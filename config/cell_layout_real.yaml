@@ -1,0 +1,100 @@
+# =============================================================================
+# Cell Layout Configuration cho REAL ROBOT mode
+# =============================================================================
+# Config này dùng khi đã sẵn sàng kết nối GP7 thật qua RoboDK Motoman driver.
+# Khác với cell_layout.yaml chỉ ở phần robot_connection và một vài tinh chỉnh.
+#
+# Trước khi dùng, đảm bảo:
+#   1. YRC1000 controller bật, kết nối Ethernet
+#   2. PC và controller cùng subnet (vd 192.168.1.x)
+#   3. Đã ping được IP của YRC1000
+#   4. High Speed Ethernet Server function đã enable trên YRC1000
+# =============================================================================
+
+metadata:
+  version: "1.0.0-real"
+  last_modified: "2025-01-15"
+  notes: "Config cho REAL GP7 + YRC1000. Sử dụng từ Pha 7."
+
+
+robot:
+  name: "Yaskawa GP7"
+  source: "library"
+  library_name: "Yaskawa-GP7.robot"
+  pose:
+    xyz_mm: [0, 0, 0]
+    rpy_deg: [0, 0, 0]
+  home_joints_deg: [0, 0, 0, 0, -90, 0]
+
+
+worktable:
+  mesh: "models/worktable.stl"
+  pose:
+    xyz_mm: [400, 0, -10]
+    rpy_deg: [0, 0, 0]
+  color_rgb: [0.6, 0.6, 0.7]
+
+
+camera_mount:
+  mesh: "models/camera_mount.stl"
+  pose:
+    xyz_mm: [400, 0, 0]
+    rpy_deg: [0, 0, 0]
+
+
+camera:
+  type: "real"                            # đánh dấu camera thật (vẫn add ảo trong RoboDK)
+  model: "Intel RealSense D455"
+  pose:
+    xyz_mm: [400, 0, 850]
+    rpy_deg: [180, 0, 0]
+  intrinsics:
+    fov_deg: 87
+    focal_length_mm: 1.93
+    size_px: [1280, 720]
+
+
+gripper:
+  name: "TwoFingerGripper"
+  mesh: "models/gripper.stl"
+  tcp_offset_xyz_mm: [0, 0, 130]
+  tcp_offset_rpy_deg: [0, 0, 0]
+
+
+frames:
+  - name: "WorkpieceArea"
+    pose:
+      xyz_mm: [400, 0, 0]
+      rpy_deg: [0, 0, 0]
+  - name: "PlaceZone"
+    pose:
+      xyz_mm: [400, 300, 50]
+      rpy_deg: [0, 0, 0]
+
+
+objects:
+  - name: "bottle"
+    mesh: "models/objects/bottle.stl"
+    visible: false
+    parent_frame: "WorkpieceArea"
+  - name: "box"
+    mesh: "models/objects/box.stl"
+    visible: false
+    parent_frame: "WorkpieceArea"
+  - name: "bolt"
+    mesh: "models/objects/bolt.stl"
+    visible: false
+    parent_frame: "WorkpieceArea"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Real robot connection
+# ─────────────────────────────────────────────────────────────────────────────
+robot_connection:
+  enabled: true                           # ENABLE for real robot
+  ip: "192.168.1.100"                     # ĐỔI theo IP YRC1000 thực tế
+  port: 80
+  driver: "Motoman"
+  # Safety limits
+  max_speed_percent: 30                   # giới hạn tốc độ thí nghiệm
+  acceleration_percent: 50

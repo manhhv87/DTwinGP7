@@ -1,0 +1,148 @@
+# =============================================================================
+# Cell Layout Configuration cho hệ thống pick-and-place GP7
+# =============================================================================
+# File này mô tả toàn bộ cell mô phỏng. RoboDK Free không lưu được .rdk,
+# nên chúng ta dùng file YAML này + script build_station.py để tái tạo cell
+# mỗi lần mở RoboDK.
+#
+# Workflow:
+#   1. Sửa file này nếu cần thay đổi cell
+#   2. Chạy: python scripts/build_station.py
+#   3. Cell xuất hiện trong RoboDK GUI sau 3-5 giây
+#
+# Validation: dùng Pydantic schema, sai field sẽ báo lỗi ngay
+#   python -m src.cell.cell_models validate config/cell_layout.yaml
+# =============================================================================
+
+metadata:
+  version: "1.0.0"
+  last_modified: "2025-01-15"
+  author: "Master Thesis - GP7 Pick Place"
+  notes: |
+    Base config cho simulation mode.
+    Camera đặt ở 850mm trên bàn (eye-to-hand).
+    3 loại vật: bottle, box, bolt.
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ROBOT
+# ─────────────────────────────────────────────────────────────────────────────
+robot:
+  name: "Yaskawa GP7"
+  source: "library"                       # "library" hoặc "file"
+  library_name: "Yaskawa-GP7.robot"       # tên file trong C:/RoboDK/Library/
+
+  # Pose của base robot trong World frame của RoboDK
+  pose:
+    xyz_mm: [0, 0, 0]                     # đặt ở gốc tọa độ
+    rpy_deg: [0, 0, 0]
+
+  # Cấu hình joints "home" (tư thế nghỉ giữa các pick)
+  # Yaskawa GP7 convention: [S, L, U, R, B, T]
+  home_joints_deg: [0, 0, 0, 0, -90, 0]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# WORKTABLE (bàn làm việc)
+# ─────────────────────────────────────────────────────────────────────────────
+worktable:
+  mesh: "models/worktable.stl"            # path relative tới project root
+
+  pose:
+    xyz_mm: [400, 0, -10]                 # cách robot 400mm về phía X, hạ 10mm
+    rpy_deg: [0, 0, 0]
+
+  color_rgb: [0.6, 0.6, 0.7]              # màu xám-xanh nhẹ
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# CAMERA MOUNT (giàn lắp camera)
+# ─────────────────────────────────────────────────────────────────────────────
+camera_mount:
+  mesh: "models/camera_mount.stl"         # optional, có thể bỏ
+  pose:
+    xyz_mm: [400, 0, 0]                   # cùng vị trí gốc với bàn
+    rpy_deg: [0, 0, 0]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# CAMERA (D455 ảo trong RoboDK, cho visualization)
+# ─────────────────────────────────────────────────────────────────────────────
+camera:
+  type: "virtual"                         # "virtual" = Camera trong RoboDK
+  model: "Intel RealSense D455"
+
+  pose:
+    xyz_mm: [400, 0, 850]                 # 850mm trên bàn
+    rpy_deg: [180, 0, 0]                  # hướng nhìn xuống
+
+  intrinsics:
+    fov_deg: 87                           # FOV ngang của D455 RGB
+    focal_length_mm: 1.93                 # tiêu cự D455
+    size_px: [1280, 720]                  # độ phân giải
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# GRIPPER (end-effector tool)
+# ─────────────────────────────────────────────────────────────────────────────
+gripper:
+  name: "TwoFingerGripper"
+  mesh: "models/gripper.stl"              # optional
+
+  # TCP offset từ flange của robot
+  tcp_offset_xyz_mm: [0, 0, 130]          # TCP 130mm cách flange theo Z
+  tcp_offset_rpy_deg: [0, 0, 0]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# REFERENCE FRAMES (hệ tọa độ tham chiếu)
+# ─────────────────────────────────────────────────────────────────────────────
+frames:
+  - name: "WorkpieceArea"
+    pose:
+      xyz_mm: [400, 0, 0]                 # trên mặt bàn, vùng có vật
+      rpy_deg: [0, 0, 0]
+
+  - name: "PlaceZone"
+    pose:
+      xyz_mm: [400, 300, 50]              # bên phải bàn, vùng đặt vật
+      rpy_deg: [0, 0, 0]
+
+  - name: "CalibrationTarget"             # cho hand-eye calibration
+    pose:
+      xyz_mm: [400, 0, 10]
+      rpy_deg: [0, 0, 0]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# OBJECT TEMPLATES (3 loại vật)
+# ─────────────────────────────────────────────────────────────────────────────
+# Các vật này được load làm template, mặc định ẩn (visible: false)
+# Khi thí nghiệm, code orchestrator sẽ clone hoặc show theo nhu cầu
+objects:
+  - name: "bottle"
+    mesh: "models/objects/bottle.stl"
+    visible: false
+    parent_frame: "WorkpieceArea"
+
+  - name: "box"
+    mesh: "models/objects/box.stl"
+    visible: false
+    parent_frame: "WorkpieceArea"
+
+  - name: "bolt"
+    mesh: "models/objects/bolt.stl"
+    visible: false
+    parent_frame: "WorkpieceArea"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ROBOT CONNECTION (online mode - kết nối GP7 thật)
+# ─────────────────────────────────────────────────────────────────────────────
+# Mặc định enabled=false (sim mode).
+# Khi đến phase test với GP7 thật, đổi enabled=true.
+robot_connection:
+  enabled: false
+  ip: "192.168.1.100"                     # IP của YRC1000
+  port: 80                                # default port cho RoboDK Motoman driver
+  driver: "Motoman"

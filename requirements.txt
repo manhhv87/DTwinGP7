@@ -1,0 +1,40 @@
+# =============================================================================
+# requirements.txt — Máy CHẠY hệ thống (gần robot, thường là Windows)
+# =============================================================================
+# Dùng cho: dựng cell, thu dataset, hand-eye calibration, chạy thí nghiệm
+# pick-and-place (inference YOLO bằng trọng số đã train sẵn).
+#
+# Việc TRAIN model làm hoàn toàn trên máy khác (Linux GPU), KHÔNG nằm trong
+# repo này — repo chỉ nhận file trọng số .pt/.onnx để inference.
+#
+# Cài:  pip install -r requirements.txt
+# Python 3.10+ bắt buộc.
+# =============================================================================
+
+# ───── Cell management (Phụ lục A) ─────
+robodk>=5.5.0              # RoboDK API client
+pydantic>=2.0.0            # Config validation
+pyyaml>=6.0                # YAML parsing
+numpy>=1.24.0              # Pose math, numerical computing
+
+# ───── Perception — INFERENCE bằng trọng số có sẵn ─────
+ultralytics>=8.1.0         # Load file .pt + chạy YOLOv8-seg inference
+opencv-python>=4.8.0       # Image processing, ChArUco calibration; PCA dùng numpy
+# Lưu ý: `pip install ultralytics` kéo theo torch bản CPU. Muốn inference
+# bằng GPU trên máy này, cài torch bản CUDA TRƯỚC (xem HUONG_DAN_CAI_DAT.md):
+#   pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
+
+# ───── Camera (RealSense D455) ─────
+# Nếu `pip install pyrealsense2` lỗi (hoặc máy không cắm D455): thêm dấu #
+# vào đầu dòng dưới rồi cài lại — phần sim/test vẫn chạy đầy đủ khi thiếu nó.
+pyrealsense2>=2.54.0
+
+# ───── Analysis & logging ─────
+pandas>=2.0.0              # Phân tích kết quả thí nghiệm
+scipy>=1.11.0              # Kiểm định thống kê (t-test)
+matplotlib>=3.7.0          # Vẽ figure cho paper
+
+# ───── Development / testing ─────
+pytest>=7.4.0
+pytest-mock>=3.11.0
+pytest-cov>=4.1.0

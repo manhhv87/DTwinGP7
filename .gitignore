@@ -1,0 +1,34 @@
+# ───── Python ─────
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.coverage
+htmlcov/
+.venv/
+venv/
+
+# ───── Claude Code ─────
+.claude/
+
+# ───── Output dữ liệu lớn (giữ thư mục bằng .gitkeep) ─────
+# data/raw/ : ảnh chụp từ D455 (chỉ thu trên máy Windows, rồi copy sang Linux)
+data/raw/*
+models/*
+results/*
+figures/*
+logs/*
+!**/.gitkeep
+!models/README.md
+
+# ───── Mesh / model nhị phân ─────
+*.stl
+*.pt
+*.rdk
+
+# ───── Output calibration (commit có chọn lọc) ─────
+config/calibration/*.npy
+
+# ───── OS ─────
+Thumbs.db
+.DS_Store
