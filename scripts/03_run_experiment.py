@@ -73,8 +73,8 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-DEFAULT_OBJECT_HEIGHTS_MM = {"bottle": 150, "cup": 40, "bolt": 25}
-DEFAULT_MASK_SIZE_PX = {"bottle": (120, 40), "cup": (80, 80), "bolt": (40, 40)}
+DEFAULT_OBJECT_HEIGHTS_MM = {"tray": 25, "bottle": 150, "cup": 40, "bolt": 25}
+DEFAULT_MASK_SIZE_PX = {"tray": (180, 100), "bottle": (120, 40), "cup": (80, 80), "bolt": (40, 40)}
 
 
 def _stl_height_mm(stl_path):
@@ -188,10 +188,15 @@ def build_perception(mode: str, config: dict, args=None, cell_config=None):
 
     # Auto-compute mask_box + depth từ cell_config nếu có (đảm bảo mock
     # detection khớp object template trong RoboDK). Fallback hard-code nếu không.
+    # Target object = FIRST object in cell config (default "tray" cho thí nghiệm
+    # khay Galaxy S23, hoặc "bottle" nếu user thay đổi thứ tự objects).
     auto_height_mm = None
+    target_name = "bottle"
     if cell_config is not None and not headless:
+        if cell_config.objects:
+            target_name = cell_config.objects[0].name
         mask_box, sim_depth_m, auto_height_mm = _auto_mock_detection_params(
-            cell_config, MockCamera.DEFAULT_INTRINSICS, "bottle",
+            cell_config, MockCamera.DEFAULT_INTRINSICS, target_name,
         )
     else:
         sim_depth_m = config.get("sim_depth_m", 0.49)
@@ -204,7 +209,7 @@ def build_perception(mode: str, config: dict, args=None, cell_config=None):
 
     if not headless:
         # RoboDK sim: 1 kịch bản cố định, mask khớp object thật trong cell.
-        det = MockDetector.make_detection("bottle", mask_box=mask_box)
+        det = MockDetector.make_detection(target_name, mask_box=mask_box)
         if auto_height_mm is not None:
             det.height_mm = auto_height_mm   # truyền chiều cao thật cho adaptive grasp
         scripted = [[det]]

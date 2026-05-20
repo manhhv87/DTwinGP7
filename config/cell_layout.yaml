@@ -123,8 +123,9 @@ gripper:
 
   # TCP offset từ flange của robot — đặt ngay tại fingertip để pose grasp
   # tương đương "đầu ngón chạm bề mặt vật".
-  # Tổng cao gripper = palm_height(40) + finger_length(50) = 90mm.
-  tcp_offset_xyz_mm: [0, 0, 90]
+  # Pneumatic parallel-jaw (custom cho Galaxy S23 tray): palm 60 + finger 80 = 140mm.
+  # PLACEHOLDER — user sẽ đo gripper thật và update sau (xem gen_primitive_meshes.py).
+  tcp_offset_xyz_mm: [0, 0, 140]
   tcp_offset_rpy_deg: [0, 0, 0]
 
 
@@ -157,12 +158,22 @@ frames:
 # Spread theo Y để 3 vật không chồng nhau; bolt rất nhỏ (9×8×24mm) — không
 # chia ô Y trùng vật khác nếu không sẽ khuất.
 objects:
+  # Object thực tế cho thí nghiệm: khay Galaxy S23 (đặt FIRST → minimal-build chọn).
+  # Bottle/cup/bolt giữ làm minh hoạ vision multi-class, không phải target gắp.
+  - name: "tray"
+    mesh: "models/objects/tray.stl"
+    visible: false
+    parent_frame: "WorkpieceArea"
+    pose:
+      xyz_mm: [0, -120, 0]                 # world (700, -120, 500)
+      rpy_deg: [0, 0, 0]
+
   - name: "bottle"
     mesh: "models/objects/bottle.stl"
     visible: false
     parent_frame: "WorkpieceArea"
     pose:
-      xyz_mm: [0, -120, 0]                 # world (700, -120, 500)
+      xyz_mm: [0, 0, 0]                    # world (700, 0, 500) — giữa bàn (đã đổi từ Y=-120)
       rpy_deg: [0, 0, 0]
 
   - name: "cup"
@@ -170,7 +181,7 @@ objects:
     visible: false
     parent_frame: "WorkpieceArea"
     pose:
-      xyz_mm: [0, 0, 0]                    # world (700, 0, 500) — giữa bàn
+      xyz_mm: [0, 120, 0]                  # world (700, 120, 500) — đã shift để tránh bottle
       rpy_deg: [0, 0, 0]
 
   - name: "bolt"
@@ -178,7 +189,7 @@ objects:
     visible: false
     parent_frame: "WorkpieceArea"
     pose:
-      xyz_mm: [0, 120, 0]                  # world (700, 120, 500)
+      xyz_mm: [60, 60, 0]                  # world (760, 60, 500)
       rpy_deg: [0, 0, 0]
 
 

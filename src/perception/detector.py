@@ -20,7 +20,7 @@ import numpy as np
 logger = logging.getLogger(__name__)
 
 # Tên class — phải khớp thứ tự khi train (data/splits/dataset.yaml).
-DEFAULT_CLASS_NAMES = ["bottle", "cup", "bolt"]
+DEFAULT_CLASS_NAMES = ["tray", "bottle", "cup", "bolt"]
 
 
 @dataclass

@@ -71,27 +71,33 @@ def make_pedestal(
 
 
 def make_parallel_gripper(
-    palm_width: float = 200.0,        # X: 150 opening + 2×12 finger + slack
-    palm_depth: float = 50.0,         # Y: bề dày thân
-    palm_height: float = 40.0,        # Z: cao của palm
-    finger_thickness: float = 12.0,   # X: đủ mảnh đâm qua quai cup
+    palm_width: float = 50.0,         # X: thân pneumatic actuator nhỏ gọn
+    palm_depth: float = 40.0,         # Y: bề dày thân
+    palm_height: float = 60.0,        # Z: cao của palm (chứa motor khí nén)
+    finger_thickness: float = 10.0,   # X: bề dày custom finger
     finger_depth: float = 30.0,       # Y: bề dày ngón
-    finger_length: float = 50.0,      # Z: đủ ôm top phần lớn object, không xuyên bàn khi gắp bolt
-    finger_inner_gap: float = 150.0,  # X: opening 150mm — cover cup width 137mm + slack
+    finger_length: float = 80.0,      # Z: custom finger dài để vào trong khay
+    finger_inner_gap: float = 50.0,   # X: opening 50mm (stroke 25mm × 2 finger)
 ) -> trimesh.Trimesh:
-    """Gripper parallel-jaw 2 ngón (universal — đủ cho cả 3 object class).
+    """Gripper PNEUMATIC parallel-jaw 2 ngón (custom cho khay Galaxy S23).
 
-    Thiết kế cho 3 vật pick-and-place GP7:
-      - bottle (68×68×210): opening 150mm > 68mm ✓, finger 50mm ôm top thân
-      - cup    (167×136×100): opening 150 ≥ width 137 ✓ (gắp body trực tiếp,
-                              không phải qua quai); finger 50mm phù hợp h=100mm
-      - bolt   (9×8×24): opening 150mm rộng — chỉ visual demo, orchestrator
-                         dùng adaptive grasp_depth_offset để fingertip không
-                         xuyên bàn (~5mm trên table)
+    **PLACEHOLDER values** — đang giả định kích thước của 1 pneumatic parallel-jaw
+    nhỏ (kiểu SMC MHZ2 / Festo HGPP) với custom long fingers cho phone tray.
+    User sẽ bổ sung số đo thực tế sau, lúc đó update các tham số ở đầu hàm này
+    rồi chạy `python scripts/gen_primitive_meshes.py --only gripper`.
+
+    Default specs (giả định):
+      - Total height = palm 60 + finger 80 = 140mm
+      - Opening max  = 50mm  (gắp tay nắm / rim mỏng của khay)
+      - Stroke       = 25mm per finger
+      - Driving      = compressed air (pneumatic)
+
+    Đối tượng đích: khay (tray) cho điện thoại Galaxy S23 — không phải
+    bottle/cup/bolt. Bottle/cup/bolt giữ trong cell config làm fallback
+    minh hoạ vision multi-class, không thực sự gắp được với gripper này.
 
     Origin: **tại fingertip (TCP)**, mesh extend theo -Z về phía flange.
-    Tổng cao 90mm (palm 40 + finger 50). Cần update cell_layout.yaml:
-      tcp_offset_xyz_mm: [0, 0, 90]  (was 110 cho gripper cũ)
+    Cần đồng bộ cell_layout.yaml: tcp_offset_xyz_mm: [0, 0, 140].
     """
     # Palm tại Z = -(finger_length + palm_height/2 ... -finger_length)
     palm = trimesh.creation.box([palm_width, palm_depth, palm_height])
@@ -112,6 +118,27 @@ def make_parallel_gripper(
     return trimesh.util.concatenate(parts)
 
 
+def make_tray(
+    width: float = 180.0,    # X: chiều rộng khay (đủ chứa Galaxy S23 146mm)
+    depth: float = 100.0,    # Y: chiều sâu khay
+    height: float = 25.0,    # Z: chiều cao khay
+) -> trimesh.Trimesh:
+    """Khay đựng điện thoại Galaxy S23 (assumed, simplified box).
+
+    **PLACEHOLDER values** — giả định kích thước phổ thông cho single-phone
+    assembly tray. User đo khay thực tế → update params này.
+
+    Galaxy S23 dimensions: 146.3 × 70.9 × 7.6mm → khay 180×100mm vừa chứa
+    với khoảng cho gripper kẹp 2 cạnh ngắn.
+
+    Origin: ở **TÂM ĐÁY** khay (Z=0), khay extend +Z → đặt tại pose Z=table_top
+    thì đáy khay trùng mặt bàn.
+    """
+    box = trimesh.creation.box([width, depth, height])
+    box.apply_translation([0, 0, height / 2])
+    return box
+
+
 def make_floor(size: float = 3000.0, thickness: float = 20.0) -> trimesh.Trimesh:
     """Sàn nhà: tấm vuông mỏng. Origin ở tâm, mặt TRÊN ở Z=0 (tấm nằm dưới sàn)
     → đặt floor tại pose Z=0 thì mặt sàn trùng đúng Z=0, mọi vật đứng lên trên.
@@ -124,7 +151,7 @@ def make_floor(size: float = 3000.0, thickness: float = 20.0) -> trimesh.Trimesh
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Generate primitive mesh STLs cho cell.")
     p.add_argument(
-        "--only", choices=["worktable", "pedestal", "gripper", "floor"],
+        "--only", choices=["worktable", "pedestal", "gripper", "floor", "tray"],
         help="Chỉ generate 1 mesh; mặc định generate tất cả.",
     )
     p.add_argument(
@@ -139,7 +166,7 @@ def main() -> int:
     args = parse_args()
     MODELS_DIR.mkdir(parents=True, exist_ok=True)
 
-    targets = {args.only} if args.only else {"worktable", "pedestal", "gripper", "floor"}
+    targets = {args.only} if args.only else {"worktable", "pedestal", "gripper", "floor", "tray"}
 
     if "worktable" in targets:
         w, d, h = args.table_size
@@ -158,7 +185,14 @@ def main() -> int:
         grip = make_parallel_gripper()
         path = MODELS_DIR / "gripper.stl"
         grip.export(str(path))
-        print(f"OK gripper.stl: parallel-jaw 2-finger, opening 150mm, total height 90mm, {len(grip.faces)} triangles")
+        print(f"OK gripper.stl: pneumatic parallel-jaw, opening 50mm, total height 140mm, {len(grip.faces)} triangles")
+
+    if "tray" in targets:
+        tray = make_tray()
+        (MODELS_DIR / "objects").mkdir(parents=True, exist_ok=True)
+        path = MODELS_DIR / "objects" / "tray.stl"
+        tray.export(str(path))
+        print(f"OK objects/tray.stl: 180x100x25mm (Galaxy S23 tray), {len(tray.faces)} triangles")
 
     if "floor" in targets:
         floor = make_floor()
