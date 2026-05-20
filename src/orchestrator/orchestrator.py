@@ -86,6 +86,10 @@ class Orchestrator:
         self.robodk_objects: dict[str, Any] = robodk_objects or {}
         self.robodk_tool = robodk_tool
         self._attached_obj: Any = None
+        # Lưu pose + parent ban đầu của object để reset đầu mỗi trial — tránh
+        # bottle "dịch chuyển ra xa dần" sau mỗi trial (offset cố định khi attach).
+        self._initial_obj_poses: dict[str, Any] = {}
+        self._initial_obj_parents: dict[str, Any] = {}
 
         self._rdk = None
         self.robot = robot
@@ -119,6 +123,10 @@ class Orchestrator:
 
         # setSpeed gọi 1 lần ở init thay vì mỗi trial (-1 API call/trial).
         self._set_speed()
+
+        # Capture pose + parent ban đầu của các object → có baseline để reset
+        # đầu mỗi trial. Chỉ làm khi có robodk_objects (sim mode với RoboDK).
+        self._capture_initial_object_poses()
 
     def _disable_collision_check(self) -> None:
         """Tắt collision check toàn cục — xem comment trong __init__."""
@@ -256,6 +264,37 @@ class Orchestrator:
         except Exception as e:  # noqa: BLE001
             logger.debug("Attach failed: %s", e)
 
+    def _capture_initial_object_poses(self) -> None:
+        """Lưu Pose() + Parent() của object để reset đầu mỗi trial."""
+        for name, item in self.robodk_objects.items():
+            if not hasattr(item, "Pose") or not hasattr(item, "Parent"):
+                continue
+            try:
+                self._initial_obj_poses[name] = item.Pose()
+                self._initial_obj_parents[name] = item.Parent()
+            except Exception as e:  # noqa: BLE001
+                logger.debug("Capture initial pose '%s' failed: %s", name, e)
+
+    def _reset_objects_to_initial(self) -> None:
+        """Reset object về parent_frame + pose ban đầu (đầu mỗi trial).
+
+        Không có baseline (headless/no-build) → no-op gracefully.
+        """
+        if not self._initial_obj_poses:
+            return
+        for name, item in self.robodk_objects.items():
+            pose = self._initial_obj_poses.get(name)
+            parent = self._initial_obj_parents.get(name)
+            if pose is None or parent is None:
+                continue
+            try:
+                if hasattr(item, "setParentStatic"):
+                    item.setParentStatic(parent)
+                if hasattr(item, "setPose"):
+                    item.setPose(pose)
+            except Exception as e:  # noqa: BLE001
+                logger.debug("Reset object '%s' failed: %s", name, e)
+
     def _detach_from_gripper(self) -> None:
         """Detach: set parent về station root, giữ pose absolute hiện tại."""
         if self._attached_obj is None:
@@ -387,6 +426,10 @@ class Orchestrator:
         """
         self.sm.reset()
         t_start = time.time()
+
+        # Reset object về vị trí template ban đầu để mỗi trial có scene
+        # giống nhau (loop demo không "trôi" object dần).
+        self._reset_objects_to_initial()
 
         # ─── DETECT ───
         self.sm.transition_to(PickState.DETECT)
