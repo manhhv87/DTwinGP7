@@ -39,8 +39,8 @@ ORIENTATIONS = [
     ("gripper chỉ xuống", [180.0, 0.0, 0.0]),
     ("gripper chéo xuống", [135.0, 0.0, 0.0]),
 ]
-FLANGE_Z = [880.0, 820.0, 760.0, 700.0, 660.0, 620.0]   # cao → thấp
-FLANGE_X = [320.0, 400.0, 250.0, 480.0, 200.0]
+FLANGE_Z = [820.0, 780.0, 740.0, 700.0, 860.0, 880.0]   # ưu tiên trung bình
+FLANGE_X = [550.0, 500.0, 600.0, 480.0, 450.0, 400.0]   # ưu tiên gần workspace
 
 
 def _write_home(path: Path, joints: list[float]) -> bool:
