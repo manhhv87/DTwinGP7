@@ -73,8 +73,8 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-DEFAULT_OBJECT_HEIGHTS_MM = {"tray": 25}
-DEFAULT_MASK_SIZE_PX = {"tray": (180, 100)}
+DEFAULT_OBJECT_HEIGHTS_MM = {"tray": 25, "bottle": 150, "cup": 40, "bolt": 25}
+DEFAULT_MASK_SIZE_PX = {"tray": (180, 100), "bottle": (120, 40), "cup": (80, 80), "bolt": (40, 40)}
 
 
 def _stl_height_mm(stl_path):
@@ -211,26 +211,26 @@ def build_perception(mode: str, config: dict, args=None, cell_config=None):
             det.height_mm = auto_height_mm   # truyền chiều cao thật cho adaptive grasp
         scripted = [[det]]
     else:
-        # Headless: sinh N kịch bản tray với position varying (pixel u/v) để
-        # thống kê success rate trong nhiều vị trí. miss_rate: tỉ lệ trial
-        # không có vật (test detection_miss recovery).
+        # Headless: sinh nhiều kịch bản đa dạng class + position để có thống kê
+        # có ý nghĩa. miss_rate: tỉ lệ trial không có vật (test recovery).
         import random
 
         n = getattr(args, "trials", 50)
         miss_rate = getattr(args, "detection_miss_rate", 0.0)
         rng = random.Random(getattr(args, "seed", 42))
-        tray_height = DEFAULT_OBJECT_HEIGHTS_MM.get("tray", 25)
+        classes = ["tray", "bottle", "cup", "bolt"]
         scripted = []
         for _ in range(n):
             if rng.random() < miss_rate:
                 scripted.append([])                       # detection miss
                 continue
+            cls = rng.choice(classes)
             cu = rng.randint(450, 1050)                   # pixel u → world X span
             cv = rng.randint(330, 410)
             det_h = MockDetector.make_detection(
-                "tray", mask_box=(cu - 90, cv - 50, cu + 90, cv + 50),
+                cls, mask_box=(cu - 60, cv - 20, cu + 60, cv + 20),
             )
-            det_h.height_mm = tray_height
+            det_h.height_mm = DEFAULT_OBJECT_HEIGHTS_MM.get(cls, 100)
             scripted.append([det_h])
     detector = MockDetector(scripted=scripted)
     return camera, detector

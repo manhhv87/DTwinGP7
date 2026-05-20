@@ -152,8 +152,9 @@ frames:
 # ─────────────────────────────────────────────────────────────────────────────
 # OBJECT TEMPLATES (3 loại vật)
 # ─────────────────────────────────────────────────────────────────────────────
-# Object target cho thí nghiệm: khay Galaxy S23. Pose là OFFSET so với
-# parent_frame (WorkpieceArea = (700, 0, 500)).
+# Pose của object là OFFSET so với parent_frame (WorkpieceArea = (700, 0, 500)).
+# tray đặt FIRST → minimal-build chọn target gắp.
+# bottle/cup/bolt giữ để demo vision multi-class (không phải target gắp).
 objects:
   - name: "tray"
     mesh: "models/objects/tray.stl"
@@ -161,6 +162,30 @@ objects:
     parent_frame: "WorkpieceArea"
     pose:
       xyz_mm: [0, -120, 0]                 # world (700, -120, 500)
+      rpy_deg: [0, 0, 0]
+
+  - name: "bottle"
+    mesh: "models/objects/bottle.stl"
+    visible: false
+    parent_frame: "WorkpieceArea"
+    pose:
+      xyz_mm: [0, 0, 0]                    # world (700, 0, 500)
+      rpy_deg: [0, 0, 0]
+
+  - name: "cup"
+    mesh: "models/objects/cup.stl"
+    visible: false
+    parent_frame: "WorkpieceArea"
+    pose:
+      xyz_mm: [0, 120, 0]                  # world (700, 120, 500)
+      rpy_deg: [0, 0, 0]
+
+  - name: "bolt"
+    mesh: "models/objects/bolt.stl"
+    visible: false
+    parent_frame: "WorkpieceArea"
+    pose:
+      xyz_mm: [60, 60, 0]                  # world (760, 60, 500)
       rpy_deg: [0, 0, 0]
 
 

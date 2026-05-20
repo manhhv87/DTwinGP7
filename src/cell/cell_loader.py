@@ -21,8 +21,6 @@ import logging
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-import numpy as np
-
 from .cell_models import CellConfig
 from .exceptions import (
     InvalidConfigError,
@@ -41,10 +39,13 @@ DEFAULT_LIBRARY_PATH = Path("C:/RoboDK/Library")
 
 
 # Màu mặc định cho từng loại item (R, G, B, A) ∈ [0, 1]. Phối màu công nghiệp:
-# thép sáng (gripper), thép tối (bàn), nhựa đen (khay).
+# thép sáng (gripper), thép tối (bàn), nhựa đen (khay); object khác để debug.
 _DEFAULT_GRIPPER_COLOR = [0.78, 0.80, 0.82, 1.0]    # thép inox sáng
 _DEFAULT_OBJECT_COLORS = {
-    "tray": [0.18, 0.18, 0.20, 1.0],      # nhựa ABS đen (anti-static)
+    "tray":   [0.18, 0.18, 0.20, 1.0],    # nhựa ABS đen (anti-static)
+    "bottle": [0.2, 0.45, 0.95, 1.0],     # xanh dương
+    "cup":    [0.95, 0.85, 0.15, 1.0],    # vàng
+    "bolt":   [0.85, 0.25, 0.25, 1.0],    # đỏ
 }
 _DEFAULT_WORKTABLE_COLOR = [0.52, 0.55, 0.58, 1.0]  # thép công nghiệp
 
