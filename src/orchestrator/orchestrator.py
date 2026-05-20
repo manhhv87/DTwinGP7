@@ -631,17 +631,28 @@ class Orchestrator:
             logger.debug("setSpeed bỏ qua: %s", e)
 
     def _return_home(self) -> None:
-        """Đưa robot về home — normalize joints để tránh quay chong chóng."""
+        """Đưa robot về home — normalize joints để tránh quay chong chóng.
+
+        Ưu tiên `config['home_joints_deg']` (truyền từ cell layout) thay vì
+        `robot.JointsHome()` — vì JointsHome() đọc từ file .robot library
+        (mặc định Yaskawa GP7 = [0,0,0,0,0,0]), KHÔNG phải pose home user đặt
+        trong cell_layout.yaml. Dùng sai source → MoveJ về 0 mà current đang
+        ở -180 → quay 180° trên J4/J6 = "chong chóng".
+        """
         try:
-            home = self.robot.JointsHome()
-            home_list = self._joints_to_list(home)
+            home_list = None
+            cfg_home = self.config.get("home_joints_deg")
+            if cfg_home:
+                home_list = [float(j) for j in cfg_home]
+            else:
+                home = self.robot.JointsHome()
+                home_list = self._joints_to_list(home)
             if home_list:
                 home_list = self._normalize_target_joints(home_list)
                 self.robot.MoveJ(home_list)
                 self._current_joints = home_list
             else:
-                # Fallback: chưa có cache joints → MoveJ Mat trực tiếp
-                self.robot.MoveJ(home)
+                self.robot.MoveJ(self.robot.JointsHome())
         except Exception as e:  # noqa: BLE001
             logger.warning("Không về home được: %s", e)
 

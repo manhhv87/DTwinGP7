@@ -244,6 +244,10 @@ def main() -> int:
     # từ object pose (mọi mode đều dùng — kể cả --no-build).
     cell_config = CellConfig.from_yaml(PROJECT_ROOT / args.cell_config)
 
+    # Truyền home_joints từ cell config xuống Orchestrator để _return_home dùng
+    # ĐÚNG home đã set trong cell (không phải JointsHome() từ file .robot).
+    config["home_joints_deg"] = list(cell_config.robot.home_joints_deg)
+
     # ─── Robot + cell ───
     sim_robot = None
     robodk_objects: dict = {}
