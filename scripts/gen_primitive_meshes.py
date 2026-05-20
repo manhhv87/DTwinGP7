@@ -119,24 +119,32 @@ def make_parallel_gripper(
 
 
 def make_tray(
-    width: float = 180.0,    # X: chiều rộng khay (đủ chứa Galaxy S23 146mm)
-    depth: float = 100.0,    # Y: chiều sâu khay
-    height: float = 25.0,    # Z: chiều cao khay
+    width: float = 180.0,           # X: chiều rộng khay (đủ chứa Galaxy S23 146mm)
+    depth: float = 100.0,           # Y: chiều sâu khay
+    height: float = 25.0,           # Z: chiều cao thân khay
+    handle_width: float = 30.0,     # X: bề rộng tay nắm trên đỉnh
+    handle_depth: float = 20.0,     # Y: bề sâu tay nắm (vừa gripper opening 50mm)
+    handle_height: float = 40.0,    # Z: cao tay nắm
 ) -> trimesh.Trimesh:
-    """Khay đựng điện thoại Galaxy S23 (assumed, simplified box).
+    """Khay đựng điện thoại Galaxy S23 + tay nắm (handle) trên đỉnh.
 
-    **PLACEHOLDER values** — giả định kích thước phổ thông cho single-phone
-    assembly tray. User đo khay thực tế → update params này.
+    **PLACEHOLDER values** — kích thước phổ thông cho single-phone assembly
+    tray, có handle để pneumatic parallel-jaw 50mm opening kẹp được.
 
-    Galaxy S23 dimensions: 146.3 × 70.9 × 7.6mm → khay 180×100mm vừa chứa
-    với khoảng cho gripper kẹp 2 cạnh ngắn.
+    Galaxy S23: 146.3 × 70.9 × 7.6mm → khay body 180×100 vừa chứa.
+    Handle: 30×20 trên đỉnh (vừa opening 50mm, gripper finger 80mm dài ôm
+    handle 40mm cao + 20mm clearance trên khay body).
 
-    Origin: ở **TÂM ĐÁY** khay (Z=0), khay extend +Z → đặt tại pose Z=table_top
-    thì đáy khay trùng mặt bàn.
+    Origin: ở **TÂM ĐÁY** khay (Z=0).
+    Top of body at Z=25, top of handle at Z=65.
     """
-    box = trimesh.creation.box([width, depth, height])
-    box.apply_translation([0, 0, height / 2])
-    return box
+    body = trimesh.creation.box([width, depth, height])
+    body.apply_translation([0, 0, height / 2])
+
+    handle = trimesh.creation.box([handle_width, handle_depth, handle_height])
+    handle.apply_translation([0, 0, height + handle_height / 2])
+
+    return trimesh.util.concatenate([body, handle])
 
 
 def make_floor(size: float = 3000.0, thickness: float = 20.0) -> trimesh.Trimesh:
@@ -192,7 +200,7 @@ def main() -> int:
         (MODELS_DIR / "objects").mkdir(parents=True, exist_ok=True)
         path = MODELS_DIR / "objects" / "tray.stl"
         tray.export(str(path))
-        print(f"OK objects/tray.stl: 180x100x25mm (Galaxy S23 tray), {len(tray.faces)} triangles")
+        print(f"OK objects/tray.stl: 180x100x25mm body + 30x20x40mm handle (Galaxy S23 tray), {len(tray.faces)} triangles")
 
     if "floor" in targets:
         floor = make_floor()
