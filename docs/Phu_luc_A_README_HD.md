@@ -6,24 +6,32 @@ Module quản lý RoboDK cell theo paradigm **code-first**: cell được mô t�
 
 ## A.1. Tổng quan
 
-### Cấu trúc 10 file
+### Cấu trúc file
 
 ```
 pickplace_gp7/
 ├── config/
-│   ├── cell_layout.yaml          ① config cell — chế độ mô phỏng
-│   └── cell_layout_real.yaml     ② config cell — chế độ robot thật
-├── src/cell/                     ◀ Package cell
-│   ├── __init__.py               ③ public API
-│   ├── cell_models.py            ④ Pydantic schemas + validation
-│   ├── cell_loader.py            ⑤ CellLoader — dựng station từ config
-│   ├── exceptions.py             ⑥ custom exceptions
-│   └── pose_utils.py             ⑦ pose math helpers
-├── scripts/
-│   ├── build_station.py          ⑧ CLI dựng cell từ YAML
-│   └── dump_cell_to_yaml.py      ⑨ capture state GUI → YAML
+│   ├── cell_layout.yaml             config cell — chế độ mô phỏng
+│   └── cell_layout_real.yaml        config cell — chế độ robot thật
+├── src/cell/                        Package cell
+│   ├── __init__.py                  public API
+│   ├── cell_models.py               Pydantic schemas + validation
+│   ├── cell_loader.py               CellLoader — dựng station từ config (hỗ trợ flag minimal_build)
+│   ├── exceptions.py                custom exceptions
+│   └── pose_utils.py                pose math helpers
+├── scripts/                         (các script cell-related)
+│   ├── build_station.py             CLI dựng cell từ YAML, hỗ trợ --minimal
+│   ├── dump_cell_to_yaml.py         capture state GUI → YAML (reverse engineering)
+│   ├── gen_primitive_meshes.py      sinh STL primitive (gripper, worktable)
+│   ├── convert_glb_to_stl.py        chuyển GLB → STL
+│   ├── diagnose_layout.py           kiểm tra cell_layout.yaml hợp lý
+│   ├── demo_reachability.py         demo MoveJ_Test cho 1 pose
+│   ├── set_home_pose.py             quét IK để chọn home_joints_deg phù hợp
+│   ├── calibration_from_layout.py   sinh T_base_camera.npy từ camera.pose
+│   └── probe_api_limit.py           đo RoboDK API rate-limit
 └── tests/
-    └── test_cell_loader.py       ⑩ 22 unit + integration tests
+    └── test_cell_loader.py          22 unit + integration tests cho module này
+                                     (tổng cộng 79 test cho toàn bộ repo)
 ```
 
 ### Yêu cầu
@@ -209,7 +217,13 @@ python scripts/build_station.py                                      # config m�
 python scripts/build_station.py --config config/cell_layout_real.yaml
 python scripts/build_station.py --no-clear                           # giữ items hiện tại
 python scripts/build_station.py --verbose                            # DEBUG log
+python scripts/build_station.py --minimal                            # build tối giản (~12 API call thay vì ~22)
 ```
+
+**`--minimal` flag**: bỏ các item cosmetic — floor, Cam2D viewport (giữ CameraFrame),
+CalibrationTarget frame, 2/3 object templates (chỉ giữ object đầu tiên). Hữu ích
+khi RoboDK Free hit rate-limit hoặc khi chạy iteratively trong dev. Object detection
+vẫn hoạt động đầy đủ vì MockDetector sinh detection độc lập với template trong RoboDK.
 
 **Exit codes**: `0` thành công · `1` connection/runtime · `2` config validation · `3` missing file. Log đầy đủ ở `logs/build_station.log`.
 
@@ -286,7 +300,7 @@ flowchart LR
 
 ```bash
 pytest tests/test_cell_loader.py -v     # 22 test riêng cho module này
-pytest tests/ -v                         # toàn bộ
+pytest tests/ -v                         # toàn bộ — kỳ vọng 79 passed
 ```
 
 **Chiến lược test**:
@@ -303,7 +317,7 @@ tests/test_cell_loader.py::TestCellConfig::test_frame_reference_validation PASSE
 tests/test_cell_loader.py::TestCellLoader::test_loader_can_instantiate PASSED
 tests/test_cell_loader.py::TestCellConfigFromYAML::test_load_from_valid_yaml_file PASSED
 ...
-======================== 22 passed ========================
+======================== 79 passed in 8s ========================
 ```
 
 CI/CD chạy được unit + integration; end-to-end để chạy local.

@@ -35,6 +35,14 @@ graph LR
 
 **Không cần**: Unity 3D, ROS 2, Linux, Gazebo, Isaac Sim, Educational license.
 
+> **Lưu ý về RoboDK Free** (đã verified): cơ chế giới hạn của Free là **rate-limit
+> ~10-15 calls/giây**, KHÔNG phải session quota cố định. Pattern thí nghiệm
+> bình thường (có `gripper_delay_s=0.3` + `inter_trial_delay_s=1.0`) chạy ở
+> ~4-5 calls/giây → **đã verify chạy 100/100 trials liên tục không hit limit**.
+> Phần thí nghiệm chính của luận văn không cần Educational license. Chế độ
+> `--headless` (mock SimRobot, 0 API call) khả dụng cho thống kê quy mô 500+
+> trials nếu cần.
+
 ## 2. Sơ đồ kết nối hệ thống
 
 ```mermaid
@@ -80,77 +88,92 @@ flowchart TB
 ## 3. Cấu trúc thư mục code
 
 ```
-files/
-├── pickplace_gp7/                   # BỘ CODE (chạy trên máy Windows gần robot)
+pickplace_gp7/                          # BỘ CODE + TÀI LIỆU (repo DTwinGP7)
+├── README.md
+├── requirements.txt
+├── pyproject.toml
+├── clean.bat                           # tiện ích xóa __pycache__
+├── docs/                               # TÀI LIỆU (đã move từ tai_lieu/)
+│   ├── phat_bieu_bai_toan_v3_2_HD.md
+│   ├── Phu_luc_A_README_HD.md
+│   └── HUONG_DAN_CAI_DAT.md
+├── config/
+│   ├── cell_layout.yaml                # cell mô phỏng
+│   ├── cell_layout_real.yaml           # cell cho robot thật
+│   ├── experiment.yaml                 # tham số Orchestrator + thí nghiệm
+│   └── calibration/
+│       └── T_base_camera.npy           # output hand-eye (sinh khi chạy)
+├── data/
+│   └── raw/                            # ảnh thô từ D455
+├── models/
 │   ├── README.md
-│   ├── requirements.txt
-│   ├── pyproject.toml
-│   ├── clean.bat                    # tiện ích xóa __pycache__
-│   ├── config/
-│   │   ├── cell_layout.yaml         # cell mô phỏng
-│   │   ├── cell_layout_real.yaml    # cell cho robot thật
-│   │   ├── experiment.yaml          # tham số Orchestrator + thí nghiệm
-│   │   └── calibration/
-│   │       └── T_base_camera.npy    # output hand-eye (sinh khi chạy)
-│   ├── data/
-│   │   └── raw/                     # ảnh thô từ D455
-│   ├── models/
-│   │   ├── README.md
-│   │   ├── yolov8s-seg_best.pt      # trọng số (copy từ máy train Linux)
-│   │   └── objects/                 # mesh STL: bottle/box/bolt
-│   ├── src/
-│   │   ├── cell/                    # Phụ lục A — "Cell là code"
-│   │   │   ├── __init__.py
-│   │   │   ├── cell_models.py       # Pydantic schemas
-│   │   │   ├── cell_loader.py       # dựng RoboDK station
-│   │   │   ├── exceptions.py
-│   │   │   └── pose_utils.py
-│   │   ├── perception/
-│   │   │   ├── __init__.py
-│   │   │   ├── camera.py            # D455 wrapper + MockCamera
-│   │   │   ├── detector.py          # YOLO inference + MockDetector
-│   │   │   ├── postprocess.py       # mask centroid + PCA + depth
-│   │   │   └── perception_node.py
-│   │   ├── orchestrator/
-│   │   │   ├── __init__.py
-│   │   │   ├── coord_conv.py        # transform utilities
-│   │   │   ├── state_machine.py
-│   │   │   └── orchestrator.py
-│   │   ├── calibration/
-│   │   │   ├── __init__.py
-│   │   │   ├── capture_calibration.py
-│   │   │   └── hand_eye_solver.py
-│   │   ├── logging/
-│   │   │   ├── __init__.py
-│   │   │   └── logger.py
-│   │   └── utils/
-│   │       ├── __init__.py
-│   │       └── helpers.py
-│   ├── scripts/
-│   │   ├── build_station.py          # dựng cell từ config YAML
-│   │   ├── dump_cell_to_yaml.py      # capture cell GUI → YAML
-│   │   ├── 01_collect_dataset.py
-│   │   ├── 02_run_calibration.py
-│   │   ├── 03_run_experiment.py
-│   │   └── 04_analyze_results.py
-│   ├── tests/
-│   │   ├── test_cell_loader.py
-│   │   ├── test_coord_conv.py
-│   │   ├── test_postprocess.py
-│   │   ├── test_state_machine.py
-│   │   ├── test_hand_eye_solver.py
-│   │   └── test_orchestrator_sim.py
-│   └── results/ · figures/ · logs/    # thư mục output khi chạy
-└── tai_lieu/                          # TÀI LIỆU
-    ├── phat_bieu_bai_toan_v3_2_HD.md
-    ├── Phu_luc_A_README_HD.md
-    └── HUONG_DAN_CAI_DAT.md
+│   ├── yolov8s-seg_best.pt             # trọng số (copy từ máy train Linux)
+│   ├── gripper.stl                     # parallel-jaw 2-finger 120×50×110mm
+│   └── objects/                        # mesh STL: bottle/cup/bolt
+├── src/
+│   ├── cell/                           # Phụ lục A — "Cell là code"
+│   │   ├── __init__.py
+│   │   ├── cell_models.py              # Pydantic schemas
+│   │   ├── cell_loader.py              # dựng RoboDK station (hỗ trợ minimal_build)
+│   │   ├── exceptions.py
+│   │   └── pose_utils.py
+│   ├── perception/
+│   │   ├── __init__.py
+│   │   ├── camera.py                   # D455 wrapper + MockCamera
+│   │   ├── detector.py                 # YOLO inference + MockDetector
+│   │   ├── postprocess.py              # mask centroid + PCA + depth
+│   │   └── perception_node.py
+│   ├── orchestrator/
+│   │   ├── __init__.py
+│   │   ├── coord_conv.py               # transform utilities
+│   │   ├── state_machine.py
+│   │   ├── orchestrator.py             # pick-place state machine
+│   │   └── sim_robot.py                # SimRobot mock thuần Python (--headless)
+│   ├── calibration/
+│   │   ├── __init__.py
+│   │   ├── capture_calibration.py
+│   │   └── hand_eye_solver.py
+│   ├── logging/
+│   │   ├── __init__.py
+│   │   └── logger.py
+│   └── utils/
+│       ├── __init__.py
+│       └── helpers.py
+├── scripts/
+│   ├── build_station.py                # dựng cell từ config YAML (--minimal)
+│   ├── dump_cell_to_yaml.py            # capture state RoboDK GUI → YAML
+│   ├── 01_collect_dataset.py
+│   ├── 02_run_calibration.py
+│   ├── 03_run_experiment.py            # main: --mode sim/real, --headless, --minimal-build
+│   ├── 04_analyze_results.py
+│   ├── calibration_from_layout.py      # sinh T_BC từ camera.pose cho headless
+│   ├── convert_glb_to_stl.py           # GLB → STL utility
+│   ├── demo_reachability.py            # demo MoveJ_Test 1 pose
+│   ├── diagnose_layout.py              # check cell_layout.yaml hợp lý
+│   ├── gen_primitive_meshes.py         # sinh STL primitive (gripper, ...)
+│   ├── probe_api_limit.py              # đo RoboDK API rate-limit
+│   └── set_home_pose.py                # quét IK chọn home_joints_deg
+├── tests/                              # 79 test cases (pytest)
+│   ├── test_cell_loader.py             # 22 test
+│   ├── test_coord_conv.py
+│   ├── test_postprocess.py
+│   ├── test_state_machine.py
+│   ├── test_hand_eye_solver.py
+│   ├── test_orchestrator_sim.py        # integration với MagicMock robot
+│   └── test_sim_robot.py               # test SimRobot reach + grasp injection
+└── results/ · figures/ · logs/          # thư mục output khi chạy
 ```
 
 > **Lưu ý về huấn luyện model:** việc train YOLOv8 (mục 5) thực hiện trên một
 > máy Linux + GPU riêng, không nằm trong `pickplace_gp7/`. Repo chỉ nhận file
 > trọng số `.pt`/`.onnx` đã train để inference. Dataset thu ở `data/raw/`,
 > gán nhãn trên Roboflow rồi chuyển sang máy Linux để train.
+
+> **Lưu ý về 3 chế độ chạy thí nghiệm**: ngoài `--mode sim` (RoboDK GUI) và
+> `--mode real` (D455 + GP7), repo còn hỗ trợ **`--headless`** — dùng SimRobot
+> mock thuần Python (`src/orchestrator/sim_robot.py`) không phụ thuộc RoboDK,
+> 0 API call, hỗ trợ failure injection (`--grasp-fail-rate`, `--detection-miss-rate`).
+> Dùng cho thống kê quy mô 500+ trials. Xem `docs/HUONG_DAN_CAI_DAT.md` §7.
 
 ---
 
@@ -539,7 +562,11 @@ Luồng trạng thái được kiểm soát bằng state machine (IDLE→DETECT�
 
 ### 7.3. Điểm vào thí nghiệm
 
-`scripts/03_run_experiment.py` ghép toàn bộ: dựng cell trong RoboDK, khởi động Perception, chạy N trial qua Orchestrator, ghi kết quả ra `results/`. Hai chế độ: `--mode sim` (Mock camera/detector, vẫn chạy đủ pipeline + digital twin) và `--mode real` (D455 + YOLO thật + GP7).
+`scripts/03_run_experiment.py` ghép toàn bộ: dựng cell trong RoboDK, khởi động Perception, chạy N trial qua Orchestrator, ghi kết quả ra `results/`. **Ba chế độ**:
+
+- `--mode sim` (default): MockCamera/MockDetector + RoboDK GUI thực sự. Phù hợp demo trực quan, screenshot, video. Có thể kèm `--minimal-build` để giảm API call.
+- `--mode sim --headless`: SimRobot mock (`src/orchestrator/sim_robot.py`) thay RoboDK, 0 API call, hỗ trợ failure injection (`--grasp-fail-rate`, `--detection-miss-rate`). Phù hợp thống kê quy mô lớn 500+ trials.
+- `--mode real`: D455 + YOLO thật + GP7 + RoboDK (L5 system test).
 
 ### 7.4. Dựng cell bằng code
 
@@ -572,7 +599,7 @@ graph LR
 | **L4** System SIM | Full pipeline + digital twin, detection giả lập | RoboDK GUI | `03_run_experiment.py --mode sim` |
 | **L5** System REAL | Full pipeline + D455 + GP7 | RoboDK + D455 + GP7 | `03_run_experiment.py --mode real` |
 
-Thư viện phần cứng (`pyrealsense2`, `robodk`, `ultralytics`) đều lazy-import → L1–L2 chạy được trên máy không có phần cứng. Hiện có **65 test case** ở `pickplace_gp7/tests/` cover L1–L3. Lịch tham chiếu: L1 từ Tuần 4 (ongoing) · L4 ≈ Tuần 14 · L5 ≈ Tuần 23+.
+Thư viện phần cứng (`pyrealsense2`, `robodk`, `ultralytics`) đều lazy-import → L1–L2 chạy được trên máy không có phần cứng. Hiện có **79 test case** ở `pickplace_gp7/tests/` cover L1–L3 (gồm `test_sim_robot.py` cho SimRobot headless). Lịch tham chiếu: L1 từ Tuần 4 (ongoing) · L4 ≈ Tuần 14 · L5 ≈ Tuần 23+.
 
 ## 9. Hiệu chỉnh (Tuning)
 

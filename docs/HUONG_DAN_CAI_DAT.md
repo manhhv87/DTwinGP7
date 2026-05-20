@@ -2,9 +2,10 @@
 
 Tài liệu này hướng dẫn cài đặt từ đầu để chạy được dự án.
 
-> **Vị trí code:** bộ code nằm ở thư mục `pickplace_gp7/` (cùng cấp với
-> thư mục `tai_lieu/` chứa tài liệu này). Mọi lệnh dưới đây chạy **bên trong
-> thư mục `pickplace_gp7/`**.
+> **Vị trí code & tài liệu:** Bộ code + tài liệu nằm trong thư mục
+> `pickplace_gp7/`. Tài liệu (bao gồm file này) ở `pickplace_gp7/docs/`.
+> Mọi lệnh dưới đây chạy **bên trong thư mục `pickplace_gp7/`** (root của
+> repo trên GitHub: https://github.com/manhhv87/DTwinGP7).
 
 ---
 
@@ -217,7 +218,7 @@ python -m src.cell.cell_models validate config/cell_layout.yaml
 pytest tests/ -q
 ```
 
-Kỳ vọng: bước 1 in `✓ Config hợp lệ: ...`; bước 2 báo `67 passed`.
+Kỳ vọng: bước 1 in `✓ Config hợp lệ: ...`; bước 2 báo `79 passed`.
 Hai bước này đạt → code + dependencies đã cài đúng.
 
 ### 6.2. Kiểm tra dựng cell — cần RoboDK
@@ -240,17 +241,40 @@ sau ~3–5 giây.
 # Dựng / dựng lại cell (cần RoboDK GUI mở)
 python scripts/build_station.py
 python scripts/build_station.py --config config/cell_layout_real.yaml
+python scripts/build_station.py --minimal                  # cell tối giản, tiết kiệm API call
 
 # Hand-eye calibration → sinh config/calibration/T_base_camera.npy
 # (mặc định method Park — KHÔNG dùng Tsai, xem mục 6.1 tài liệu đề tài)
 python scripts/02_run_calibration.py --method park
+python scripts/calibration_from_layout.py                  # sinh T_BC từ YAML cho headless
 
 # Thí nghiệm pick-and-place (CẦN có T_base_camera.npy ở bước trên)
-python scripts/03_run_experiment.py --mode sim  --trials 50
-python scripts/03_run_experiment.py --mode real --trials 50 --lighting bright
+python scripts/03_run_experiment.py --mode sim  --trials 50                     # RoboDK GUI
+python scripts/03_run_experiment.py --mode sim  --trials 50 --minimal-build     # tiết kiệm API
+python scripts/03_run_experiment.py --mode sim  --trials 500 --headless         # 0 API call, SimRobot mock
+python scripts/03_run_experiment.py --mode real --trials 50 --lighting bright   # GP7 thật
 
 # Phân tích kết quả
 python scripts/04_analyze_results.py --csv "results/*.csv"
+```
+
+**3 chế độ chạy thí nghiệm**:
+
+| Chế độ | Cần phần cứng | Phụ thuộc RoboDK | Use case |
+|---|---|---|---|
+| `--mode sim` (default) | RoboDK GUI | ✅ có | Demo trực quan, screenshot, video |
+| `--mode sim --headless` | KHÔNG | ❌ không | Thống kê quy mô lớn (500+ trials), 0 API call, có failure injection (`--grasp-fail-rate`, `--detection-miss-rate`) |
+| `--mode real` | D455 + GP7 + RoboDK | ✅ có | Thí nghiệm trên robot thật (L5) |
+
+**Script tiện ích bổ sung**:
+
+```powershell
+python scripts/gen_primitive_meshes.py     # sinh STL primitive (gripper, worktable, ...)
+python scripts/convert_glb_to_stl.py       # chuyển GLB → STL
+python scripts/diagnose_layout.py          # kiểm tra cell_layout.yaml hợp lý
+python scripts/demo_reachability.py        # demo tính reachability cho 1 pose
+python scripts/set_home_pose.py            # quét IK để chọn home_joints_deg
+python scripts/probe_api_limit.py          # đo giới hạn RoboDK API (rate-limit)
 ```
 
 > **Lưu ý thứ tự:** `03_run_experiment.py` cần file hand-eye
@@ -274,17 +298,20 @@ python scripts/04_analyze_results.py --csv "results/*.csv"
 | `MissingRobotError: Yaskawa GP7` | Chưa tải GP7 vào Library | Mục 2.6 |
 | `MissingMeshError: worktable.stl` | Thiếu mesh | Mục 2.7 — đặt file STL đúng path |
 | `FileNotFoundError: ...best.pt` | Chưa copy trọng số về | Mục 5 — đưa trọng số về máy chạy |
-| `FileNotFoundError: ...T_base_camera.npy` | Chưa chạy hand-eye calibration | Chạy `02_run_calibration.py`; hoặc tạo ma trận đơn vị tạm (mục 7) |
+| `FileNotFoundError: ...T_base_camera.npy` | Chưa chạy hand-eye calibration | Chạy `02_run_calibration.py`; hoặc tạo ma trận đơn vị tạm (mục 7); hoặc `scripts/calibration_from_layout.py` (sinh T_BC từ YAML cho headless) |
 | `UnicodeEncodeError` ký tự ✓/─ | Console Windows cp1252 | Đã xử lý sẵn trong code (ép UTF-8) |
 | `pip install` lỗi ở `pyrealsense2` | Wheel không hợp Python/OS | Thêm `#` vào dòng `pyrealsense2` trong `requirements.txt`, cài lại (sim/test vẫn chạy) |
 | Calibration sai số lớn (>5mm) | Dùng nhầm Tsai, hoặc pose thiếu rotation | Dùng `--method park`; thêm pose xoay ±30° |
 | Robot ở sai vị trí trong cell | `pose.xyz_mm` nhầm đơn vị m vs mm | Verify dùng mm (số thường > 100) |
+| `struct.error: unpack requires a buffer of 4 bytes` | RoboDK Free hit **rate-limit** (popup "API calls are limited" chèn vào socket gây desync) | 3 cách: (1) restart RoboDK reset quota; (2) thêm flag `--minimal-build` để giảm API call; (3) chuyển sang `--headless` (0 API call). Thực nghiệm cho thấy pattern thông thường (≤ 5 calls/giây) chạy được 100+ trials không hit limit. |
+| `[WinError 10053] connection aborted` | RoboDK socket đã đóng (sau popup limit) | Same fix như `struct.error` ở trên — restart RoboDK GUI |
 
 ---
 
 ## 9. Liên kết
 
-- Tổng quan dự án: `../pickplace_gp7/README.md`
-- Trọng số + mesh: `../pickplace_gp7/models/README.md`
+- Tổng quan dự án: `../README.md`
+- Trọng số + mesh: `../models/README.md`
 - Tài liệu đề tài: `phat_bieu_bai_toan_v3_2_HD.md`
 - Chi tiết cell module: `Phu_luc_A_README_HD.md`
+- Repo GitHub: https://github.com/manhhv87/DTwinGP7
