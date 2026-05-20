@@ -373,6 +373,30 @@ class Orchestrator:
                     continue
         return None
 
+    def _normalize_target_joints(self, target_joints):
+        """Wrap mỗi joint của target ±360° để gần `_current_joints` nhất.
+
+        MoveJ nội suy LINEAR trong joint space. Nếu home_joints[J4]=-180 và
+        current J4=+180 (cùng orientation thực tế), MoveJ sẽ quay -360° → "chong
+        chóng". Wrap target về phía gần current pick đường ngắn nhất.
+
+        Yaskawa GP7 joint ranges lớn (R/T tới ±360) cho phép nhiều biểu diễn
+        cùng một orientation — normalize bắt buộc để tránh full-rotation.
+        """
+        if self._current_joints is None or target_joints is None:
+            return target_joints
+        result = list(target_joints)
+        n = min(len(result), len(self._current_joints))
+        for i in range(n):
+            cur = float(self._current_joints[i])
+            tgt = float(result[i])
+            while tgt - cur > 180.0:
+                tgt -= 360.0
+            while tgt - cur < -180.0:
+                tgt += 360.0
+            result[i] = tgt
+        return result
+
     def _solve_ik_joints(self, pose) -> list[float] | None:
         """Tính joints cho pose; trả None nếu không có solution.
 
@@ -398,6 +422,7 @@ class Orchestrator:
         RoboDK MoveJ(pose) đôi khi raise 'Target cannot be reached' do internal
         IK chọn solution xa current joints. Truyền `joints_approx=current` vào
         SolveIK để pick solution gần nhất, rồi MoveJ(joints) bypass IK internal.
+        Normalize joints wrap ±360 để tránh full-rotation "chong chóng".
         """
         pose = self._to_robodk_pose(target_T)
         joint_list = self._solve_ik_joints(pose)
@@ -405,6 +430,7 @@ class Orchestrator:
             # Mock robot trong test hoặc SolveIK fail → fallback MoveJ(pose)
             self.robot.MoveJ(pose)
             return
+        joint_list = self._normalize_target_joints(joint_list)
         logger.debug("MoveJ joints=%s (target world=%s)",
                      [round(j, 1) for j in joint_list],
                      target_T[:3, 3].round(1).tolist())
@@ -418,6 +444,7 @@ class Orchestrator:
         if joint_list is None:
             self.robot.MoveL(pose)
             return
+        joint_list = self._normalize_target_joints(joint_list)
         self.robot.MoveL(joint_list)
         self._current_joints = joint_list
 
@@ -604,9 +631,17 @@ class Orchestrator:
             logger.debug("setSpeed bỏ qua: %s", e)
 
     def _return_home(self) -> None:
-        """Đưa robot về home sau lỗi (best-effort)."""
+        """Đưa robot về home — normalize joints để tránh quay chong chóng."""
         try:
-            self.robot.MoveJ(self.robot.JointsHome())
+            home = self.robot.JointsHome()
+            home_list = self._joints_to_list(home)
+            if home_list:
+                home_list = self._normalize_target_joints(home_list)
+                self.robot.MoveJ(home_list)
+                self._current_joints = home_list
+            else:
+                # Fallback: chưa có cache joints → MoveJ Mat trực tiếp
+                self.robot.MoveJ(home)
         except Exception as e:  # noqa: BLE001
             logger.warning("Không về home được: %s", e)
 
