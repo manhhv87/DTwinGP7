@@ -123,8 +123,8 @@ gripper:
 
   # TCP offset từ flange của robot — đặt ngay tại fingertip để pose grasp
   # tương đương "đầu ngón chạm bề mặt vật".
-  # Tổng cao gripper = palm_height(40) + finger_length(70) = 110mm.
-  tcp_offset_xyz_mm: [0, 0, 110]
+  # Tổng cao gripper = palm_height(40) + finger_length(50) = 90mm.
+  tcp_offset_xyz_mm: [0, 0, 90]
   tcp_offset_rpy_deg: [0, 0, 0]
 
 

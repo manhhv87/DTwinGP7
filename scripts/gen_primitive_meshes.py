@@ -71,27 +71,27 @@ def make_pedestal(
 
 
 def make_parallel_gripper(
-    palm_width: float = 120.0,        # X: chứa cơ cấu khi mở hết
+    palm_width: float = 200.0,        # X: 150 opening + 2×12 finger + slack
     palm_depth: float = 50.0,         # Y: bề dày thân
     palm_height: float = 40.0,        # Z: cao của palm
     finger_thickness: float = 12.0,   # X: đủ mảnh đâm qua quai cup
     finger_depth: float = 30.0,       # Y: bề dày ngón
-    finger_length: float = 70.0,      # Z: đủ chạm bàn khi gắp bolt
-    finger_inner_gap: float = 90.0,   # X: khoảng giữa 2 mặt trong (max open)
+    finger_length: float = 50.0,      # Z: đủ ôm top phần lớn object, không xuyên bàn khi gắp bolt
+    finger_inner_gap: float = 150.0,  # X: opening 150mm — cover cup width 137mm + slack
 ) -> trimesh.Trimesh:
-    """Gripper parallel-jaw 2 ngón.
+    """Gripper parallel-jaw 2 ngón (universal — đủ cho cả 3 object class).
 
-    Thiết kế đủ cho 3 vật trong bài toán pick-and-place GP7:
-      - bottle (68×68×210): mở 90mm > 68mm ✓, gắp thân
-      - cup    (167×136×100, có quai): body quá to → gắp quai;
-                                       finger 12mm mảnh đâm qua lỗ quai
-      - bolt   (9×8×24): mở 90mm → đóng quanh thân; finger 70mm chạm sát bàn
+    Thiết kế cho 3 vật pick-and-place GP7:
+      - bottle (68×68×210): opening 150mm > 68mm ✓, finger 50mm ôm top thân
+      - cup    (167×136×100): opening 150 ≥ width 137 ✓ (gắp body trực tiếp,
+                              không phải qua quai); finger 50mm phù hợp h=100mm
+      - bolt   (9×8×24): opening 150mm rộng — chỉ visual demo, orchestrator
+                         dùng adaptive grasp_depth_offset để fingertip không
+                         xuyên bàn (~5mm trên table)
 
     Origin: **tại fingertip (TCP)**, mesh extend theo -Z về phía flange.
-    Tổng cao 110mm (palm 40 + finger 70). Khi gắn vào tool item (whose origin
-    nằm tại TCP world), mesh tự khớp: palm tại flange, fingers giữa flange-TCP.
-    RoboDK pattern: tool.pose = TCP offset → AddFile(mesh, tool) đặt mesh origin
-    tại tool origin = TCP. Phải invert mesh Z để palm gắn vào flange.
+    Tổng cao 90mm (palm 40 + finger 50). Cần update cell_layout.yaml:
+      tcp_offset_xyz_mm: [0, 0, 90]  (was 110 cho gripper cũ)
     """
     # Palm tại Z = -(finger_length + palm_height/2 ... -finger_length)
     palm = trimesh.creation.box([palm_width, palm_depth, palm_height])
@@ -158,7 +158,7 @@ def main() -> int:
         grip = make_parallel_gripper()
         path = MODELS_DIR / "gripper.stl"
         grip.export(str(path))
-        print(f"OK gripper.stl: parallel-jaw 2-finger, opening 90mm, total height 110mm, {len(grip.faces)} triangles")
+        print(f"OK gripper.stl: parallel-jaw 2-finger, opening 150mm, total height 90mm, {len(grip.faces)} triangles")
 
     if "floor" in targets:
         floor = make_floor()

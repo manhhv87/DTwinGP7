@@ -36,6 +36,10 @@ class Detection:
     pose_camera: tuple[float, float, float, float] | None = None
     pixel_uv: tuple[int, int] | None = None
     mask_area: int = 0
+    # Chiều cao thật của vật (mm) — sim mode lấy từ STL bounds. Real mode
+    # có thể tính từ depth gradient hoặc lookup class. Dùng cho adaptive
+    # grasp_depth_offset trong orchestrator.
+    height_mm: float | None = None
 
 
 def field_dict(det: Detection) -> dict:
@@ -49,6 +53,7 @@ def field_dict(det: Detection) -> dict:
         "pose_camera": det.pose_camera,
         "pixel_uv": det.pixel_uv,
         "mask_area": det.mask_area,
+        "height_mm": det.height_mm,
     }
 
 

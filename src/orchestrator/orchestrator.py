@@ -485,11 +485,22 @@ class Orchestrator:
         self.sm.transition_to(PickState.PLAN)
         dz = self.config["approach_height_mm"]
 
+        # Margin tối thiểu cho fingertip cách table top (mặc định bàn ở Z=500).
+        safety_margin_mm = 5.0
+        max_offset = float(self.config["grasp_depth_offset_mm"])
+
         for obj in objects:
             xyz_base = np.array(obj["pose_base"], dtype=float).copy()
             # pose_base[2] là Z của TOP object (camera nhìn xuống → depth là top).
-            # Trừ grasp_depth_offset_mm để fingertip TCP đi vào giữa thân.
-            xyz_base[2] -= self.config["grasp_depth_offset_mm"]
+            # Adaptive offset: clip theo chiều cao để fingertip KHÔNG xuyên bàn
+            # khi gắp vật ngắn (bolt h=24mm với offset 50 → xuyên bàn 26mm).
+            obj_height = obj.get("height_mm")
+            if obj_height and obj_height > 0:
+                effective_offset = min(max_offset,
+                                       max(safety_margin_mm, obj_height - safety_margin_mm))
+            else:
+                effective_offset = max_offset
+            xyz_base[2] -= effective_offset
             yaw = obj["pose_camera"][3]
             grasp_T = make_grasp_pose(xyz_base, yaw, self.config["yaw_offset_deg"])
             lift_T = grasp_T.copy()

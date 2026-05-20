@@ -188,8 +188,9 @@ def build_perception(mode: str, config: dict, args=None, cell_config=None):
 
     # Auto-compute mask_box + depth từ cell_config nếu có (đảm bảo mock
     # detection khớp object template trong RoboDK). Fallback hard-code nếu không.
+    auto_height_mm = None
     if cell_config is not None and not headless:
-        mask_box, sim_depth_m, _ = _auto_mock_detection_params(
+        mask_box, sim_depth_m, auto_height_mm = _auto_mock_detection_params(
             cell_config, MockCamera.DEFAULT_INTRINSICS, "bottle",
         )
     else:
@@ -203,9 +204,10 @@ def build_perception(mode: str, config: dict, args=None, cell_config=None):
 
     if not headless:
         # RoboDK sim: 1 kịch bản cố định, mask khớp object thật trong cell.
-        scripted = [[MockDetector.make_detection(
-            "bottle", mask_box=mask_box,
-        )]]
+        det = MockDetector.make_detection("bottle", mask_box=mask_box)
+        if auto_height_mm is not None:
+            det.height_mm = auto_height_mm   # truyền chiều cao thật cho adaptive grasp
+        scripted = [[det]]
     else:
         # Headless: sinh nhiều kịch bản đa dạng để thống kê có ý nghĩa.
         # - detection_miss_rate: tỉ lệ trial không có vật
@@ -224,9 +226,12 @@ def build_perception(mode: str, config: dict, args=None, cell_config=None):
             cls = rng.choice(classes)
             cu = rng.randint(450, 1050)                   # pixel u → world X span
             cv = rng.randint(330, 410)
-            scripted.append([MockDetector.make_detection(
+            det_h = MockDetector.make_detection(
                 cls, mask_box=(cu - 60, cv - 20, cu + 60, cv + 20),
-            )])
+            )
+            # Headless lookup chiều cao per class (real D455 không có info này).
+            det_h.height_mm = DEFAULT_OBJECT_HEIGHTS_MM.get(cls, 100)
+            scripted.append([det_h])
     detector = MockDetector(scripted=scripted)
     return camera, detector
 
