@@ -77,6 +77,32 @@ DEFAULT_OBJECT_HEIGHTS_MM = {"bottle": 150, "cup": 40, "bolt": 25}
 DEFAULT_MASK_SIZE_PX = {"bottle": (120, 40), "cup": (80, 80), "bolt": (40, 40)}
 
 
+def _stl_height_mm(stl_path):
+    """Đọc binary STL → chiều cao theo trục Z (max Z - min Z). None nếu lỗi.
+
+    Dùng để auto-detect dimensions object thật thay vì hard-code, giúp depth
+    + grasp pose khớp đúng với mesh file thực.
+    """
+    import struct
+    try:
+        with open(stl_path, "rb") as f:
+            f.read(80)
+            ntri = struct.unpack("<I", f.read(4))[0]
+            z_min, z_max = float("inf"), float("-inf")
+            for _ in range(ntri):
+                f.read(12)
+                for _ in range(3):
+                    _, _, z = struct.unpack("<fff", f.read(12))
+                    if z < z_min:
+                        z_min = z
+                    if z > z_max:
+                        z_max = z
+                f.read(2)
+            return z_max - z_min if z_max > z_min else None
+    except Exception:
+        return None
+
+
 def _auto_mock_detection_params(cell_config, intrinsics_dict, object_name="bottle"):
     """Auto-compute (mask_box, depth_m, height_mm) từ object pose trong cell_layout.
 
@@ -101,8 +127,18 @@ def _auto_mock_detection_params(cell_config, intrinsics_dict, object_name="bottl
     offset_xyz = np.array(obj.pose.xyz_mm, dtype=float) if obj.pose else np.zeros(3)
     obj_base_world = parent_xyz + offset_xyz
 
-    # Top object = base + chiều cao class
+    # Top object = base + chiều cao thực. Ưu tiên ĐO trực tiếp từ STL file
+    # để khớp với mesh thật (tránh hard-code sai như giả định bottle=150mm
+    # nhưng STL thực 210mm → gripper đi quá sâu, chai thò lên trên gripper).
     height_mm = DEFAULT_OBJECT_HEIGHTS_MM.get(object_name, 100)
+    if obj.mesh:
+        mesh_path = Path(obj.mesh)
+        if not mesh_path.is_absolute():
+            mesh_path = PROJECT_ROOT / mesh_path
+        if mesh_path.exists():
+            actual = _stl_height_mm(mesh_path)
+            if actual is not None and actual > 1.0:
+                height_mm = actual
     obj_top_world = obj_base_world.copy()
     obj_top_world[2] += height_mm
 
