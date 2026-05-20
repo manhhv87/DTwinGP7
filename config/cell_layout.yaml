@@ -47,7 +47,7 @@ robot:
   # → arm tránh đụng workpiece khi với xuống. B=60°: wrist hướng xuống sẵn
   # cho top-down picking → SolveIK ưu tiên config sạch không xuyên vật.
   # Tinh chỉnh tự động: chạy scripts/set_home_pose.py (cần RoboDK GUI).
-  home_joints_deg: [0, -1, 43.1, -180, 134.1, -180]   # tư thế home tính bằng IK (set_home_pose.py)
+  home_joints_deg: [1.97, 2.26, -4.99, -181.93, 41.7, -90.35]   # capture từ RoboDK GUI (save_current_as_home.py)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -139,7 +139,7 @@ frames:
 
   - name: "PlaceZone"
     pose:
-      xyz_mm: [700, 200, 500]             # bên Y+ vùng pick, cùng cao độ mặt bàn — reach ~742mm
+      xyz_mm: [700, 120, 500]             # mirror của bottle pick Y=-120 → bottle 68mm hoàn toàn trong bàn (Y range -200..+200)
       rpy_deg: [0, 0, 0]
 
   - name: "CalibrationTarget"             # cho hand-eye calibration

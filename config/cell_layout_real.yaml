@@ -24,7 +24,7 @@ robot:
   pose:
     xyz_mm: [0, 0, 0]                     # robot trên sàn, dùng built-in floor stand
     rpy_deg: [0, 0, 0]
-  home_joints_deg: [0, -1, 43.1, -180, 134.1, -180]   # tư thế home tính bằng IK (set_home_pose.py)
+  home_joints_deg: [1.97, 2.26, -4.99, -181.93, 41.7, -90.35]   # capture từ RoboDK GUI (save_current_as_home.py)
 
 
 floor:
@@ -76,7 +76,7 @@ frames:
       rpy_deg: [0, 0, 0]
   - name: "PlaceZone"
     pose:
-      xyz_mm: [480, 200, 500]
+      xyz_mm: [480, 120, 500]
       rpy_deg: [0, 0, 0]
 
 

@@ -33,11 +33,11 @@ logger = logging.getLogger(__name__)
 _DEFAULT_CONFIG: dict[str, Any] = {
     "robot_name": "Yaskawa GP7",
     "calibration_path": "config/calibration/T_base_camera.npy",
-    "place_position": [700.0, 200.0, 700.0],
-    # Khoảng cách lift trên grasp/place pose. 100mm: lift_T Z ≈ 760 (trên top
-    # bottle 50mm, dưới home TCP) → trajectory rõ ràng "trên xuống" thay vì
-    # "ngang". Approach + Retreat đều dùng giá trị này.
-    "approach_height_mm": 100.0,
+    "place_position": [700.0, 120.0, 700.0],
+    # Khoảng cách lift trên grasp/place pose. 200mm: lift_T Z ≈ 860 (trên top
+    # bottle 150mm) → MoveL xuống thẳng đứng từ cao; arm không quét workspace
+    # khi APPROACH/TRANSFER → tránh đâm bottle vào tay robot.
+    "approach_height_mm": 200.0,
     # Trừ vào Z của grasp pose để fingertip vào GIỮA THÂN object, không kẹp ở
     # đỉnh (postprocess.deproject trả về tọa độ TOP của object — Z=top). Giá trị
     # phụ thuộc chiều cao object: bottle ~150mm → offset 50-80mm; cup ~40mm → 20mm.
