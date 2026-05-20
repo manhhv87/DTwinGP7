@@ -15,20 +15,12 @@ venv/
 # ───── Output dữ liệu lớn (giữ thư mục bằng .gitkeep) ─────
 # data/raw/ : ảnh chụp từ D455 (chỉ thu trên máy Windows, rồi copy sang Linux)
 data/raw/*
-models/*
 results/*
-figures/*
 logs/*
 !**/.gitkeep
-!models/README.md
 
 # ───── Mesh / model nhị phân ─────
-*.stl
 *.pt
-*.rdk
-
-# ───── Output calibration (commit có chọn lọc) ─────
-config/calibration/*.npy
 
 # ───── OS ─────
 Thumbs.db
