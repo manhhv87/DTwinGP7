@@ -21,11 +21,9 @@ pickplace_gp7/
 │   └── pose_utils.py                pose math helpers
 ├── scripts/                         (các script cell-related)
 │   ├── build_station.py             CLI dựng cell từ YAML, hỗ trợ --minimal
-│   ├── dump_cell_to_yaml.py         capture state GUI → YAML (reverse engineering)
 │   ├── gen_primitive_meshes.py      sinh STL primitive (gripper, worktable)
 │   ├── convert_glb_to_stl.py        chuyển GLB → STL
 │   ├── diagnose_layout.py           kiểm tra cell_layout.yaml hợp lý
-│   ├── demo_reachability.py         demo MoveJ_Test cho 1 pose
 │   ├── set_home_pose.py             quét IK để chọn home_joints_deg phù hợp
 │   ├── calibration_from_layout.py   sinh T_base_camera.npy từ camera.pose
 │   └── probe_api_limit.py           đo RoboDK API rate-limit
@@ -63,7 +61,6 @@ graph TB
     C -->|RoboDK API| D[RoboDK Software<br/>━━━━━━<br/>Cell hiện ra]
 
     E[scripts/build_station.py<br/>━━━━━━<br/>CLI entry point] -->|uses| C
-    F[scripts/dump_cell_to_yaml.py<br/>━━━━━━<br/>Read RoboDK state<br/>→ YAML] -.->|generates| A
     G[tests/test_cell_loader.py<br/>━━━━━━<br/>Unit tests + mocks] -.->|tests| C
 
     style A fill:#E65100,stroke:#fff,color:#fff
@@ -227,17 +224,7 @@ vẫn hoạt động đầy đủ vì MockDetector sinh detection độc lập v
 
 **Exit codes**: `0` thành công · `1` connection/runtime · `2` config validation · `3` missing file. Log đầy đủ ở `logs/build_station.log`.
 
-### A.4.3. Capture state GUI → YAML
-
-Khi prototyping bằng cách kéo thả trong GUI rồi muốn lưu lại tọa độ:
-
-```bash
-python scripts/dump_cell_to_yaml.py --output current_cell.yaml
-```
-
-Output là YAML thô liệt kê mọi item — cần biên tập lại để khớp schema `CellConfig`.
-
-### A.4.4. Vòng iterate khi đổi cell
+### A.4.3. Vòng iterate khi đổi cell
 
 ```mermaid
 %%{init: {'theme':'base', 'themeVariables': {'fontSize':'15px','primaryTextColor':'#fff','primaryBorderColor':'#fff','lineColor':'#fff','background':'#1e1e1e','mainBkg':'#1e1e1e'}}}%%
@@ -252,7 +239,7 @@ flowchart LR
     style E fill:#2E7D32,stroke:#fff,color:#fff
 ```
 
-### A.4.5. VS Code task (tuỳ chọn)
+### A.4.4. VS Code task (tuỳ chọn)
 
 `.vscode/tasks.json`:
 
@@ -384,4 +371,4 @@ Mỗi config copy từ base, chỉ override field khác biệt.
 
 ---
 
-*Phụ lục A — v1.0. Mã nguồn: `pickplace_gp7/src/cell/`, `scripts/build_station.py`, `scripts/dump_cell_to_yaml.py`, `tests/test_cell_loader.py`.*
+*Phụ lục A — v1.0. Mã nguồn: `pickplace_gp7/src/cell/`, `scripts/build_station.py`, `tests/test_cell_loader.py`.*

@@ -141,14 +141,12 @@ pickplace_gp7/                          # BỘ CODE + TÀI LIỆU (repo DTwinGP7
 │       └── helpers.py
 ├── scripts/
 │   ├── build_station.py                # dựng cell từ config YAML (--minimal)
-│   ├── dump_cell_to_yaml.py            # capture state RoboDK GUI → YAML
 │   ├── 01_collect_dataset.py
 │   ├── 02_run_calibration.py
 │   ├── 03_run_experiment.py            # main: --mode sim/real, --headless, --minimal-build
 │   ├── 04_analyze_results.py
 │   ├── calibration_from_layout.py      # sinh T_BC từ camera.pose cho headless
 │   ├── convert_glb_to_stl.py           # GLB → STL utility
-│   ├── demo_reachability.py            # demo MoveJ_Test 1 pose
 │   ├── diagnose_layout.py              # check cell_layout.yaml hợp lý
 │   ├── gen_primitive_meshes.py         # sinh STL primitive (gripper, ...)
 │   ├── probe_api_limit.py              # đo RoboDK API rate-limit

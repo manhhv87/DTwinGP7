@@ -272,7 +272,6 @@ python scripts/04_analyze_results.py --csv "results/*.csv"
 python scripts/gen_primitive_meshes.py     # sinh STL primitive (gripper, worktable, ...)
 python scripts/convert_glb_to_stl.py       # chuyển GLB → STL
 python scripts/diagnose_layout.py          # kiểm tra cell_layout.yaml hợp lý
-python scripts/demo_reachability.py        # demo tính reachability cho 1 pose
 python scripts/set_home_pose.py            # quét IK để chọn home_joints_deg
 python scripts/probe_api_limit.py          # đo giới hạn RoboDK API (rate-limit)
 ```
