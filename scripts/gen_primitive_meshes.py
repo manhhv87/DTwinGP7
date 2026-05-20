@@ -137,13 +137,40 @@ def make_tray(
     return box
 
 
-def make_floor(size: float = 3000.0, thickness: float = 20.0) -> trimesh.Trimesh:
-    """Sàn nhà: tấm vuông mỏng. Origin ở tâm, mặt TRÊN ở Z=0 (tấm nằm dưới sàn)
-    → đặt floor tại pose Z=0 thì mặt sàn trùng đúng Z=0, mọi vật đứng lên trên.
+def make_floor(
+    size: float = 3000.0,
+    thickness: float = 20.0,
+    tile_count_per_side: int = 5,
+    gap_mm: float = 5.0,
+) -> trimesh.Trimesh:
+    """Sàn gạch lát: grid n×n ô vuông với khe hở (grout) giữa các ô.
+
+    Mỗi ô là 1 box riêng, concatenate thành 1 mesh. Khe hở 5mm giữa các ô
+    hiển thị như đường grout (gap rỗng, render background tối). Tổng kích
+    thước = size × size mm.
+
+    Default: 5×5 grid, ô 596×596mm, khe 5mm → 3000×3000mm tổng.
+
+    Origin ở tâm, mặt trên ô ở Z=0 (đặt floor tại pose Z=0 → mặt sàn ở Z=0).
     """
-    plate = trimesh.creation.box([size, size, thickness])
-    plate.apply_translation([0, 0, -thickness / 2])
-    return plate
+    n = max(int(tile_count_per_side), 1)
+    if n == 1:
+        # Trường hợp suy biến: 1 ô = tấm phẳng (giữ tương thích cũ)
+        plate = trimesh.creation.box([size, size, thickness])
+        plate.apply_translation([0, 0, -thickness / 2])
+        return plate
+
+    tile_size = (size - gap_mm * (n - 1)) / n
+    start = -size / 2 + tile_size / 2
+    parts = []
+    for i in range(n):
+        for j in range(n):
+            x = start + i * (tile_size + gap_mm)
+            y = start + j * (tile_size + gap_mm)
+            tile = trimesh.creation.box([tile_size, tile_size, thickness])
+            tile.apply_translation([x, y, -thickness / 2])
+            parts.append(tile)
+    return trimesh.util.concatenate(parts)
 
 
 def parse_args() -> argparse.Namespace:
@@ -196,7 +223,7 @@ def main() -> int:
         floor = make_floor()
         path = MODELS_DIR / "floor.stl"
         floor.export(str(path))
-        print(f"OK floor.stl: 3000x3000 mm, top surface at Z=0, {len(floor.faces)} triangles")
+        print(f"OK floor.stl: 5x5 tiled grid (596x596mm each, 5mm gaps), 3000x3000mm total, {len(floor.faces)} triangles")
 
     return 0
 
