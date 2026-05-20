@@ -42,6 +42,17 @@ _DEFAULT_CONFIG: dict[str, Any] = {
     # đỉnh (postprocess.deproject trả về tọa độ TOP của object — Z=top). Giá trị
     # phụ thuộc chiều cao object: bottle ~150mm → offset 50-80mm; cup ~40mm → 20mm.
     "grasp_depth_offset_mm": 50.0,
+    # Mặt trên worktable trong world frame (mm). Fingertip TCP KHÔNG được
+    # xuống thấp hơn (table_top_z_mm + safety_margin) ở bất kỳ object nào.
+    # Cấu hình clamp cứng tránh xuyên bàn cho vật ngắn (tray 25mm, bolt 24mm).
+    "table_top_z_mm": 500.0,
+    "table_safety_margin_mm": 15.0,
+    # Bù lệch yaw giữa PCA major axis trên mask và trục mở gripper. Yaw=0:
+    # gripper jaws spread cùng hướng PCA major axis (= longest object dim).
+    # Yaw=90: jaws spread vuông góc PCA (= shortest object dim) — dùng cho
+    # khay Galaxy S23: PCA major = 180mm (chiều dài), jaws phải spread theo
+    # 100mm (chiều rộng) → cần yaw_offset 90°.
+    "yaw_offset_deg": 90.0,
     # Về home sau mỗi success → trial kế APPROACH từ trên cao xuống (không
     # "đi ngang" từ place_lift đến lift mới). Tốn ~2 API call/trial nhưng
     # cần cho video demo trông tự nhiên.
@@ -51,7 +62,6 @@ _DEFAULT_CONFIG: dict[str, Any] = {
     "inter_trial_delay_s": 1.0,
     "speed_joint_deg_s": 60.0,
     "speed_linear_mm_s": 80.0,
-    "yaw_offset_deg": 0.0,
     "detection_timeout_s": 2.0,
     # Sim mặc định SKIP reachability check (tiết kiệm 4 API calls/trial cho
     # RoboDK Free quota nhỏ). MoveJ sẽ tự raise nếu thật sự không với tới.
@@ -485,23 +495,26 @@ class Orchestrator:
         self.sm.transition_to(PickState.PLAN)
         dz = self.config["approach_height_mm"]
 
-        # Margin tối thiểu cho fingertip cách table top (mặc định bàn ở Z=500).
-        # 15mm để fingertip không xuyên bàn dù vật ngắn (vd tray 25mm, bolt 24mm).
-        safety_margin_mm = 15.0
+        # Clamp cứng cho fingertip TCP: không bao giờ xuống dưới table_top + safety.
+        # Tránh xuyên bàn 100% cho mọi vật, kể cả khi adaptive offset chọn sai.
+        table_top = float(self.config["table_top_z_mm"])
+        safety_margin = float(self.config["table_safety_margin_mm"])
+        min_grasp_z = table_top + safety_margin
         max_offset = float(self.config["grasp_depth_offset_mm"])
 
         for obj in objects:
             xyz_base = np.array(obj["pose_base"], dtype=float).copy()
             # pose_base[2] là Z của TOP object (camera nhìn xuống → depth là top).
-            # Adaptive offset: clip theo chiều cao để fingertip KHÔNG xuyên bàn
-            # khi gắp vật ngắn (bolt h=24mm với offset 50 → xuyên bàn 26mm).
+            # Adaptive offset: clip theo chiều cao để fingertip vào giữa thân.
             obj_height = obj.get("height_mm")
             if obj_height and obj_height > 0:
                 effective_offset = min(max_offset,
-                                       max(safety_margin_mm, obj_height - safety_margin_mm))
+                                       max(safety_margin, obj_height - safety_margin))
             else:
                 effective_offset = max_offset
-            xyz_base[2] -= effective_offset
+            target_z = xyz_base[2] - effective_offset
+            # HARD CLAMP: dù offset thế nào, TCP không bao giờ dưới min_grasp_z.
+            xyz_base[2] = max(target_z, min_grasp_z)
             yaw = obj["pose_camera"][3]
             grasp_T = make_grasp_pose(xyz_base, yaw, self.config["yaw_offset_deg"])
             lift_T = grasp_T.copy()

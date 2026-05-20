@@ -17,7 +17,7 @@ approach_height_mm: 200.0       # lift_T Z = grasp_Z + 200 → MoveL xuống th�
 return_home_after_success: true # về home sau mỗi success → trial kế APPROACH từ trên cao xuống tự nhiên (video demo đẹp)
 speed_joint_deg_s: 60.0         # tốc độ joint
 speed_linear_mm_s: 80.0         # tốc độ linear
-yaw_offset_deg: 0.0             # bù lệch yaw PCA ↔ trục mở gripper
+yaw_offset_deg: 90.0            # 90°: gripper jaws spread vuông góc PCA major axis → kẹp chiều rộng tray (Y, 100mm) thay vì chiều dài (X, 180mm)
 
 # ───── Gripper ─────
 gripper_do_index: 1             # chỉ số Digital Output điều khiển gripper
