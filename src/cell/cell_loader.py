@@ -40,16 +40,16 @@ logger = logging.getLogger(__name__)
 DEFAULT_LIBRARY_PATH = Path("C:/RoboDK/Library")
 
 
-# Màu mặc định cho từng loại item (R, G, B, A) ∈ [0, 1]. Mục đích: dễ phân
-# biệt visual trong RoboDK GUI (mặc định tất cả mesh là trắng).
-_DEFAULT_GRIPPER_COLOR = [1.0, 0.5, 0.1, 1.0]      # cam đậm — gripper nổi bật
+# Màu mặc định cho từng loại item (R, G, B, A) ∈ [0, 1]. Phối màu công nghiệp
+# thực tế: thép sáng (gripper), thép tối (bàn), nhựa đen (khay) — đủ tương phản.
+_DEFAULT_GRIPPER_COLOR = [0.78, 0.80, 0.82, 1.0]    # thép inox sáng (stainless)
 _DEFAULT_OBJECT_COLORS = {
-    "tray":   [0.2, 0.75, 0.35, 1.0],    # xanh lá — khay điện thoại
-    "bottle": [0.2, 0.45, 0.95, 1.0],    # xanh dương — chai
-    "cup":    [0.95, 0.85, 0.15, 1.0],   # vàng — cốc
-    "bolt":   [0.85, 0.25, 0.25, 1.0],   # đỏ — bulong
+    "tray":   [0.18, 0.18, 0.20, 1.0],    # nhựa ABS đen (anti-static tray)
+    "bottle": [0.2, 0.45, 0.95, 1.0],     # xanh dương (giữ cho debug nếu cần)
+    "cup":    [0.95, 0.85, 0.15, 1.0],    # vàng
+    "bolt":   [0.85, 0.25, 0.25, 1.0],    # đỏ
 }
-_DEFAULT_WORKTABLE_COLOR = [0.55, 0.38, 0.22, 1.0]  # nâu gỗ — bàn làm việc
+_DEFAULT_WORKTABLE_COLOR = [0.52, 0.55, 0.58, 1.0]  # thép công nghiệp xám hơi xanh
 
 
 def _apply_color(item, rgb_or_rgba):

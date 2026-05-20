@@ -71,7 +71,7 @@ worktable:
     xyz_mm: [700, 0, 0]                   # center bàn X=700
     rpy_deg: [0, 0, 90]                   # XOAY 90° quanh Z: long-side (600mm) giờ dọc Y, short-side (400mm) dọc X
 
-  color_rgb: [0.55, 0.38, 0.22]           # nâu gỗ — dễ phân biệt với gripper cam, tray xanh lá
+  color_rgb: [0.52, 0.55, 0.58]           # thép công nghiệp xám hơi xanh — bàn assembly line
 
 
 # ─────────────────────────────────────────────────────────────────────────────
