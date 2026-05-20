@@ -272,8 +272,7 @@ python scripts/04_analyze_results.py --csv "results/*.csv"
 python scripts/gen_primitive_meshes.py     # sinh STL primitive (gripper, worktable, ...)
 python scripts/convert_glb_to_stl.py       # chuyển GLB → STL
 python scripts/diagnose_layout.py          # kiểm tra cell_layout.yaml hợp lý
-python scripts/set_home_pose.py            # quét IK để chọn home_joints_deg
-python scripts/probe_api_limit.py          # đo giới hạn RoboDK API (rate-limit)
+python scripts/save_current_as_home.py     # jog robot tay trong RoboDK rồi ghi vào YAML
 ```
 
 > **Lưu ý thứ tự:** `03_run_experiment.py` cần file hand-eye

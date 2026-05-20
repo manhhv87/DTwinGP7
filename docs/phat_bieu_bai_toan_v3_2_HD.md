@@ -149,8 +149,7 @@ pickplace_gp7/                          # BỘ CODE + TÀI LIỆU (repo DTwinGP7
 │   ├── convert_glb_to_stl.py           # GLB → STL utility
 │   ├── diagnose_layout.py              # check cell_layout.yaml hợp lý
 │   ├── gen_primitive_meshes.py         # sinh STL primitive (gripper, ...)
-│   ├── probe_api_limit.py              # đo RoboDK API rate-limit
-│   └── set_home_pose.py                # quét IK chọn home_joints_deg
+│   └── save_current_as_home.py         # capture joints hiện tại → home YAML
 ├── tests/                              # 79 test cases (pytest)
 │   ├── test_cell_loader.py             # 22 test
 │   ├── test_coord_conv.py

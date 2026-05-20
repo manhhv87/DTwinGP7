@@ -71,7 +71,7 @@ pickplace_gp7/
 │   │   └── capture_calibration.py   # phát hiện ChArUco + thu pose
 │   ├── logging/                   # TrialLogger → CSV
 │   └── utils/                     # helpers (logging, YAML)
-├── scripts/                       # CLI entry points (12 scripts)
+├── scripts/                       # CLI entry points (10 scripts)
 │   ├── build_station.py             # dựng cell (--minimal cho RoboDK Free)
 │   ├── 01_collect_dataset.py        # chụp dataset bằng D455
 │   ├── 02_run_calibration.py        # hand-eye calibration (ChArUco)
@@ -81,8 +81,6 @@ pickplace_gp7/
 │   ├── convert_glb_to_stl.py        # GLB → STL utility
 │   ├── diagnose_layout.py           # in toạ độ world thật của items trong RoboDK
 │   ├── gen_primitive_meshes.py      # sinh STL primitives (gripper, tray, ...)
-│   ├── probe_api_limit.py           # đo RoboDK Free rate-limit
-│   ├── set_home_pose.py             # auto-find home_joints qua IK scan
 │   └── save_current_as_home.py      # ghi joints hiện tại làm home (sau khi jog tay)
 ├── tests/                         # 79 unit/integration tests
 ├── data/raw/ · models/ · results/ · figures/ · logs/   # output (gitignored)

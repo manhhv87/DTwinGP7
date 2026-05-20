@@ -24,9 +24,8 @@ pickplace_gp7/
 │   ├── gen_primitive_meshes.py      sinh STL primitive (gripper, worktable)
 │   ├── convert_glb_to_stl.py        chuyển GLB → STL
 │   ├── diagnose_layout.py           kiểm tra cell_layout.yaml hợp lý
-│   ├── set_home_pose.py             quét IK để chọn home_joints_deg phù hợp
-│   ├── calibration_from_layout.py   sinh T_base_camera.npy từ camera.pose
-│   └── probe_api_limit.py           đo RoboDK API rate-limit
+│   ├── save_current_as_home.py      capture joints hiện tại → home_joints_deg
+│   └── calibration_from_layout.py   sinh T_base_camera.npy từ camera.pose
 └── tests/
     └── test_cell_loader.py          22 unit + integration tests cho module này
                                      (tổng cộng 79 test cho toàn bộ repo)
