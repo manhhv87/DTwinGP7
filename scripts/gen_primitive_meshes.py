@@ -71,25 +71,28 @@ def make_pedestal(
 
 
 def make_parallel_gripper(
-    palm_width: float = 240.0,        # X: 200 opening + 2×10 finger + 20 slack
+    palm_width: float = 150.0,        # X: 110 opening + 2×10 finger + 20 slack
     palm_depth: float = 50.0,         # Y: bề dày thân
     palm_height: float = 60.0,        # Z: cao của palm (chứa motor khí nén)
     finger_thickness: float = 10.0,   # X: bề dày custom finger
-    finger_depth: float = 40.0,       # Y: bề dày ngón (đủ ôm tray depth 100mm? không, finger ôm cạnh)
+    finger_depth: float = 40.0,       # Y: bề dày ngón
     finger_length: float = 40.0,      # Z: vừa ôm chiều cao tray 25mm + clearance
-    finger_inner_gap: float = 200.0,  # X: opening 200mm — kẹp 2 bên mặt tray (width 180mm)
+    finger_inner_gap: float = 110.0,  # X: opening 110mm — vừa khay Y=100mm + 5mm clearance/bên
 ) -> trimesh.Trimesh:
-    """Gripper PNEUMATIC parallel-jaw WIDE (kẹp 2 bên mặt khay Galaxy S23).
+    """Gripper PNEUMATIC parallel-jaw (kẹp chiều rộng khay Galaxy S23).
 
-    **PLACEHOLDER values** — giả định gripper rộng custom cho phone tray
-    180mm width: opening 200mm > 180mm để jaws ôm 2 bên dài của khay,
-    finger 40mm vừa cao bằng khay 25mm + clearance.
+    **PLACEHOLDER values** — gripper khít với chiều rộng tray (100mm Y):
+    opening 110mm > 100mm để jaws ôm 2 cạnh DÀI 180mm (X) của khay với
+    clearance 5mm/bên.
 
     Default specs:
       - Total height = palm 60 + finger 40 = 100mm
-      - Opening max  = 200mm (long-stroke pneumatic, kẹp body khay trực tiếp)
-      - Stroke       = 100mm per finger
+      - Opening max  = 110mm (vừa khít chiều rộng khay)
+      - Stroke       = 55mm per finger
       - Driving      = compressed air (pneumatic)
+
+    Orchestrator dùng yaw_offset_deg=90 để gripper jaws aligns vuông góc PCA
+    major axis (= longest tray dim) → jaws spread theo chiều rộng khay.
 
     Origin: **tại fingertip (TCP)**, mesh extend theo -Z về phía flange.
     Cần đồng bộ cell_layout.yaml: tcp_offset_xyz_mm: [0, 0, 100].
@@ -179,7 +182,7 @@ def main() -> int:
         grip = make_parallel_gripper()
         path = MODELS_DIR / "gripper.stl"
         grip.export(str(path))
-        print(f"OK gripper.stl: pneumatic parallel-jaw WIDE, opening 200mm, total height 100mm, {len(grip.faces)} triangles")
+        print(f"OK gripper.stl: pneumatic parallel-jaw, opening 110mm (fits tray Y=100mm), total height 100mm, {len(grip.faces)} triangles")
 
     if "tray" in targets:
         tray = make_tray()

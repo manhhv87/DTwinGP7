@@ -514,19 +514,27 @@ class Orchestrator:
                 effective_offset = max_offset
             target_z = xyz_base[2] - effective_offset
             # HARD CLAMP: dù offset thế nào, TCP không bao giờ dưới min_grasp_z.
-            xyz_base[2] = max(target_z, min_grasp_z)
+            clamped_z = max(target_z, min_grasp_z)
+            if clamped_z > target_z:
+                logger.info(
+                    "Grasp Z clamped: target=%.0f → %.0f (table_safety, "
+                    "fingertip giữ %dmm trên bàn)",
+                    target_z, clamped_z, int(safety_margin),
+                )
+            xyz_base[2] = clamped_z
             yaw = obj["pose_camera"][3]
             grasp_T = make_grasp_pose(xyz_base, yaw, self.config["yaw_offset_deg"])
             lift_T = grasp_T.copy()
             lift_T[2, 3] += dz
 
             # Place pose: X,Y từ config; Z = grasp Z để vật quay về bàn ở cùng
-            # độ cao như khi gắp (tránh "lơ lửng" do tool-object offset cố định
-            # khi attach). Config place_position.Z dùng làm fallback nếu không
-            # có grasp_z hợp lệ.
+            # độ cao như khi gắp. yaw + yaw_offset GIỐNG grasp_T → gripper giữ
+            # cùng orientation lúc grasp & place → tray KHÔNG xoay khi transfer.
+            # (Trước đây place_T dùng yaw=0 + yaw_offset=0 → xoay 90° trong khi
+            # grasp dùng yaw_offset=90° → tray bị xoay khi thả.)
             place_xyz = np.array(self.config["place_position"], dtype=float).copy()
             place_xyz[2] = xyz_base[2]
-            place_T = make_grasp_pose(place_xyz, 0.0)
+            place_T = make_grasp_pose(place_xyz, yaw, self.config["yaw_offset_deg"])
             place_lift_T = place_T.copy()
             place_lift_T[2, 3] += dz
 
