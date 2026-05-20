@@ -13,7 +13,8 @@ calibration_path: "config/calibration/T_base_camera.npy"
 place_position: [700.0, 200.0, 700.0]   # Z=700 (cao hơn mặt bàn 200mm) để fingertip (TCP) không chạm bàn khi thả
 
 # ───── Tham số chuyển động (tinh chỉnh ở pha tuning — mục 9) ─────
-approach_height_mm: 60.0        # chiều cao điểm approach phía trên vật
+approach_height_mm: 100.0       # lift_T Z = grasp_Z + 100 → robot có clearance đi từ trên xuống thay vì ngang
+return_home_after_success: true # về home sau mỗi success → trial kế APPROACH từ trên cao xuống tự nhiên (video demo đẹp)
 speed_joint_deg_s: 60.0         # tốc độ joint
 speed_linear_mm_s: 80.0         # tốc độ linear
 yaw_offset_deg: 0.0             # bù lệch yaw PCA ↔ trục mở gripper
