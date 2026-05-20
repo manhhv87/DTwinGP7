@@ -72,10 +72,10 @@ def make_pedestal(
 
 def make_parallel_gripper(
     palm_width: float = 150.0,        # X: 110 opening + 2×10 finger + 20 slack
-    palm_depth: float = 50.0,         # Y: bề dày thân
+    palm_depth: float = 50.0,         # Y: bề dày thân palm (motor)
     palm_height: float = 60.0,        # Z: cao của palm (chứa motor khí nén)
-    finger_thickness: float = 10.0,   # X: bề dày custom finger
-    finger_depth: float = 40.0,       # Y: bề dày ngón
+    finger_thickness: float = 10.0,   # X: bề dày ngón (theo opening direction)
+    finger_depth: float = 220.0,      # Y: chiều dài "thanh dài" — > tray length 180mm
     finger_length: float = 40.0,      # Z: vừa ôm chiều cao tray 25mm + clearance
     finger_inner_gap: float = 110.0,  # X: opening 110mm — vừa khay Y=100mm + 5mm clearance/bên
 ) -> trimesh.Trimesh:
