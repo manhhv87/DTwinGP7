@@ -450,9 +450,6 @@ class Orchestrator:
         # ─── PLAN: thử từng vật tới khi có vật với tới được ───
         self.sm.transition_to(PickState.PLAN)
         dz = self.config["approach_height_mm"]
-        place_T = make_grasp_pose(np.array(self.config["place_position"]), 0.0)
-        place_lift_T = place_T.copy()
-        place_lift_T[2, 3] += dz
 
         for obj in objects:
             xyz_base = np.array(obj["pose_base"], dtype=float).copy()
@@ -463,6 +460,16 @@ class Orchestrator:
             grasp_T = make_grasp_pose(xyz_base, yaw, self.config["yaw_offset_deg"])
             lift_T = grasp_T.copy()
             lift_T[2, 3] += dz
+
+            # Place pose: X,Y từ config; Z = grasp Z để vật quay về bàn ở cùng
+            # độ cao như khi gắp (tránh "lơ lửng" do tool-object offset cố định
+            # khi attach). Config place_position.Z dùng làm fallback nếu không
+            # có grasp_z hợp lệ.
+            place_xyz = np.array(self.config["place_position"], dtype=float).copy()
+            place_xyz[2] = xyz_base[2]
+            place_T = make_grasp_pose(place_xyz, 0.0)
+            place_lift_T = place_T.copy()
+            place_lift_T[2, 3] += dz
 
             # Kiểm tra reachability cho TOÀN BỘ trajectory (contribution C2).
             # Skip trong sim để tiết kiệm API budget (4 calls/trial × N trials).
