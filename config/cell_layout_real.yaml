@@ -39,7 +39,7 @@ worktable:
   mesh: "models/worktable.stl"            # bàn primitive 600×400×500 mm (robot trên sàn)
   pose:
     xyz_mm: [480, 0, 0]                   # ĐO LẠI vị trí bàn thật so với gốc robot
-    rpy_deg: [0, 0, 0]
+    rpy_deg: [0, 0, 90]                   # XOAY 90° quanh Z (đồng bộ sim mode)
   color_rgb: [0.6, 0.6, 0.7]
 
 

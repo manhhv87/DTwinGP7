@@ -68,8 +68,8 @@ worktable:
   mesh: "models/worktable.stl"            # bàn 600×400×500 mm, origin ở đáy chân bàn (Z=0 = sàn)
 
   pose:
-    xyz_mm: [700, 0, 0]                   # center bàn X=700 → mép trước X=400 (clearance ~215mm với robot base ⌀370mm)
-    rpy_deg: [0, 0, 0]
+    xyz_mm: [700, 0, 0]                   # center bàn X=700
+    rpy_deg: [0, 0, 90]                   # XOAY 90° quanh Z: long-side (600mm) giờ dọc Y, short-side (400mm) dọc X
 
   color_rgb: [0.6, 0.6, 0.7]              # màu xám-xanh nhẹ
 
