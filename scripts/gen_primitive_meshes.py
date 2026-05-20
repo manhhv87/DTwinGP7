@@ -97,11 +97,12 @@ def make_parallel_gripper(
     Origin: **tại fingertip (TCP)**, mesh extend theo -Z về phía flange.
     Cần đồng bộ cell_layout.yaml: tcp_offset_xyz_mm: [0, 0, 100].
     """
-    # Palm tại Z = -(finger_length + palm_height/2 ... -finger_length)
+    # FLIPPED: palm tại Z=[+finger_length, +total_height], finger tại Z=[0, +finger_length].
+    # STL extend theo +Z từ origin (fingertip). Trước đây extend theo -Z gây xuyên bàn
+    # trong RoboDK render (mesh hiển thị bên dưới TCP world dù theory nói trên).
     palm = trimesh.creation.box([palm_width, palm_depth, palm_height])
-    palm.apply_translation([0, 0, -finger_length - palm_height / 2])
+    palm.apply_translation([0, 0, +finger_length + palm_height / 2])
 
-    # finger center offset từ trục tool: nửa khoảng hở trong + nửa bề dày ngón
     finger_center_x = (finger_inner_gap + finger_thickness) / 2
     parts = [palm]
     for sign in (1, -1):
@@ -109,7 +110,7 @@ def make_parallel_gripper(
         finger.apply_translation([
             sign * finger_center_x,
             0,
-            -finger_length / 2,         # finger từ Z=-finger_length đến Z=0
+            +finger_length / 2,         # finger từ Z=0 đến Z=+finger_length
         ])
         parts.append(finger)
 
