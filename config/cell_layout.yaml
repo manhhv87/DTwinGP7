@@ -43,9 +43,11 @@ robot:
 
   # Cấu hình joints "home" (tư thế rest/transport)
   # Yaskawa GP7 convention: [S, L, U, R, B, T]
-  # S=0: arm hướng về +X (về phía bàn ở X=700). J1 ở Z=630, home flange ở
-  # Z≈1115 (cao hơn mặt bàn 615mm) → arm duỗi ngang không kẹt vào bàn.
-  home_joints_deg: [0, 0, 0, 0, 0, 0]
+  # S=0: arm hướng về +X (về phía bàn). L=30°, U=-60°: tư thế "elbow up"
+  # → arm tránh đụng workpiece khi với xuống. B=60°: wrist hướng xuống sẵn
+  # cho top-down picking → SolveIK ưu tiên config sạch không xuyên vật.
+  # Tinh chỉnh tự động: chạy scripts/set_home_pose.py (cần RoboDK GUI).
+  home_joints_deg: [0, 30, -60, 0, 60, 0]
 
 
 # ─────────────────────────────────────────────────────────────────────────────

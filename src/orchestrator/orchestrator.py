@@ -35,6 +35,10 @@ _DEFAULT_CONFIG: dict[str, Any] = {
     "calibration_path": "config/calibration/T_base_camera.npy",
     "place_position": [700.0, 200.0, 700.0],
     "approach_height_mm": 60.0,
+    # Trừ vào Z của grasp pose để fingertip vào GIỮA THÂN object, không kẹp ở
+    # đỉnh (postprocess.deproject trả về tọa độ TOP của object — Z=top). Giá trị
+    # phụ thuộc chiều cao object: bottle ~150mm → offset 50-80mm; cup ~40mm → 20mm.
+    "grasp_depth_offset_mm": 50.0,
     "gripper_do_index": 1,
     "gripper_delay_s": 0.3,
     "inter_trial_delay_s": 1.0,
@@ -70,10 +74,18 @@ class Orchestrator:
         config: dict[str, Any] | None = None,
         robot: Any = None,
         logger_obj: Any = None,
+        robodk_objects: dict[str, Any] | None = None,
+        robodk_tool: Any = None,
     ) -> None:
         self.queue = perception_queue
         self.config = {**_DEFAULT_CONFIG, **(config or {})}
         self.trial_logger = logger_obj
+
+        # Items để attach/detach object vào gripper trong sim mode (visualize
+        # gắp-đi). None ở headless / --no-build → no-op gracefully.
+        self.robodk_objects: dict[str, Any] = robodk_objects or {}
+        self.robodk_tool = robodk_tool
+        self._attached_obj: Any = None
 
         self._rdk = None
         self.robot = robot
@@ -214,10 +226,53 @@ class Orchestrator:
             logger.warning("MoveJ_Test lỗi: %s", e)
             return False
 
-    def _gripper(self, close: bool) -> None:
-        """Đóng/mở gripper qua Digital Output, chờ ổn định."""
+    def _gripper(self, close: bool, obj_class: str | None = None) -> None:
+        """Đóng/mở gripper qua Digital Output, chờ ổn định.
+
+        Sim mode: kèm attach/detach object item vào gripper tool qua
+        `setParentStatic` để object visually di chuyển theo gripper.
+        Headless / no robodk_objects: no-op.
+        """
         self.robot.setDO(self.config["gripper_do_index"], 1 if close else 0)
+
+        if close and obj_class:
+            self._attach_to_gripper(obj_class)
+        elif not close:
+            self._detach_from_gripper()
+
         time.sleep(self.config["gripper_delay_s"])
+
+    def _attach_to_gripper(self, obj_class: str) -> None:
+        """Set parent của object item → gripper tool. Object follow gripper."""
+        if not self.robodk_objects or self.robodk_tool is None:
+            return
+        item = self.robodk_objects.get(obj_class)
+        if item is None or not hasattr(item, "setParentStatic"):
+            return
+        try:
+            item.setParentStatic(self.robodk_tool)
+            self._attached_obj = item
+            logger.debug("Attached object '%s' to gripper", obj_class)
+        except Exception as e:  # noqa: BLE001
+            logger.debug("Attach failed: %s", e)
+
+    def _detach_from_gripper(self) -> None:
+        """Detach: set parent về station root, giữ pose absolute hiện tại."""
+        if self._attached_obj is None:
+            return
+        if not hasattr(self._attached_obj, "setParentStatic"):
+            self._attached_obj = None
+            return
+        try:
+            rdk = self._rdk
+            if rdk is None and hasattr(self.robot, "RDK") and callable(self.robot.RDK):
+                rdk = self.robot.RDK()
+            if rdk is not None and hasattr(rdk, "ActiveStation"):
+                self._attached_obj.setParentStatic(rdk.ActiveStation())
+                logger.debug("Detached object from gripper")
+        except Exception as e:  # noqa: BLE001
+            logger.debug("Detach failed: %s", e)
+        self._attached_obj = None
 
     def _to_robodk_pose(self, T: np.ndarray):
         """Chuyển numpy 4x4 (world frame) → RoboDK Mat (parent frame).
@@ -357,7 +412,10 @@ class Orchestrator:
         place_lift_T[2, 3] += dz
 
         for obj in objects:
-            xyz_base = obj["pose_base"]
+            xyz_base = np.array(obj["pose_base"], dtype=float).copy()
+            # pose_base[2] là Z của TOP object (camera nhìn xuống → depth là top).
+            # Trừ grasp_depth_offset_mm để fingertip TCP đi vào giữa thân.
+            xyz_base[2] -= self.config["grasp_depth_offset_mm"]
             yaw = obj["pose_camera"][3]
             grasp_T = make_grasp_pose(xyz_base, yaw, self.config["yaw_offset_deg"])
             lift_T = grasp_T.copy()
@@ -433,7 +491,7 @@ class Orchestrator:
 
             self.sm.transition_to(PickState.GRASP)
             self._move_l_via_ik(grasp_T)
-            self._gripper(close=True)
+            self._gripper(close=True, obj_class=obj.get("class_name"))
 
             self.sm.transition_to(PickState.LIFT)
             if approach_joints is not None:

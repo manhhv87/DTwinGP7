@@ -24,7 +24,7 @@ robot:
   pose:
     xyz_mm: [0, 0, 0]                     # robot trên sàn, dùng built-in floor stand
     rpy_deg: [0, 0, 0]
-  home_joints_deg: [180, 0, 0, 0, 0, 0]  # S=180: arm duỗi ngược hướng bàn, tránh xuyên bàn
+  home_joints_deg: [0, 30, -60, 0, 60, 0]  # elbow up + wrist down cho top-down picking; chạy set_home_pose.py để tinh chỉnh
 
 
 floor:

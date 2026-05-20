@@ -73,8 +73,66 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def build_perception(mode: str, config: dict, args=None):
-    """Tạo (camera, detector) theo chế độ chạy."""
+DEFAULT_OBJECT_HEIGHTS_MM = {"bottle": 150, "cup": 40, "bolt": 25}
+DEFAULT_MASK_SIZE_PX = {"bottle": (120, 40), "cup": (80, 80), "bolt": (40, 40)}
+
+
+def _auto_mock_detection_params(cell_config, intrinsics_dict, object_name="bottle"):
+    """Auto-compute (mask_box, depth_m, height_mm) từ object pose trong cell_layout.
+
+    Đảm bảo mock detection PHẢN ÁNH ĐÚNG vị trí object template trong RoboDK,
+    không phải hard-code pixel center. Project object_top thế giới → pixel qua
+    camera intrinsics + camera world pose. Fallback giá trị cũ nếu thiếu config.
+    """
+    import numpy as np
+
+    from src.cell.pose_utils import make_homogeneous
+
+    obj = next((o for o in cell_config.objects if o.name == object_name), None)
+    if obj is None:
+        return (580, 350, 700, 390), 0.49, 150
+
+    # World pose của object base = parent_frame.pose + object.pose offset
+    if obj.parent_frame:
+        parent = next((f for f in cell_config.frames if f.name == obj.parent_frame), None)
+        parent_xyz = np.array(parent.pose.xyz_mm, dtype=float) if parent else np.zeros(3)
+    else:
+        parent_xyz = np.zeros(3)
+    offset_xyz = np.array(obj.pose.xyz_mm, dtype=float) if obj.pose else np.zeros(3)
+    obj_base_world = parent_xyz + offset_xyz
+
+    # Top object = base + chiều cao class
+    height_mm = DEFAULT_OBJECT_HEIGHTS_MM.get(object_name, 100)
+    obj_top_world = obj_base_world.copy()
+    obj_top_world[2] += height_mm
+
+    # Camera world pose → T_BC; inverse để đổi world → camera frame
+    cam_T = make_homogeneous(cell_config.camera.pose.xyz_mm, cell_config.camera.pose.rpy_deg)
+    p_world_h = np.array([*obj_top_world, 1.0])
+    p_cam_h = np.linalg.inv(cam_T) @ p_world_h
+    x_cam, y_cam, z_cam = p_cam_h[:3]
+
+    if z_cam <= 10:
+        return (580, 350, 700, 390), 0.49, height_mm
+
+    fx, fy = intrinsics_dict["fx"], intrinsics_dict["fy"]
+    ppx, ppy = intrinsics_dict["ppx"], intrinsics_dict["ppy"]
+    u = ppx + fx * x_cam / z_cam
+    v = ppy + fy * y_cam / z_cam
+
+    W, H = DEFAULT_MASK_SIZE_PX.get(object_name, (60, 60))
+    mask_box = (int(u - W / 2), int(v - H / 2), int(u + W / 2), int(v + H / 2))
+    depth_m = float(z_cam) / 1000.0
+    return mask_box, depth_m, height_mm
+
+
+def build_perception(mode: str, config: dict, args=None, cell_config=None):
+    """Tạo (camera, detector) theo chế độ chạy.
+
+    Args:
+        cell_config: Nếu có, mock detection sẽ tự sinh từ object pose trong cell
+            (mask_box + depth khớp object thật) thay vì hard-code pixel.
+    """
     if mode == "real":
         from src.perception import D455Camera, ObjectDetector
 
@@ -86,23 +144,31 @@ def build_perception(mode: str, config: dict, args=None):
         return camera, detector
 
     # mode == "sim" (cả RoboDK sim lẫn headless): kịch bản detection giả lập.
-    # Depth phải khớp scene thật: camera ở Z=1200, bottle top ở Z=710
-    # → khoảng cách = 490mm = 0.49m.
     import numpy as np
 
     from src.perception import MockCamera, MockDetector
 
-    sim_depth_m = config.get("sim_depth_m", 0.49)
+    headless = bool(getattr(args, "headless", False))
+
+    # Auto-compute mask_box + depth từ cell_config nếu có (đảm bảo mock
+    # detection khớp object template trong RoboDK). Fallback hard-code nếu không.
+    if cell_config is not None and not headless:
+        mask_box, sim_depth_m, _ = _auto_mock_detection_params(
+            cell_config, MockCamera.DEFAULT_INTRINSICS, "bottle",
+        )
+    else:
+        sim_depth_m = config.get("sim_depth_m", 0.49)
+        mask_box = (580, 350, 700, 390)
+
     h, w = 720, 1280
     camera = MockCamera(
         depth_frames=[np.full((h, w), sim_depth_m, np.float32)],
     )
 
-    headless = bool(getattr(args, "headless", False))
     if not headless:
-        # RoboDK sim: 1 kịch bản cố định, mask wide → yaw≈0 → orientation đơn giản.
+        # RoboDK sim: 1 kịch bản cố định, mask khớp object thật trong cell.
         scripted = [[MockDetector.make_detection(
-            "bottle", mask_box=(580, 350, 700, 390),
+            "bottle", mask_box=mask_box,
         )]]
     else:
         # Headless: sinh nhiều kịch bản đa dạng để thống kê có ý nghĩa.
@@ -138,13 +204,18 @@ def main() -> int:
 
     config = load_yaml(PROJECT_ROOT / args.config)
 
+    # Load cell_config sớm: cần cho build_perception auto-mock detection
+    # từ object pose (mọi mode đều dùng — kể cả --no-build).
+    cell_config = CellConfig.from_yaml(PROJECT_ROOT / args.cell_config)
+
     # ─── Robot + cell ───
     sim_robot = None
+    robodk_objects: dict = {}
+    robodk_tool = None
     if args.headless:
         # Headless: KHÔNG kết nối RoboDK, dùng SimRobot mock → 0 API call.
         from src.orchestrator.sim_robot import SimRobot
 
-        cell_config = CellConfig.from_yaml(PROJECT_ROOT / args.cell_config)
         sim_robot = SimRobot(
             home_joints=cell_config.robot.home_joints_deg,
             base_xyz=tuple(cell_config.robot.pose.xyz_mm),    # J1 world cho reach model
@@ -163,15 +234,18 @@ def main() -> int:
         log.info("Bỏ qua dựng cell (--no-build) — dùng station RoboDK đã có.")
     else:
         # Dựng cell trong RoboDK.
-        cell_config = CellConfig.from_yaml(PROJECT_ROOT / args.cell_config)
         loader = CellLoader(cell_config, project_root=PROJECT_ROOT,
                             minimal_build=args.minimal_build)
-        loader.build()
+        items = loader.build()
+        # Lưu references để Orchestrator attach/detach object khi gắp-thả.
+        robodk_objects = items.get("objects", {}) or {}
+        robodk_tool = items.get("tool")
         log.info("Cell đã dựng trong RoboDK%s.",
                  " (minimal)" if args.minimal_build else "")
 
     # ─── Perception ───
-    camera, detector = build_perception(args.mode, config, args)
+    # Pass cell_config để mock detection auto-khớp object pose thật.
+    camera, detector = build_perception(args.mode, config, args, cell_config)
     # Headless: queue đủ lớn để pre-fill 1 scenario/trial (deterministic).
     qsize = args.trials + 1 if args.headless else 3
     det_queue: queue.Queue = queue.Queue(maxsize=qsize)
@@ -188,7 +262,9 @@ def main() -> int:
 
     # ─── Orchestrator ───
     orch = Orchestrator(det_queue, config=config, robot=sim_robot,
-                        logger_obj=trial_logger)
+                        logger_obj=trial_logger,
+                        robodk_objects=robodk_objects,
+                        robodk_tool=robodk_tool)
 
     if args.headless:
         # Deterministic: sinh đúng N message (1 scenario/trial) rồi pre-fill
