@@ -10,7 +10,7 @@ robot_name: "Yaskawa GP7"
 calibration_path: "config/calibration/T_base_camera.npy"
 
 # ───── Vùng đặt vật (base frame, mm) ─────
-place_position: [400.0, 300.0, 50.0]
+place_position: [700.0, 200.0, 700.0]   # Z=700 (cao hơn mặt bàn 200mm) để fingertip (TCP) không chạm bàn khi thả
 
 # ───── Tham số chuyển động (tinh chỉnh ở pha tuning — mục 9) ─────
 approach_height_mm: 60.0        # chiều cao điểm approach phía trên vật

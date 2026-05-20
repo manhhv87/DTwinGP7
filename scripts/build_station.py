@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import struct
 import sys
 from pathlib import Path
 
@@ -41,12 +42,20 @@ from src.cell import (  # noqa: E402
 
 def setup_logging(verbose: bool = False) -> None:
     """Cấu hình logging."""
+    # Windows console mặc định cp1252 → không encode được ✓ + tiếng Việt.
+    # Ép stdout/stderr sang UTF-8 trước khi gắn StreamHandler.
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[union-attr]
+        except (AttributeError, ValueError):
+            pass
+
     log_dir = PROJECT_ROOT / "logs"
     log_dir.mkdir(exist_ok=True)
 
     handlers = [
         logging.StreamHandler(sys.stdout),
-        logging.FileHandler(log_dir / "build_station.log"),
+        logging.FileHandler(log_dir / "build_station.log", encoding="utf-8"),
     ]
 
     logging.basicConfig(
@@ -87,6 +96,12 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Custom RoboDK Library path (default: C:/RoboDK/Library)",
     )
+    parser.add_argument(
+        "--minimal",
+        action="store_true",
+        help="Build tối giản: bỏ floor, Cam2D viewport, CalibrationTarget frame, "
+             "2/3 object templates → tiết kiệm ~10 API call cho RoboDK Free quota.",
+    )
     return parser.parse_args()
 
 
@@ -123,6 +138,7 @@ def main() -> int:
             config=config,
             project_root=PROJECT_ROOT,
             library_path=library_path,
+            minimal_build=args.minimal,
         )
         items = loader.build(clear_existing=not args.no_clear)
 
@@ -140,6 +156,18 @@ def main() -> int:
         logger.warning("Cell built nhưng không kết nối được robot thật.")
         # Cell vẫn build OK, chỉ là connection fail
         # Return non-zero để CI/CD biết
+        return 1
+    except struct.error:
+        # Popup "API calls are limited" của RoboDK Free chèn vào luồng socket
+        # API giữa chừng → desync → struct.error khi đọc số nguyên trạng thái.
+        logger.error(
+            "RoboDK Free đã bật popup 'API calls are limited' và ngắt kết nối "
+            "API giữa chừng. Đây là GIỚI HẠN CỦA RoboDK FREE, không phải lỗi code."
+        )
+        logger.error(
+            "Khắc phục: ĐÓNG HẲN RoboDK (tắt cả popup lẫn ứng dụng), rồi chạy "
+            "lại build_station.py — phiên RoboDK mới sẽ reset bộ đếm API call."
+        )
         return 1
     except Exception as e:
         logger.exception("Unexpected error: %s", e)

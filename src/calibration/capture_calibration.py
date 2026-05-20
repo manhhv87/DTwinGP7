@@ -60,10 +60,14 @@ class CharucoBoardEstimator:
         dist_coeffs: np.ndarray,
         min_corners: int = 10,
     ) -> np.ndarray | None:
-        """Ước lượng pose board → camera (T_target2cam 4x4, mét).
+        """Ước lượng pose board → camera (T_target2cam 4x4, **mm**).
+
+        Chú ý đơn vị: ChArUco board được tạo với square_length tính bằng mét
+        (convention OpenCV), nên solvePnP trả về tvec tính bằng mét. Convert
+        sang mm để đồng nhất với toàn pipeline (robot.Pose() trả mm, T_BC mm).
 
         Returns:
-            Ma trận 4x4, hoặc None nếu không phát hiện đủ corner.
+            Ma trận 4x4 đơn vị mm, hoặc None nếu không phát hiện đủ corner.
         """
         cv2 = self._cv2
         ch_corners, ch_ids, _, _ = self.detector.detectBoard(gray)
@@ -83,7 +87,7 @@ class CharucoBoardEstimator:
         R, _ = cv2.Rodrigues(rvec)
         T = np.eye(4)
         T[:3, :3] = R
-        T[:3, 3] = tvec.flatten()
+        T[:3, 3] = tvec.flatten() * 1000.0       # mét → mm
         return T
 
 
@@ -95,8 +99,8 @@ class CalibrationSession:
 
     def __init__(self, estimator: CharucoBoardEstimator | None = None) -> None:
         self.estimator = estimator
-        self.poses_gripper2base: list[np.ndarray] = []  # T_E^B (mét)
-        self.poses_target2cam: list[np.ndarray] = []     # T_W^C (mét)
+        self.poses_gripper2base: list[np.ndarray] = []  # T_E^B (mm)
+        self.poses_target2cam: list[np.ndarray] = []     # T_W^C (mm)
 
     def add_pose_pair(
         self,
@@ -140,8 +144,12 @@ class CalibrationSession:
         logger.info("Đã ghi pose #%d", len(self.poses_gripper2base))
         return True
 
-    def solve(self, method: str = "tsai") -> np.ndarray:
-        """Giải hand-eye từ các cặp pose đã thu. Trả về T_BC (mét)."""
+    def solve(self, method: str = "park") -> np.ndarray:
+        """Giải hand-eye từ các cặp pose đã thu. Trả về T_BC (mm).
+
+        Default "park" (KHÔNG "tsai") vì camera nhìn xuống → T_BC xoay ~180°
+        trùng điểm kỳ dị Tsai-Lenz — xem ghi chú ở solve_hand_eye.
+        """
         return solve_hand_eye(
             self.poses_gripper2base, self.poses_target2cam, method=method
         )

@@ -83,7 +83,7 @@ class TestPoseExtractor:
     def test_extract_full_pose(self):
         depth = np.full((480, 640), 0.8, np.float32)
         mask = rect_mask((480, 640), (300, 220, 340, 260))
-        det = {"mask": mask, "class_name": "box"}
+        det = {"mask": mask, "class_name": "cup"}
 
         extractor = PoseExtractor(INTRINSICS)
         result = extractor.extract(det, depth)

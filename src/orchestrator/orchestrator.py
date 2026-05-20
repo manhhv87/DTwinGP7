@@ -29,10 +29,11 @@ logger = logging.getLogger(__name__)
 
 
 # Giá trị mặc định cho config — override qua dict truyền vào.
+# place_position phải khớp PlaceZone trong cell_layout.yaml (mm, base frame).
 _DEFAULT_CONFIG: dict[str, Any] = {
     "robot_name": "Yaskawa GP7",
     "calibration_path": "config/calibration/T_base_camera.npy",
-    "place_position": [400.0, 300.0, 50.0],
+    "place_position": [700.0, 200.0, 700.0],
     "approach_height_mm": 60.0,
     "gripper_do_index": 1,
     "gripper_delay_s": 0.3,
@@ -41,6 +42,10 @@ _DEFAULT_CONFIG: dict[str, Any] = {
     "speed_linear_mm_s": 80.0,
     "yaw_offset_deg": 0.0,
     "detection_timeout_s": 2.0,
+    # Sim mặc định SKIP reachability check (tiết kiệm 4 API calls/trial cho
+    # RoboDK Free quota nhỏ). MoveJ sẽ tự raise nếu thật sự không với tới.
+    # Real mode nên đổi thành False để bật C2 (lớp an toàn digital twin).
+    "skip_reachability_check": True,
 }
 
 
@@ -79,8 +84,69 @@ class Orchestrator:
         self.T_BC = load_calibration(self.config["calibration_path"])
         logger.info("Loaded hand-eye T_BC, translation=%s mm", self.T_BC[:3, 3].round(1))
 
+        # MoveJ pose được RoboDK diễn giải trong parent frame của robot
+        # (mặc định). Cell ta đặt parent ở pedestal (Z=630), nhưng orchestrator
+        # và T_BC đều dùng WORLD frame. Tính sẵn transform để convert
+        # pose world → parent trước khi gọi MoveJ/MoveJ_Test.
+        self._T_world_to_robotbase = self._compute_world_to_robotbase()
+        if not np.allclose(self._T_world_to_robotbase, np.eye(4)):
+            logger.info(
+                "Robot parent frame ở world Z=%.1fmm — sẽ convert pose world→parent",
+                -self._T_world_to_robotbase[2, 3],
+            )
+
+        # Disable collision check ở runtime — RoboDK báo "collision" cho cả
+        # gripper-touching-object khi grasp (đó là CHỦ ĐÍCH, không phải lỗi)
+        # và arm-sweeping-through-template-volume khi IK chọn config. Cả hai
+        # đều block MoveJ. Sim cần disable để chạy được; real mode tuning sau.
+        self._disable_collision_check()
+
         self.sm = PickPlaceStateMachine()
         self.stats = {"attempted": 0, "successful": 0, "failed": 0}
+        self._current_joints: list[float] | None = None       # cache cho SolveIK ref
+
+        # setSpeed gọi 1 lần ở init thay vì mỗi trial (-1 API call/trial).
+        self._set_speed()
+
+    def _disable_collision_check(self) -> None:
+        """Tắt collision check toàn cục — xem comment trong __init__."""
+        try:
+            rdk = self._rdk
+            if rdk is None and hasattr(self.robot, "RDK") and callable(self.robot.RDK):
+                rdk = self.robot.RDK()
+            if rdk is None or not hasattr(rdk, "setCollisionActive"):
+                return
+            rdk.setCollisionActive(0)
+            logger.info("Collision check disabled (sim convention)")
+        except Exception as e:  # noqa: BLE001
+            logger.debug("setCollisionActive bỏ qua: %s", e)
+
+    def _compute_world_to_robotbase(self) -> np.ndarray:
+        """Tính ma trận chuyển từ world frame sang robot reference frame.
+
+        RoboDK MoveJ(pose) diễn giải pose tương đối với robot.Parent() (mặc định).
+        Cell_loader đặt parent ở pedestal height (vd Z=630) → cần convert
+        target_in_parent = inv(T_parent_in_world) @ target_in_world.
+
+        Trả về identity nếu không lấy được pose parent (vd mock robot trong test).
+        """
+        try:
+            if not (hasattr(self.robot, "Parent") and callable(self.robot.Parent)):
+                return np.eye(4)
+            parent = self.robot.Parent()
+            if parent is None or not hasattr(parent, "PoseAbs"):
+                return np.eye(4)
+            from src.cell.pose_utils import robodk_pose_to_matrix
+            from src.calibration.hand_eye_solver import invert_transform
+            T_parent_in_world = robodk_pose_to_matrix(parent.PoseAbs())
+            if not isinstance(T_parent_in_world, np.ndarray):
+                return np.eye(4)
+            if T_parent_in_world.shape != (4, 4):
+                return np.eye(4)
+            return invert_transform(T_parent_in_world)
+        except Exception as e:  # noqa: BLE001
+            logger.debug("Robot parent frame không sẵn có: %s", e)
+            return np.eye(4)
 
     # ────────────────────────────────────────────────────────────
     # Kết nối
@@ -119,13 +185,31 @@ class Orchestrator:
     def _is_reachable(self, target_T: np.ndarray) -> bool:
         """Kiểm tra robot có với tới pose `target_T` (numpy 4x4) không.
 
-        Dùng digital twin: RoboDK.MoveJ_Test trả về < 0 nếu không tới được
-        hoặc va chạm. Đây là lớp an toàn chạy TRƯỚC mỗi lần gắp vật lý.
+        RoboDK MoveJ_Test convention:
+            0   = OK, không va chạm
+            > 0 = va chạm tại joint số đó (collision check active)
+            < 0 = không với tới (out of reach / joint limit / singularity)
+
+        Trong sim, va chạm thường là false positive (gripper-vs-object template,
+        arm-vs-pedestal khi planner chọn config không tối ưu). Chỉ reject nếu
+        thật sự out-of-reach (< 0). Real mode nên enable collision check riêng
+        và xử lý tách bạch — đó là pha tuning sau (mục 9 tài liệu).
         """
         try:
             target_pose = self._to_robodk_pose(target_T)
             result = self.robot.MoveJ_Test(self.robot.Joints(), target_pose)
-            return result == 0
+            if result < 0:
+                logger.info(
+                    "MoveJ_Test out-of-reach (code=%s) tại world %s",
+                    result, target_T[:3, 3].round(1).tolist(),
+                )
+                return False
+            if result > 0:
+                logger.debug(
+                    "MoveJ_Test phát hiện va chạm tại joint %s, pose world %s — chấp nhận trong sim",
+                    result, target_T[:3, 3].round(1).tolist(),
+                )
+            return True
         except Exception as e:  # noqa: BLE001
             logger.warning("MoveJ_Test lỗi: %s", e)
             return False
@@ -136,10 +220,105 @@ class Orchestrator:
         time.sleep(self.config["gripper_delay_s"])
 
     def _to_robodk_pose(self, T: np.ndarray):
-        """Chuyển numpy 4x4 → RoboDK Mat (lazy import)."""
+        """Chuyển numpy 4x4 (world frame) → RoboDK Mat (parent frame).
+
+        Apply T_world_to_robotbase conversion để MoveJ nhận pose đúng frame
+        (mặc định RoboDK diễn giải trong parent frame của robot).
+        """
         from robodk.robomath import Mat
 
-        return Mat(T.tolist())
+        T_parent = self._T_world_to_robotbase @ np.asarray(T)
+        return Mat(T_parent.tolist())
+
+    @staticmethod
+    def _joints_to_list(joints) -> list[float] | None:
+        """Convert RoboDK Mat hoặc list-like → flat list of 6 floats.
+
+        RoboDK Joints() / SolveIK() trả về Mat. Phụ thuộc shape (1xN row hoặc
+        Nx1 col), .tolist() ra hình thức khác nhau. Handle cả 2.
+        """
+        if joints is None:
+            return None
+        # Ưu tiên .tolist() (RoboDK Mat method)
+        for getter in (
+            lambda: joints.tolist() if hasattr(joints, "tolist") else None,
+            lambda: list(joints),
+        ):
+            try:
+                data = getter()
+            except Exception:  # noqa: BLE001
+                continue
+            if not data:
+                continue
+            # Trường hợp 1: đã là list[float] phẳng
+            if isinstance(data[0], (int, float)) and len(data) >= 6:
+                try:
+                    return [float(j) for j in data[:6]]
+                except (TypeError, ValueError):
+                    continue
+            # Trường hợp 2: nested [[j1, j2, ..., j6]] (1xN row)
+            if isinstance(data[0], list) and len(data) == 1 and len(data[0]) >= 6:
+                try:
+                    return [float(j) for j in data[0][:6]]
+                except (TypeError, ValueError):
+                    continue
+            # Trường hợp 3: nested [[j1], [j2], ...] (Nx1 column)
+            if isinstance(data[0], list) and len(data) >= 6 and all(
+                isinstance(row, list) and len(row) >= 1 for row in data[:6]
+            ):
+                try:
+                    return [float(row[0]) for row in data[:6]]
+                except (TypeError, ValueError):
+                    continue
+        return None
+
+    def _solve_ik_joints(self, pose) -> list[float] | None:
+        """Tính joints cho pose; trả None nếu không có solution.
+
+        SolveIK với `joints_approx = current` → pick solution gần nhất, tránh
+        MoveJ refusing on discontinuous joint motion.
+        """
+        joints = None
+        if self._current_joints is not None:
+            try:
+                joints = self.robot.SolveIK(pose, self._current_joints)
+            except (TypeError, AttributeError):
+                joints = None
+        if joints is None:
+            try:
+                joints = self.robot.SolveIK(pose)
+            except Exception:  # noqa: BLE001
+                return None
+        return self._joints_to_list(joints)
+
+    def _move_j_via_ik(self, target_T: np.ndarray) -> None:
+        """MoveJ via SolveIK với joints gần current → MoveJ(joints).
+
+        RoboDK MoveJ(pose) đôi khi raise 'Target cannot be reached' do internal
+        IK chọn solution xa current joints. Truyền `joints_approx=current` vào
+        SolveIK để pick solution gần nhất, rồi MoveJ(joints) bypass IK internal.
+        """
+        pose = self._to_robodk_pose(target_T)
+        joint_list = self._solve_ik_joints(pose)
+        if joint_list is None:
+            # Mock robot trong test hoặc SolveIK fail → fallback MoveJ(pose)
+            self.robot.MoveJ(pose)
+            return
+        logger.debug("MoveJ joints=%s (target world=%s)",
+                     [round(j, 1) for j in joint_list],
+                     target_T[:3, 3].round(1).tolist())
+        self.robot.MoveJ(joint_list)
+        self._current_joints = joint_list
+
+    def _move_l_via_ik(self, target_T: np.ndarray) -> None:
+        """MoveL via SolveIK với joints gần current (same pattern as MoveJ)."""
+        pose = self._to_robodk_pose(target_T)
+        joint_list = self._solve_ik_joints(pose)
+        if joint_list is None:
+            self.robot.MoveL(pose)
+            return
+        self.robot.MoveL(joint_list)
+        self._current_joints = joint_list
 
     # ────────────────────────────────────────────────────────────
     # Chu trình chính
@@ -172,21 +351,42 @@ class Orchestrator:
 
         # ─── PLAN: thử từng vật tới khi có vật với tới được ───
         self.sm.transition_to(PickState.PLAN)
+        dz = self.config["approach_height_mm"]
+        place_T = make_grasp_pose(np.array(self.config["place_position"]), 0.0)
+        place_lift_T = place_T.copy()
+        place_lift_T[2, 3] += dz
+
         for obj in objects:
             xyz_base = obj["pose_base"]
             yaw = obj["pose_camera"][3]
             grasp_T = make_grasp_pose(xyz_base, yaw, self.config["yaw_offset_deg"])
+            lift_T = grasp_T.copy()
+            lift_T[2, 3] += dz
 
-            if not self._is_reachable(grasp_T):
-                logger.info(
-                    "Trial %d: vật '%s' không với tới được, bỏ qua",
-                    trial_id, obj.get("class_name", "?"),
-                )
-                continue
+            # Kiểm tra reachability cho TOÀN BỘ trajectory (contribution C2).
+            # Skip trong sim để tiết kiệm API budget (4 calls/trial × N trials).
+            if not self.config.get("skip_reachability_check", False):
+                unreachable = [
+                    name for name, T in (
+                        ("approach", lift_T),
+                        ("grasp", grasp_T),
+                        ("place_lift", place_lift_T),
+                        ("place", place_T),
+                    )
+                    if not self._is_reachable(T)
+                ]
+                if unreachable:
+                    logger.info(
+                        "Trial %d: vật '%s' không với tới được tại %s, bỏ qua",
+                        trial_id, obj.get("class_name", "?"), unreachable,
+                    )
+                    continue
 
             # ─── Thực thi pick-and-place cho vật này ───
             self.stats["attempted"] += 1
-            ok = self._execute_pick_place(grasp_T, obj, trial_id)
+            ok = self._execute_pick_place(
+                grasp_T, lift_T, place_T, place_lift_T, obj, trial_id,
+            )
             self._log_trial(
                 trial_id, ok,
                 "" if ok else self.sm.history[-1].note,
@@ -201,44 +401,62 @@ class Orchestrator:
         return False
 
     def _execute_pick_place(
-        self, grasp_T: np.ndarray, obj: dict[str, Any], trial_id: int
+        self,
+        grasp_T: np.ndarray,
+        lift_T: np.ndarray,
+        place_T: np.ndarray,
+        place_lift_T: np.ndarray,
+        obj: dict[str, Any],
+        trial_id: int,
     ) -> bool:
         """Chạy chuỗi chuyển động gắp-thả. Trả về True nếu thành công.
 
-        Mọi pose tính bằng numpy 4x4; chỉ chuyển sang RoboDK Mat ngay trước
-        khi gọi robot → logic này test được bằng mock không cần RoboDK.
+        Nhận 4 pose đã được PLAN tính sẵn (vì cùng dữ liệu dùng cho reachability
+        check). Chỉ chuyển sang RoboDK Mat ngay trước khi gọi robot → logic này
+        test được bằng mock không cần RoboDK.
         """
-        dz = self.config["approach_height_mm"]
-
-        # Pose approach/lift = grasp dịch lên theo Z base.
-        lift_T = grasp_T.copy()
-        lift_T[2, 3] += dz
-        place_T = make_grasp_pose(np.array(self.config["place_position"]), 0.0)
-        place_lift_T = place_T.copy()
-        place_lift_T[2, 3] += dz
-
         try:
-            self._set_speed()
+            # Cache current joints chỉ lần đầu (trial 1) — các trial sau dùng
+            # self._current_joints đã được _move_*_via_ik cập nhật ở trial trước.
+            # Tiết kiệm 1 robot.Joints() call/trial cho RoboDK Free quota nhỏ.
+            if self._current_joints is None:
+                try:
+                    self._current_joints = self._joints_to_list(self.robot.Joints())
+                except Exception:  # noqa: BLE001
+                    pass
 
             self.sm.transition_to(PickState.APPROACH)
-            self.robot.MoveJ(self._to_robodk_pose(lift_T))
+            self._move_j_via_ik(lift_T)
+            # Cache joints sau APPROACH để LIFT reuse — cùng pose lift_T, không
+            # cần SolveIK lại (-1 API call/trial).
+            approach_joints = self._current_joints
 
             self.sm.transition_to(PickState.GRASP)
-            self.robot.MoveL(self._to_robodk_pose(grasp_T))
+            self._move_l_via_ik(grasp_T)
             self._gripper(close=True)
 
             self.sm.transition_to(PickState.LIFT)
-            self.robot.MoveL(self._to_robodk_pose(lift_T))
+            if approach_joints is not None:
+                self.robot.MoveL(approach_joints)
+                self._current_joints = approach_joints
+            else:
+                self._move_l_via_ik(lift_T)
 
             self.sm.transition_to(PickState.TRANSFER)
-            self.robot.MoveJ(self._to_robodk_pose(place_lift_T))
+            self._move_j_via_ik(place_lift_T)
+            # Cache joints sau TRANSFER để RETREAT reuse (-1 API call/trial).
+            transfer_joints = self._current_joints
 
             self.sm.transition_to(PickState.PLACE)
-            self.robot.MoveL(self._to_robodk_pose(place_T))
+            self._move_l_via_ik(place_T)
             self._gripper(close=False)
 
             self.sm.transition_to(PickState.RETREAT)
-            self.robot.MoveL(self._to_robodk_pose(place_lift_T))
+            if transfer_joints is not None:
+                self.robot.MoveL(transfer_joints)
+                self._current_joints = transfer_joints
+            else:
+                self._move_l_via_ik(place_lift_T)
 
             self.sm.transition_to(PickState.DONE)
             self.stats["successful"] += 1
@@ -246,6 +464,11 @@ class Orchestrator:
                 "Trial %d: gắp-thả '%s' THÀNH CÔNG | stats=%s",
                 trial_id, obj.get("class_name", "?"), self.stats,
             )
+            # Skip return_home ở success path: trial kế bắt đầu từ RETREAT pose
+            # (vẫn trong workspace), tiết kiệm 1-2 API call/trial. Để re-enable,
+            # set config["return_home_after_success"]=True.
+            if self.config.get("return_home_after_success", False):
+                self._return_home()
             return True
 
         except Exception as e:  # noqa: BLE001

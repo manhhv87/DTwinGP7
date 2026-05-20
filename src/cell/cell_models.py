@@ -119,11 +119,43 @@ class WorktableConfig(BaseModel):
         return v
 
 
+class FloorConfig(BaseModel):
+    """Sàn nhà (optional) — tấm phẳng làm mặt phẳng tham chiếu cho cả cell."""
+
+    mesh: str
+    pose: PoseConfig
+    color_rgb: Tuple[float, float, float] = (0.82, 0.82, 0.86)
+
+    @field_validator("color_rgb")
+    @classmethod
+    def _validate_color(cls, v: Tuple[float, float, float]) -> Tuple[float, float, float]:
+        for c, val in zip("rgb", v):
+            if not 0.0 <= val <= 1.0:
+                raise ValueError(f"color_rgb[{c}]={val} phải trong [0, 1]")
+        return v
+
+
 class CameraMountConfig(BaseModel):
     """Giàn lắp camera (optional)."""
 
     mesh: str
     pose: PoseConfig
+
+
+class PedestalConfig(BaseModel):
+    """Pedestal nâng robot lên (optional, dùng cho cell công nghiệp)."""
+
+    mesh: str
+    pose: PoseConfig
+    color_rgb: Tuple[float, float, float] = (0.4, 0.4, 0.4)
+
+    @field_validator("color_rgb")
+    @classmethod
+    def _validate_color(cls, v: Tuple[float, float, float]) -> Tuple[float, float, float]:
+        for c, val in zip("rgb", v):
+            if not 0.0 <= val <= 1.0:
+                raise ValueError(f"color_rgb[{c}]={val} phải trong [0, 1]")
+        return v
 
 
 class CameraIntrinsics(BaseModel):
@@ -171,6 +203,7 @@ class ObjectConfig(BaseModel):
     mesh: str
     visible: bool = False
     parent_frame: Optional[str] = None
+    pose: Optional[PoseConfig] = None       # offset so với parent_frame; None = trùng gốc
 
 
 class RobotConnectionConfig(BaseModel):
@@ -201,7 +234,9 @@ class CellConfig(BaseModel):
     worktable: WorktableConfig
     camera: CameraConfig
     gripper: GripperConfig
+    floor: Optional[FloorConfig] = None
     camera_mount: Optional[CameraMountConfig] = None
+    robot_pedestal: Optional[PedestalConfig] = None
     frames: List[FrameConfig] = Field(default_factory=list)
     objects: List[ObjectConfig] = Field(default_factory=list)
     robot_connection: RobotConnectionConfig = Field(default_factory=RobotConnectionConfig)

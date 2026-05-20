@@ -20,8 +20,8 @@ metadata:
   author: "Master Thesis - GP7 Pick Place"
   notes: |
     Base config cho simulation mode.
-    Camera đặt ở 850mm trên bàn (eye-to-hand).
-    3 loại vật: bottle, box, bolt.
+    Camera đặt ở 700mm trên bàn (eye-to-hand, sweet spot D455).
+    3 loại vật: bottle, cup, bolt.
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -32,27 +32,57 @@ robot:
   source: "library"                       # "library" hoặc "file"
   library_name: "Yaskawa-GP7.robot"       # tên file trong C:/RoboDK/Library/
 
-  # Pose của base robot trong World frame của RoboDK
+  # Pose của base robot trong World frame của RoboDK.
+  # Yaskawa-GP7.robot library: origin item TRÙNG với J1 axis, còn mesh stand
+  # built-in được vẽ ĐI XUỐNG dưới origin (~330mm — đo được qua trial-error).
+  # pose.z = 630 → đáy stand ở Z=300 = đỉnh pedestal.stl → robot đứng trên
+  # pedestal. J1 ở Z=630, cao hơn mặt bàn (Z=500) 130mm cho top-down picking.
   pose:
-    xyz_mm: [0, 0, 0]                     # đặt ở gốc tọa độ
+    xyz_mm: [0, 0, 630]                   # J1 trên đỉnh pedestal + stand built-in
     rpy_deg: [0, 0, 0]
 
-  # Cấu hình joints "home" (tư thế nghỉ giữa các pick)
+  # Cấu hình joints "home" (tư thế rest/transport)
   # Yaskawa GP7 convention: [S, L, U, R, B, T]
-  home_joints_deg: [0, 0, 0, 0, -90, 0]
+  # S=0: arm hướng về +X (về phía bàn ở X=700). J1 ở Z=630, home flange ở
+  # Z≈1115 (cao hơn mặt bàn 615mm) → arm duỗi ngang không kẹt vào bàn.
+  home_joints_deg: [0, 0, 0, 0, 0, 0]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# FLOOR (sàn nhà — mặt phẳng tham chiếu cho cả cell, mặt trên tại Z=0)
+# ─────────────────────────────────────────────────────────────────────────────
+floor:
+  mesh: "models/floor.stl"                # tấm 3000×3000 mm, mặt trên ở Z=0
+  pose:
+    xyz_mm: [300, 0, 0]                   # phủ dưới cả robot (X=0) lẫn bàn (X=480)
+    rpy_deg: [0, 0, 0]
+  color_rgb: [0.82, 0.82, 0.86]           # xám nhạt
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # WORKTABLE (bàn làm việc)
 # ─────────────────────────────────────────────────────────────────────────────
 worktable:
-  mesh: "models/worktable.stl"            # path relative tới project root
+  mesh: "models/worktable.stl"            # bàn 600×400×500 mm, origin ở đáy chân bàn (Z=0 = sàn)
 
   pose:
-    xyz_mm: [400, 0, -10]                 # cách robot 400mm về phía X, hạ 10mm
+    xyz_mm: [700, 0, 0]                   # center bàn X=700 → mép trước X=400 (clearance ~215mm với robot base ⌀370mm)
     rpy_deg: [0, 0, 0]
 
   color_rgb: [0.6, 0.6, 0.7]              # màu xám-xanh nhẹ
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ROBOT PEDESTAL — nâng robot lên cao hơn bàn cho top-down picking tự nhiên
+# pedestal.stl: 300×300×300mm, origin ở đáy → chạm sàn khi pose.z=0
+# Robot stand built-in (~350mm) sẽ ngồi trên đỉnh pedestal (Z=300)
+# ─────────────────────────────────────────────────────────────────────────────
+robot_pedestal:
+  mesh: "models/pedestal.stl"
+  pose:
+    xyz_mm: [0, 0, 0]                     # chạm sàn, dưới robot
+    rpy_deg: [0, 0, 0]
+  color_rgb: [0.4, 0.4, 0.4]
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -61,7 +91,7 @@ worktable:
 camera_mount:
   mesh: "models/camera_mount.stl"         # optional, có thể bỏ
   pose:
-    xyz_mm: [400, 0, 0]                   # cùng vị trí gốc với bàn
+    xyz_mm: [700, 0, 500]                 # đứng trên mặt bàn (Z=500)
     rpy_deg: [0, 0, 0]
 
 
@@ -73,7 +103,7 @@ camera:
   model: "Intel RealSense D455"
 
   pose:
-    xyz_mm: [400, 0, 850]                 # 850mm trên bàn
+    xyz_mm: [700, 0, 1200]                # 700 mm trên mặt bàn (sweet spot D455 0.6-2m)
     rpy_deg: [180, 0, 0]                  # hướng nhìn xuống
 
   intrinsics:
@@ -87,10 +117,12 @@ camera:
 # ─────────────────────────────────────────────────────────────────────────────
 gripper:
   name: "TwoFingerGripper"
-  mesh: "models/gripper.stl"              # optional
+  mesh: "models/gripper.stl"              # parallel-jaw, opening 90mm, cao 110mm
 
-  # TCP offset từ flange của robot
-  tcp_offset_xyz_mm: [0, 0, 130]          # TCP 130mm cách flange theo Z
+  # TCP offset từ flange của robot — đặt ngay tại fingertip để pose grasp
+  # tương đương "đầu ngón chạm bề mặt vật".
+  # Tổng cao gripper = palm_height(40) + finger_length(70) = 110mm.
+  tcp_offset_xyz_mm: [0, 0, 110]
   tcp_offset_rpy_deg: [0, 0, 0]
 
 
@@ -100,17 +132,17 @@ gripper:
 frames:
   - name: "WorkpieceArea"
     pose:
-      xyz_mm: [400, 0, 0]                 # trên mặt bàn, vùng có vật
+      xyz_mm: [700, 0, 500]               # giữa mặt bàn (Z=500), vùng pick — reach ~712mm từ J1
       rpy_deg: [0, 0, 0]
 
   - name: "PlaceZone"
     pose:
-      xyz_mm: [400, 300, 50]              # bên phải bàn, vùng đặt vật
+      xyz_mm: [700, 200, 500]             # bên Y+ vùng pick, cùng cao độ mặt bàn — reach ~742mm
       rpy_deg: [0, 0, 0]
 
   - name: "CalibrationTarget"             # cho hand-eye calibration
     pose:
-      xyz_mm: [400, 0, 10]
+      xyz_mm: [700, 0, 510]               # trên mặt bàn 10 mm
       rpy_deg: [0, 0, 0]
 
 
@@ -119,21 +151,33 @@ frames:
 # ─────────────────────────────────────────────────────────────────────────────
 # Các vật này được load làm template, mặc định ẩn (visible: false)
 # Khi thí nghiệm, code orchestrator sẽ clone hoặc show theo nhu cầu
+# Pose của object là OFFSET so với parent_frame (WorkpieceArea = (700, 0, 500)).
+# Spread theo Y để 3 vật không chồng nhau; bolt rất nhỏ (9×8×24mm) — không
+# chia ô Y trùng vật khác nếu không sẽ khuất.
 objects:
   - name: "bottle"
     mesh: "models/objects/bottle.stl"
     visible: false
     parent_frame: "WorkpieceArea"
+    pose:
+      xyz_mm: [0, -120, 0]                 # world (700, -120, 500)
+      rpy_deg: [0, 0, 0]
 
-  - name: "box"
-    mesh: "models/objects/box.stl"
+  - name: "cup"
+    mesh: "models/objects/cup.stl"
     visible: false
     parent_frame: "WorkpieceArea"
+    pose:
+      xyz_mm: [0, 0, 0]                    # world (700, 0, 500) — giữa bàn
+      rpy_deg: [0, 0, 0]
 
   - name: "bolt"
     mesh: "models/objects/bolt.stl"
     visible: false
     parent_frame: "WorkpieceArea"
+    pose:
+      xyz_mm: [0, 120, 0]                  # world (700, 120, 500)
+      rpy_deg: [0, 0, 0]
 
 
 # ─────────────────────────────────────────────────────────────────────────────

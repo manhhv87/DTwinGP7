@@ -32,7 +32,7 @@ format=onnx`) rồi trỏ `model_path` tới file `.onnx`.
 | Thư mục | Nội dung |
 |---|---|
 | `models/` | `worktable.stl`, `camera_mount.stl`, `gripper.stl` |
-| `models/objects/` | `bottle.stl`, `box.stl`, `bolt.stl` — mesh CAD của 3 loại vật |
+| `models/objects/` | `bottle.stl`, `cup.stl`, `bolt.stl` — mesh CAD của 3 loại vật |
 
 `config/cell_layout.yaml` tham chiếu các đường dẫn mesh này; `CellLoader`
 nạp chúng vào RoboDK khi dựng cell.

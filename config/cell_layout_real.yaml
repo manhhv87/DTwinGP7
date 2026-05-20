@@ -22,15 +22,23 @@ robot:
   source: "library"
   library_name: "Yaskawa-GP7.robot"
   pose:
-    xyz_mm: [0, 0, 0]
+    xyz_mm: [0, 0, 0]                     # robot trên sàn, dùng built-in floor stand
     rpy_deg: [0, 0, 0]
-  home_joints_deg: [0, 0, 0, 0, -90, 0]
+  home_joints_deg: [180, 0, 0, 0, 0, 0]  # S=180: arm duỗi ngược hướng bàn, tránh xuyên bàn
+
+
+floor:
+  mesh: "models/floor.stl"                # sàn 3000×3000 mm, mặt trên Z=0
+  pose:
+    xyz_mm: [300, 0, 0]
+    rpy_deg: [0, 0, 0]
+  color_rgb: [0.82, 0.82, 0.86]
 
 
 worktable:
-  mesh: "models/worktable.stl"
+  mesh: "models/worktable.stl"            # bàn primitive 600×400×500 mm (robot trên sàn)
   pose:
-    xyz_mm: [400, 0, -10]
+    xyz_mm: [480, 0, 0]                   # ĐO LẠI vị trí bàn thật so với gốc robot
     rpy_deg: [0, 0, 0]
   color_rgb: [0.6, 0.6, 0.7]
 
@@ -38,7 +46,7 @@ worktable:
 camera_mount:
   mesh: "models/camera_mount.stl"
   pose:
-    xyz_mm: [400, 0, 0]
+    xyz_mm: [480, 0, 500]
     rpy_deg: [0, 0, 0]
 
 
@@ -46,7 +54,7 @@ camera:
   type: "real"                            # đánh dấu camera thật (vẫn add ảo trong RoboDK)
   model: "Intel RealSense D455"
   pose:
-    xyz_mm: [400, 0, 850]
+    xyz_mm: [480, 0, 1350]                # 850 mm trên mặt bàn — ĐO LẠI khi lắp D455 thật
     rpy_deg: [180, 0, 0]
   intrinsics:
     fov_deg: 87
@@ -64,11 +72,11 @@ gripper:
 frames:
   - name: "WorkpieceArea"
     pose:
-      xyz_mm: [400, 0, 0]
+      xyz_mm: [480, 0, 500]
       rpy_deg: [0, 0, 0]
   - name: "PlaceZone"
     pose:
-      xyz_mm: [400, 300, 50]
+      xyz_mm: [480, 200, 500]
       rpy_deg: [0, 0, 0]
 
 
@@ -77,8 +85,8 @@ objects:
     mesh: "models/objects/bottle.stl"
     visible: false
     parent_frame: "WorkpieceArea"
-  - name: "box"
-    mesh: "models/objects/box.stl"
+  - name: "cup"
+    mesh: "models/objects/cup.stl"
     visible: false
     parent_frame: "WorkpieceArea"
   - name: "bolt"

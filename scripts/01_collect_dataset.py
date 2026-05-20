@@ -10,7 +10,7 @@ File lưu: data/raw/{class}_{lighting}_{angle}_{overlap}_{bg}_{ts}_{NNNN}_rgb.pn
 
 Phím tắt:
     SPACE      chụp 1 ảnh (RGB + depth)
-    1/2/3      class = bottle / box / bolt
+    1/2/3      class = bottle / cup / bolt
     b/m/d      lighting = bright / medium / dim
     n/l/o      overlap  = none / light / medium
     g/u/r      background = gray / blue / brown
@@ -69,7 +69,7 @@ def main() -> int:
     counter = 0
 
     key_map = {
-        ord("1"): ("class", "bottle"), ord("2"): ("class", "box"),
+        ord("1"): ("class", "bottle"), ord("2"): ("class", "cup"),
         ord("3"): ("class", "bolt"),
         ord("b"): ("lighting", "bright"), ord("m"): ("lighting", "medium"),
         ord("d"): ("lighting", "dim"),

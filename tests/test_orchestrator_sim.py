@@ -59,8 +59,12 @@ def orchestrator(calibration_file, mock_robot, monkeypatch):
         Orchestrator, "_to_robodk_pose", lambda self, T: np.asarray(T)
     )
     det_queue: queue.Queue = queue.Queue(maxsize=3)
-    config = {"calibration_path": str(calibration_file), "inter_trial_delay_s": 0.0,
-              "gripper_delay_s": 0.0}
+    config = {
+        "calibration_path": str(calibration_file),
+        "inter_trial_delay_s": 0.0,
+        "gripper_delay_s": 0.0,
+        "skip_reachability_check": False,    # test verify hành vi reach check
+    }
     return Orchestrator(det_queue, config=config, robot=mock_robot)
 
 
@@ -74,10 +78,10 @@ class TestSelectObjects:
     def test_sorts_top_object_first(self, orchestrator):
         msg = make_detection_msg([
             make_object("bottle", xyz=(400, 0, 50)),
-            make_object("box", xyz=(400, 0, 250)),
+            make_object("cup", xyz=(400, 0, 250)),
         ])
         objs = orchestrator._select_objects(msg)
-        assert objs[0]["class_name"] == "box"  # Z cao hơn → gắp trước
+        assert objs[0]["class_name"] == "cup"  # Z cao hơn → gắp trước
 
 
 class TestRunOneCycle:

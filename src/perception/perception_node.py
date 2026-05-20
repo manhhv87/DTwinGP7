@@ -94,6 +94,9 @@ class PerceptionNode:
         while self._running:
             msg = self.process_once()
             if msg is None:
+                # Không có frame (camera lỗi hoặc timeout) — nghỉ ngắn để
+                # không busy-spin CPU.
+                time.sleep(0.01)
                 continue
             try:
                 self.queue.put_nowait(msg)
