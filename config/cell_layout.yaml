@@ -123,9 +123,9 @@ gripper:
 
   # TCP offset từ flange của robot — đặt ngay tại fingertip để pose grasp
   # tương đương "đầu ngón chạm bề mặt vật".
-  # Pneumatic parallel-jaw (custom cho Galaxy S23 tray): palm 60 + finger 80 = 140mm.
-  # PLACEHOLDER — user sẽ đo gripper thật và update sau (xem gen_primitive_meshes.py).
-  tcp_offset_xyz_mm: [0, 0, 140]
+  # Pneumatic parallel-jaw WIDE (200mm opening kẹp 2 bên tray):
+  # palm 60 + finger 40 = 100mm. PLACEHOLDER — update sau khi đo gripper thật.
+  tcp_offset_xyz_mm: [0, 0, 100]
   tcp_offset_rpy_deg: [0, 0, 0]
 
 

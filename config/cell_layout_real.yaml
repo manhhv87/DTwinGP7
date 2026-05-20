@@ -65,7 +65,7 @@ camera:
 gripper:
   name: "TwoFingerGripper"
   mesh: "models/gripper.stl"
-  tcp_offset_xyz_mm: [0, 0, 140]  # pneumatic parallel-jaw custom cho Galaxy S23 tray (palm 60 + finger 80)
+  tcp_offset_xyz_mm: [0, 0, 100]  # pneumatic parallel-jaw WIDE (200mm opening) cho Galaxy S23 tray, palm 60 + finger 40
   tcp_offset_rpy_deg: [0, 0, 0]
 
 

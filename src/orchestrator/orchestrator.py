@@ -486,7 +486,8 @@ class Orchestrator:
         dz = self.config["approach_height_mm"]
 
         # Margin tối thiểu cho fingertip cách table top (mặc định bàn ở Z=500).
-        safety_margin_mm = 5.0
+        # 15mm để fingertip không xuyên bàn dù vật ngắn (vd tray 25mm, bolt 24mm).
+        safety_margin_mm = 15.0
         max_offset = float(self.config["grasp_depth_offset_mm"])
 
         for obj in objects:
