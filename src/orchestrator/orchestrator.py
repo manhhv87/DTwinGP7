@@ -46,7 +46,11 @@ _DEFAULT_CONFIG: dict[str, Any] = {
     # xuống thấp hơn (table_top_z_mm + safety_margin) ở bất kỳ object nào.
     # Cấu hình clamp cứng tránh xuyên bàn cho vật ngắn (tray 25mm, bolt 24mm).
     "table_top_z_mm": 500.0,
-    "table_safety_margin_mm": 15.0,
+    # Safety margin LỚN (100mm thay vì 15) để bù chênh lệch không giải thích được
+    # giữa math (gripper above TCP) và observation (gripper xuyên bàn). TCP bị
+    # ép cao 100mm trên bàn — kể cả gripper hiển thị xuyên 100mm vẫn không
+    # chạm mặt bàn. User báo gripper xuyên qua bàn + tray với safety=15 trước đó.
+    "table_safety_margin_mm": 100.0,
     # Bù lệch yaw giữa PCA major axis trên mask và trục mở gripper. Yaw=0:
     # gripper jaws spread cùng hướng PCA major axis (= longest object dim).
     # Yaw=90: jaws spread vuông góc PCA (= shortest object dim) — dùng cho
