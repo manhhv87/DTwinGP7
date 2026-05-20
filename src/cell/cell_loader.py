@@ -40,6 +40,31 @@ logger = logging.getLogger(__name__)
 DEFAULT_LIBRARY_PATH = Path("C:/RoboDK/Library")
 
 
+# Màu mặc định cho từng loại item (R, G, B, A) ∈ [0, 1]. Mục đích: dễ phân
+# biệt visual trong RoboDK GUI (mặc định tất cả mesh là trắng).
+_DEFAULT_GRIPPER_COLOR = [1.0, 0.5, 0.1, 1.0]      # cam đậm — gripper nổi bật
+_DEFAULT_OBJECT_COLORS = {
+    "tray":   [0.2, 0.75, 0.35, 1.0],    # xanh lá — khay điện thoại
+    "bottle": [0.2, 0.45, 0.95, 1.0],    # xanh dương — chai
+    "cup":    [0.95, 0.85, 0.15, 1.0],   # vàng — cốc
+    "bolt":   [0.85, 0.25, 0.25, 1.0],   # đỏ — bulong
+}
+_DEFAULT_WORKTABLE_COLOR = [0.55, 0.38, 0.22, 1.0]  # nâu gỗ — bàn làm việc
+
+
+def _apply_color(item, rgb_or_rgba):
+    """Áp dụng màu cho RoboDK Item (best-effort, bỏ qua nếu API không có)."""
+    if item is None or not hasattr(item, "setColor"):
+        return
+    try:
+        color = list(rgb_or_rgba)
+        if len(color) == 3:
+            color = color + [1.0]
+        item.setColor(color)
+    except Exception as e:  # noqa: BLE001
+        logger.debug("setColor bỏ qua: %s", e)
+
+
 class CellLoader:
     """Xây dựng RoboDK station từ validated CellConfig.
 
@@ -284,6 +309,10 @@ class CellLoader:
         T = make_homogeneous(cfg.pose.xyz_mm, cfg.pose.rpy_deg)
         table.setPose(matrix_to_robodk_pose(T))
 
+        # Worktable: nâu gỗ để dễ phân biệt với gripper/objects màu sắc
+        color = getattr(cfg, "color_rgb", None) or _DEFAULT_WORKTABLE_COLOR[:3]
+        _apply_color(table, color)
+
         logger.info("✓ Worktable loaded")
         return table
 
@@ -299,6 +328,10 @@ class CellLoader:
         T = make_homogeneous(cfg.pose.xyz_mm, cfg.pose.rpy_deg)
         floor.setPose(matrix_to_robodk_pose(T))
 
+        color = getattr(cfg, "color_rgb", None)
+        if color:
+            _apply_color(floor, color)
+
         logger.info("✓ Floor loaded")
         return floor
 
@@ -312,6 +345,10 @@ class CellLoader:
         pedestal = self._rdk.AddFile(str(mesh))
         T = make_homogeneous(cfg.pose.xyz_mm, cfg.pose.rpy_deg)
         pedestal.setPose(matrix_to_robodk_pose(T))
+
+        color = getattr(cfg, "color_rgb", None)
+        if color:
+            _apply_color(pedestal, color)
 
         logger.info("✓ Pedestal loaded")
         return pedestal
@@ -390,7 +427,8 @@ class CellLoader:
             if mesh.exists():
                 # RoboDK API không có Item.AddGeometryFromFile. Pattern đúng:
                 # AddFile() tạo Item mới với geometry, truyền parent=tool để gắn.
-                self._rdk.AddFile(str(mesh), tool)
+                gripper_mesh = self._rdk.AddFile(str(mesh), tool)
+                _apply_color(gripper_mesh, _DEFAULT_GRIPPER_COLOR)
             else:
                 logger.warning("Gripper mesh không có: %s (TCP vẫn được tạo)", mesh)
 
@@ -447,6 +485,11 @@ class CellLoader:
             if cfg.pose is not None:
                 T = make_homogeneous(cfg.pose.xyz_mm, cfg.pose.rpy_deg)
                 obj.setPose(matrix_to_robodk_pose(T))
+
+            # Apply màu theo class_name để phân biệt object trong RoboDK GUI.
+            color = _DEFAULT_OBJECT_COLORS.get(cfg.name)
+            if color:
+                _apply_color(obj, color)
 
             objects[cfg.name] = obj
             logger.info("✓ Object template: %s", cfg.name)
