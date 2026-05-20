@@ -81,16 +81,8 @@ frames:
 
 
 objects:
-  - name: "bottle"
-    mesh: "models/objects/bottle.stl"
-    visible: false
-    parent_frame: "WorkpieceArea"
-  - name: "cup"
-    mesh: "models/objects/cup.stl"
-    visible: false
-    parent_frame: "WorkpieceArea"
-  - name: "bolt"
-    mesh: "models/objects/bolt.stl"
+  - name: "tray"
+    mesh: "models/objects/tray.stl"
     visible: false
     parent_frame: "WorkpieceArea"
 

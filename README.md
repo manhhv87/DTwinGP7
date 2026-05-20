@@ -3,7 +3,12 @@
 > Tích hợp YOLOv8-seg vào hệ thống Digital Twin (RoboDK Free) cho bài toán
 > gắp–thả sản phẩm ở vị trí ngẫu nhiên. Stack tối giản, license 0đ.
 >
-> Tài liệu đề tài đặt ở thư mục `../tai_lieu/`.
+> **Use case thực tế**: gắp khay (tray) đựng điện thoại Galaxy S23 trên dây
+> chuyền assembly, dùng pneumatic parallel-jaw gripper custom.
+> Demo vision multi-class với 3 vật khác (bottle/cup/bolt) tùy chọn.
+>
+> Tài liệu: `docs/` (HUONG_DAN_CAI_DAT, phat_bieu_bai_toan, Phu_luc_A).
+> Repo GitHub: https://github.com/manhhv87/DTwinGP7
 
 ## Quickstart
 
@@ -13,21 +18,29 @@ pip install -r requirements.txt
 
 # 2. Verify config + chạy tests (không cần RoboDK/D455)
 python -m src.cell.cell_models validate config/cell_layout.yaml
-pytest tests/ -q
+pytest tests/ -q                              # kỳ vọng: 79 passed
 
-# 3. Mở RoboDK GUI (empty) → dựng cell
-python scripts/build_station.py
+# 3. Mở RoboDK GUI (empty) → dựng cell (minimal = chỉ tray, ~20 API calls)
+python scripts/build_station.py --minimal
 
 # 4. Chạy thí nghiệm pick-and-place ở chế độ sim
-python scripts/03_run_experiment.py --mode sim --trials 50
+python scripts/03_run_experiment.py --mode sim --trials 5 --minimal-build
+
+# Headless mode (0 API call, scale ~500 trials cho thống kê thesis)
+python scripts/03_run_experiment.py --mode sim --trials 500 --headless
 ```
 
-## Vị trí trong thư mục tổng
+## Cấu trúc repo
 
 ```
-files/
-├── pickplace_gp7/     ← BỘ CODE (thư mục này)
-└── tai_lieu/          ← Tài liệu: HUONG_DAN_CAI_DAT.md + đề tài + phụ lục
+pickplace_gp7/             ← root repo (DTwinGP7 trên GitHub)
+├── docs/                  ← HUONG_DAN_CAI_DAT, phat_bieu_bai_toan, Phu_luc_A
+├── config/                ← YAML configs
+├── models/                ← STL meshes + YOLOv8 weights
+├── src/                   ← Python source
+├── scripts/               ← CLI entry points
+├── tests/                 ← 79 tests
+└── results/ figures/ logs/  ← output (gitignored)
 ```
 
 ## Cấu trúc bộ code
@@ -58,13 +71,22 @@ pickplace_gp7/
 │   │   └── capture_calibration.py   # phát hiện ChArUco + thu pose
 │   ├── logging/                   # TrialLogger → CSV
 │   └── utils/                     # helpers (logging, YAML)
-├── scripts/                       # CLI entry points
-│   ├── build_station.py · dump_cell_to_yaml.py
-│   ├── 01_collect_dataset.py       # chụp dataset bằng D455
-│   ├── 02_run_calibration.py       # hand-eye calibration
-│   ├── 03_run_experiment.py        # chạy thí nghiệm pick-and-place
-│   └── 04_analyze_results.py       # phân tích thống kê + figures
-├── tests/                         # 67 unit/integration tests
+├── scripts/                       # CLI entry points (15 scripts)
+│   ├── build_station.py             # dựng cell (--minimal cho RoboDK Free)
+│   ├── dump_cell_to_yaml.py         # capture state GUI → YAML
+│   ├── 01_collect_dataset.py        # chụp dataset bằng D455
+│   ├── 02_run_calibration.py        # hand-eye calibration (ChArUco)
+│   ├── 03_run_experiment.py         # thí nghiệm — sim/real/--headless/--minimal-build
+│   ├── 04_analyze_results.py        # phân tích thống kê + figures
+│   ├── calibration_from_layout.py   # sinh T_BC từ cell config (sim/headless)
+│   ├── convert_glb_to_stl.py        # GLB → STL utility
+│   ├── demo_reachability.py         # demo MoveJ_Test 1 pose
+│   ├── diagnose_layout.py           # check cell_layout.yaml hợp lý
+│   ├── gen_primitive_meshes.py      # sinh STL primitives (gripper, tray, ...)
+│   ├── probe_api_limit.py           # đo RoboDK Free rate-limit
+│   ├── set_home_pose.py             # auto-find home_joints qua IK scan
+│   └── save_current_as_home.py      # ghi joints hiện tại làm home (sau khi jog tay)
+├── tests/                         # 79 unit/integration tests
 ├── data/raw/ · models/ · results/ · figures/ · logs/   # output (gitignored)
 ├── clean.bat                       # tiện ích xóa __pycache__
 └── requirements.txt · pyproject.toml
@@ -99,8 +121,9 @@ pytest tests/ --cov=src --cov-report=term     # với coverage
 
 | Tầng test | Phần cứng cần | Cách chạy |
 |---|---|---|
-| Unit + integration (67 tests) | Không | `pytest tests/` |
+| Unit + integration (79 tests) | Không | `pytest tests/` |
 | System SIM | RoboDK GUI | `03_run_experiment.py --mode sim` |
+| System SIM headless | Không (SimRobot mock) | `03_run_experiment.py --headless --trials 500` |
 | System REAL | RoboDK + D455 + GP7 | `03_run_experiment.py --mode real` |
 
 ## Hai lưu ý kỹ thuật quan trọng

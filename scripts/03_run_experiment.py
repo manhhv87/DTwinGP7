@@ -73,8 +73,8 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-DEFAULT_OBJECT_HEIGHTS_MM = {"tray": 25, "bottle": 150, "cup": 40, "bolt": 25}
-DEFAULT_MASK_SIZE_PX = {"tray": (180, 100), "bottle": (120, 40), "cup": (80, 80), "bolt": (40, 40)}
+DEFAULT_OBJECT_HEIGHTS_MM = {"tray": 25}
+DEFAULT_MASK_SIZE_PX = {"tray": (180, 100)}
 
 
 def _stl_height_mm(stl_path):
@@ -103,7 +103,7 @@ def _stl_height_mm(stl_path):
         return None
 
 
-def _auto_mock_detection_params(cell_config, intrinsics_dict, object_name="bottle"):
+def _auto_mock_detection_params(cell_config, intrinsics_dict, object_name="tray"):
     """Auto-compute (mask_box, depth_m, height_mm) từ object pose trong cell_layout.
 
     Đảm bảo mock detection PHẢN ÁNH ĐÚNG vị trí object template trong RoboDK,
@@ -128,8 +128,7 @@ def _auto_mock_detection_params(cell_config, intrinsics_dict, object_name="bottl
     obj_base_world = parent_xyz + offset_xyz
 
     # Top object = base + chiều cao thực. Ưu tiên ĐO trực tiếp từ STL file
-    # để khớp với mesh thật (tránh hard-code sai như giả định bottle=150mm
-    # nhưng STL thực 210mm → gripper đi quá sâu, chai thò lên trên gripper).
+    # để khớp với mesh thật, tránh hard-code chiều cao có thể sai.
     height_mm = DEFAULT_OBJECT_HEIGHTS_MM.get(object_name, 100)
     if obj.mesh:
         mesh_path = Path(obj.mesh)
@@ -186,12 +185,10 @@ def build_perception(mode: str, config: dict, args=None, cell_config=None):
 
     headless = bool(getattr(args, "headless", False))
 
-    # Auto-compute mask_box + depth từ cell_config nếu có (đảm bảo mock
-    # detection khớp object template trong RoboDK). Fallback hard-code nếu không.
-    # Target object = FIRST object in cell config (default "tray" cho thí nghiệm
-    # khay Galaxy S23, hoặc "bottle" nếu user thay đổi thứ tự objects).
+    # Auto-compute mask_box + depth từ cell_config (mock detection khớp object
+    # template thật trong RoboDK). Target = first object in cell (= tray default).
     auto_height_mm = None
-    target_name = "bottle"
+    target_name = "tray"
     if cell_config is not None and not headless:
         if cell_config.objects:
             target_name = cell_config.objects[0].name
@@ -214,28 +211,26 @@ def build_perception(mode: str, config: dict, args=None, cell_config=None):
             det.height_mm = auto_height_mm   # truyền chiều cao thật cho adaptive grasp
         scripted = [[det]]
     else:
-        # Headless: sinh nhiều kịch bản đa dạng để thống kê có ý nghĩa.
-        # - detection_miss_rate: tỉ lệ trial không có vật
-        # - mask center span theo u → world X span → 1 phần ngoài reach (unreachable)
+        # Headless: sinh N kịch bản tray với position varying (pixel u/v) để
+        # thống kê success rate trong nhiều vị trí. miss_rate: tỉ lệ trial
+        # không có vật (test detection_miss recovery).
         import random
 
         n = getattr(args, "trials", 50)
         miss_rate = getattr(args, "detection_miss_rate", 0.0)
         rng = random.Random(getattr(args, "seed", 42))
-        classes = ["bottle", "cup", "bolt"]
+        tray_height = DEFAULT_OBJECT_HEIGHTS_MM.get("tray", 25)
         scripted = []
         for _ in range(n):
             if rng.random() < miss_rate:
                 scripted.append([])                       # detection miss
                 continue
-            cls = rng.choice(classes)
             cu = rng.randint(450, 1050)                   # pixel u → world X span
             cv = rng.randint(330, 410)
             det_h = MockDetector.make_detection(
-                cls, mask_box=(cu - 60, cv - 20, cu + 60, cv + 20),
+                "tray", mask_box=(cu - 90, cv - 50, cu + 90, cv + 50),
             )
-            # Headless lookup chiều cao per class (real D455 không có info này).
-            det_h.height_mm = DEFAULT_OBJECT_HEIGHTS_MM.get(cls, 100)
+            det_h.height_mm = tray_height
             scripted.append([det_h])
     detector = MockDetector(scripted=scripted)
     return camera, detector

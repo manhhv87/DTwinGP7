@@ -152,44 +152,15 @@ frames:
 # ─────────────────────────────────────────────────────────────────────────────
 # OBJECT TEMPLATES (3 loại vật)
 # ─────────────────────────────────────────────────────────────────────────────
-# Các vật này được load làm template, mặc định ẩn (visible: false)
-# Khi thí nghiệm, code orchestrator sẽ clone hoặc show theo nhu cầu
-# Pose của object là OFFSET so với parent_frame (WorkpieceArea = (700, 0, 500)).
-# Spread theo Y để 3 vật không chồng nhau; bolt rất nhỏ (9×8×24mm) — không
-# chia ô Y trùng vật khác nếu không sẽ khuất.
+# Object target cho thí nghiệm: khay Galaxy S23. Pose là OFFSET so với
+# parent_frame (WorkpieceArea = (700, 0, 500)).
 objects:
-  # Object thực tế cho thí nghiệm: khay Galaxy S23 (đặt FIRST → minimal-build chọn).
-  # Bottle/cup/bolt giữ làm minh hoạ vision multi-class, không phải target gắp.
   - name: "tray"
     mesh: "models/objects/tray.stl"
     visible: false
     parent_frame: "WorkpieceArea"
     pose:
       xyz_mm: [0, -120, 0]                 # world (700, -120, 500)
-      rpy_deg: [0, 0, 0]
-
-  - name: "bottle"
-    mesh: "models/objects/bottle.stl"
-    visible: false
-    parent_frame: "WorkpieceArea"
-    pose:
-      xyz_mm: [0, 0, 0]                    # world (700, 0, 500) — giữa bàn (đã đổi từ Y=-120)
-      rpy_deg: [0, 0, 0]
-
-  - name: "cup"
-    mesh: "models/objects/cup.stl"
-    visible: false
-    parent_frame: "WorkpieceArea"
-    pose:
-      xyz_mm: [0, 120, 0]                  # world (700, 120, 500) — đã shift để tránh bottle
-      rpy_deg: [0, 0, 0]
-
-  - name: "bolt"
-    mesh: "models/objects/bolt.stl"
-    visible: false
-    parent_frame: "WorkpieceArea"
-    pose:
-      xyz_mm: [60, 60, 0]                  # world (760, 60, 500)
       rpy_deg: [0, 0, 0]
 
 

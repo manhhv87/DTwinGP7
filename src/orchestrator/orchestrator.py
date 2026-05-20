@@ -34,22 +34,15 @@ _DEFAULT_CONFIG: dict[str, Any] = {
     "robot_name": "Yaskawa GP7",
     "calibration_path": "config/calibration/T_base_camera.npy",
     "place_position": [700.0, 120.0, 700.0],
-    # Khoảng cách lift trên grasp/place pose. 200mm: lift_T Z ≈ 860 (trên top
-    # bottle 150mm) → MoveL xuống thẳng đứng từ cao; arm không quét workspace
-    # khi APPROACH/TRANSFER → tránh đâm bottle vào tay robot.
+    # Lift cao trên grasp/place để robot tiếp cận thẳng đứng (MoveL xuống),
+    # arm không quét ngang workspace.
     "approach_height_mm": 200.0,
-    # Trừ vào Z của grasp pose để fingertip vào GIỮA THÂN object, không kẹp ở
-    # đỉnh (postprocess.deproject trả về tọa độ TOP của object — Z=top). Giá trị
-    # phụ thuộc chiều cao object: bottle ~150mm → offset 50-80mm; cup ~40mm → 20mm.
+    # Offset trừ vào Z grasp pose để fingertip vào giữa thân object thay vì
+    # đỉnh (postprocess.deproject trả về tọa độ TOP). Adaptive theo height.
     "grasp_depth_offset_mm": 50.0,
-    # Mặt trên worktable trong world frame (mm). Fingertip TCP KHÔNG được
-    # xuống thấp hơn (table_top_z_mm + safety_margin) ở bất kỳ object nào.
-    # Cấu hình clamp cứng tránh xuyên bàn cho vật ngắn (tray 25mm, bolt 24mm).
+    # Hard clamp: fingertip TCP không bao giờ thấp hơn (table_top + safety),
+    # tránh xuyên bàn dù offset adaptive sai.
     "table_top_z_mm": 500.0,
-    # Safety margin LỚN (100mm thay vì 15) để bù chênh lệch không giải thích được
-    # giữa math (gripper above TCP) và observation (gripper xuyên bàn). TCP bị
-    # ép cao 100mm trên bàn — kể cả gripper hiển thị xuyên 100mm vẫn không
-    # chạm mặt bàn. User báo gripper xuyên qua bàn + tray với safety=15 trước đó.
     "table_safety_margin_mm": 100.0,
     # Bù lệch yaw giữa PCA major axis trên mask và trục mở gripper. Yaw=0:
     # gripper jaws spread cùng hướng PCA major axis (= longest object dim).
@@ -108,7 +101,7 @@ class Orchestrator:
         self.robodk_tool = robodk_tool
         self._attached_obj: Any = None
         # Lưu pose + parent ban đầu của object để reset đầu mỗi trial — tránh
-        # bottle "dịch chuyển ra xa dần" sau mỗi trial (offset cố định khi attach).
+        # object dịch chuyển ra xa dần (offset cố định khi setParentStatic attach).
         self._initial_obj_poses: dict[str, Any] = {}
         self._initial_obj_parents: dict[str, Any] = {}
 
@@ -531,11 +524,9 @@ class Orchestrator:
             lift_T = grasp_T.copy()
             lift_T[2, 3] += dz
 
-            # Place pose: X,Y từ config; Z = grasp Z để vật quay về bàn ở cùng
-            # độ cao như khi gắp. yaw + yaw_offset GIỐNG grasp_T → gripper giữ
-            # cùng orientation lúc grasp & place → tray KHÔNG xoay khi transfer.
-            # (Trước đây place_T dùng yaw=0 + yaw_offset=0 → xoay 90° trong khi
-            # grasp dùng yaw_offset=90° → tray bị xoay khi thả.)
+            # Place pose: X,Y từ config; Z = grasp Z (cùng tool-object offset
+            # → vật đặt lại ở cùng độ cao bàn). yaw + yaw_offset giống grasp →
+            # gripper giữ orientation, attached object không xoay khi transfer.
             place_xyz = np.array(self.config["place_position"], dtype=float).copy()
             place_xyz[2] = xyz_base[2]
             place_T = make_grasp_pose(place_xyz, yaw, self.config["yaw_offset_deg"])
@@ -643,10 +634,7 @@ class Orchestrator:
                 "Trial %d: gắp-thả '%s' THÀNH CÔNG | stats=%s",
                 trial_id, obj.get("class_name", "?"), self.stats,
             )
-            # Skip return_home ở success path: trial kế bắt đầu từ RETREAT pose
-            # (vẫn trong workspace), tiết kiệm 1-2 API call/trial. Để re-enable,
-            # set config["return_home_after_success"]=True.
-            if self.config.get("return_home_after_success", False):
+            if self.config["return_home_after_success"]:
                 self._return_home()
             return True
 

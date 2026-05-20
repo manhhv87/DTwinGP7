@@ -40,16 +40,13 @@ logger = logging.getLogger(__name__)
 DEFAULT_LIBRARY_PATH = Path("C:/RoboDK/Library")
 
 
-# Màu mặc định cho từng loại item (R, G, B, A) ∈ [0, 1]. Phối màu công nghiệp
-# thực tế: thép sáng (gripper), thép tối (bàn), nhựa đen (khay) — đủ tương phản.
-_DEFAULT_GRIPPER_COLOR = [0.78, 0.80, 0.82, 1.0]    # thép inox sáng (stainless)
+# Màu mặc định cho từng loại item (R, G, B, A) ∈ [0, 1]. Phối màu công nghiệp:
+# thép sáng (gripper), thép tối (bàn), nhựa đen (khay).
+_DEFAULT_GRIPPER_COLOR = [0.78, 0.80, 0.82, 1.0]    # thép inox sáng
 _DEFAULT_OBJECT_COLORS = {
-    "tray":   [0.18, 0.18, 0.20, 1.0],    # nhựa ABS đen (anti-static tray)
-    "bottle": [0.2, 0.45, 0.95, 1.0],     # xanh dương (giữ cho debug nếu cần)
-    "cup":    [0.95, 0.85, 0.15, 1.0],    # vàng
-    "bolt":   [0.85, 0.25, 0.25, 1.0],    # đỏ
+    "tray": [0.18, 0.18, 0.20, 1.0],      # nhựa ABS đen (anti-static)
 }
-_DEFAULT_WORKTABLE_COLOR = [0.52, 0.55, 0.58, 1.0]  # thép công nghiệp xám hơi xanh
+_DEFAULT_WORKTABLE_COLOR = [0.52, 0.55, 0.58, 1.0]  # thép công nghiệp
 
 
 def _apply_color(item, rgb_or_rgba):
@@ -286,14 +283,10 @@ class CellLoader:
             except AttributeError:
                 robot.setPose(target_pose)
 
-        # Set home joints
         robot.setJoints(cfg.home_joints_deg)
 
-        # Lưu ý: KHÔNG set reference frame ở đây. RoboDK mặc định diễn giải
-        # MoveJ(pose) trong parent frame (đang ở pedestal Z=630). Orchestrator
-        # sẽ tự convert pose world → parent frame trước khi gọi MoveJ
-        # (xem Orchestrator._get_robotbase_in_world). Cách này robust hơn dựa
-        # setPoseFrame — đã thử và không có hiệu lực trong phiên bản hiện tại.
+        # Orchestrator tự convert pose world → parent frame trước khi MoveJ
+        # (xem Orchestrator._compute_world_to_robotbase). Không setPoseFrame ở đây.
 
         logger.info("✓ Robot loaded: %s at target world %s", cfg.name, cfg.pose.xyz_mm)
         return robot
