@@ -880,20 +880,14 @@ Cuối thí nghiệm, build failure mode matrix:
 ```mermaid
 %%{init: {'theme':'dark'}}%%
 sequenceDiagram
-    box rgb(94, 64, 55) Human side
-        actor H as Human
-    end
-    box rgb(21, 101, 192) PC software
-        participant S as System
-    end
-    box rgb(230, 81, 0) Hardware
-        participant R as Robot GP7
-    end
+    actor H as Human
+    participant S as PC software
+    participant R as Robot GP7 + YRC1000
 
     H->>H: Dat 1-3 vat ngau nhien tren ban
     H->>+S: Press SPACE start trial
-    S->>S: Capture detection (D455)
-    S->>+R: Execute pick (MoveJ via HSE)
+    S->>S: Capture detection D455
+    S->>+R: Execute pick MoveJ via HSE
     R-->>-S: Done success or fail
     S->>S: Log result + cycle time
     S-->>-H: Trial completed
@@ -929,9 +923,9 @@ sequenceDiagram
 ```mermaid
 %%{init: {'theme':'dark'}}%%
 gantt
-    title Lo trinh trien khai (~7 thang)
+    title Lo trinh trien khai 7 thang
     dateFormat YYYY-MM-DD
-    todayMarker on
+    axisFormat %m/%Y
 
     section Pha 1 Foundation
     Install + verify stack                 :active, p1a, 2026-06-01, 7d
