@@ -37,9 +37,47 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--config", default="config/experiment.yaml")
-    parser.add_argument("--cell-config", default="config/cell_layout.yaml")
+    parser.add_argument(
+        "--cell-config", default=None,
+        help="Cell layout YAML. Mặc định: cell_layout.yaml cho sim, "
+             "cell_layout_real.yaml cho real (auto-pick theo --mode).",
+    )
     parser.add_argument("--trials", type=int, default=50)
     parser.add_argument("--mode", choices=["sim", "real"], default="sim")
+    parser.add_argument(
+        "--backend", choices=["robodk", "hse", "sim"], default=None,
+        help="Robot backend. Default: 'sim' khi --headless, 'robodk' khi mode=sim, "
+             "'hse' khi mode=real. Override để bypass RoboDK driver (HSE → trực tiếp YRC1000).",
+    )
+    parser.add_argument(
+        "--hse-ip", default=None,
+        help="IP YRC1000 cho --backend hse. Default: lấy từ robot_connection.ip "
+             "trong cell config.",
+    )
+    parser.add_argument(
+        "--mirror-hz", type=float, default=2.0,
+        help="Tần số viewport setJoints (Hz). Default 2.0 — an toàn RoboDK Free "
+             "nagware. RoboDK Educational+ có thể tăng lên 10-50Hz.",
+    )
+    parser.add_argument(
+        "--telemetry-hz", type=float, default=10.0,
+        help="Tần số HSE Joints poll + log CSV (Hz). Default 10.0 — đủ resolution "
+             "cho velocity / cycle time analysis. Decouple khỏi mirror-hz: "
+             "viewport throttle xuống mirror-hz tự động.",
+    )
+    parser.add_argument(
+        "--no-viewport-mirror", action="store_true",
+        help="Tắt setJoints lên RoboDK item → 0 RoboDK API call trong mirror "
+             "thread. Telemetry CSV vẫn ghi đầy đủ, visualize offline qua "
+             "05_analyze_telemetry.py. Khuyến nghị khi dùng RoboDK Free.",
+    )
+    parser.add_argument(
+        "--ultra-fast", action="store_true",
+        help="HSE backend ultra-fast mode: upload INFORM template chỉ 1 lần, "
+             "mỗi trial chỉ WRITE_POS_VAR + JOB_START qua HSE (0 FTP overhead). "
+             "~50ms/trial thay vì ~200ms (M3 batch). Yêu cầu trial structure "
+             "không đổi (vd cùng pattern pick-and-place).",
+    )
     parser.add_argument("--lighting", default="", help="Nhãn điều kiện ánh sáng (log)")
     parser.add_argument("--overlap", default="", help="Nhãn mức chồng lấn (log)")
     parser.add_argument(
@@ -243,7 +281,24 @@ def main() -> int:
     log.info("Thí nghiệm pick-and-place — mode=%s, trials=%d", args.mode, args.trials)
     log.info("=" * 60)
 
+    # Auto-pick cell config theo --mode (nếu user không override). Tránh
+    # tình huống --mode real vô tình dùng cell_layout.yaml (robot_connection
+    # disabled → không bao giờ gửi command tới GP7 thật).
+    if args.cell_config is None:
+        args.cell_config = (
+            "config/cell_layout_real.yaml" if args.mode == "real"
+            else "config/cell_layout.yaml"
+        )
+        log.info("Auto-pick cell-config: %s (theo --mode=%s)", args.cell_config, args.mode)
+
     config = load_yaml(PROJECT_ROOT / args.config)
+
+    # Real mode: bật C2 safety layer (giữ collision check + reachability).
+    # Override default sim-friendly config trong _DEFAULT_CONFIG của orchestrator.
+    if args.mode == "real":
+        config["is_real_mode"] = True
+        config["skip_reachability_check"] = False
+        log.info("Real mode: collision check + reachability check BẬT (safety C2)")
 
     # Load cell_config sớm: cần cho build_perception auto-mock detection
     # từ object pose (mọi mode đều dùng — kể cả --no-build).
@@ -253,11 +308,26 @@ def main() -> int:
     # ĐÚNG home đã set trong cell (không phải JointsHome() từ file .robot).
     config["home_joints_deg"] = list(cell_config.robot.home_joints_deg)
 
+    # ─── Resolve backend ───
+    # Logic chọn backend (theo --backend hoặc auto theo mode/headless):
+    #   --headless           → sim   (SimRobot, không RoboDK GUI)
+    #   --backend hse        → hse   (UDP socket → YRC1000, bypass RoboDK driver)
+    #   --mode sim (default) → robodk (RoboDK Item, viewport visualization)
+    #   --mode real          → hse   (RoboDK Free không có driver license)
+    if args.backend is None:
+        if args.headless:
+            args.backend = "sim"
+        elif args.mode == "real":
+            args.backend = "hse"
+        else:
+            args.backend = "robodk"
+    log.info("Backend: %s", args.backend)
+
     # ─── Robot + cell ───
     sim_robot = None
     robodk_objects: dict = {}
     robodk_tool = None
-    if args.headless:
+    if args.backend == "sim":
         # Headless: KHÔNG kết nối RoboDK, dùng SimRobot mock → 0 API call.
         from src.orchestrator.sim_robot import SimRobot
 
@@ -275,10 +345,72 @@ def main() -> int:
         log.info("HEADLESS mode — SimRobot (base=%s, grasp_fail=%.0f%%, miss=%.0f%%).",
                  list(cell_config.robot.pose.xyz_mm),
                  args.grasp_fail_rate * 100, args.detection_miss_rate * 100)
+    elif args.backend == "hse":
+        # HSE backend: full bidirectional digital twin.
+        #   1. Dựng cell RoboDK (visualization) + lấy robot item làm kinematic helper
+        #   2. MotomanHSEBackend → UDP → YRC1000 (motion + I/O thật)
+        #   3. DigitalTwinMirror = façade [HSE backend + RoboDK item + mirror thread]
+        from src.orchestrator.backends.motoman_hse import MotomanHSEBackend
+        from src.orchestrator.digital_twin import DigitalTwinMirror
+        from src.orchestrator.telemetry import TelemetryLogger
+
+        hse_ip = args.hse_ip or cell_config.robot_connection.ip
+        if not hse_ip:
+            log.error("--backend hse cần IP YRC1000 (qua --hse-ip hoặc cell config)")
+            return 2
+
+        # Build cell trong RoboDK để có robot item (kinematic helper + viewport).
+        robodk_robot_item = None
+        if not args.no_build:
+            loader = CellLoader(cell_config, project_root=PROJECT_ROOT,
+                                minimal_build=args.minimal_build)
+            items = loader.build()
+            robodk_objects = items.get("objects", {}) or {}
+            robodk_tool = items.get("tool")
+            robodk_robot_item = items.get("robot")
+            log.info("Cell visualization dựng (HSE motion bypass driver).")
+
+        # HSE backend — connect + heartbeat probe.
+        hse = MotomanHSEBackend(
+            ip=hse_ip,
+            max_speed_pct=cell_config.robot_connection.max_speed_percent,
+        )
+        hse.set_home_joints(list(cell_config.robot.home_joints_deg))
+        hse.connect()
+        if not hse.Valid():
+            log.error("HSE heartbeat fail — kiểm tra ping %s + HSE Server function", hse_ip)
+            hse.disconnect()
+            return 3
+        log.info("HSE backend connected: %s. Joints (sanity): %s", hse_ip, hse.Joints())
+        if args.ultra_fast:
+            hse.enable_ultra_fast(True)
+            log.info("HSE Ultra-fast P-var mode: ON (template upload chỉ 1 lần)")
+
+        # Telemetry logger — ghi joint state mỗi tick cho post-analysis + drift detection.
+        telemetry = TelemetryLogger(
+            PROJECT_ROOT / f"results/telemetry_{timestamp()}.csv"
+        )
+
+        # DigitalTwinMirror façade — orchestrator dùng object này thay HSE trực tiếp.
+        sim_robot = DigitalTwinMirror(
+            hse_backend=hse,
+            robodk_robot_item=robodk_robot_item,
+            telemetry=telemetry,
+            mirror_hz=args.mirror_hz,
+            telemetry_hz=args.telemetry_hz,
+            drift_warn_deg=2.0,
+            viewport_mirror_enabled=not args.no_viewport_mirror,
+        )
+        sim_robot.start_mirror()
+        log.info(
+            "DigitalTwinMirror active — telemetry %.1fHz, viewport %.1fHz%s",
+            args.telemetry_hz, args.mirror_hz,
+            " (ON)" if not args.no_viewport_mirror else " (OFF — RoboDK Free safe)",
+        )
     elif args.no_build:
         log.info("Bỏ qua dựng cell (--no-build) — dùng station RoboDK đã có.")
     else:
-        # Dựng cell trong RoboDK.
+        # Backend robodk: dựng cell trong RoboDK GUI.
         loader = CellLoader(cell_config, project_root=PROJECT_ROOT,
                             minimal_build=args.minimal_build)
         items = loader.build()
@@ -324,8 +456,32 @@ def main() -> int:
         try:
             perception.start()
             stats = orch.run_n_trials(args.trials)
+        except KeyboardInterrupt:
+            # Real mode: Ctrl+C phải dừng GP7 NGAY thay vì chỉ kill Python.
+            # Gọi robot.Stop() trước khi propagate.
+            log.warning("Ctrl+C — dừng robot khẩn cấp")
+            try:
+                if args.mode == "real" and hasattr(orch.robot, "Stop"):
+                    orch.robot.Stop()
+                    log.info("robot.Stop() đã gửi")
+            except Exception as e:  # noqa: BLE001
+                log.error("Lỗi khi Stop robot: %s", e)
+            stats = {"attempted": 0, "successful": 0, "failed": 0, "success_rate": 0.0,
+                     "aborted_by_user": True}
         finally:
             perception.stop()
+
+    # Cleanup digital twin (HSE backend) — stop mirror thread, close telemetry,
+    # đóng UDP socket. Idempotent + an toàn nếu không phải backend hse.
+    if args.backend == "hse":
+        try:
+            from src.orchestrator.digital_twin import DigitalTwinMirror
+            if isinstance(sim_robot, DigitalTwinMirror):
+                sim_robot.stop_mirror()
+                if hasattr(sim_robot.hse, "disconnect"):
+                    sim_robot.hse.disconnect()
+        except Exception as e:                  # noqa: BLE001
+            log.warning("Cleanup digital twin lỗi: %s", e)
 
     summary = trial_logger.summarize()
     log.info("─" * 60)

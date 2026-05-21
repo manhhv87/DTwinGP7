@@ -1,11 +1,39 @@
 # HƯỚNG DẪN CÀI ĐẶT & CẤU HÌNH — pickplace_gp7
 
-Tài liệu này hướng dẫn cài đặt từ đầu để chạy được dự án.
+Tài liệu này tập trung vào **setup phần cứng + phần mềm 1 lần**. Sau khi cài
+xong, dùng [`HUONG_DAN_SU_DUNG.md`](HUONG_DAN_SU_DUNG.md) cho workflow + commands
+hàng ngày.
 
-> **Vị trí code & tài liệu:** Bộ code + tài liệu nằm trong thư mục
-> `pickplace_gp7/`. Tài liệu (bao gồm file này) ở `pickplace_gp7/docs/`.
-> Mọi lệnh dưới đây chạy **bên trong thư mục `pickplace_gp7/`** (root của
-> repo trên GitHub: https://github.com/manhhv87/DTwinGP7).
+> **Phạm vi file này**: Python venv, RoboDK install, RealSense SDK, YRC1000 HSE
+> Server setup, ChArUco board, mesh setup. **KHÔNG bao gồm** workflow chạy thí
+> nghiệm — xem [`HUONG_DAN_SU_DUNG.md`](HUONG_DAN_SU_DUNG.md).
+>
+> **Vị trí code & tài liệu:** Mọi lệnh chạy trong thư mục root repo
+> (`pickplace_gp7/` / `DTwinGP7/`).
+
+## Setup flow tổng quan
+
+```mermaid
+%%{init: {'theme':'dark'}}%%
+flowchart TB
+    S0[Section 0-1<br/>2 may Windows + Linux] --> S1[Section 2.1-2.3<br/>Python 3.10 venv<br/>requirements.txt]
+    S1 --> Q1{Mode<br/>sim only?}
+    Q1 -->|YES| S2A[Section 2.4-2.7<br/>RoboDK Free<br/>STL primitives<br/>GP7 library]
+    Q1 -->|NO real| S2B[Section 2.4-2.8<br/>RoboDK + RealSense SDK<br/>STL + GP7 lib<br/>D455 lap dat]
+    S2B --> S3[Section 2.9<br/>YRC1000 HSE setup<br/>Maintenance mode<br/>HSE Server ON<br/>Network config<br/>CIO ladder gripper<br/>REMOTE mode]
+    S2A --> S4[Section 3-5<br/>Linux train YOLO<br/>Copy pt file ve<br/>config YAML]
+    S3 --> S4
+    S4 --> S5[Section 6<br/>Verify cai dat<br/>pytest tests<br/>274 passed]
+    S5 --> DONE([Sang HUONG_DAN_SU_DUNG.md<br/>de chay thi nghiem])
+
+    style S0 fill:#9E9E9E,stroke:#fff,color:#fff
+    style S1 fill:#2E7D32,stroke:#fff,color:#fff
+    style S2A fill:#1565C0,stroke:#fff,color:#fff
+    style S2B fill:#1565C0,stroke:#fff,color:#fff
+    style S3 fill:#E65100,stroke:#fff,stroke-width:3px,color:#fff
+    style S5 fill:#558B2F,stroke:#fff,color:#fff
+    style DONE fill:#7E57C2,stroke:#fff,color:#fff
+```
 
 ---
 
@@ -96,6 +124,11 @@ pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
 3. File tự tải về `C:/RoboDK/Library/Yaskawa-GP7.robot`.
 4. Đóng RoboDK (không cần lưu).
 
+> **Lưu ý license**: RoboDK Free **KHÔNG hỗ trợ robot drivers** (cấm `robot.Connect()`).
+> Sim mode (`--backend robodk`) chạy được với Free. Real mode có 2 đường:
+> - `--backend robodk` cần **RoboDK Educational ($340)** hoặc Professional
+> - `--backend hse` (khuyến nghị) bypass RoboDK driver hoàn toàn — xem mục 2.9
+
 ### 2.7. Chuẩn bị mesh STL
 
 Đặt các file mesh vào đúng vị trí (vẽ trong Fusion 360 hoặc tạo primitive
@@ -112,6 +145,54 @@ models/objects/bolt.stl
 
 > Object mesh thiếu sẽ bị bỏ qua kèm cảnh báo (không lỗi). Worktable mesh
 > thiếu sẽ gây lỗi `MissingMeshError`.
+
+### 2.9. (Real mode) Cấu hình YRC1000 cho HSE Backend
+
+HSE (High-Speed Ethernet Server) là function **built-in miễn phí** của YRC1000,
+không cần license riêng. Bật 1 lần qua maintenance mode trên teach pendant.
+
+**Bước 1 — Bật HSE Server function trên YRC1000:**
+
+1. Power off controller
+2. Power on trong **Maintenance mode** (giữ phím MAIN MENU khi power on)
+3. Vào `System → Function Setting → Optional Function`
+4. Tìm `HIGH-SPEED ETHERNET SERVER FUNCTION` → set **USED**
+5. Save + reboot bình thường
+
+**Bước 2 — Cấu hình network:**
+
+| Thiết bị | IP | Subnet |
+|---|---|---|
+| YRC1000 | 192.168.1.100 (vd) | 255.255.255.0 |
+| PC | 192.168.1.50 (vd) | 255.255.255.0 |
+
+Cáp Ethernet → port LAN1 của YRC1000. Verify từ PC:
+```powershell
+ping 192.168.1.100      # phải reply trước khi tiếp tục
+```
+
+**Bước 3 — Sửa `config/cell_layout_real.yaml`:**
+
+```yaml
+robot_connection:
+  enabled: true
+  ip: "192.168.1.100"          # ĐỔI theo IP YRC1000 thực tế
+  port: 80
+  driver: "Motoman"
+  max_speed_percent: 30        # safety cap cho testing đầu
+  acceleration_percent: 50
+```
+
+**Bước 4 — (Tùy chọn) CIO ladder cho gripper IO:**
+
+Nếu dùng gripper khí nén qua HSE setDO, cần bind 1 network I/O bit (default 27010)
+với Y-output vật lý điều khiển gripper. Setup 1 lần qua MOTOMAN INFORM Ladder Editor
+trên teach pendant. Document chi tiết trong `models/README.md` (CIO ladder setup).
+
+**Bước 5 — REMOTE mode khi chạy:**
+
+Trên teach pendant: switch sang **REMOTE mode** trước khi script gửi command qua HSE.
+Nếu controller ở TEACH mode → HSE báo alarm 1010 (REMOTE_MODE_REQUIRED).
 
 ### 2.8. Lắp đặt camera D455 (eye-to-hand)
 
@@ -218,7 +299,7 @@ python -m src.cell.cell_models validate config/cell_layout.yaml
 pytest tests/ -q
 ```
 
-Kỳ vọng: bước 1 in `✓ Config hợp lệ: ...`; bước 2 báo `79 passed`.
+Kỳ vọng: bước 1 in `✓ Config hợp lệ: ...`; bước 2 báo `274 passed`.
 Hai bước này đạt → code + dependencies đã cài đúng.
 
 ### 6.2. Kiểm tra dựng cell — cần RoboDK
@@ -235,81 +316,49 @@ sau ~3–5 giây.
 
 ---
 
-## 7. Các lệnh chạy chính
+## 7. Workflow + Lệnh chạy thí nghiệm
+
+→ Xem [`HUONG_DAN_SU_DUNG.md`](HUONG_DAN_SU_DUNG.md) (đầy đủ scenarios, CLI flags,
+phân tích output).
+
+Tóm tắt nhanh sau khi cài xong:
 
 ```powershell
-# Dựng / dựng lại cell (cần RoboDK GUI mở)
-python scripts/build_station.py
-python scripts/build_station.py --config config/cell_layout_real.yaml
-python scripts/build_station.py --minimal                  # cell tối giản, tiết kiệm API call
+# Test cài đặt OK
+pytest tests/ -q                                          # → 274 passed
 
-# Hand-eye calibration → sinh config/calibration/T_base_camera.npy
-# (mặc định method Park — KHÔNG dùng Tsai, xem mục 6.1 tài liệu đề tài)
-python scripts/02_run_calibration.py --method park
-python scripts/calibration_from_layout.py                  # sinh T_BC từ YAML cho headless
+# Sim không cần robot
+python scripts/03_run_experiment.py --mode sim --headless --trials 500
 
-# Thí nghiệm pick-and-place (CẦN có T_base_camera.npy ở bước trên)
-python scripts/03_run_experiment.py --mode sim  --trials 50                     # RoboDK GUI
-python scripts/03_run_experiment.py --mode sim  --trials 50 --minimal-build     # tiết kiệm API
-python scripts/03_run_experiment.py --mode sim  --trials 500 --headless         # 0 API call, SimRobot mock
-python scripts/03_run_experiment.py --mode real --trials 50 --lighting bright   # GP7 thật
-
-# Phân tích kết quả
-python scripts/04_analyze_results.py --csv "results/*.csv"
+# Real qua HSE bypass (sau khi setup YRC1000 ở mục 2.9)
+python scripts/03_run_experiment.py --mode real --backend hse --trials 50
 ```
-
-**3 chế độ chạy thí nghiệm**:
-
-| Chế độ | Cần phần cứng | Phụ thuộc RoboDK | Use case |
-|---|---|---|---|
-| `--mode sim` (default) | RoboDK GUI | ✅ có | Demo trực quan, screenshot, video |
-| `--mode sim --headless` | KHÔNG | ❌ không | Thống kê quy mô lớn (500+ trials), 0 API call, có failure injection (`--grasp-fail-rate`, `--detection-miss-rate`) |
-| `--mode real` | D455 + GP7 + RoboDK | ✅ có | Thí nghiệm trên robot thật (L5) |
-
-**Script tiện ích bổ sung**:
-
-```powershell
-python scripts/gen_primitive_meshes.py     # sinh STL primitive (gripper, worktable, ...)
-python scripts/convert_glb_to_stl.py       # chuyển GLB → STL
-python scripts/diagnose_layout.py          # kiểm tra cell_layout.yaml hợp lý
-python scripts/save_current_as_home.py     # jog robot tay trong RoboDK rồi ghi vào YAML
-```
-
-> **Lưu ý thứ tự:** `03_run_experiment.py` cần file hand-eye
-> `config/calibration/T_base_camera.npy` — kể cả `--mode sim`. Nếu muốn chạy
-> thử sim TRƯỚC khi calibration thật, tạo tạm ma trận đơn vị:
->
-> ```powershell
-> python -c "import numpy as np, os; os.makedirs('config/calibration', exist_ok=True); np.save('config/calibration/T_base_camera.npy', np.eye(4))"
-> ```
->
-> Ma trận đơn vị chỉ để smoke-test pipeline chạy thông — toạ độ không đúng,
-> KHÔNG dùng để gắp thật.
 
 ---
 
-## 8. Troubleshooting
+## 8. Troubleshooting **install-specific**
 
-| Triệu chứng | Nguyên nhân | Cách xử lý |
+> **Lỗi khi CHẠY** (không phải lỗi cài đặt) — xem [`HUONG_DAN_SU_DUNG.md`](HUONG_DAN_SU_DUNG.md) §7.
+
+| Triệu chứng (lúc setup) | Nguyên nhân | Cách xử lý |
 |---|---|---|
-| `RoboDKConnectionError` | Chưa mở RoboDK GUI | Mở RoboDK trước khi chạy script |
-| `MissingRobotError: Yaskawa GP7` | Chưa tải GP7 vào Library | Mục 2.6 |
-| `MissingMeshError: worktable.stl` | Thiếu mesh | Mục 2.7 — đặt file STL đúng path |
-| `FileNotFoundError: ...best.pt` | Chưa copy trọng số về | Mục 5 — đưa trọng số về máy chạy |
-| `FileNotFoundError: ...T_base_camera.npy` | Chưa chạy hand-eye calibration | Chạy `02_run_calibration.py`; hoặc tạo ma trận đơn vị tạm (mục 7); hoặc `scripts/calibration_from_layout.py` (sinh T_BC từ YAML cho headless) |
-| `UnicodeEncodeError` ký tự ✓/─ | Console Windows cp1252 | Đã xử lý sẵn trong code (ép UTF-8) |
 | `pip install` lỗi ở `pyrealsense2` | Wheel không hợp Python/OS | Thêm `#` vào dòng `pyrealsense2` trong `requirements.txt`, cài lại (sim/test vẫn chạy) |
-| Calibration sai số lớn (>5mm) | Dùng nhầm Tsai, hoặc pose thiếu rotation | Dùng `--method park`; thêm pose xoay ±30° |
-| Robot ở sai vị trí trong cell | `pose.xyz_mm` nhầm đơn vị m vs mm | Verify dùng mm (số thường > 100) |
-| `struct.error: unpack requires a buffer of 4 bytes` | RoboDK Free hit **rate-limit** (popup "API calls are limited" chèn vào socket gây desync) | 3 cách: (1) restart RoboDK reset quota; (2) thêm flag `--minimal-build` để giảm API call; (3) chuyển sang `--headless` (0 API call). Thực nghiệm cho thấy pattern thông thường (≤ 5 calls/giây) chạy được 100+ trials không hit limit. |
-| `[WinError 10053] connection aborted` | RoboDK socket đã đóng (sau popup limit) | Same fix như `struct.error` ở trên — restart RoboDK GUI |
+| `MissingRobotError: Yaskawa GP7` | Chưa tải GP7 vào RoboDK Library | Mục 2.6 |
+| `MissingMeshError: worktable.stl` | Thiếu mesh | Mục 2.7 — đặt file STL đúng path hoặc chạy `scripts/gen_primitive_meshes.py` |
+| `FileNotFoundError: ...best.pt` | Chưa copy YOLO trọng số về | Mục 5 — copy file `.pt` từ máy train Linux |
+| `FileNotFoundError: ...T_base_camera.npy` | Chưa chạy hand-eye calibration | Chạy `02_run_calibration.py` (real) hoặc `calibration_from_layout.py` (sim) |
+| `UnicodeEncodeError` ký tự ✓/─ | Console Windows cp1252 | Đã xử lý sẵn trong code (ép UTF-8) |
+| `RoboDKConnectionError` lúc test setup | Chưa mở RoboDK GUI | Mở RoboDK trước khi chạy |
+| Calibration sai số lớn (>5mm) | Dùng nhầm Tsai-Lenz, hoặc pose thiếu rotation | Dùng `--method park`; thêm pose xoay ±30° |
+| `ping 192.168.x.x` fail (HSE setup) | YRC1000 không cùng subnet hoặc cáp lỗi | Check IP cấu hình maintenance mode + cáp Ethernet vào LAN1 |
 
 ---
 
 ## 9. Liên kết
 
-- Tổng quan dự án: `../README.md`
-- Trọng số + mesh: `../models/README.md`
-- Tài liệu đề tài: `phat_bieu_bai_toan_v3_2_HD.md`
-- Chi tiết cell module: `Phu_luc_A_README_HD.md`
+- **Entry point + tổng quan**: [`../README.md`](../README.md)
+- **Workflow + commands hàng ngày**: [`HUONG_DAN_SU_DUNG.md`](HUONG_DAN_SU_DUNG.md)
+- **Trọng số + mesh + CIO ladder**: [`../models/README.md`](../models/README.md)
+- **Tài liệu đề tài + kiến trúc**: [`phat_bieu_bai_toan_v3_2_HD.md`](phat_bieu_bai_toan_v3_2_HD.md)
+- **Chi tiết cell module**: [`Phu_luc_A_README_HD.md`](Phu_luc_A_README_HD.md)
 - Repo GitHub: https://github.com/manhhv87/DTwinGP7

@@ -28,8 +28,17 @@ pickplace_gp7/
 │   └── calibration_from_layout.py   sinh T_base_camera.npy từ camera.pose
 └── tests/
     └── test_cell_loader.py          22 unit + integration tests cho module này
-                                     (tổng cộng 79 test cho toàn bộ repo)
+                                     (tổng cộng 274 test cho toàn bộ repo,
+                                     bao gồm HSE backend, digital twin, kinematics)
 ```
+
+> **Mở rộng từ phiên Option C (HSE bypass driver)**: Cell module này vẫn là entry
+> point dựng RoboDK station, nhưng giờ cell layout cũng dùng cho:
+> - **Kinematic helper** trong `DigitalTwinMirror` (SolveIK + MoveJ_Test client-side)
+> - **Mirror target** cho real robot state (HSE Joints poll → setJoints RoboDK item)
+> - **Pure-Python FK** dùng base pose từ `robot.pose.xyz_mm` (kinematics module)
+>
+> Chi tiết digital twin: `../README.md` mục "Luồng dữ liệu Level-4".
 
 ### Yêu cầu
 
@@ -53,7 +62,7 @@ Python 3.10+ (type hints hiện đại).
 ## A.2. Kiến trúc
 
 ```mermaid
-%%{init: {'theme':'base', 'themeVariables': {'fontSize':'15px','primaryTextColor':'#fff','primaryBorderColor':'#fff','lineColor':'#fff','background':'#1e1e1e','mainBkg':'#1e1e1e'}}}%%
+%%{init: {'theme':'dark'}}%%
 graph TB
     A[config/cell_layout.yaml<br/>━━━━━━<br/>Data: vị trí, kích thước,<br/>file paths] -->|loaded by| B[src/cell/cell_models.py<br/>━━━━━━<br/>Pydantic validation]
     B -->|validated config| C[cell_loader.py<br/>━━━━━━<br/>CellLoader class<br/>builds station]
@@ -226,7 +235,7 @@ vẫn hoạt động đầy đủ vì MockDetector sinh detection độc lập v
 ### A.4.3. Vòng iterate khi đổi cell
 
 ```mermaid
-%%{init: {'theme':'base', 'themeVariables': {'fontSize':'15px','primaryTextColor':'#fff','primaryBorderColor':'#fff','lineColor':'#fff','background':'#1e1e1e','mainBkg':'#1e1e1e'}}}%%
+%%{init: {'theme':'dark'}}%%
 flowchart LR
     A[Sửa YAML config] --> B[python scripts/build_station.py]
     B --> C[Cell rebuild]
@@ -370,4 +379,33 @@ Mỗi config copy từ base, chỉ override field khác biệt.
 
 ---
 
-*Phụ lục A — v1.0. Mã nguồn: `pickplace_gp7/src/cell/`, `scripts/build_station.py`, `tests/test_cell_loader.py`.*
+*Phụ lục A — v1.1. Mã nguồn: `pickplace_gp7/src/cell/`, `scripts/build_station.py`, `tests/test_cell_loader.py`.*
+
+---
+
+## A.9. Tương tác với HSE Backend (Real mode bypass RoboDK driver)
+
+Khi chạy `--mode real --backend hse`, cell module vẫn là entry point dựng RoboDK
+station, nhưng vai trò của RoboDK đổi từ "robot driver" sang **"kinematic helper +
+visualization"**. `robot_connection` trong YAML được dùng để:
+
+| Field | Dùng cho |
+|---|---|
+| `robot_connection.ip` | Default cho `--hse-ip` (HSE UDP target) |
+| `robot_connection.max_speed_percent` | Cap speed cho INFORM job VJ parameter |
+| `robot_connection.driver` | Vẫn ghi "Motoman" nhưng KHÔNG dùng cho `robot.Connect()` |
+| `robot_connection.enabled` | True bật cell_loader gọi `connect_real_robot()` (RoboDK driver path) — KHÔNG cần với HSE backend |
+
+**Khuyến nghị config cho HSE backend**:
+
+```yaml
+robot_connection:
+  enabled: false          # KHÔNG kết nối qua RoboDK driver (HSE bypass)
+  ip: "192.168.1.100"     # Vẫn dùng làm default cho --hse-ip
+  port: 80
+  driver: "Motoman"
+  max_speed_percent: 30   # Cap cho INFORM VJ
+```
+
+Chi tiết HSE protocol + INFORM codegen: `../README.md` mục "Backend pluggable",
+mã nguồn `src/orchestrator/backends/`.

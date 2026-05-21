@@ -84,6 +84,78 @@ class TestSelectObjects:
         assert objs[0]["class_name"] == "cup"  # Z cao hơn → gắp trước
 
 
+class TestObjectMirror:
+    """Real mode: detection update RoboDK item pose để twin khớp camera view."""
+
+    def test_object_pose_mirrored_to_robodk_item(
+        self, calibration_file, mock_robot, monkeypatch
+    ):
+        # Setup orchestrator với robodk_objects (mock item)
+        monkeypatch.setattr(
+            Orchestrator, "_to_robodk_pose", lambda self, T: np.asarray(T)
+        )
+        mock_item = MagicMock(name="trayItem")
+        orch = Orchestrator(
+            queue.Queue(maxsize=3),
+            config={"calibration_path": str(calibration_file),
+                    "inter_trial_delay_s": 0, "gripper_delay_s": 0},
+            robot=mock_robot,
+            robodk_objects={"tray": mock_item},
+        )
+        msg = make_detection_msg([
+            make_object("tray", xyz=(500, 200, 600), yaw=0.5),
+        ])
+        orch._select_objects(msg)
+        # setPose được gọi với pose 4x4 chứa xyz và yaw
+        mock_item.setPose.assert_called_once()
+        pose_arg = mock_item.setPose.call_args[0][0]
+        np.testing.assert_array_almost_equal(pose_arg[:3, 3], [500, 200, 600])
+        # Top-left 2x2 phản ánh rotation Z theo yaw
+        assert abs(pose_arg[0, 0] - np.cos(0.5)) < 1e-6
+        assert abs(pose_arg[1, 0] - np.sin(0.5)) < 1e-6
+
+    def test_no_robodk_objects_skips_mirror(self, orchestrator):
+        """Không có robodk_objects → _select_objects vẫn chạy."""
+        msg = make_detection_msg([make_object("tray", xyz=(100, 0, 50))])
+        objs = orchestrator._select_objects(msg)
+        assert len(objs) == 1                       # no crash
+
+    def test_unknown_class_name_no_setpose(
+        self, calibration_file, mock_robot, monkeypatch
+    ):
+        monkeypatch.setattr(
+            Orchestrator, "_to_robodk_pose", lambda self, T: np.asarray(T)
+        )
+        mock_item = MagicMock()
+        orch = Orchestrator(
+            queue.Queue(maxsize=3),
+            config={"calibration_path": str(calibration_file)},
+            robot=mock_robot,
+            robodk_objects={"tray": mock_item},
+        )
+        # Detection của 'cup' không có trong robodk_objects
+        msg = make_detection_msg([make_object("cup", xyz=(100, 0, 50))])
+        orch._select_objects(msg)
+        mock_item.setPose.assert_not_called()       # tray item KHÔNG bị đổi pose
+
+    def test_attached_object_not_updated(self, calibration_file, mock_robot, monkeypatch):
+        """Khi object đang được attach vào gripper → không update pose."""
+        monkeypatch.setattr(
+            Orchestrator, "_to_robodk_pose", lambda self, T: np.asarray(T)
+        )
+        mock_item = MagicMock()
+        orch = Orchestrator(
+            queue.Queue(maxsize=3),
+            config={"calibration_path": str(calibration_file)},
+            robot=mock_robot,
+            robodk_objects={"tray": mock_item},
+        )
+        orch._attached_obj = mock_item                   # đã gắp
+        msg = make_detection_msg([make_object("tray", xyz=(100, 0, 50))])
+        orch._select_objects(msg)
+        mock_item.setPose.assert_not_called()
+
+
 class TestRunOneCycle:
     def test_successful_pick(self, orchestrator):
         orchestrator.queue.put(make_detection_msg([make_object()]))

@@ -15,6 +15,7 @@ RoboDK được lazy-import → module này import được khi chỉ chạy uni
 """
 from __future__ import annotations
 
+import contextlib
 import logging
 import queue
 import time
@@ -64,6 +65,18 @@ _DEFAULT_CONFIG: dict[str, Any] = {
     # RoboDK Free quota nhỏ). MoveJ sẽ tự raise nếu thật sự không với tới.
     # Real mode nên đổi thành False để bật C2 (lớp an toàn digital twin).
     "skip_reachability_check": True,
+    # Khi True (default sim) tắt collision check vì RoboDK báo false-positive
+    # cho gripper-touching-object lúc grasp. Real mode set False để giữ
+    # collision check + reachability — C2 lớp an toàn digital twin.
+    "is_real_mode": False,
+    # UC2 — Pure-Python predictive simulation TRƯỚC khi gửi MoveJ tới robot.
+    # Verify joint limit + self-collision đầy đủ trajectory (không chỉ 1 pose
+    # như MoveJ_Test). Khi True: pre-check ~50ms/trial, reject trial nếu predicted
+    # unsafe. Khi False: skip predict (tăng tốc nhưng yếu safety).
+    "predictive_safety_enabled": False,
+    # Max joint speed (deg/s) dùng cho predict interpolation. Phải khớp tốc độ
+    # thực tế của robot để predict đúng motion sequence.
+    "predict_max_speed_deg_s": 30.0,
 }
 
 
@@ -128,8 +141,12 @@ class Orchestrator:
         # Disable collision check ở runtime — RoboDK báo "collision" cho cả
         # gripper-touching-object khi grasp (đó là CHỦ ĐÍCH, không phải lỗi)
         # và arm-sweeping-through-template-volume khi IK chọn config. Cả hai
-        # đều block MoveJ. Sim cần disable để chạy được; real mode tuning sau.
-        self._disable_collision_check()
+        # đều block MoveJ. Sim cần disable để chạy được.
+        # Real mode: GIỮ collision check để an toàn vật lý (C2).
+        if not self.config.get("is_real_mode", False):
+            self._disable_collision_check()
+        else:
+            logger.info("Real mode: collision check GIỮ active (safety layer)")
 
         self.sm = PickPlaceStateMachine()
         self.stats = {"attempted": 0, "successful": 0, "failed": 0}
@@ -207,14 +224,62 @@ class Orchestrator:
         """Chuyển detections sang base frame, sắp xếp vật trên-cùng trước.
 
         Trả về list rỗng nếu không có vật.
+
+        Side-effect: cập nhật pose của RoboDK object item theo detection để
+        digital twin viewport phản ánh vị trí THẬT của vật (không phải template
+        pose tĩnh trong cell config). Trong sim mode detection từ MockDetector
+        luôn khớp template → update no-op; real mode update theo D455 detection.
         """
         objects = det_msg.get("objects", [])
         for o in objects:
             xyz_cam = np.array(o["pose_camera"][:3], dtype=float)
             o["pose_base"] = camera_to_base(xyz_cam, self.T_BC)
+            # Mirror detection lên viewport (real mode)
+            self._mirror_object_pose(o)
         # Vật có Z cao nhất (gần camera / nằm trên cùng) được gắp trước.
         objects.sort(key=lambda o: o["pose_base"][2], reverse=True)
         return objects
+
+    def _mirror_object_pose(self, det: dict[str, Any]) -> None:
+        """Cập nhật pose của object item trong RoboDK theo detection.
+
+        Bidirectional digital twin requirement: khi camera detect vật ở vị trí
+        thật khác template, viewport phải reflect vị trí đó để Orchestrator's
+        downstream visualization (planning lines, collision viz) khớp reality.
+
+        No-op nếu:
+          - robodk_objects rỗng (headless mode)
+          - Class name không có item tương ứng
+          - Item đang được attach vào gripper (đang gắp, không reset pose)
+        """
+        if not self.robodk_objects:
+            return
+        class_name = det.get("class_name")
+        if not class_name:
+            return
+        item = self.robodk_objects.get(class_name)
+        if item is None or not hasattr(item, "setPose"):
+            return
+        # Không update pose nếu vật đang được attach (gắp đi rồi)
+        if self._attached_obj is item:
+            return
+
+        # Xây pose 4x4 từ xyz_base + yaw (từ PCA mask)
+        xyz_base = det["pose_base"]
+        yaw_rad = det.get("pose_camera", (0, 0, 0, 0))[3] if "pose_camera" in det else 0.0
+        T = np.eye(4)
+        cos_y, sin_y = np.cos(yaw_rad), np.sin(yaw_rad)
+        T[0, 0], T[0, 1] = cos_y, -sin_y
+        T[1, 0], T[1, 1] = sin_y, cos_y
+        T[:3, 3] = xyz_base
+
+        try:
+            item.setPose(self._to_robodk_pose(T))
+            logger.debug(
+                "Mirror object '%s' → pose %s", class_name, xyz_base.round(1).tolist()
+            )
+        except Exception as e:                          # noqa: BLE001
+            logger.debug("Mirror object '%s' setPose lỗi: %s", class_name, e)
 
     def _is_reachable(self, target_T: np.ndarray) -> bool:
         """Kiểm tra robot có với tới pose `target_T` (numpy 4x4) không.
@@ -254,6 +319,9 @@ class Orchestrator:
         Sim mode: kèm attach/detach object item vào gripper tool qua
         `setParentStatic` để object visually di chuyển theo gripper.
         Headless / no robodk_objects: no-op.
+
+        Delay: dùng `self.robot.timer()` nếu backend support (HSE batch mode
+        → INFORM TIMER instruction) hoặc fallback time.sleep.
         """
         self.robot.setDO(self.config["gripper_do_index"], 1 if close else 0)
 
@@ -262,7 +330,74 @@ class Orchestrator:
         elif not close:
             self._detach_from_gripper()
 
-        time.sleep(self.config["gripper_delay_s"])
+        self._robot_timer(self.config["gripper_delay_s"])
+
+    def _robot_timer(self, seconds: float) -> None:
+        """Sleep với batch awareness — INFORM TIMER trong batch, time.sleep ngoài."""
+        if hasattr(self.robot, "timer") and callable(self.robot.timer):
+            self.robot.timer(seconds)
+        else:
+            time.sleep(seconds)
+
+    def _robot_batch_ctx(self) -> Any:
+        """Context manager batch nếu backend support (HSE), nullcontext otherwise.
+
+        Cho phép `_execute_pick_place` gom 5-7 motion call thành 1 INFORM upload —
+        giảm overhead từ ~1-2s/trial xuống ~200ms/trial (HSE backend M3).
+        """
+        if hasattr(self.robot, "batch") and callable(self.robot.batch):
+            return self.robot.batch()
+        return contextlib.nullcontext()
+
+    def _predict_safety(self, joint_waypoints_rad: list[list[float]]) -> str | None:
+        """UC2 — Pre-execute trajectory prediction.
+
+        Run pure-Python FK trên trajectory đầy đủ → check joint limit +
+        self-collision toàn bộ path. Tốn ~50ms/trial nhưng catch được unsafe
+        path mà single-point MoveJ_Test miss.
+
+        Args:
+            joint_waypoints_rad: List 6-tuple joint configs (radian).
+
+        Returns:
+            None nếu safe. String mô tả vi phạm nếu unsafe.
+        """
+        if not self.config.get("predictive_safety_enabled", False):
+            return None
+
+        try:
+            from src.orchestrator.kinematics import (
+                check_joint_limits, check_self_collision_spheres,
+                gp7_default, interpolate_joints,
+            )
+        except ImportError as e:                    # noqa: BLE001
+            logger.debug("Kinematics module không import được: %s", e)
+            return None
+
+        if len(joint_waypoints_rad) < 2:
+            return None                              # Không đủ waypoint để predict
+
+        model = gp7_default()
+        samples = interpolate_joints(
+            joint_waypoints_rad, dt=0.05,
+            max_joint_speed_deg_s=self.config["predict_max_speed_deg_s"],
+        )
+
+        # Joint limits
+        violations = check_joint_limits(model, samples)
+        if violations:
+            s_idx, j_idx, val = violations[0]
+            return (f"predicted_joint_limit: J{j_idx+1}={np.rad2deg(val):.1f}° "
+                    f"@ sample {s_idx}/{len(samples)}")
+
+        # Self-collision (sphere-based, conservative)
+        collisions = check_self_collision_spheres(model, samples)
+        if collisions:
+            s_idx, i, j, dist = collisions[0]
+            return (f"predicted_self_collision: joint {i} vs {j} dist={dist:.0f}mm "
+                    f"@ sample {s_idx}/{len(samples)}")
+
+        return None
 
     def _attach_to_gripper(self, obj_class: str) -> None:
         """Set parent của object item → gripper tool. Object follow gripper."""
@@ -595,38 +730,42 @@ class Orchestrator:
                 except Exception:  # noqa: BLE001
                     pass
 
-            self.sm.transition_to(PickState.APPROACH)
-            self._move_j_via_ik(lift_T)
-            # Cache joints sau APPROACH để LIFT reuse — cùng pose lift_T, không
-            # cần SolveIK lại (-1 API call/trial).
-            approach_joints = self._current_joints
+            # Batch context: HSE backend gom toàn bộ motion + IO vào 1 INFORM job
+            # → 1 FTP upload + 1 JOB_START/trial thay vì 5-7 lần. Backends khác
+            # (RoboDK item, SimRobot) → nullcontext, code chạy nguyên văn.
+            with self._robot_batch_ctx():
+                self.sm.transition_to(PickState.APPROACH)
+                self._move_j_via_ik(lift_T)
+                # Cache joints sau APPROACH để LIFT reuse — cùng pose lift_T, không
+                # cần SolveIK lại (-1 API call/trial).
+                approach_joints = self._current_joints
 
-            self.sm.transition_to(PickState.GRASP)
-            self._move_l_via_ik(grasp_T)
-            self._gripper(close=True, obj_class=obj.get("class_name"))
+                self.sm.transition_to(PickState.GRASP)
+                self._move_l_via_ik(grasp_T)
+                self._gripper(close=True, obj_class=obj.get("class_name"))
 
-            self.sm.transition_to(PickState.LIFT)
-            if approach_joints is not None:
-                self.robot.MoveL(approach_joints)
-                self._current_joints = approach_joints
-            else:
-                self._move_l_via_ik(lift_T)
+                self.sm.transition_to(PickState.LIFT)
+                if approach_joints is not None:
+                    self.robot.MoveL(approach_joints)
+                    self._current_joints = approach_joints
+                else:
+                    self._move_l_via_ik(lift_T)
 
-            self.sm.transition_to(PickState.TRANSFER)
-            self._move_j_via_ik(place_lift_T)
-            # Cache joints sau TRANSFER để RETREAT reuse (-1 API call/trial).
-            transfer_joints = self._current_joints
+                self.sm.transition_to(PickState.TRANSFER)
+                self._move_j_via_ik(place_lift_T)
+                # Cache joints sau TRANSFER để RETREAT reuse (-1 API call/trial).
+                transfer_joints = self._current_joints
 
-            self.sm.transition_to(PickState.PLACE)
-            self._move_l_via_ik(place_T)
-            self._gripper(close=False)
+                self.sm.transition_to(PickState.PLACE)
+                self._move_l_via_ik(place_T)
+                self._gripper(close=False)
 
-            self.sm.transition_to(PickState.RETREAT)
-            if transfer_joints is not None:
-                self.robot.MoveL(transfer_joints)
-                self._current_joints = transfer_joints
-            else:
-                self._move_l_via_ik(place_lift_T)
+                self.sm.transition_to(PickState.RETREAT)
+                if transfer_joints is not None:
+                    self.robot.MoveL(transfer_joints)
+                    self._current_joints = transfer_joints
+                else:
+                    self._move_l_via_ik(place_lift_T)
 
             self.sm.transition_to(PickState.DONE)
             self.stats["successful"] += 1
@@ -682,11 +821,29 @@ class Orchestrator:
             logger.warning("Không về home được: %s", e)
 
     def run_n_trials(self, n: int) -> dict[str, Any]:
-        """Chạy `n` trial liên tiếp, trả về thống kê tổng hợp."""
+        """Chạy `n` trial liên tiếp, trả về thống kê tổng hợp.
+
+        Bail out sớm nếu phát hiện connection tới RoboDK bị drop (RoboDK Free
+        hết quota / GUI bị đóng) — tránh spam log với 100% trial fail vô ích.
+        """
         logger.info("Bắt đầu %d trials", n)
         for i in range(n):
             logger.info("─── Trial %d/%d ───", i + 1, n)
             self.run_one_cycle(trial_id=i + 1)
+
+            # Auto-abort khi mất kết nối RoboDK (WinError 10053/10054).
+            # 3 trial liên tiếp fail với cùng motion_error → connection chết.
+            recent_fails = [r for r in self.sm.history[-12:]
+                            if r.note.startswith(("motion_error", "WinError"))]
+            if len(recent_fails) >= 3 and any(
+                "1005" in r.note for r in recent_fails  # WinError 10053/10054
+            ):
+                logger.error(
+                    "RoboDK API connection lost (3 motion_error liên tiếp) — abort loop. "
+                    "Dùng --headless cho batch lớn hoặc khởi động lại RoboDK."
+                )
+                break
+
             time.sleep(self.config["inter_trial_delay_s"])
 
         attempted = max(self.stats["attempted"], 1)

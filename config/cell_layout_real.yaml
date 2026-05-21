@@ -1,112 +1,182 @@
 # =============================================================================
 # Cell Layout Configuration cho REAL ROBOT mode
 # =============================================================================
-# Config này dùng khi đã sẵn sàng kết nối GP7 thật qua RoboDK Motoman driver.
-# Khác với cell_layout.yaml chỉ ở phần robot_connection và một vài tinh chỉnh.
+# File này MIRROR cell_layout.yaml để digital twin trong RoboDK trông GIỐNG sim,
+# chỉ khác:
+#   - camera.type: "real" (D455 thật, không phải Cam2D virtual của RoboDK)
+#   - robot_connection.enabled: true (gửi command tới YRC1000)
+#   - max_speed_percent / acceleration_percent: safety limits cho real
 #
-# Trước khi dùng, đảm bảo:
+# Trước khi dùng:
 #   1. YRC1000 controller bật, kết nối Ethernet
 #   2. PC và controller cùng subnet (vd 192.168.1.x)
 #   3. Đã ping được IP của YRC1000
 #   4. High Speed Ethernet Server function đã enable trên YRC1000
+#   5. RoboDK Educational/Professional license (Free KHÔNG hỗ trợ robot drivers)
+#
+# Khi cell vật lý KHÁC sim (vd không có pedestal, bàn ở vị trí khác), copy file
+# này thành biến thể riêng + đo lại các pose cho đúng cell thật.
 # =============================================================================
 
 metadata:
   version: "1.0.0-real"
-  last_modified: "2025-01-15"
-  notes: "Config cho REAL GP7 + YRC1000. Sử dụng từ Pha 7."
+  last_modified: "2026-05-20"
+  author: "Master Thesis - GP7 Pick Place"
+  notes: |
+    Config cho REAL GP7 + YRC1000 (Pha 7).
+    Mirror sim layout — robot trên pedestal, bàn X=700, camera 700mm trên bàn.
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# ROBOT
+# ─────────────────────────────────────────────────────────────────────────────
 robot:
   name: "Yaskawa GP7"
   source: "library"
   library_name: "Yaskawa-GP7.robot"
+
+  # J1 ở Z=630 = đỉnh pedestal (300mm) + built-in stand (~330mm). Cell vật lý
+  # phải đặt robot lên pedestal cao 300mm để khớp config này. Nếu robot bắt
+  # thẳng xuống sàn → xoá robot_pedestal + đổi pose.xyz_mm thành [0, 0, 0].
   pose:
-    xyz_mm: [0, 0, 0]                     # robot trên sàn, dùng built-in floor stand
+    xyz_mm: [0, 0, 630]
     rpy_deg: [0, 0, 0]
-  home_joints_deg: [1.97, 2.26, -4.99, -181.93, 41.7, -90.35]   # capture từ RoboDK GUI (save_current_as_home.py)
+
+  home_joints_deg: [1.97, 2.26, -4.99, -181.93, 41.7, -90.35]
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# FLOOR
+# ─────────────────────────────────────────────────────────────────────────────
 floor:
-  mesh: "models/floor.stl"                # sàn 3000×3000 mm, mặt trên Z=0
+  mesh: "models/floor.stl"
   pose:
     xyz_mm: [300, 0, 0]
     rpy_deg: [0, 0, 0]
   color_rgb: [0.82, 0.82, 0.86]
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# WORKTABLE
+# ─────────────────────────────────────────────────────────────────────────────
 worktable:
-  mesh: "models/worktable.stl"            # bàn primitive 600×400×500 mm (robot trên sàn)
+  mesh: "models/worktable.stl"
   pose:
-    xyz_mm: [480, 0, 0]                   # ĐO LẠI vị trí bàn thật so với gốc robot
-    rpy_deg: [0, 0, 90]                   # XOAY 90° quanh Z (đồng bộ sim mode)
-  color_rgb: [0.6, 0.6, 0.7]
+    xyz_mm: [700, 0, 0]
+    rpy_deg: [0, 0, 90]
+  color_rgb: [0.52, 0.55, 0.58]
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# ROBOT PEDESTAL (nâng robot lên 300mm)
+# ─────────────────────────────────────────────────────────────────────────────
+robot_pedestal:
+  mesh: "models/pedestal.stl"
+  pose:
+    xyz_mm: [0, 0, 0]
+    rpy_deg: [0, 0, 0]
+  color_rgb: [0.4, 0.4, 0.4]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# CAMERA MOUNT
+# ─────────────────────────────────────────────────────────────────────────────
 camera_mount:
   mesh: "models/camera_mount.stl"
   pose:
-    xyz_mm: [480, 0, 500]
+    xyz_mm: [700, 0, 500]
     rpy_deg: [0, 0, 0]
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# CAMERA (D455 thật)
+# ─────────────────────────────────────────────────────────────────────────────
 camera:
-  type: "real"                            # đánh dấu camera thật (vẫn add ảo trong RoboDK)
+  type: "real"                            # D455 thật (KHÔNG phải Cam2D virtual)
   model: "Intel RealSense D455"
   pose:
-    xyz_mm: [480, 0, 1350]                # 850 mm trên mặt bàn — ĐO LẠI khi lắp D455 thật
-    rpy_deg: [180, 0, 0]
+    xyz_mm: [700, 0, 1200]                # 700mm trên mặt bàn (sweet spot D455)
+    rpy_deg: [180, 0, 0]                  # nhìn xuống
   intrinsics:
     fov_deg: 87
     focal_length_mm: 1.93
     size_px: [1280, 720]
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# GRIPPER
+# ─────────────────────────────────────────────────────────────────────────────
 gripper:
   name: "TwoFingerGripper"
   mesh: "models/gripper.stl"
-  tcp_offset_xyz_mm: [0, 0, 100]  # pneumatic parallel-jaw WIDE (200mm opening) cho Galaxy S23 tray, palm 60 + finger 40
+  tcp_offset_xyz_mm: [0, 0, 100]          # PLACEHOLDER — đo lại sau khi lắp gripper thật
   tcp_offset_rpy_deg: [0, 0, 0]
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# REFERENCE FRAMES
+# ─────────────────────────────────────────────────────────────────────────────
 frames:
   - name: "WorkpieceArea"
     pose:
-      xyz_mm: [480, 0, 500]
+      xyz_mm: [700, 0, 500]
       rpy_deg: [0, 0, 0]
+
   - name: "PlaceZone"
     pose:
-      xyz_mm: [480, 120, 500]
+      xyz_mm: [700, 120, 500]
+      rpy_deg: [0, 0, 0]
+
+  - name: "CalibrationTarget"
+    pose:
+      xyz_mm: [700, 0, 510]
       rpy_deg: [0, 0, 0]
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# OBJECT TEMPLATES
+# ─────────────────────────────────────────────────────────────────────────────
 objects:
   - name: "tray"
     mesh: "models/objects/tray.stl"
     visible: false
     parent_frame: "WorkpieceArea"
+    pose:
+      xyz_mm: [0, -120, 0]
+      rpy_deg: [0, 0, 0]
+
   - name: "bottle"
     mesh: "models/objects/bottle.stl"
     visible: false
     parent_frame: "WorkpieceArea"
+    pose:
+      xyz_mm: [0, 0, 0]
+      rpy_deg: [0, 0, 0]
+
   - name: "cup"
     mesh: "models/objects/cup.stl"
     visible: false
     parent_frame: "WorkpieceArea"
+    pose:
+      xyz_mm: [0, 120, 0]
+      rpy_deg: [0, 0, 0]
+
   - name: "bolt"
     mesh: "models/objects/bolt.stl"
     visible: false
     parent_frame: "WorkpieceArea"
+    pose:
+      xyz_mm: [60, 60, 0]
+      rpy_deg: [0, 0, 0]
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Real robot connection
+# REAL ROBOT CONNECTION
 # ─────────────────────────────────────────────────────────────────────────────
 robot_connection:
-  enabled: true                           # ENABLE for real robot
+  enabled: true                           # BẬT — gửi command tới GP7 thật
   ip: "192.168.1.100"                     # ĐỔI theo IP YRC1000 thực tế
   port: 80
   driver: "Motoman"
-  # Safety limits
-  max_speed_percent: 30                   # giới hạn tốc độ thí nghiệm
-  acceleration_percent: 50
+  max_speed_percent: 30                   # safety: hạ tốc độ thí nghiệm xuống 30%
+  acceleration_percent: 50                # safety: gia tốc 50%
