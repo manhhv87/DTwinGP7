@@ -1,0 +1,510 @@
+"""
+test_motoman_hse.py
+───────────────────
+Verify MotomanHSEBackend round-trip request/response qua mock UDP socket.
+
+KHÔNG cần YRC1000 — mock socket trả response giả lập.
+"""
+from __future__ import annotations
+
+import socket
+import struct
+from unittest.mock import MagicMock
+
+import pytest
+
+from src.orchestrator.backends.hse_protocol import (
+    ACK_RESPONSE,
+    GP7_PULSE_PER_DEG,
+    HSE_HEADER_SIZE,
+    HSE_IDENTIFIER,
+    HSE_RESERVE1,
+    HSE_RESERVE2,
+    Command,
+    HSEResponseError,
+)
+from src.orchestrator.backends.motoman_hse import (
+    HSE_PORT_ROBOT,
+    NETWORK_IO_BASE,
+    MotomanHSEBackend,
+)
+
+
+def _build_response(
+    status: int = 0,
+    payload: bytes = b"",
+    request_id: int = 0,
+) -> bytes:
+    """Build a synthetic HSE response packet."""
+    header = struct.pack(
+        "<4s H H B B B B I 8s B B B B H H",
+        HSE_IDENTIFIER, HSE_HEADER_SIZE, len(payload),
+        HSE_RESERVE1, 0x01, ACK_RESPONSE, request_id, 0,
+        HSE_RESERVE2,
+        0x01, status, 0, 0, 0, 0,
+    )
+    return header + payload
+
+
+def _build_position_response(joints_deg: list[float]) -> bytes:
+    """Build response for READ_POSITION with given joints in degrees."""
+    pulses = [int(d * r) for d, r in zip(joints_deg, GP7_PULSE_PER_DEG)]
+    payload = struct.pack(
+        "<5I 8i",
+        0x10, 0, 0, 0, 0,          # data_type=pulse + form + tool + frame + ext
+        *pulses, 0, 0,             # 6 joints + 2 unused axis
+    )
+    return _build_response(payload=payload, request_id=1)
+
+
+@pytest.fixture
+def backend_with_mock_socket(monkeypatch):
+    """MotomanHSEBackend with socket.sendto/recvfrom monkey-patched."""
+    backend = MotomanHSEBackend(ip="192.168.1.100", port=HSE_PORT_ROBOT, timeout_s=0.5)
+
+    # Inject mock socket vào backend
+    mock_sock = MagicMock(spec=socket.socket)
+    backend._sock = mock_sock                   # bypass connect()
+    return backend, mock_sock
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# Lifecycle
+# ─────────────────────────────────────────────────────────────────────────
+
+
+class TestLifecycle:
+    def test_connect_opens_udp_socket(self, monkeypatch):
+        created_sockets = []
+
+        def fake_socket(family, type_):
+            assert family == socket.AF_INET
+            assert type_ == socket.SOCK_DGRAM
+            mock = MagicMock()                  # plain mock — spec strict ẩn settimeout
+            created_sockets.append(mock)
+            return mock
+
+        monkeypatch.setattr(socket, "socket", fake_socket)
+        backend = MotomanHSEBackend(ip="192.168.1.100")
+        backend.connect()
+        assert len(created_sockets) == 1
+        created_sockets[0].settimeout.assert_called_once_with(backend.timeout_s)
+
+    def test_connect_idempotent(self, monkeypatch):
+        backend = MotomanHSEBackend(ip="192.168.1.100")
+        backend._sock = MagicMock()             # đã connect
+        backend.connect()                        # gọi lần 2 — no error
+        # Không sinh socket mới
+
+    def test_disconnect_closes_socket(self, backend_with_mock_socket):
+        backend, mock_sock = backend_with_mock_socket
+        backend.disconnect()
+        mock_sock.close.assert_called_once()
+        assert backend._sock is None
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# Joints() — read joint position
+# ─────────────────────────────────────────────────────────────────────────
+
+
+class TestJoints:
+    def test_joints_returns_degrees(self, backend_with_mock_socket):
+        backend, mock_sock = backend_with_mock_socket
+        joints_truth = [10.0, -5.0, 20.0, 0.0, 30.0, -15.0]
+        mock_sock.recvfrom.return_value = (
+            _build_position_response(joints_truth), ("192.168.1.100", HSE_PORT_ROBOT),
+        )
+        result = backend.Joints()
+        assert len(result) == 6
+        for actual, expected in zip(result, joints_truth):
+            assert abs(actual - expected) < 0.1     # < 0.1° conversion error
+
+    def test_joints_sends_read_position_command(self, backend_with_mock_socket):
+        backend, mock_sock = backend_with_mock_socket
+        mock_sock.recvfrom.return_value = (
+            _build_position_response([0.0] * 6), ("192.168.1.100", HSE_PORT_ROBOT),
+        )
+        backend.Joints()
+        # sendto call gửi packet — kiểm tra command byte
+        packet, addr = mock_sock.sendto.call_args[0]
+        assert addr == ("192.168.1.100", HSE_PORT_ROBOT)
+        cmd_field = struct.unpack("<H", packet[24:26])[0]
+        assert cmd_field == Command.READ_POSITION == 0x75
+
+    def test_joints_raises_on_controller_error(self, backend_with_mock_socket):
+        backend, mock_sock = backend_with_mock_socket
+        mock_sock.recvfrom.return_value = (
+            _build_response(status=0x1F),       # robot not ready
+            ("192.168.1.100", HSE_PORT_ROBOT),
+        )
+        with pytest.raises(HSEResponseError) as exc:
+            backend.Joints()
+        assert exc.value.status == 0x1F
+
+    def test_joints_raises_on_timeout(self, backend_with_mock_socket):
+        backend, mock_sock = backend_with_mock_socket
+        mock_sock.recvfrom.side_effect = socket.timeout()
+        with pytest.raises(TimeoutError, match="timeout"):
+            backend.Joints()
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# setDO — gripper control via network I/O
+# ─────────────────────────────────────────────────────────────────────────
+
+
+class TestSetDO:
+    def test_setdo_close_sends_write_io_command(self, backend_with_mock_socket):
+        backend, mock_sock = backend_with_mock_socket
+        mock_sock.recvfrom.return_value = (_build_response(), ("192.168.1.100", 10040))
+
+        backend.setDO(1, 1)                      # gripper index 1, close
+
+        packet, _ = mock_sock.sendto.call_args[0]
+        cmd_field = struct.unpack("<H", packet[24:26])[0]
+        instance_field = struct.unpack("<H", packet[26:28])[0]
+        service_byte = packet[29]
+        payload = packet[HSE_HEADER_SIZE:]
+
+        assert cmd_field == Command.WRITE_IO == 0x78
+        assert instance_field == NETWORK_IO_BASE      # index=1 → bit 27010
+        assert service_byte == 0x10                   # SET_ATTRIBUTE_SINGLE
+        assert struct.unpack("<I", payload)[0] == 1   # value = 1
+
+    def test_setdo_open_writes_zero(self, backend_with_mock_socket):
+        backend, mock_sock = backend_with_mock_socket
+        mock_sock.recvfrom.return_value = (_build_response(), ("192.168.1.100", 10040))
+        backend.setDO(1, 0)
+        packet, _ = mock_sock.sendto.call_args[0]
+        payload = packet[HSE_HEADER_SIZE:]
+        assert struct.unpack("<I", payload)[0] == 0
+
+    def test_setdo_index_offsets_bit_address(self, backend_with_mock_socket):
+        backend, mock_sock = backend_with_mock_socket
+        mock_sock.recvfrom.return_value = (_build_response(), ("192.168.1.100", 10040))
+        backend.setDO(3, 1)
+        packet, _ = mock_sock.sendto.call_args[0]
+        instance_field = struct.unpack("<H", packet[26:28])[0]
+        # index=3 → bit 27010 + 2 = 27012
+        assert instance_field == NETWORK_IO_BASE + 2
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# Stub motion + IK
+# ─────────────────────────────────────────────────────────────────────────
+
+
+class TestStubsAndPoseRejection:
+    def test_solveik_raises_not_implemented(self, backend_with_mock_socket):
+        backend, _ = backend_with_mock_socket
+        with pytest.raises(NotImplementedError):
+            backend.SolveIK(None)
+
+    def test_movej_test_returns_zero_ok(self, backend_with_mock_socket):
+        backend, _ = backend_with_mock_socket
+        assert backend.MoveJ_Test([0] * 6, None) == 0
+
+    def test_movej_rejects_4x4_pose_until_ik_implemented(self, backend_with_mock_socket):
+        import numpy as np
+        backend, _ = backend_with_mock_socket
+        with pytest.raises(NotImplementedError, match="IK solver"):
+            backend.MoveJ(np.eye(4))
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# MoveJ wire-up: INFORM gen + FTP upload + JOB_SELECT + START + wait_idle
+# ─────────────────────────────────────────────────────────────────────────
+
+
+class TestMoveJEndToEnd:
+    def test_movej_uploads_job_selects_starts_waits(
+        self, backend_with_mock_socket, monkeypatch
+    ):
+        backend, mock_sock = backend_with_mock_socket
+
+        # FTP mock — capture upload contents
+        from unittest.mock import MagicMock
+        uploaded = {}
+        mock_ftp_cls = MagicMock()
+        mock_ftp_inst = MagicMock()
+        mock_ftp_cls.return_value = mock_ftp_inst
+
+        def capture_stor(cmd, stream):
+            uploaded["cmd"] = cmd
+            uploaded["data"] = stream.read()
+        mock_ftp_inst.storbinary.side_effect = capture_stor
+
+        import ftplib
+        monkeypatch.setattr(ftplib, "FTP", mock_ftp_cls)
+
+        # Socket: trả ACK cho mọi command + status payload với bit Running tắt
+        # cho READ_STATUS poll.
+        responses = [
+            _build_response(),                       # JOB_SELECT
+            _build_response(),                       # START
+            _build_response(payload=b"\x00"),        # READ_STATUS — idle (bit 1 = 0)
+        ]
+        mock_sock.recvfrom.side_effect = [
+            (r, ("192.168.1.100", 10040)) for r in responses
+        ]
+
+        backend.MoveJ([10.0, -5.0, 20.0, 0.0, 15.0, -10.0])
+
+        # FTP đã được gọi đúng
+        mock_ftp_cls.assert_called_once()
+        mock_ftp_inst.login.assert_called_once()
+        mock_ftp_inst.cwd.assert_called_once_with("/MPRAM1/JBI")
+        assert "STOR " in uploaded["cmd"]
+        assert b"/JOB" in uploaded["data"]              # INFORM header
+        assert b"MOVJ" in uploaded["data"]              # motion instruction
+        # HSE sent 3 packets: JOB_SELECT, START, READ_STATUS
+        assert mock_sock.sendto.call_count == 3
+
+    def test_movej_wait_idle_times_out(self, backend_with_mock_socket, monkeypatch):
+        backend, mock_sock = backend_with_mock_socket
+        backend.wait_completion_timeout_s = 0.3       # short timeout cho test
+
+        from unittest.mock import MagicMock
+        mock_ftp_cls = MagicMock()
+        mock_ftp_inst = MagicMock()
+        mock_ftp_cls.return_value = mock_ftp_inst
+        import ftplib
+        monkeypatch.setattr(ftplib, "FTP", mock_ftp_cls)
+
+        # READ_STATUS luôn trả bit Running=ON (0x02) → wait_idle timeout
+        def respond(*_a, **_k):
+            return _build_response(payload=b"\x02"), ("192.168.1.100", 10040)
+        mock_sock.recvfrom.side_effect = respond
+
+        with pytest.raises(TimeoutError, match="không kết thúc"):
+            backend.MoveJ([0] * 6)
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# JOB_SELECT payload format
+# ─────────────────────────────────────────────────────────────────────────
+
+
+class TestBatchMode:
+    """Batch mode: gom MoveJ/MoveL/setDO/timer vào 1 INFORM job."""
+
+    @pytest.fixture
+    def backend_with_ftp_mock(self, backend_with_mock_socket, monkeypatch):
+        backend, mock_sock = backend_with_mock_socket
+        from unittest.mock import MagicMock
+        uploaded = {}
+        mock_ftp_cls = MagicMock()
+        mock_ftp_inst = MagicMock()
+        mock_ftp_cls.return_value = mock_ftp_inst
+
+        def capture_stor(cmd, stream):
+            uploaded["cmd"] = cmd
+            uploaded["data"] = stream.read()
+
+        mock_ftp_inst.storbinary.side_effect = capture_stor
+        import ftplib
+        monkeypatch.setattr(ftplib, "FTP", mock_ftp_cls)
+
+        # Socket: JOB_SELECT + START + READ_STATUS idle
+        responses = [
+            _build_response(),                               # JOB_SELECT
+            _build_response(),                               # START
+            _build_response(payload=b"\x00"),                # READ_STATUS idle
+        ]
+        mock_sock.recvfrom.side_effect = [
+            (r, ("x", 10040)) for r in responses
+        ]
+        return backend, mock_sock, mock_ftp_inst, uploaded
+
+    def test_batch_collects_into_single_upload(self, backend_with_ftp_mock):
+        backend, mock_sock, mock_ftp, uploaded = backend_with_ftp_mock
+
+        with backend.batch("PICKTRIAL"):
+            backend.MoveJ([10, 0, 0, 0, 0, 0])
+            backend.MoveL([20, 0, 0, 0, 0, 0])
+            backend.setDO(1, 1)
+            backend.timer(0.3)
+            backend.MoveJ([30, 0, 0, 0, 0, 0])
+
+        # FTP called đúng 1 lần — không phải 3 lần (cho 3 motion)
+        mock_ftp.storbinary.assert_called_once()
+        # HSE socket: JOB_SELECT + START + READ_STATUS (3 packets) — KHÔNG có
+        # WRITE_IO/MoveJ packet riêng vì batch
+        assert mock_sock.sendto.call_count == 3
+
+        # Verify nội dung INFORM bao gồm tất cả instructions
+        data = uploaded["data"]
+        assert b"MOVJ" in data
+        assert b"MOVL" in data
+        assert b"DOUT OT#(1) ON" in data
+        assert b"TIMER T=0.30" in data
+
+    def test_batch_outside_falls_back_to_single_shot(self, backend_with_mock_socket, monkeypatch):
+        """Ngoài batch: mỗi MoveJ tự upload độc lập như trước (preserved behavior)."""
+        backend, mock_sock = backend_with_mock_socket
+        from unittest.mock import MagicMock
+        mock_ftp_cls = MagicMock()
+        mock_ftp_cls.return_value = MagicMock()
+        import ftplib
+        monkeypatch.setattr(ftplib, "FTP", mock_ftp_cls)
+
+        mock_sock.recvfrom.side_effect = [
+            (_build_response(), ("x", 10040)),               # JOB_SELECT
+            (_build_response(), ("x", 10040)),               # START
+            (_build_response(payload=b"\x00"), ("x", 10040)),  # READ_STATUS idle
+        ]
+        backend.MoveJ([10, 0, 0, 0, 0, 0])
+        # Non-batch path: FTP called 1 lần cho MoveJ này
+        mock_ftp_cls.return_value.storbinary.assert_called_once()
+
+    def test_batch_nested_raises(self, backend_with_ftp_mock):
+        backend, *_ = backend_with_ftp_mock
+        with backend.batch():
+            with pytest.raises(RuntimeError, match="Nested"):
+                with backend.batch():
+                    pass
+
+    def test_batch_empty_skips_upload(self, backend_with_mock_socket, monkeypatch):
+        backend, mock_sock = backend_with_mock_socket
+        from unittest.mock import MagicMock
+        mock_ftp_cls = MagicMock()
+        mock_ftp_cls.return_value = MagicMock()
+        import ftplib
+        monkeypatch.setattr(ftplib, "FTP", mock_ftp_cls)
+        # Không setup socket response — sẽ raise nếu HSE bị gọi
+
+        with backend.batch():
+            pass                                              # không add gì
+
+        mock_ftp_cls.return_value.storbinary.assert_not_called()
+        mock_sock.sendto.assert_not_called()
+
+    def test_batch_setdo_uses_dout_not_write_io(self, backend_with_ftp_mock):
+        """Trong batch, setDO append DOUT vào INFORM, không gọi WRITE_IO HSE."""
+        backend, mock_sock, mock_ftp, uploaded = backend_with_ftp_mock
+
+        with backend.batch():
+            backend.MoveJ([0] * 6)
+            backend.setDO(1, 1)
+
+        # Sock chỉ có JOB_SELECT + START + READ_STATUS (3 packets), không có
+        # WRITE_IO packet (vì DOUT đi qua INFORM)
+        assert mock_sock.sendto.call_count == 3
+        data = uploaded["data"]
+        assert b"DOUT OT#(1) ON" in data
+
+    def test_batch_timer_uses_inform_not_sleep(self, backend_with_ftp_mock):
+        """timer() trong batch → INFORM TIMER, không time.sleep."""
+        import time as _time
+        backend, *_, uploaded = backend_with_ftp_mock
+
+        t_start = _time.time()
+        with backend.batch():
+            backend.MoveJ([0] * 6)
+            backend.timer(2.0)                                # nếu sleep thật → mất 2s
+        elapsed = _time.time() - t_start
+        assert elapsed < 1.0, f"timer() trong batch sleep thật ({elapsed:.2f}s)"
+        assert b"TIMER T=2.00" in uploaded["data"]
+
+    def test_batch_exception_drops_builder_no_upload(self, backend_with_mock_socket, monkeypatch):
+        backend, mock_sock = backend_with_mock_socket
+        from unittest.mock import MagicMock
+        mock_ftp_cls = MagicMock()
+        mock_ftp_cls.return_value = MagicMock()
+        import ftplib
+        monkeypatch.setattr(ftplib, "FTP", mock_ftp_cls)
+
+        with pytest.raises(ValueError):
+            with backend.batch():
+                backend.MoveJ([0] * 6)
+                raise ValueError("user code error")
+
+        # Sau exception: builder cleared, không upload
+        assert backend._batch_builder is None
+        mock_ftp_cls.return_value.storbinary.assert_not_called()
+        # Vẫn dùng được sau khi exception (state đã reset)
+        assert backend._batch_builder is None
+
+
+class TestReadAlarm:
+    def test_read_alarm_zero_no_alarm(self, backend_with_mock_socket):
+        backend, mock_sock = backend_with_mock_socket
+        # Payload: code=0, sub_code=0 (8 bytes)
+        payload = struct.pack("<II", 0, 0)
+        mock_sock.recvfrom.return_value = (
+            _build_response(payload=payload), ("x", 10040),
+        )
+        code, sub = backend.read_alarm()
+        assert (code, sub) == (0, 0)
+
+    def test_read_alarm_returns_code_sub(self, backend_with_mock_socket):
+        backend, mock_sock = backend_with_mock_socket
+        payload = struct.pack("<II", 2010, 1)        # emergency stop, sub 1
+        mock_sock.recvfrom.return_value = (
+            _build_response(payload=payload), ("x", 10040),
+        )
+        assert backend.read_alarm() == (2010, 1)
+
+    def test_read_alarm_sends_command_70(self, backend_with_mock_socket):
+        backend, mock_sock = backend_with_mock_socket
+        payload = struct.pack("<II", 0, 0)
+        mock_sock.recvfrom.return_value = (
+            _build_response(payload=payload), ("x", 10040),
+        )
+        backend.read_alarm()
+        packet, _ = mock_sock.sendto.call_args[0]
+        cmd_field = struct.unpack("<H", packet[24:26])[0]
+        assert cmd_field == 0x70                     # READ_ALARM
+
+    def test_read_alarm_short_payload_returns_zero(self, backend_with_mock_socket):
+        backend, mock_sock = backend_with_mock_socket
+        mock_sock.recvfrom.return_value = (
+            _build_response(payload=b"\x00\x00"),    # only 2 bytes
+            ("x", 10040),
+        )
+        assert backend.read_alarm() == (0, 0)
+
+
+class TestJobSelectPayload:
+    def test_job_select_pads_name_to_32_bytes(self, backend_with_mock_socket):
+        backend, mock_sock = backend_with_mock_socket
+        mock_sock.recvfrom.return_value = (_build_response(), ("x", 10040))
+        backend.job_select("PICKTEST")
+        packet, _ = mock_sock.sendto.call_args[0]
+        payload = packet[HSE_HEADER_SIZE:]
+        assert len(payload) == 32 + 4              # 32-byte name + 4-byte line
+        # First 8 chars = "PICKTEST", rest null-padded
+        assert payload[:8] == b"PICKTEST"
+        assert payload[8:32] == b"\x00" * 24
+        # Line number (last 4 bytes LE) = 0
+        assert struct.unpack("<I", payload[32:])[0] == 0
+
+    def test_job_select_strips_jbi_suffix(self, backend_with_mock_socket):
+        backend, mock_sock = backend_with_mock_socket
+        mock_sock.recvfrom.return_value = (_build_response(), ("x", 10040))
+        backend.job_select("PICKTEST.JBI")
+        packet, _ = mock_sock.sendto.call_args[0]
+        # Name section bắt đầu với "PICKTEST", không có ".JBI"
+        assert packet[HSE_HEADER_SIZE:HSE_HEADER_SIZE + 8] == b"PICKTEST"
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# Home joints config
+# ─────────────────────────────────────────────────────────────────────────
+
+
+class TestHomeJoints:
+    def test_jointshome_default_zeros(self):
+        backend = MotomanHSEBackend(ip="x")
+        assert backend.JointsHome() == [0.0] * 6
+
+    def test_set_home_joints(self):
+        backend = MotomanHSEBackend(ip="x")
+        backend.set_home_joints([1.0, 2.0, 3.0, 4.0, 5.0, 6.0])
+        assert backend.JointsHome() == [1.0, 2.0, 3.0, 4.0, 5.0, 6.0]
+
+    def test_set_home_joints_wrong_count_raises(self):
+        backend = MotomanHSEBackend(ip="x")
+        with pytest.raises(ValueError):
+            backend.set_home_joints([1.0, 2.0, 3.0])

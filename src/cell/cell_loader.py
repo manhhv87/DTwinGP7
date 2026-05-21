@@ -170,12 +170,27 @@ class CellLoader:
             raise RuntimeError("Phải gọi build() trước connect_real_robot()")
 
         logger.info("Connecting to real robot tại %s:%d (%s)", conn.ip, conn.port, conn.driver)
-        robot.setConnectionParams(conn.ip, conn.port)
+        # RoboDK 5.x: setConnectionParams yêu cầu đủ 5 arg (ip, port, remote_path,
+        # ftp_user, ftp_pass). FTP path/user/pass chỉ cần cho file transfer
+        # programs xuống controller, không cần cho online command — để rỗng.
+        robot.setConnectionParams(conn.ip, conn.port, "/", "", "")
 
         # Connect với safe option (timeout)
         success = robot.Connect()
         if not success:
             raise RobotConnectionError(conn.ip, conn.port, conn.driver)
+
+        # ⚠ Chuyển RunMode sang RUN_ROBOT: từ giờ MoveJ/MoveL gửi LỆNH XUỐNG GP7
+        # thật thay vì chỉ visualize trong RoboDK. Bắt buộc cho true digital twin —
+        # nếu bỏ qua, mọi MoveJ chỉ động trong viewport, robot thật không nhúc nhích.
+        try:
+            from robodk.robolink import RUNMODE_RUN_ROBOT  # lazy import
+            rdk = robot.RDK() if hasattr(robot, "RDK") and callable(robot.RDK) else None
+            if rdk is not None and hasattr(rdk, "setRunMode"):
+                rdk.setRunMode(RUNMODE_RUN_ROBOT)
+                logger.info("RunMode = RUN_ROBOT (lệnh gửi tới GP7 thật)")
+        except Exception as e:  # noqa: BLE001
+            logger.warning("Không set được RUNMODE_RUN_ROBOT: %s — robot có thể chỉ chạy sim", e)
 
         # Apply safety limits
         robot.setSpeed(-1, -1)  # reset

@@ -1,141 +1,144 @@
 # pickplace_gp7 — Vision-guided Pick-and-Place cho Yaskawa GP7
 
-> Tích hợp YOLOv8-seg vào hệ thống Digital Twin (RoboDK Free) cho bài toán
-> gắp–thả sản phẩm ở vị trí ngẫu nhiên. Stack tối giản, license 0đ.
+> Tích hợp YOLOv8-seg vào hệ thống **Level-4 Bidirectional Digital Twin** cho
+> bài toán gắp–thả sản phẩm ở vị trí ngẫu nhiên. Stack tối giản, **0đ license**
+> nhờ HSE bypass driver.
 >
 > **Use case thực tế**: gắp khay (tray) đựng điện thoại Galaxy S23 trên dây
 > chuyền assembly, dùng pneumatic parallel-jaw gripper custom.
 > Demo vision multi-class với 3 vật khác (bottle/cup/bolt) tùy chọn.
 >
-> Tài liệu: `docs/` (HUONG_DAN_CAI_DAT, phat_bieu_bai_toan, Phu_luc_A).
 > Repo GitHub: https://github.com/manhhv87/DTwinGP7
 
-## Quickstart
+## 📊 Xem sơ đồ trong các file `.md`
+
+Các file `.md` chứa **Mermaid diagrams** (Stack, Architecture, Workflow...). Để render:
+
+| Viewer | Cần làm gì |
+|---|---|
+| **GitHub.com** (xem trên web) | ✅ Không cần làm gì — GitHub render native |
+| **VS Code / Cursor** (local) | Install extension: `Ctrl+Shift+X` → search **"Markdown Preview Mermaid Support"** (Matt Bierner) → Install. Sau đó `Ctrl+Shift+V` để preview |
+| Obsidian / Typora | ✅ Native support |
+| Windows notepad / viewer cơ bản | ❌ Show raw code — dùng 1 trong 3 viewer trên |
+
+## Stack tổng quan
+
+```mermaid
+%%{init: {'theme':'dark'}}%%
+graph LR
+    A[RoboDK Free<br/>3D viewer<br/>kinematic helper] -->|API socket| B[Python<br/>YOLO + OpenCV<br/>Orchestrator<br/>Digital Twin L4]
+    B -->|Path 1 RoboDK driver<br/>NEEDS Educational| GP7
+    B ==>|Path 2 HSE bypass<br/>UDP + FTP - FREE| GP7[Yaskawa GP7<br/>YRC1000<br/>HSE Server ON]
+
+    style A fill:#C62828,stroke:#fff,stroke-width:2px,color:#fff
+    style B fill:#2E7D32,stroke:#fff,stroke-width:2px,color:#fff
+    style GP7 fill:#E65100,stroke:#fff,stroke-width:2px,color:#fff
+```
+
+**Path 2 (HSE bypass) là đóng góp kỹ thuật chính** — luận văn implement protocol
+public Yaskawa HW1485553 → 0đ thay vì 340 USD RoboDK Educational license.
+
+## ⭐ Đọc tài liệu nào trước?
+
+| Bạn cần | Đọc file |
+|---|---|
+| **Chạy thử trên máy** (không có robot) | [`docs/HUONG_DAN_SU_DUNG.md`](docs/HUONG_DAN_SU_DUNG.md) — workflow + commands theo kịch bản |
+| **Cài đặt từ đầu** | [`docs/HUONG_DAN_CAI_DAT.md`](docs/HUONG_DAN_CAI_DAT.md) — Python + RoboDK + D455 + YRC1000 HSE |
+| **Hiểu kiến trúc + nghiên cứu thesis** | [`docs/phat_bieu_bai_toan_v3_2_HD.md`](docs/phat_bieu_bai_toan_v3_2_HD.md) — sơ đồ + research contribution |
+| **Mở rộng cell module** | [`docs/Phu_luc_A_README_HD.md`](docs/Phu_luc_A_README_HD.md) — Pydantic schema + CellLoader |
+| **Setup STL mesh + YOLO weights + gripper IO** | [`models/README.md`](models/README.md) — assets + CIO ladder |
+
+## Quickstart 30 giây
 
 ```bash
-# 1. Cài dependencies (Python 3.10+)
 pip install -r requirements.txt
-
-# 2. Verify config + chạy tests (không cần RoboDK/D455)
-python -m src.cell.cell_models validate config/cell_layout.yaml
-pytest tests/ -q                              # kỳ vọng: 79 passed
-
-# 3. Mở RoboDK GUI (empty) → dựng cell (minimal = chỉ tray, ~20 API calls)
-python scripts/build_station.py --minimal
-
-# 4. Chạy thí nghiệm pick-and-place ở chế độ sim
-python scripts/03_run_experiment.py --mode sim --trials 5 --minimal-build
-
-# Headless mode (0 API call, scale ~500 trials cho thống kê thesis)
-python scripts/03_run_experiment.py --mode sim --trials 500 --headless
+pytest tests/ -q                                              # → 274 passed
+python scripts/03_run_experiment.py --mode sim --headless --trials 500
 ```
 
-## Cấu trúc repo
+3 lệnh trên chạy được trên **mọi laptop**, không cần phần cứng. Đầu ra: CSV
+trong `results/`. Cho workflow chi tiết hơn (RoboDK GUI, real robot, ultra-fast,
+phân tích figure), xem [`HUONG_DAN_SU_DUNG.md`](docs/HUONG_DAN_SU_DUNG.md).
 
-```
-pickplace_gp7/             ← root repo (DTwinGP7 trên GitHub)
-├── docs/                  ← HUONG_DAN_CAI_DAT, phat_bieu_bai_toan, Phu_luc_A
-├── config/                ← YAML configs
-├── models/                ← STL meshes + YOLOv8 weights
-├── src/                   ← Python source
-├── scripts/               ← CLI entry points
-├── tests/                 ← 79 tests
-└── results/ figures/ logs/  ← output (gitignored)
-```
+## Kiến trúc Level-4 Bidirectional Digital Twin
 
-## Cấu trúc bộ code
+```mermaid
+%%{init: {'theme':'dark'}}%%
+flowchart TB
+    CAM[D455 Camera] --> PER[Perception<br/>YOLO + postprocess]
+    PER --> ORC[Orchestrator<br/>state machine + predictive safety]
+    ORC --> DT[DigitalTwinMirror<br/>L4 facade]
+    DT -->|Command path| BE[Robot Backend<br/>HSE or RoboDK or Sim]
+    BE -->|UDP HSE + FTP INFORM| GP7[YRC1000 + GP7]
+    GP7 -.->|State sync<br/>Joints @10Hz| DT
+    DT -.->|setJoints @2Hz| RDK[RoboDK 3D viewport<br/>= Digital Twin display]
+    DT --> TEL[Telemetry CSV<br/>+ drift detection<br/>+ alarm auto-Stop]
 
-```
-pickplace_gp7/
-├── config/                       # YAML configs (validate bằng Pydantic)
-│   ├── cell_layout.yaml           # cell sim
-│   ├── cell_layout_real.yaml      # cell cho robot thật
-│   ├── experiment.yaml            # tham số Orchestrator + thí nghiệm
-│   └── calibration/               # T_base_camera.npy (output hand-eye)
-├── src/
-│   ├── cell/                      # Phụ lục A — "Cell là code"
-│   │   ├── cell_models.py          # Pydantic schemas
-│   │   ├── cell_loader.py          # dựng station từ config
-│   │   ├── exceptions.py · pose_utils.py
-│   ├── perception/                # Thị giác
-│   │   ├── camera.py               # D455Camera + MockCamera
-│   │   ├── detector.py             # ObjectDetector (YOLO) + MockDetector
-│   │   ├── postprocess.py          # mask → centroid + PCA + depth → pose 3D
-│   │   └── perception_node.py      # vòng lặp perception (threaded)
-│   ├── orchestrator/              # Điều phối
-│   │   ├── coord_conv.py           # transforms (pure numpy)
-│   │   ├── state_machine.py        # state machine pick-and-place
-│   │   └── orchestrator.py         # chu trình + lớp an toàn digital-twin
-│   ├── calibration/               # Hand-eye eye-to-hand
-│   │   ├── hand_eye_solver.py       # solver (mặc định Park, KHÔNG Tsai)
-│   │   └── capture_calibration.py   # phát hiện ChArUco + thu pose
-│   ├── logging/                   # TrialLogger → CSV
-│   └── utils/                     # helpers (logging, YAML)
-├── scripts/                       # CLI entry points (10 scripts)
-│   ├── build_station.py             # dựng cell (--minimal cho RoboDK Free)
-│   ├── 01_collect_dataset.py        # chụp dataset bằng D455
-│   ├── 02_run_calibration.py        # hand-eye calibration (ChArUco)
-│   ├── 03_run_experiment.py         # thí nghiệm — sim/real/--headless/--minimal-build
-│   ├── 04_analyze_results.py        # phân tích thống kê + figures
-│   ├── calibration_from_layout.py   # sinh T_BC từ cell config (sim/headless)
-│   ├── convert_glb_to_stl.py        # GLB → STL utility
-│   ├── diagnose_layout.py           # in toạ độ world thật của items trong RoboDK
-│   ├── gen_primitive_meshes.py      # sinh STL primitives (gripper, tray, ...)
-│   └── save_current_as_home.py      # ghi joints hiện tại làm home (sau khi jog tay)
-├── tests/                         # 79 unit/integration tests
-├── data/raw/ · models/ · results/ · figures/ · logs/   # output (gitignored)
-├── clean.bat                       # tiện ích xóa __pycache__
-└── requirements.txt · pyproject.toml
+    style ORC fill:#2E7D32,stroke:#fff,stroke-width:2px,color:#fff
+    style DT fill:#9C27B0,stroke:#fff,stroke-width:3px,color:#fff
+    style BE fill:#1565C0,stroke:#fff,stroke-width:2px,color:#fff
+    style GP7 fill:#E65100,stroke:#fff,stroke-width:3px,color:#fff
+    style RDK fill:#C62828,stroke:#fff,stroke-width:2px,color:#fff
 ```
 
-> **Train model:** việc huấn luyện YOLOv8 làm trên máy Linux GPU bằng công cụ
-> riêng, **không nằm trong repo này**. Repo chỉ nhận file trọng số `.pt`/`.onnx`
-> (đặt vào `models/`) để inference. Xem `models/README.md`.
+**Bidirectional**: PC → robot (motion command) + robot → PC (joint state @10Hz).
+Twin viewport phản ánh **vị trí THẬT** của robot, không phải vị trí command.
 
-## Luồng dữ liệu
+Chi tiết kiến trúc + so sánh backend đầy đủ: [phat_bieu mục 2](docs/phat_bieu_bai_toan_v3_2_HD.md#2-sơ-đồ-kết-nối-hệ-thống--level-4-bidirectional-digital-twin).
 
-```
-config/*.yaml → cell_loader → RoboDK station (Digital Twin)
-D455 → detector (YOLOv8-seg) → postprocess → pose 3D (camera frame)
-                                                   ↓ hand-eye T_BC
-                              orchestrator → pose 3D (base frame)
-                                                   ↓ kiểm tra reachability
-                              RoboDK → GP7 (sim hoặc thật) → TrialLogger → CSV
-```
+## 5 chế độ chạy
 
-## Thiết kế để test được
-
-Mọi thư viện phần cứng (`pyrealsense2`, `robodk`, `ultralytics`) đều được
-**lazy-import** — module logic thuần import được và test được trên máy không
-có phần cứng. Có `MockCamera` / `MockDetector` cho pipeline sim đầy đủ.
-
-```bash
-pytest tests/ -q                              # toàn bộ — không cần phần cứng
-pytest tests/test_hand_eye_solver.py -v       # solver hand-eye
-pytest tests/ --cov=src --cov-report=term     # với coverage
-```
-
-| Tầng test | Phần cứng cần | Cách chạy |
+| Chế độ | Phần cứng | Use case |
 |---|---|---|
-| Unit + integration (79 tests) | Không | `pytest tests/` |
-| System SIM | RoboDK GUI | `03_run_experiment.py --mode sim` |
-| System SIM headless | Không (SimRobot mock) | `03_run_experiment.py --headless --trials 500` |
-| System REAL | RoboDK + D455 + GP7 | `03_run_experiment.py --mode real` |
+| **Sim headless** | 0 | Thống kê 500+ trial cho thesis |
+| **Sim RoboDK GUI** | RoboDK Free | Demo trực quan |
+| Real qua RoboDK driver | RoboDK Educational $340 | Legacy |
+| **Real qua HSE bypass** | YRC1000 + GP7 + D455 | **Recommended** (0đ license) |
+| **Real ultra-fast** | Như trên | ~50ms/trial overhead, scale 500+ trial trên robot thật |
 
-## Hai lưu ý kỹ thuật quan trọng
+Workflow + commands chi tiết: [`HUONG_DAN_SU_DUNG.md`](docs/HUONG_DAN_SU_DUNG.md).
 
-1. **Hand-eye eye-to-hand**: `cv2.calibrateHandEye` mặc định cho eye-in-hand;
-   solver ở đây tự nghịch đảo `gripper2base → base2gripper` để ra đúng `T_BC`.
-2. **KHÔNG dùng Tsai-Lenz** cho setup này: camera nhìn xuống nên `T_BC` xoay
-   ~180° — đúng điểm kỳ dị của Tsai. Mặc định dùng **Park**.
+## Tóm tắt cấu trúc repo
 
-## Liên kết
+```
+pickplace_gp7/                  ← root repo (DTwinGP7 trên GitHub)
+├── README.md                    ← file này (entry point)
+├── docs/                        ← 4 file hướng dẫn (xem bảng trên)
+├── config/                      ← YAML configs (KHÔNG sửa code)
+├── models/                      ← STL meshes + YOLOv8 weights (xem models/README.md)
+├── src/                         ← Python source (logic, không chạy trực tiếp)
+│   ├── cell/                     dựng cell RoboDK
+│   ├── perception/               YOLO + D455 + postprocess
+│   ├── orchestrator/             ★ trial pick-place + digital twin L4 + kinematics + backends
+│   ├── calibration/              hand-eye ChArUco
+│   ├── logging/ · utils/
+├── scripts/                     ← 11 CLI entry points (BẠN CHẠY)
+├── tests/                       ← 274 unit/integration tests
+└── results/ · figures/ · logs/  ← output (gitignored)
+```
 
-- Hướng dẫn cài đặt: `../tai_lieu/HUONG_DAN_CAI_DAT.md`
-- Tài liệu đề tài: `../tai_lieu/phat_bieu_bai_toan_v3_2_HD.md`
-- Phụ lục A (chi tiết cell module): `../tai_lieu/Phu_luc_A_README_HD.md`
-- RoboDK API: https://robodk.com/doc/en/PythonAPI/
+Chi tiết module tree: xem [phat_bieu mục 3](docs/phat_bieu_bai_toan_v3_2_HD.md#3-cấu-trúc-thư-mục-code).
+
+## Đóng góp kỹ thuật chính
+
+1. **Level-4 Bidirectional Digital Twin** — RoboDK viewport mirror robot thật @2Hz
+   + telemetry CSV @10Hz + drift detection + alarm auto-Stop
+2. **HSE bypass** RoboDK driver license — implement từ public spec Yaskawa
+   HW1485553, 0đ thay vì $340 Educational
+3. **3-tier motion optimization** — single-shot → batch M3 → ultra-fast M3++
+   (~30× speedup so với RoboDK Free fail)
+4. **Predictive safety C2+** — pure-Python forward kinematics verify joint limit
+   + self-collision toàn trajectory trước MoveJ
+
+Tài liệu chi tiết: [phat_bieu_bai_toan_v3_2_HD.md](docs/phat_bieu_bai_toan_v3_2_HD.md).
+
+## Train YOLO model
+
+Việc huấn luyện YOLOv8 làm trên máy Linux GPU bằng công cụ riêng,
+**không nằm trong repo này**. Repo chỉ nhận file trọng số `.pt`/`.onnx`
+(đặt vào `models/`) để inference. Xem [`models/README.md`](models/README.md)
++ [phat_bieu Phần C](docs/phat_bieu_bai_toan_v3_2_HD.md#phần-c--xây-dựng--huấn-luyện-model).
 
 ---
-*pickplace_gp7 — Version 1.0*
-# DTwinGP7
+
+*pickplace_gp7 — Version 2.0 (Level-4 Bidirectional Digital Twin + HSE Bypass)*
