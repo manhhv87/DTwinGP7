@@ -880,18 +880,25 @@ Cuối thí nghiệm, build failure mode matrix:
 ```mermaid
 %%{init: {'theme':'dark'}}%%
 sequenceDiagram
-    participant H as Human
-    participant S as System
-    participant R as Robot
-    
-    H->>H: Đặt 1–3 vật ngẫu nhiên trên bàn
-    H->>S: Press SPACE start trial
-    S->>S: Capture detection
-    S->>R: Execute pick
-    R-->>S: Done (success/fail)
+    box rgb(94, 64, 55) Human side
+        actor H as Human
+    end
+    box rgb(21, 101, 192) PC software
+        participant S as System
+    end
+    box rgb(230, 81, 0) Hardware
+        participant R as Robot GP7
+    end
+
+    H->>H: Dat 1-3 vat ngau nhien tren ban
+    H->>+S: Press SPACE start trial
+    S->>S: Capture detection (D455)
+    S->>+R: Execute pick (MoveJ via HSE)
+    R-->>-S: Done success or fail
     S->>S: Log result + cycle time
-    H->>H: Đặt lại vật cho trial tiếp
-    Note over H,S: Lặp lại 50 lần
+    S-->>-H: Trial completed
+    H->>H: Dat lai vat cho trial tiep
+    Note over H,R: Lap lai 50 lan
 ```
 
 **Tự động hóa đặt vật**: không khả thi với master. Thực hiện bằng tay là OK, nhưng:
@@ -922,43 +929,50 @@ sequenceDiagram
 ```mermaid
 %%{init: {'theme':'dark'}}%%
 gantt
-    title Lộ trình triển khai (~7 tháng)
+    title Lo trinh trien khai (~7 thang)
     dateFormat YYYY-MM-DD
     todayMarker on
+
     section Pha 1 Foundation
-    Install + verify stack                 :p1a, 2026-06-01, 7d
-    Bring-up cell mô phỏng                  :p1b, after p1a, 3d
+    Install + verify stack                 :active, p1a, 2026-06-01, 7d
+    Bring-up cell mo phong                 :p1b, after p1a, 3d
+    Milestone cell sim OK                  :milestone, m1, after p1b, 0d
 
     section Pha 2 Dataset
-    Setup cell vật lý                      :p2a, after p1b, 7d
-    Capture 2100 ảnh                       :p2b, after p2a, 14d
-    Label trên Roboflow                    :p2c, after p2b, 21d
+    Setup cell vat ly                      :p2a, after p1b, 7d
+    Capture 2100 anh                       :crit, p2b, after p2a, 14d
+    Label tren Roboflow                    :crit, p2c, after p2b, 21d
+    Milestone dataset v1.0                 :milestone, m2, after p2c, 0d
 
     section Pha 3 Model
-    Train YOLOv8 n/s/m                     :p3a, after p2c, 14d
+    Train YOLOv8 n/s/m                     :crit, p3a, after p2c, 14d
     Eval + select best                     :p3b, after p3a, 7d
+    Milestone best.pt                      :milestone, m3, after p3b, 0d
 
     section Pha 4 Calibration
     Hand-eye calibration                   :p4a, after p3b, 7d
     Touch test + validation                :p4b, after p4a, 7d
 
     section Pha 5 Integration
-    Hardware bring-up                      :p5a, after p4b, 7d
-    End-to-end real test                   :p5b, after p5a, 7d
+    Hardware bring-up                      :crit, p5a, after p4b, 7d
+    End-to-end real test                   :crit, p5b, after p5a, 7d
+    Milestone L5 real test                 :milestone, m5, after p5b, 0d
 
     section Pha 6 Tuning
     Vision + pose tuning                   :p6a, after p5b, 14d
     Motion + gripper tuning                :p6b, after p6a, 14d
 
     section Pha 7 Experiments
-    Exp 1–2–3 trên RoboDK sim              :p7a, after p6b, 14d
-    Exp trên GP7 thật                      :p7b, after p7a, 14d
+    Exp 1-2-3 tren RoboDK sim              :p7a, after p6b, 14d
+    Exp tren GP7 that (HSE)                :crit, p7b, after p7a, 14d
     Analysis                               :p7c, after p7b, 7d
+    Milestone all data                     :milestone, m7, after p7c, 0d
 
     section Pha 8 Writing
     Draft paper                            :p8a, after p7c, 21d
     Revise + proofread                     :p8b, after p8a, 14d
-    Submit                                  :p8c, after p8b, 7d
+    Submit                                 :crit, p8c, after p8b, 7d
+    Milestone submit                       :milestone, m8, after p8c, 0d
 ```
 
 ### Chi tiết từng pha
