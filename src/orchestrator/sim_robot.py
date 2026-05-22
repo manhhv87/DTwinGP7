@@ -48,6 +48,11 @@ class SimRobot:
         seed: Seed RNG để tái lập kết quả.
     """
 
+    # Class-level: SimRobot CÓ thể nhận 4x4 pose target — dùng DLS internal
+    # làm "fake YRC IK" để sim được YRC IK pipeline. Chỉ verify wiring +
+    # routing, KHÔNG verify được YRC's actual IK accuracy (cần controller thật).
+    supports_cartesian_pose: bool = True
+
     def __init__(
         self,
         home_joints: list[float] | None = None,
@@ -134,12 +139,54 @@ class SimRobot:
 
     def _apply_move(self, target: Any, kind: str) -> None:
         self._move_count += 1
+        # Joint list (6 floats)
         if isinstance(target, (list, tuple)) and len(target) >= 6:
             try:
                 self._joints = [float(j) for j in target[:6]]
+                logger.debug("%s #%d joints", kind, self._move_count)
+                return
             except (TypeError, ValueError):
                 pass
-        logger.debug("%s #%d", kind, self._move_count)
+        # 4x4 pose — sim YRC IK path qua DLS internal
+        if self._is_pose_4x4(target):
+            self._joints = self._fake_yrc_ik(target)
+            logger.debug("%s #%d Cartesian (fake YRC IK)", kind, self._move_count)
+            return
+        logger.debug("%s #%d (unknown target type)", kind, self._move_count)
+
+    @staticmethod
+    def _is_pose_4x4(target: Any) -> bool:
+        """Detect 4x4 numpy hoặc list-of-lists."""
+        if hasattr(target, "shape") and getattr(target, "shape", None) == (4, 4):
+            return True
+        if (isinstance(target, (list, tuple)) and len(target) == 4
+                and all(hasattr(r, "__len__") and len(r) == 4 for r in target)):
+            return True
+        return False
+
+    def _fake_yrc_ik(self, target_pose_base: Any) -> list[float]:
+        """Stand-in cho YRC's internal IK — dùng DLS pure Python.
+
+        ⚠ Chỉ để sim test wiring/pipeline. KHÔNG reflect YRC's actual IK accuracy.
+        DH params trong kinematics module có thể chưa khớp robot thật.
+        """
+        try:
+            from .kinematics import inverse_kinematics
+            from .kinematics.urdf_chain import gp7_urdf
+        except ImportError:
+            return list(self._joints)            # fallback: keep current
+
+        if not hasattr(self, "_sim_dh_model"):
+            # URDF chain — match RoboDK SolveFK exactly (verified 0.00mm)
+            self._sim_dh_model = gp7_urdf(
+                base_xyz_mm=tuple(self._base.tolist()),
+            )
+        q_init_rad = [np.deg2rad(q) for q in self._joints]
+        sol_rad = inverse_kinematics(self._sim_dh_model, target_pose_base, q_init_rad)
+        if sol_rad is None:
+            # IK fail trong sim → keep current joints (orchestrator sẽ log unreachable)
+            return list(self._joints)
+        return [float(np.rad2deg(q)) for q in sol_rad]
 
     # ─── Gripper / speed ───
     def setDO(self, index: int, value: int) -> None:
@@ -149,3 +196,27 @@ class SimRobot:
 
     def setSpeed(self, linear: float, joint: float = -1) -> None:
         logger.debug("setSpeed(linear=%s, joint=%s)", linear, joint)
+
+    # ─── PLC/CC-Link mock cho sim mode ───
+    def set_io(self, bit_addr: int, value: int) -> None:
+        """Sim mock — no-op. Track gripper close command qua bit pattern."""
+        # Bít clamp ON → set grasp pending check (sim grasp slip injection)
+        self._grasp_pending_check = bool(value)
+        logger.debug("SimRobot.set_io(bit=%d) = %d", bit_addr, value)
+
+    def read_io(self, bit_addr: int) -> int:
+        """Sim mock — luôn trả "sensor confirmed" để pipeline pass-through.
+
+        Real mode dùng MotomanHSEBackend.read_io đọc CC-Link bit thật.
+        Sim: trả 1 ngay (gripper coi như đã đến position + có vật trong gripper).
+        """
+        return 1
+
+    # ─── DigitalTwinMirror compatibility ───
+    def Stop(self) -> None:
+        """No-op cho sim (không có hardware để stop)."""
+        logger.debug("SimRobot.Stop() no-op")
+
+    def disconnect(self) -> None:
+        """No-op cho sim — cho phép DigitalTwinMirror cleanup thống nhất."""
+        logger.debug("SimRobot.disconnect() no-op")

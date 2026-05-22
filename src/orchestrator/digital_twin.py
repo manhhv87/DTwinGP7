@@ -2,25 +2,25 @@
 digital_twin.py
 ───────────────
 DigitalTwinMirror: façade bidirectional digital twin combining:
-  - HSE backend (motion + I/O thật → YRC1000)
-  - RoboDK robot item (kinematic helper + visualization mirror)
-  - Mirror thread (poll real state → cập nhật RoboDK item liên tục)
+  - Motion backend (HSE → YRC1000 thật, hoặc SimRobot cho dev)
+  - Optional viewport callback (Open3D mirror — render robot state live)
+  - Mirror thread (poll real state @ 10Hz)
   - Telemetry logger (CSV state log)
+  - Drift detection + auto-stop on major alarms
 
 KIẾN TRÚC:
-                                          ┌─ MoveJ joints ─> HSE ──> YRC1000
-  Orchestrator ──> DigitalTwinMirror ─────┤                            │
-       (RoboDK Item-like API)             ├─ IK + reach ──> RoboDK Item│
-                                          │   (PC-side)                │
-                                          │                            ↓
-                                          └─ MirrorThread <── poll Joints (10Hz)
-                                                  ↓
-                                          setJoints(actual) → RoboDK viewport
-                                                  ↓
-                                          TelemetryLogger → CSV
+  Orchestrator ──> DigitalTwinMirror ───── MoveJ joints ──> Backend ──> Robot
+       (duck-type API)                                                    │
+                       MirrorThread <───── poll Joints (10Hz) ────────────┘
+                            ↓
+                       viewport_callback(joints)  ← optional, ~2Hz
+                            ↓
+                       TelemetryLogger → CSV (10Hz)
 
-Đây là implementation "true digital twin" — RoboDK viewport phản ánh state
-THẬT của robot, không chỉ commanded state.
+Viewport callback nhận joints (degrees) mỗi N tick — Open3D mirror sẽ render
+state THẬT (không phải commanded). Backend yêu cầu tự handle frame conversion
+(world → robot base) bằng `frame_convert.world_to_robot_base` khi gọi MoveJ
+với pose 4x4.
 """
 from __future__ import annotations
 
@@ -57,24 +57,25 @@ DEFAULT_DRIFT_WARN_DEG = 2.0
 class DigitalTwinMirror:
     """Bidirectional digital twin façade.
 
-    Duck-types RoboDK Item interface để Orchestrator gọi nguyên văn. Bên trong:
-      - motion + I/O → HSE backend
-      - IK + reachability → RoboDK robot item (kinematic helper)
-      - actual joint state mirror → RoboDK robot item visualize
+    Bên trong:
+      - motion + I/O → backend (HSE cho real, SimRobot cho dev)
+      - actual joint state mirror → optional viewport_callback (Open3D mirror)
+      - telemetry logging + drift detection + alarm handling
 
     Args:
-        hse_backend: MotomanHSEBackend đã connect.
-        robodk_robot_item: RoboDK Item của robot trong cell (cho IK + visualize).
-            Có thể None → IK disable + visualize disable (chỉ HSE bare-metal).
+        backend: Robot backend duck-typed (MotomanHSEBackend hoặc SimRobot).
+        viewport_callback: Callable(joints_deg: list[float]) → None, gọi mỗi N
+            tick để render robot state. None → không có viewport mirror.
         telemetry: TelemetryLogger để log state. None → skip.
-        mirror_hz: Tần số poll Joints() từ YRC1000. Default 10Hz.
+        mirror_hz: Tần số gọi viewport_callback. Default 2Hz.
+        telemetry_hz: Tần số poll Joints + log CSV. Default 10Hz.
         drift_warn_deg: Threshold cảnh báo lệch commanded vs actual.
     """
 
     def __init__(
         self,
-        hse_backend: Any,
-        robodk_robot_item: Any = None,
+        backend: Any,
+        viewport_callback: Any = None,
         telemetry: Any = None,
         mirror_hz: float = DEFAULT_MIRROR_HZ,
         telemetry_hz: float = DEFAULT_TELEMETRY_HZ,
@@ -83,8 +84,10 @@ class DigitalTwinMirror:
         auto_stop_on_major_alarm: bool = True,
         viewport_mirror_enabled: bool = True,
     ) -> None:
-        self.hse = hse_backend
-        self.rdk_item = robodk_robot_item
+        self.backend = backend
+        # Backward compat: nhiều site truy cập `.hse` — giữ alias để khỏi break.
+        self.hse = backend
+        self.viewport_callback = viewport_callback
         self.telemetry = telemetry
         # Loop chạy ở telemetry_hz (cao). Viewport throttle theo mirror_hz.
         self.telemetry_hz = max(0.5, float(telemetry_hz))
@@ -99,8 +102,8 @@ class DigitalTwinMirror:
         # 0.0 = fire ngay tick đầu (không đợi alarm_poll_period_s sau start).
         self._next_alarm_poll_t: float = 0.0
         self.auto_stop_on_major_alarm = bool(auto_stop_on_major_alarm)
-        # Tắt setJoints lên RoboDK item → 0 API call vào RoboDK Free (an toàn
-        # nagware popup). Telemetry CSV vẫn ghi state thật, visualize offline.
+        # Tắt viewport_callback → mirror loop vẫn chạy (telemetry + drift +
+        # alarm), chỉ skip render. Dùng để giảm overhead khi không cần visual.
         self.viewport_mirror_enabled = bool(viewport_mirror_enabled)
 
         self._mirror_thread: threading.Thread | None = None
@@ -148,15 +151,15 @@ class DigitalTwinMirror:
 
     def _mirror_loop(self) -> None:
         """Main loop chạy ở telemetry_hz (cao). Mỗi tick:
-          1. Poll Joints từ HSE        (mỗi tick, ~10Hz)
+          1. Poll Joints từ backend     (mỗi tick, ~10Hz)
           2. Log telemetry CSV          (mỗi tick, ~10Hz)
           3. Drift detection            (mỗi tick, ~10Hz)
-          4. setJoints lên RoboDK       (mỗi N tick, throttle xuống ~2Hz)
+          4. viewport_callback(joints)  (mỗi N tick, throttle xuống ~2Hz)
           5. Poll alarm                 (mỗi alarm_poll_period_s, ~0.4Hz)
           6. Flush telemetry disk       (mỗi 1s)
 
         Decouple cho phép telemetry resolution cao (cho analysis chính xác)
-        mà không spam RoboDK setJoints (tránh nagware popup Free license).
+        mà không spam viewport render.
         """
         period = 1.0 / self.telemetry_hz
         last_flush = time.monotonic()
@@ -166,7 +169,7 @@ class DigitalTwinMirror:
             try:
                 actual = self.hse.Joints()                # (1) Poll real state
 
-                # (4) Viewport throttled — KHÔNG mỗi tick để tránh spam RoboDK
+                # (4) Viewport throttled — chỉ gọi callback mỗi N tick
                 self._viewport_tick += 1
                 if self._viewport_tick >= self._viewport_throttle:
                     self._viewport_tick = 0
@@ -249,17 +252,16 @@ class DigitalTwinMirror:
         return self.current_alarm().code != 0
 
     def _update_viewport(self, joints: list[float]) -> None:
-        """Cập nhật vị trí joints của RoboDK item → viewport mirror robot thật.
+        """Gọi viewport_callback với joints (degrees) — render robot state.
 
-        Skip nếu `viewport_mirror_enabled=False` — tránh API call vào RoboDK
-        khi dùng Free license (nagware popup sau ~30 actions).
+        Skip nếu `viewport_mirror_enabled=False` hoặc callback chưa set.
         """
-        if self.rdk_item is None or not self.viewport_mirror_enabled:
+        if self.viewport_callback is None or not self.viewport_mirror_enabled:
             return
         try:
-            self.rdk_item.setJoints(joints)
+            self.viewport_callback(joints)
         except Exception as e:                           # noqa: BLE001
-            logger.debug("setJoints lỗi (viewport mirror): %s", e)
+            logger.debug("viewport_callback lỗi: %s", e)
 
     def _check_drift(self, actual: list[float]) -> None:
         """So sánh actual vs last commanded → warn nếu drift quá lớn."""
@@ -280,7 +282,7 @@ class DigitalTwinMirror:
             )
 
     # ────────────────────────────────────────────────────────────────────
-    # Duck-type RoboDK Item — forward calls
+    # Forward calls đến backend
     # ────────────────────────────────────────────────────────────────────
     def Valid(self) -> bool:
         return self.hse.Valid()
@@ -291,24 +293,27 @@ class DigitalTwinMirror:
     def JointsHome(self) -> Any:
         return self.hse.JointsHome()
 
-    def Parent(self) -> Any:
-        """Forward tới RoboDK item để Orchestrator tính world→parent transform."""
-        if self.rdk_item is not None and hasattr(self.rdk_item, "Parent"):
-            try:
-                return self.rdk_item.Parent()
-            except Exception:                            # noqa: BLE001
-                return None
-        return None
-
     def setSpeed(self, linear_mm_s: float, joint_deg_s: float = -1) -> None:
         self.hse.setSpeed(linear_mm_s, joint_deg_s)
 
     def setDO(self, index: int, value: int) -> None:
         self.hse.setDO(index, value)
 
+    def set_io(self, bit_addr: int, value: int) -> None:
+        """Forward set_io (absolute bit) tới backend — cho CC-Link bits."""
+        if hasattr(self.backend, "set_io") and callable(self.backend.set_io):
+            self.backend.set_io(bit_addr, value)
+
+    def read_io(self, bit_addr: int) -> int:
+        """Forward read_io tới backend (CC-Link sensor feedback)."""
+        if hasattr(self.backend, "read_io") and callable(self.backend.read_io):
+            return self.backend.read_io(bit_addr)
+        return -1
+
     def Stop(self) -> None:
-        """Emergency stop."""
-        self.hse.Stop()
+        """Emergency stop. No-op nếu backend không support (SimRobot)."""
+        if hasattr(self.backend, "Stop") and callable(self.backend.Stop):
+            self.backend.Stop()
 
     # ────────────────────────────────────────────────────────────────────
     # Batch + timer — forward to HSE backend (nếu support)
@@ -331,82 +336,79 @@ class DigitalTwinMirror:
             time.sleep(seconds)
 
     # ────────────────────────────────────────────────────────────────────
-    # Kinematic delegation (RoboDK Item dùng để tính IK + reachability)
+    # Reachability (predictive safety nếu Orchestrator enable; else assume OK)
     # ────────────────────────────────────────────────────────────────────
-    def SolveIK(self, pose: Any, joints_approx: Any = None) -> Any:
-        if self.rdk_item is None:
-            raise NotImplementedError(
-                "DigitalTwinMirror cần robodk_robot_item để IK. "
-                "Truyền RoboDK item khi construct hoặc giải IK client-side."
-            )
-        if joints_approx is not None:
-            return self.rdk_item.SolveIK(pose, joints_approx)
-        return self.rdk_item.SolveIK(pose)
-
     def MoveJ_Test(self, j_start: Any, target: Any, *args: Any) -> int:
-        if self.rdk_item is None:
-            return 0    # no kinematic check available, assume reachable
-        return self.rdk_item.MoveJ_Test(j_start, target, *args)
+        """No-op reachability check — kinematic check thực sự nằm ở
+        Orchestrator predictive safety (UC2). Trả 0 = assume reachable.
+        """
+        return 0
 
     # ────────────────────────────────────────────────────────────────────
-    # Motion — convert pose → joints (via RoboDK IK) → HSE backend
+    # Motion — Orchestrator đã giải IK (client DLS) trước khi gọi đây
+    # Hoặc pass-through 4x4 pose nếu backend support YRC IK Cartesian
     # ────────────────────────────────────────────────────────────────────
+    def _backend_supports_cartesian(self) -> bool:
+        """True nếu backend có thể nhận 4x4 pose (HSE BASE Cartesian).
+
+        Check class-level flag `supports_cartesian_pose=True` thay vì
+        hasattr — MagicMock auto-create attr nên hasattr không phân biệt được.
+        """
+        return getattr(type(self.backend), "supports_cartesian_pose", False) is True
+
     def MoveJ(self, target: Any) -> None:
+        # Cartesian pass-through cho HSE backend khi target là 4x4 pose
+        if (isinstance(target, np.ndarray) and target.shape == (4, 4)
+                and self._backend_supports_cartesian()):
+            with self._lock:
+                self._last_commanded = None         # joints không biết trước
+            self.backend.MoveJ(target)
+            return
         joints = self._target_to_joints(target)
         with self._lock:
             self._last_commanded = list(joints)
-        self.hse.MoveJ(joints)
+        self.backend.MoveJ(joints)
 
     def MoveL(self, target: Any) -> None:
+        if (isinstance(target, np.ndarray) and target.shape == (4, 4)
+                and self._backend_supports_cartesian()):
+            with self._lock:
+                self._last_commanded = None
+            self.backend.MoveL(target)
+            return
         joints = self._target_to_joints(target)
         with self._lock:
             self._last_commanded = list(joints)
-        self.hse.MoveL(joints)
+        self.backend.MoveL(joints)
 
     def _target_to_joints(self, target: Any) -> list[float]:
-        """Convert target (joint list HOẶC pose 4x4) sang joint list[float]."""
-        # Joint list
+        """Convert target joint list → list[float] of 6 floats.
+
+        Pose 4x4 KHÔNG được handle ở đây — caller (MoveJ/MoveL) đã pass-through
+        4x4 pose tới backend nếu backend support Cartesian. Orchestrator giải
+        client-side DLS IK trước khi gọi với joints.
+        """
         if isinstance(target, (list, tuple)) and len(target) >= 6:
             try:
                 return [float(j) for j in target[:6]]
-            except (TypeError, ValueError):
-                pass
-
-        # Numpy 4x4 pose → IK
-        if isinstance(target, np.ndarray) and target.shape == (4, 4):
-            if self.rdk_item is None:
-                raise NotImplementedError(
-                    "MoveJ với pose 4x4 cần robodk_robot_item để IK."
-                )
-            current = self.Joints()
-            sol = self.rdk_item.SolveIK(target, current)
-            return self._mat_to_joint_list(sol)
-
-        # RoboDK Mat → IK
-        if hasattr(target, "Pos") and self.rdk_item is not None:
-            current = self.Joints()
-            sol = self.rdk_item.SolveIK(target, current)
-            return self._mat_to_joint_list(sol)
-
-        raise ValueError(f"MoveJ target type không hỗ trợ: {type(target)}")
+            except (TypeError, ValueError) as e:
+                raise ValueError(f"target joint values không phải float: {e}")
+        raise ValueError(
+            f"MoveJ target type không hỗ trợ: {type(target)}. "
+            f"Truyền joint list[float] hoặc 4x4 numpy pose (cần "
+            f"backend.supports_cartesian_pose=True)."
+        )
 
     @staticmethod
     def _mat_to_joint_list(sol: Any) -> list[float]:
-        """Convert RoboDK SolveIK return → list[float]."""
+        """Convert IK solution iterable → list[float]."""
         if sol is None:
-            raise RuntimeError("SolveIK trả None — pose ngoài tầm với")
+            raise RuntimeError("IK trả None — pose ngoài tầm với")
         if isinstance(sol, (list, tuple)):
             if len(sol) < 6:
-                raise RuntimeError(f"SolveIK trả {len(sol)} phần tử, kỳ vọng ≥6")
+                raise RuntimeError(f"IK trả {len(sol)} phần tử, kỳ vọng ≥6")
             return [float(j) for j in sol[:6]]
-        # RoboDK Mat with .list() method
-        if hasattr(sol, "list") and callable(sol.list):
-            data = sol.list()
-            if len(data) < 6:
-                raise RuntimeError(f"SolveIK Mat.list() có {len(data)} phần tử")
-            return [float(j) for j in data[:6]]
-        # numpy array
         arr = np.asarray(sol).flatten()
         if arr.size < 6:
-            raise RuntimeError(f"SolveIK numpy có {arr.size} phần tử")
+            raise RuntimeError(f"IK numpy có {arr.size} phần tử")
         return [float(j) for j in arr[:6]]

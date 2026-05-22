@@ -24,10 +24,7 @@ def calibration_file(tmp_path):
 
 
 @pytest.fixture
-def orchestrator_with_predict(calibration_file, monkeypatch):
-    monkeypatch.setattr(
-        Orchestrator, "_to_robodk_pose", lambda self, T: np.asarray(T)
-    )
+def orchestrator_with_predict(calibration_file):
     return Orchestrator(
         queue.Queue(maxsize=3),
         config={
@@ -39,10 +36,7 @@ def orchestrator_with_predict(calibration_file, monkeypatch):
 
 
 @pytest.fixture
-def orchestrator_no_predict(calibration_file, monkeypatch):
-    monkeypatch.setattr(
-        Orchestrator, "_to_robodk_pose", lambda self, T: np.asarray(T)
-    )
+def orchestrator_no_predict(calibration_file):
     return Orchestrator(
         queue.Queue(maxsize=3),
         config={
@@ -83,10 +77,7 @@ class TestPredictSafety:
         assert orchestrator_with_predict._predict_safety([[0] * 6]) is None
         assert orchestrator_with_predict._predict_safety([]) is None
 
-    def test_speed_param_respected(self, calibration_file, monkeypatch):
-        monkeypatch.setattr(
-            Orchestrator, "_to_robodk_pose", lambda self, T: np.asarray(T)
-        )
+    def test_speed_param_respected(self, calibration_file):
         # Đường đi tốc độ cao → interpolation ít sample hơn → cũng OK
         orch = Orchestrator(
             queue.Queue(maxsize=3),

@@ -11,11 +11,16 @@
 # Python 3.10+ bắt buộc.
 # =============================================================================
 
-# ───── Cell management (Phụ lục A) ─────
-robodk>=5.5.0              # RoboDK API client
-pydantic>=2.0.0            # Config validation
+# ───── Config + math ─────
+pydantic>=2.0.0            # Config validation (cell_layout YAML schema)
 pyyaml>=6.0                # YAML parsing
-numpy>=1.24.0              # Pose math, numerical computing
+numpy>=1.24.0              # Pose math, kinematics, numerical computing
+
+# ───── (Tùy chọn) so sánh FK/IK với RoboDK ─────
+# Chỉ cần khi chạy `scripts/13_verify_vs_robodk.py` để verify client URDF FK +
+# DLS IK match RoboDK SolveFK/SolveIK. Stack motion + viewport KHÔNG dùng
+# RoboDK nữa (Open3D thay thế cho sim, HSE thay thế cho real).
+# robodk>=5.5.0
 
 # ───── Perception — INFERENCE bằng trọng số có sẵn ─────
 ultralytics>=8.1.0         # Load file .pt + chạy YOLOv8-seg inference
@@ -28,6 +33,14 @@ opencv-python>=4.8.0       # Image processing, ChArUco calibration; PCA dùng nu
 # Nếu `pip install pyrealsense2` lỗi (hoặc máy không cắm D455): thêm dấu #
 # vào đầu dòng dưới rồi cài lại — phần sim/test vẫn chạy đầy đủ khi thiếu nó.
 pyrealsense2>=2.54.0
+
+# ───── Viewport 3D thay RoboDK (tùy chọn) ─────
+# Open3D làm viewport live 3D cho sim mode — render local, 0 RoboDK API call
+# (thoát hẳn RoboDK Free API limit). Có wheel pip sẵn cho Windows (KHÔNG cần
+# C++ compiler như pybullet). Chỉ cần khi chạy `--viewport open3d` (legacy
+# Visualizer) hoặc `--viewport open3d-gui` (O3DVisualizer/Filament, navigate
+# mượt như RoboDK); sim/headless/real KHÔNG bắt buộc nó.
+open3d>=0.18.0
 
 # ───── Analysis & logging ─────
 pandas>=2.0.0              # Phân tích kết quả thí nghiệm

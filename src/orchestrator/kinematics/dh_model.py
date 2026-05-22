@@ -69,40 +69,61 @@ def gp7_default(
     base_rpy_rad: tuple[float, float, float] = (0.0, 0.0, 0.0),
     tool_offset_mm: float = 0.0,
 ) -> RobotDHModel:
-    """Yaskawa GP7 DH default values.
+    """Yaskawa GP7 DH default values — Modified DH (Craig 1986).
 
-    Spec source: datasheet HW1474564 (public).
-    Reach max ~927mm, payload 7kg, repeatability ±0.02mm.
+    Physical dimensions (Yaskawa GP7 datasheet HW1474564 + ROS-Industrial
+    motoman_gp7_support URDF):
+        d1  = 330 mm    Base height (J1 axis to J2 axis vertical)
+        a1  = 40  mm    J1 horizontal offset (J1 axis to J2 axis)
+        a2  = 445 mm    Upper arm length (J2 to J3)
+        d4  = 440 mm    Forearm length (J3 to J5)
+        d6  = 80  mm    Wrist to flange
+        Reach max ~927mm, payload 7kg, repeatability ±0.02mm
 
-    ⚠ VERIFY với máy thật trước khi dùng cho safety-critical predict. Sai
-    pulse_per_deg trong hse_protocol.py cũng làm sai actual joint angle.
+    Modified DH convention (link i's params are alpha_{i-1}, a_{i-1}, d_i):
+        Each transform = Rot_x(alpha) · Trans_x(a) · Rot_z(theta) · Trans_z(d)
+
+    | i | alpha_{i-1} | a_{i-1} | d_i | theta_offset_i |
+    |---|-------------|---------|-----|----------------|
+    | 1 |  0          |  0      | d1  |  0             |
+    | 2 | -π/2        |  a1     |  0  | -π/2           |  ← home arm horizontal
+    | 3 |  0          |  a2     |  0  |  0             |
+    | 4 | -π/2        |  0      | d4  |  0             |
+    | 5 |  π/2        |  0      |  0  |  0             |
+    | 6 | -π/2        |  0      | d6  |  0             |
+
+    Verified bằng `scripts/13_verify_vs_robodk.py` vs RoboDK GP7 model — max
+    position diff < 5mm khi base_xyz match. (URDF chain trong `urdf_chain.py`
+    cho kết quả khớp chính xác hơn — 0.00mm — và là default dùng trong orchestrator.)
     """
     deg = np.deg2rad
-    # Joint limits từ datasheet (deg → rad)
+    # GP7 dimensions (mm)
+    d1, a1, a2, d4, d6 = 330.0, 40.0, 445.0, 440.0, 80.0
+
     links = (
-        # S (J1): base rotation
-        DHLink(a=150.0,  alpha=deg(-90),  d=330.0,
+        # S (J1): base rotation about world Z
+        DHLink(a=0.0,    alpha=0.0,        d=d1,
                theta_offset=0.0,
                joint_min=deg(-170), joint_max=deg(170)),
-        # L (J2): shoulder
-        DHLink(a=760.0,  alpha=0.0,       d=0.0,
+        # L (J2): shoulder — rotate about Y after Rx(-90°) twist
+        DHLink(a=a1,     alpha=deg(-90),   d=0.0,
                theta_offset=deg(-90),
                joint_min=deg(-90),  joint_max=deg(155)),
-        # U (J3): elbow
-        DHLink(a=140.0,  alpha=deg(-90),  d=0.0,
+        # U (J3): elbow — same axis as L (no twist)
+        DHLink(a=a2,     alpha=0.0,        d=0.0,
                theta_offset=0.0,
                joint_min=deg(-175), joint_max=deg(240)),
-        # R (J4): wrist roll
-        DHLink(a=0.0,    alpha=deg(90),   d=795.0,
+        # R (J4): wrist roll — twist axis to forearm
+        DHLink(a=0.0,    alpha=deg(-90),   d=d4,
                theta_offset=0.0,
                joint_min=deg(-180), joint_max=deg(180)),
         # B (J5): wrist pitch
-        DHLink(a=0.0,    alpha=deg(-90),  d=0.0,
+        DHLink(a=0.0,    alpha=deg(90),    d=0.0,
                theta_offset=0.0,
                joint_min=deg(-135), joint_max=deg(135)),
         # T (J6): wrist yaw + flange
-        DHLink(a=0.0,    alpha=0.0,       d=80.0,
-               theta_offset=deg(180),
+        DHLink(a=0.0,    alpha=deg(-90),   d=d6,
+               theta_offset=0.0,
                joint_min=deg(-360), joint_max=deg(360)),
     )
     return RobotDHModel(

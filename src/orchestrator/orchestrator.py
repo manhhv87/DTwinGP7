@@ -1,17 +1,20 @@
 """
 orchestrator.py
 ───────────────
-Orchestrator: kết nối Perception ↔ RoboDK, điều khiển chu trình pick-and-place.
+Orchestrator: kết nối Perception ↔ robot backend, điều khiển chu trình pick-and-place.
 
 Vai trò:
   - Nhận detection (camera frame) từ perception queue
   - Chuyển sang base frame qua ma trận hand-eye
-  - Kiểm tra reachability + collision bằng digital twin (RoboDK) TRƯỚC khi gắp
-    → đây là "lớp an toàn dựa trên digital twin", đóng góp C2 của paper
-  - Thực thi pick-and-place qua RoboDK API (sim hoặc robot thật)
+  - Kiểm tra reachability bằng backend (SimRobot reach envelope hoặc predictive
+    safety pure-Python) → đóng góp C2 của paper
+  - Thực thi pick-and-place qua robot backend (SimRobot sim hoặc DigitalTwin
+    + HSE real)
   - Ghi log mọi trial qua TrialLogger
 
-RoboDK được lazy-import → module này import được khi chỉ chạy unit test logic.
+Backend cần inject sẵn (`robot=` arg). Module này KHÔNG còn phụ thuộc RoboDK —
+SolveIK đi qua URDF chain pure-Python (verified match RoboDK 0.00mm) hoặc YRC1000
+controller-side (Cartesian path).
 """
 from __future__ import annotations
 
@@ -55,43 +58,59 @@ _DEFAULT_CONFIG: dict[str, Any] = {
     # "đi ngang" từ place_lift đến lift mới). Tốn ~2 API call/trial nhưng
     # cần cho video demo trông tự nhiên.
     "return_home_after_success": True,
+    # ─── Gripper config ───
+    # 2 chế độ:
+    #   1. Single-bit toggle (default, sim + legacy): `gripper_do_index` 1 bit
+    #   2. Dual-solenoid + sensors (CC-Link real): set `gripper_cc_link` dict
+    #      trong config experiment.yaml hoặc CLI. Khi có → orchestrator dùng
+    #      pattern double-acting với feedback sensors thay vì blind delay.
     "gripper_do_index": 1,
-    "gripper_delay_s": 0.3,
+    "gripper_delay_s": 0.5,                 # fallback blind delay (no sensor)
+    "gripper_cc_link": None,                # opt-in: set dict cho CC-Link path
     "inter_trial_delay_s": 1.0,
     "speed_joint_deg_s": 60.0,
     "speed_linear_mm_s": 80.0,
     "detection_timeout_s": 2.0,
-    # Sim mặc định SKIP reachability check (tiết kiệm 4 API calls/trial cho
-    # RoboDK Free quota nhỏ). MoveJ sẽ tự raise nếu thật sự không với tới.
-    # Real mode nên đổi thành False để bật C2 (lớp an toàn digital twin).
+    # Sim mặc định SKIP reachability check (MoveJ tự raise nếu out-of-reach).
+    # Real mode nên đổi thành False để bật C2 (predictive safety layer).
     "skip_reachability_check": True,
-    # Khi True (default sim) tắt collision check vì RoboDK báo false-positive
-    # cho gripper-touching-object lúc grasp. Real mode set False để giữ
-    # collision check + reachability — C2 lớp an toàn digital twin.
     "is_real_mode": False,
     # UC2 — Pure-Python predictive simulation TRƯỚC khi gửi MoveJ tới robot.
-    # Verify joint limit + self-collision đầy đủ trajectory (không chỉ 1 pose
-    # như MoveJ_Test). Khi True: pre-check ~50ms/trial, reject trial nếu predicted
-    # unsafe. Khi False: skip predict (tăng tốc nhưng yếu safety).
+    # Verify joint limit + self-collision đầy đủ trajectory. Khi True:
+    # pre-check ~50ms/trial, reject trial nếu predicted unsafe.
     "predictive_safety_enabled": False,
     # Max joint speed (deg/s) dùng cho predict interpolation. Phải khớp tốc độ
     # thực tế của robot để predict đúng motion sequence.
     "predict_max_speed_deg_s": 30.0,
+    # Khi True: dùng numerical IK client-side (URDF chain DLS pure-Python).
+    # Default cho mọi backend non-YRC.
+    "use_client_ik": False,
+    # Base pose của robot trong world frame (mm + radian). Dùng để init URDF
+    # model với base offset đúng cho client IK.
+    "robot_base_xyz_mm": (0.0, 0.0, 0.0),
+    "robot_base_rpy_deg": (0.0, 0.0, 0.0),
+    # Tool TCP offset (mm) theo Z của flange. Phải khớp gripper TCP trong
+    # cell config để IK trả đúng joints cho fingertip pose.
+    "robot_tool_offset_mm": 0.0,
+    # Khi True: gửi pose Cartesian thẳng tới YRC1000 qua HSE BASE position
+    # variable → controller tự IK. Recommended cho HSE real mode. Override
+    # use_client_ik.
+    "use_yrc_ik": False,
 }
 
 
 class Orchestrator:
-    """Điều phối chu trình pick-and-place dựa trên RoboDK digital twin.
+    """Điều phối chu trình pick-and-place qua robot backend (SimRobot hoặc HSE).
 
     Sử dụng:
-        orch = Orchestrator(perception_queue, config, robot=mock_robot)
+        orch = Orchestrator(perception_queue, config, robot=sim_robot)
         stats = orch.run_n_trials(50)
 
     Args:
         perception_queue: Queue chứa message detection từ PerceptionNode.
         config: Dict cấu hình (xem _DEFAULT_CONFIG).
-        robot: (Tùy chọn) Inject sẵn một robot item — dùng cho test với mock.
-            Nếu None → tự kết nối RoboDK và tìm robot.
+        robot: Backend duck-typed (SimRobot hoặc DigitalTwinMirror). BẮT BUỘC
+            inject — không còn auto-connect tới RoboDK.
         logger_obj: (Tùy chọn) TrialLogger để ghi kết quả.
     """
 
@@ -101,120 +120,26 @@ class Orchestrator:
         config: dict[str, Any] | None = None,
         robot: Any = None,
         logger_obj: Any = None,
-        robodk_objects: dict[str, Any] | None = None,
-        robodk_tool: Any = None,
     ) -> None:
         self.queue = perception_queue
         self.config = {**_DEFAULT_CONFIG, **(config or {})}
         self.trial_logger = logger_obj
 
-        # Items để attach/detach object vào gripper trong sim mode (visualize
-        # gắp-đi). None ở headless / --no-build → no-op gracefully.
-        self.robodk_objects: dict[str, Any] = robodk_objects or {}
-        self.robodk_tool = robodk_tool
-        self._attached_obj: Any = None
-        # Lưu pose + parent ban đầu của object để reset đầu mỗi trial — tránh
-        # object dịch chuyển ra xa dần (offset cố định khi setParentStatic attach).
-        self._initial_obj_poses: dict[str, Any] = {}
-        self._initial_obj_parents: dict[str, Any] = {}
-
-        self._rdk = None
+        if robot is None:
+            raise ValueError(
+                "Orchestrator yêu cầu robot backend (SimRobot hoặc DigitalTwinMirror) "
+                "qua arg `robot=`. RoboDK auto-connect đã bị loại bỏ."
+            )
         self.robot = robot
-        if self.robot is None:
-            self._connect_robodk()
 
-        # Tải ma trận hand-eye calibration.
         self.T_BC = load_calibration(self.config["calibration_path"])
         logger.info("Loaded hand-eye T_BC, translation=%s mm", self.T_BC[:3, 3].round(1))
-
-        # MoveJ pose được RoboDK diễn giải trong parent frame của robot
-        # (mặc định). Cell ta đặt parent ở pedestal (Z=630), nhưng orchestrator
-        # và T_BC đều dùng WORLD frame. Tính sẵn transform để convert
-        # pose world → parent trước khi gọi MoveJ/MoveJ_Test.
-        self._T_world_to_robotbase = self._compute_world_to_robotbase()
-        if not np.allclose(self._T_world_to_robotbase, np.eye(4)):
-            logger.info(
-                "Robot parent frame ở world Z=%.1fmm — sẽ convert pose world→parent",
-                -self._T_world_to_robotbase[2, 3],
-            )
-
-        # Disable collision check ở runtime — RoboDK báo "collision" cho cả
-        # gripper-touching-object khi grasp (đó là CHỦ ĐÍCH, không phải lỗi)
-        # và arm-sweeping-through-template-volume khi IK chọn config. Cả hai
-        # đều block MoveJ. Sim cần disable để chạy được.
-        # Real mode: GIỮ collision check để an toàn vật lý (C2).
-        if not self.config.get("is_real_mode", False):
-            self._disable_collision_check()
-        else:
-            logger.info("Real mode: collision check GIỮ active (safety layer)")
 
         self.sm = PickPlaceStateMachine()
         self.stats = {"attempted": 0, "successful": 0, "failed": 0}
         self._current_joints: list[float] | None = None       # cache cho SolveIK ref
 
-        # setSpeed gọi 1 lần ở init thay vì mỗi trial (-1 API call/trial).
         self._set_speed()
-
-        # Capture pose + parent ban đầu của các object → có baseline để reset
-        # đầu mỗi trial. Chỉ làm khi có robodk_objects (sim mode với RoboDK).
-        self._capture_initial_object_poses()
-
-    def _disable_collision_check(self) -> None:
-        """Tắt collision check toàn cục — xem comment trong __init__."""
-        try:
-            rdk = self._rdk
-            if rdk is None and hasattr(self.robot, "RDK") and callable(self.robot.RDK):
-                rdk = self.robot.RDK()
-            if rdk is None or not hasattr(rdk, "setCollisionActive"):
-                return
-            rdk.setCollisionActive(0)
-            logger.info("Collision check disabled (sim convention)")
-        except Exception as e:  # noqa: BLE001
-            logger.debug("setCollisionActive bỏ qua: %s", e)
-
-    def _compute_world_to_robotbase(self) -> np.ndarray:
-        """Tính ma trận chuyển từ world frame sang robot reference frame.
-
-        RoboDK MoveJ(pose) diễn giải pose tương đối với robot.Parent() (mặc định).
-        Cell_loader đặt parent ở pedestal height (vd Z=630) → cần convert
-        target_in_parent = inv(T_parent_in_world) @ target_in_world.
-
-        Trả về identity nếu không lấy được pose parent (vd mock robot trong test).
-        """
-        try:
-            if not (hasattr(self.robot, "Parent") and callable(self.robot.Parent)):
-                return np.eye(4)
-            parent = self.robot.Parent()
-            if parent is None or not hasattr(parent, "PoseAbs"):
-                return np.eye(4)
-            from src.cell.pose_utils import robodk_pose_to_matrix
-            from src.calibration.hand_eye_solver import invert_transform
-            T_parent_in_world = robodk_pose_to_matrix(parent.PoseAbs())
-            if not isinstance(T_parent_in_world, np.ndarray):
-                return np.eye(4)
-            if T_parent_in_world.shape != (4, 4):
-                return np.eye(4)
-            return invert_transform(T_parent_in_world)
-        except Exception as e:  # noqa: BLE001
-            logger.debug("Robot parent frame không sẵn có: %s", e)
-            return np.eye(4)
-
-    # ────────────────────────────────────────────────────────────
-    # Kết nối
-    # ────────────────────────────────────────────────────────────
-
-    def _connect_robodk(self) -> None:
-        """Kết nối RoboDK và lấy robot item (lazy import)."""
-        from robodk.robolink import ITEM_TYPE_ROBOT, Robolink
-
-        self._rdk = Robolink()
-        self.robot = self._rdk.Item(self.config["robot_name"], ITEM_TYPE_ROBOT)
-        if not self.robot.Valid():
-            raise RuntimeError(
-                f"Robot '{self.config['robot_name']}' không có trong RoboDK station. "
-                f"Chạy scripts/build_station.py trước."
-            )
-        logger.info("Connected to robot '%s'", self.config["robot_name"])
 
     # ────────────────────────────────────────────────────────────
     # Helpers chuyển toạ độ + điều khiển
@@ -224,113 +149,142 @@ class Orchestrator:
         """Chuyển detections sang base frame, sắp xếp vật trên-cùng trước.
 
         Trả về list rỗng nếu không có vật.
-
-        Side-effect: cập nhật pose của RoboDK object item theo detection để
-        digital twin viewport phản ánh vị trí THẬT của vật (không phải template
-        pose tĩnh trong cell config). Trong sim mode detection từ MockDetector
-        luôn khớp template → update no-op; real mode update theo D455 detection.
         """
         objects = det_msg.get("objects", [])
         for o in objects:
             xyz_cam = np.array(o["pose_camera"][:3], dtype=float)
             o["pose_base"] = camera_to_base(xyz_cam, self.T_BC)
-            # Mirror detection lên viewport (real mode)
-            self._mirror_object_pose(o)
         # Vật có Z cao nhất (gần camera / nằm trên cùng) được gắp trước.
         objects.sort(key=lambda o: o["pose_base"][2], reverse=True)
         return objects
 
-    def _mirror_object_pose(self, det: dict[str, Any]) -> None:
-        """Cập nhật pose của object item trong RoboDK theo detection.
-
-        Bidirectional digital twin requirement: khi camera detect vật ở vị trí
-        thật khác template, viewport phải reflect vị trí đó để Orchestrator's
-        downstream visualization (planning lines, collision viz) khớp reality.
-
-        No-op nếu:
-          - robodk_objects rỗng (headless mode)
-          - Class name không có item tương ứng
-          - Item đang được attach vào gripper (đang gắp, không reset pose)
-        """
-        if not self.robodk_objects:
-            return
-        class_name = det.get("class_name")
-        if not class_name:
-            return
-        item = self.robodk_objects.get(class_name)
-        if item is None or not hasattr(item, "setPose"):
-            return
-        # Không update pose nếu vật đang được attach (gắp đi rồi)
-        if self._attached_obj is item:
-            return
-
-        # Xây pose 4x4 từ xyz_base + yaw (từ PCA mask)
-        xyz_base = det["pose_base"]
-        yaw_rad = det.get("pose_camera", (0, 0, 0, 0))[3] if "pose_camera" in det else 0.0
-        T = np.eye(4)
-        cos_y, sin_y = np.cos(yaw_rad), np.sin(yaw_rad)
-        T[0, 0], T[0, 1] = cos_y, -sin_y
-        T[1, 0], T[1, 1] = sin_y, cos_y
-        T[:3, 3] = xyz_base
-
-        try:
-            item.setPose(self._to_robodk_pose(T))
-            logger.debug(
-                "Mirror object '%s' → pose %s", class_name, xyz_base.round(1).tolist()
-            )
-        except Exception as e:                          # noqa: BLE001
-            logger.debug("Mirror object '%s' setPose lỗi: %s", class_name, e)
-
     def _is_reachable(self, target_T: np.ndarray) -> bool:
-        """Kiểm tra robot có với tới pose `target_T` (numpy 4x4) không.
+        """Kiểm tra pose `target_T` (numpy 4x4) trong reach envelope GP7.
 
-        RoboDK MoveJ_Test convention:
-            0   = OK, không va chạm
-            > 0 = va chạm tại joint số đó (collision check active)
-            < 0 = không với tới (out of reach / joint limit / singularity)
+        Dùng sphere envelope client-side (`backends.reach_envelope`) — pure
+        Python, không phụ thuộc backend. SimRobot có MoveJ_Test riêng (sphere
+        envelope nội bộ) nhưng DigitalTwinMirror.MoveJ_Test giờ là no-op → cần
+        check client-side ở orchestrator level.
 
-        Trong sim, va chạm thường là false positive (gripper-vs-object template,
-        arm-vs-pedestal khi planner chọn config không tối ưu). Chỉ reject nếu
-        thật sự out-of-reach (< 0). Real mode nên enable collision check riêng
-        và xử lý tách bạch — đó là pha tuning sau (mục 9 tài liệu).
+        Đây là layer pre-filter NHẸ (0 IK call). Predictive safety C2 (joint
+        limit + self-collision toàn trajectory) chạy sau trong
+        `_execute_pick_place` nếu `predictive_safety_enabled=True`.
         """
         try:
-            target_pose = self._to_robodk_pose(target_T)
-            result = self.robot.MoveJ_Test(self.robot.Joints(), target_pose)
-            if result < 0:
-                logger.info(
-                    "MoveJ_Test out-of-reach (code=%s) tại world %s",
-                    result, target_T[:3, 3].round(1).tolist(),
-                )
-                return False
-            if result > 0:
-                logger.debug(
-                    "MoveJ_Test phát hiện va chạm tại joint %s, pose world %s — chấp nhận trong sim",
-                    result, target_T[:3, 3].round(1).tolist(),
-                )
+            from .backends.reach_envelope import ReachEnvelope
+        except ImportError:
             return True
-        except Exception as e:  # noqa: BLE001
-            logger.warning("MoveJ_Test lỗi: %s", e)
+
+        base_xyz = tuple(self.config.get("robot_base_xyz_mm", (0.0, 0.0, 0.0)))
+        if not hasattr(self, "_reach_env_cached"):
+            self._reach_env_cached = ReachEnvelope.gp7_default(base_xyz_mm=base_xyz)
+
+        target_xyz = np.asarray(target_T)[:3, 3]
+        if not self._reach_env_cached.can_reach(target_xyz):
+            logger.info(
+                "Reach envelope fail tại world %s (base=%s)",
+                target_xyz.round(1).tolist(), list(base_xyz),
+            )
             return False
+        return True
 
     def _gripper(self, close: bool, obj_class: str | None = None) -> None:
-        """Đóng/mở gripper qua Digital Output, chờ ổn định.
+        """Đóng/mở gripper. 2 paths tùy config:
+
+        **Path A — CC-Link double-acting + feedback** (real, có PLC + sensors):
+        Khi `config["gripper_cc_link"]` set:
+          1. Mutually exclusive: tắt solenoid kia trước rồi bật solenoid này
+             (an toàn cylinder — không drive 2 chiều cùng lúc)
+          2. Wait sensor position bit confirm cylinder đã đến vị trí (clamp/unclamp)
+          3. (Close only) verify detect sensor X505 ON → vật trong gripper
+             → fail "grasp_failed" nếu OFF (config require_detect_on_close=True)
+
+        **Path B — Single-bit blind delay** (sim, legacy, no PLC feedback):
+        Fallback `setDO(gripper_do_index, ...)` + `gripper_delay_s` cố định.
 
         Sim mode: kèm attach/detach object item vào gripper tool qua
         `setParentStatic` để object visually di chuyển theo gripper.
-        Headless / no robodk_objects: no-op.
-
-        Delay: dùng `self.robot.timer()` nếu backend support (HSE batch mode
-        → INFORM TIMER instruction) hoặc fallback time.sleep.
         """
+        cc = self.config.get("gripper_cc_link")
+        if cc and hasattr(self.robot, "set_io") and hasattr(self.robot, "read_io"):
+            self._gripper_cc_link(close, obj_class, cc)
+        else:
+            self._gripper_simple(close, obj_class)
+
+    def _gripper_simple(self, close: bool, obj_class: str | None) -> None:
+        """Path B: 1-bit toggle + blind delay (legacy / sim path)."""
         self.robot.setDO(self.config["gripper_do_index"], 1 if close else 0)
-
-        if close and obj_class:
-            self._attach_to_gripper(obj_class)
-        elif not close:
-            self._detach_from_gripper()
-
+        # Visual attach/detach (sim viewport) — gọi backend nếu support
+        self._notify_viewport_grasp(close, obj_class)
         self._robot_timer(self.config["gripper_delay_s"])
+
+    def _gripper_cc_link(
+        self, close: bool, obj_class: str | None, cc: dict,
+    ) -> None:
+        """Path A: double-acting solenoid + sensor feedback qua CC-Link."""
+        if close:
+            # Sequence an toàn: tắt UnClamp trước, BẬT Clamp
+            self.robot.set_io(cc["unclamp_bit"], 0)
+            self.robot.set_io(cc["clamp_bit"], 1)
+            sensor_bit = cc["clamp_sensor_bit"]
+            action_name = "Clamp"
+        else:
+            self.robot.set_io(cc["clamp_bit"], 0)
+            self.robot.set_io(cc["unclamp_bit"], 1)
+            sensor_bit = cc["unclamp_sensor_bit"]
+            action_name = "UnClamp"
+
+        # Wait sensor confirm cylinder đã đến vị trí (KHÔNG dùng blind delay)
+        if not self._wait_sensor_on(
+            sensor_bit,
+            timeout_s=float(cc.get("wait_sensor_timeout_s", 2.0)),
+            poll_s=float(cc.get("wait_sensor_poll_s", 0.05)),
+        ):
+            raise RuntimeError(
+                f"gripper_timeout: {action_name} sensor (bit {sensor_bit}) "
+                f"không ON sau {cc.get('wait_sensor_timeout_s', 2.0)}s"
+            )
+
+        # Verify grasp khi close (require detect sensor X505)
+        if close and cc.get("require_detect_on_close", True):
+            detect = self.robot.read_io(cc["detect_bit"])
+            if detect != 1:
+                raise RuntimeError(
+                    f"grasp_failed: detect sensor (bit {cc['detect_bit']}) "
+                    f"OFF — vật không trong gripper"
+                )
+
+        # Visual object attach/detach (sim viewport)
+        self._notify_viewport_grasp(close, obj_class)
+
+    def _notify_viewport_grasp(self, close: bool, obj_class: str | None) -> None:
+        """Notify backend viewport (nếu support) khi gripper đóng/mở.
+
+        Viewport (Open3D SimRobot/Mirror) dùng signal này để attach/detach
+        object mesh khỏi tool. Backend không có → no-op.
+        """
+        if close and obj_class and hasattr(self.robot, "attach_object"):
+            try:
+                self.robot.attach_object(obj_class)
+            except Exception as e:  # noqa: BLE001
+                logger.debug("viewport attach_object lỗi: %s", e)
+        elif not close and hasattr(self.robot, "detach_object"):
+            try:
+                self.robot.detach_object()
+            except Exception as e:  # noqa: BLE001
+                logger.debug("viewport detach_object lỗi: %s", e)
+
+    def _wait_sensor_on(
+        self, bit_addr: int, timeout_s: float, poll_s: float,
+    ) -> bool:
+        """Poll sensor bit cho tới khi == 1 hoặc timeout. Returns True nếu ON."""
+        deadline = time.monotonic() + timeout_s
+        while time.monotonic() < deadline:
+            val = self.robot.read_io(bit_addr)
+            if val == 1:
+                return True
+            time.sleep(poll_s)
+        return False
 
     def _robot_timer(self, seconds: float) -> None:
         """Sleep với batch awareness — INFORM TIMER trong batch, time.sleep ngoài."""
@@ -399,120 +353,51 @@ class Orchestrator:
 
         return None
 
-    def _attach_to_gripper(self, obj_class: str) -> None:
-        """Set parent của object item → gripper tool. Object follow gripper."""
-        if not self.robodk_objects or self.robodk_tool is None:
-            return
-        item = self.robodk_objects.get(obj_class)
-        if item is None or not hasattr(item, "setParentStatic"):
-            return
-        try:
-            item.setParentStatic(self.robodk_tool)
-            self._attached_obj = item
-            logger.debug("Attached object '%s' to gripper", obj_class)
-        except Exception as e:  # noqa: BLE001
-            logger.debug("Attach failed: %s", e)
+    def _predict_safety_for_trajectory(
+        self, target_T_world_list: list[np.ndarray]
+    ) -> str | None:
+        """Build joint trajectory từ list pose world + check predictive safety.
 
-    def _capture_initial_object_poses(self) -> None:
-        """Lưu Pose() + Parent() của object để reset đầu mỗi trial."""
-        for name, item in self.robodk_objects.items():
-            if not hasattr(item, "Pose") or not hasattr(item, "Parent"):
-                continue
-            try:
-                self._initial_obj_poses[name] = item.Pose()
-                self._initial_obj_parents[name] = item.Parent()
-            except Exception as e:  # noqa: BLE001
-                logger.debug("Capture initial pose '%s' failed: %s", name, e)
-
-    def _reset_objects_to_initial(self) -> None:
-        """Reset object về parent_frame + pose ban đầu (đầu mỗi trial).
-
-        Không có baseline (headless/no-build) → no-op gracefully.
+        Solve IK client-side cho từng pose (URDF DLS), prepend joints hiện tại,
+        rồi gọi `_predict_safety`. Short-circuit return None nếu predictive
+        safety disabled hoặc IK fail (để main flow tự handle).
         """
-        if not self._initial_obj_poses:
-            return
-        for name, item in self.robodk_objects.items():
-            pose = self._initial_obj_poses.get(name)
-            parent = self._initial_obj_parents.get(name)
-            if pose is None or parent is None:
-                continue
-            try:
-                if hasattr(item, "setParentStatic"):
-                    item.setParentStatic(parent)
-                if hasattr(item, "setPose"):
-                    item.setPose(pose)
-            except Exception as e:  # noqa: BLE001
-                logger.debug("Reset object '%s' failed: %s", name, e)
+        if not self.config.get("predictive_safety_enabled", False):
+            return None
+        if not target_T_world_list:
+            return None
 
-    def _detach_from_gripper(self) -> None:
-        """Detach: set parent về station root, giữ pose absolute hiện tại."""
-        if self._attached_obj is None:
-            return
-        if not hasattr(self._attached_obj, "setParentStatic"):
-            self._attached_obj = None
-            return
-        try:
-            rdk = self._rdk
-            if rdk is None and hasattr(self.robot, "RDK") and callable(self.robot.RDK):
-                rdk = self.robot.RDK()
-            if rdk is not None and hasattr(rdk, "ActiveStation"):
-                self._attached_obj.setParentStatic(rdk.ActiveStation())
-                logger.debug("Detached object from gripper")
-        except Exception as e:  # noqa: BLE001
-            logger.debug("Detach failed: %s", e)
-        self._attached_obj = None
+        # Build joint waypoints (radian) — current first, then each target via IK
+        waypoints_rad: list[list[float]] = []
+        if self._current_joints is not None:
+            waypoints_rad.append([np.deg2rad(q) for q in self._current_joints])
+        for T in target_T_world_list:
+            joints_deg = self._solve_ik_client(T)
+            if joints_deg is None:
+                # IK fail — không predict được, để main flow raise tự nhiên
+                logger.debug("Predictive safety skip: IK fail tại world %s",
+                             T[:3, 3].round(1).tolist())
+                return None
+            waypoints_rad.append([np.deg2rad(q) for q in joints_deg])
 
-    def _to_robodk_pose(self, T: np.ndarray):
-        """Chuyển numpy 4x4 (world frame) → RoboDK Mat (parent frame).
-
-        Apply T_world_to_robotbase conversion để MoveJ nhận pose đúng frame
-        (mặc định RoboDK diễn giải trong parent frame của robot).
-        """
-        from robodk.robomath import Mat
-
-        T_parent = self._T_world_to_robotbase @ np.asarray(T)
-        return Mat(T_parent.tolist())
+        return self._predict_safety(waypoints_rad)
 
     @staticmethod
     def _joints_to_list(joints) -> list[float] | None:
-        """Convert RoboDK Mat hoặc list-like → flat list of 6 floats.
-
-        RoboDK Joints() / SolveIK() trả về Mat. Phụ thuộc shape (1xN row hoặc
-        Nx1 col), .tolist() ra hình thức khác nhau. Handle cả 2.
-        """
+        """Convert iterable joints → flat list of 6 floats."""
         if joints is None:
             return None
-        # Ưu tiên .tolist() (RoboDK Mat method)
-        for getter in (
-            lambda: joints.tolist() if hasattr(joints, "tolist") else None,
-            lambda: list(joints),
-        ):
+        try:
+            data = list(joints)
+        except TypeError:
+            return None
+        if not data:
+            return None
+        if isinstance(data[0], (int, float)) and len(data) >= 6:
             try:
-                data = getter()
-            except Exception:  # noqa: BLE001
-                continue
-            if not data:
-                continue
-            # Trường hợp 1: đã là list[float] phẳng
-            if isinstance(data[0], (int, float)) and len(data) >= 6:
-                try:
-                    return [float(j) for j in data[:6]]
-                except (TypeError, ValueError):
-                    continue
-            # Trường hợp 2: nested [[j1, j2, ..., j6]] (1xN row)
-            if isinstance(data[0], list) and len(data) == 1 and len(data[0]) >= 6:
-                try:
-                    return [float(j) for j in data[0][:6]]
-                except (TypeError, ValueError):
-                    continue
-            # Trường hợp 3: nested [[j1], [j2], ...] (Nx1 column)
-            if isinstance(data[0], list) and len(data) >= 6 and all(
-                isinstance(row, list) and len(row) >= 1 for row in data[:6]
-            ):
-                try:
-                    return [float(row[0]) for row in data[:6]]
-                except (TypeError, ValueError):
-                    continue
+                return [float(j) for j in data[:6]]
+            except (TypeError, ValueError):
+                return None
         return None
 
     def _normalize_target_joints(self, target_joints):
@@ -539,39 +424,96 @@ class Orchestrator:
             result[i] = tgt
         return result
 
-    def _solve_ik_joints(self, pose) -> list[float] | None:
-        """Tính joints cho pose; trả None nếu không có solution.
+    def _solve_ik_client(self, target_T_world: np.ndarray) -> list[float] | None:
+        """Numerical IK client-side qua kinematics module (DLS pure-Python).
 
-        SolveIK với `joints_approx = current` → pick solution gần nhất, tránh
-        MoveJ refusing on discontinuous joint motion.
+        URDF chain verified match RoboDK SolveFK 0.00mm — không cần RoboDK fallback.
+
+        Args:
+            target_T_world: 4x4 pose trong WORLD frame (orchestrator native).
+
+        Returns:
+            Joints (degrees) gần `_current_joints`, hoặc None nếu không converge.
         """
-        joints = None
-        if self._current_joints is not None:
-            try:
-                joints = self.robot.SolveIK(pose, self._current_joints)
-            except (TypeError, AttributeError):
-                joints = None
-        if joints is None:
-            try:
-                joints = self.robot.SolveIK(pose)
-            except Exception:  # noqa: BLE001
-                return None
-        return self._joints_to_list(joints)
+        try:
+            from .kinematics import inverse_kinematics_seeded
+            from .kinematics.urdf_chain import gp7_urdf
+        except ImportError:
+            return None
+
+        if not hasattr(self, "_dh_model_cached"):
+            # URDF chain — verified match RoboDK SolveFK (0.00mm diff)
+            self._dh_model_cached = gp7_urdf(
+                base_xyz_mm=tuple(self.config.get("robot_base_xyz_mm", (0.0, 0.0, 0.0))),
+                tool_offset_mm=float(self.config.get("robot_tool_offset_mm", 0.0)),
+            )
+        model = self._dh_model_cached
+
+        q_init = (
+            [np.deg2rad(q) for q in self._current_joints]
+            if self._current_joints is not None
+            else [0.0] * 6
+        )
+        # Multi-seed: thử q_init trước (nghiệm gần, mượt); fail thì retry từ seed
+        # đa dạng → ~100% hội tụ.
+        sol_rad = inverse_kinematics_seeded(model, target_T_world, q_init)
+        if sol_rad is None:
+            return None
+        return [float(np.rad2deg(q)) for q in sol_rad]
+
+    def _world_to_robot_base(self, T_world: np.ndarray) -> np.ndarray:
+        """Convert pose 4x4 từ world → robot BASE frame (cho HSE Cartesian).
+
+        Wrap frame_convert.world_to_robot_base() với config-driven base pose.
+        """
+        from .frame_convert import world_to_robot_base
+        base_xyz = tuple(self.config.get("robot_base_xyz_mm", (0.0, 0.0, 0.0)))
+        base_rpy = tuple(self.config.get("robot_base_rpy_deg", (0.0, 0.0, 0.0)))
+        return world_to_robot_base(T_world, base_xyz, base_rpy)
+
+    def _solve_ik_routed(self, target_T_world: np.ndarray):
+        """Pick IK source: YRC controller (Cartesian) hoặc client-side DLS.
+
+        Priority:
+          1. use_yrc_ik=True → gửi pose Cartesian thẳng cho backend (YRC tự IK).
+             Trả về ("YRC_POSE", T_base).
+          2. Default → numerical DLS client-side. Trả về (joint_list, None).
+
+        Returns:
+            ("YRC_POSE", T_base): caller gọi MoveJ(T_base) Cartesian
+            (joint_list, None): caller gọi MoveJ(joint_list)
+            (None, None): IK fail
+        """
+        # Path 1: YRC tự IK — gửi pose Cartesian thẳng
+        if self.config.get("use_yrc_ik", False):
+            T_base = self._world_to_robot_base(target_T_world)
+            return ("YRC_POSE", T_base)
+
+        # Path 2: client-side numerical IK (default — URDF chain match RoboDK 0.00mm)
+        joint_list = self._solve_ik_client(target_T_world)
+        if joint_list is None:
+            logger.warning("Client DLS IK fail tại world %s",
+                           target_T_world[:3, 3].round(1).tolist())
+            return (None, None)
+        return (joint_list, None)
 
     def _move_j_via_ik(self, target_T: np.ndarray) -> None:
-        """MoveJ via SolveIK với joints gần current → MoveJ(joints).
+        """MoveJ qua IK route (YRC controller hoặc client DLS)."""
+        result, pose = self._solve_ik_routed(target_T)
 
-        RoboDK MoveJ(pose) đôi khi raise 'Target cannot be reached' do internal
-        IK chọn solution xa current joints. Truyền `joints_approx=current` vào
-        SolveIK để pick solution gần nhất, rồi MoveJ(joints) bypass IK internal.
-        Normalize joints wrap ±360 để tránh full-rotation "chong chóng".
-        """
-        pose = self._to_robodk_pose(target_T)
-        joint_list = self._solve_ik_joints(pose)
-        if joint_list is None:
-            # Mock robot trong test hoặc SolveIK fail → fallback MoveJ(pose)
+        # YRC IK path — pass pose 4x4 trực tiếp, controller tự IK
+        if result == "YRC_POSE":
+            logger.debug("MoveJ Cartesian (YRC IK): target_base=%s",
+                         pose[:3, 3].round(1).tolist())
             self.robot.MoveJ(pose)
+            self._current_joints = None
             return
+
+        joint_list = result
+        if joint_list is None:
+            raise RuntimeError(
+                f"IK fail at world {target_T[:3, 3].round(1).tolist()} (no fallback)"
+            )
         joint_list = self._normalize_target_joints(joint_list)
         logger.debug("MoveJ joints=%s (target world=%s)",
                      [round(j, 1) for j in joint_list],
@@ -580,12 +522,19 @@ class Orchestrator:
         self._current_joints = joint_list
 
     def _move_l_via_ik(self, target_T: np.ndarray) -> None:
-        """MoveL via SolveIK với joints gần current (same pattern as MoveJ)."""
-        pose = self._to_robodk_pose(target_T)
-        joint_list = self._solve_ik_joints(pose)
-        if joint_list is None:
+        """MoveL qua IK route — same pattern as MoveJ."""
+        result, pose = self._solve_ik_routed(target_T)
+
+        if result == "YRC_POSE":
             self.robot.MoveL(pose)
+            self._current_joints = None
             return
+
+        joint_list = result
+        if joint_list is None:
+            raise RuntimeError(
+                f"IK fail at world {target_T[:3, 3].round(1).tolist()} (no fallback)"
+            )
         joint_list = self._normalize_target_joints(joint_list)
         self.robot.MoveL(joint_list)
         self._current_joints = joint_list
@@ -603,9 +552,13 @@ class Orchestrator:
         self.sm.reset()
         t_start = time.time()
 
-        # Reset object về vị trí template ban đầu để mỗi trial có scene
-        # giống nhau (loop demo không "trôi" object dần).
-        self._reset_objects_to_initial()
+        # Reset viewport scene về template ban đầu (nếu backend support) —
+        # tránh object "trôi" dần qua nhiều trial.
+        if hasattr(self.robot, "reset_scene"):
+            try:
+                self.robot.reset_scene()
+            except Exception as e:  # noqa: BLE001
+                logger.debug("reset_scene lỗi: %s", e)
 
         # ─── DETECT ───
         self.sm.transition_to(PickState.DETECT)
@@ -716,23 +669,36 @@ class Orchestrator:
     ) -> bool:
         """Chạy chuỗi chuyển động gắp-thả. Trả về True nếu thành công.
 
-        Nhận 4 pose đã được PLAN tính sẵn (vì cùng dữ liệu dùng cho reachability
-        check). Chỉ chuyển sang RoboDK Mat ngay trước khi gọi robot → logic này
-        test được bằng mock không cần RoboDK.
+        Nhận 4 pose đã được PLAN tính sẵn. Pose ở WORLD frame numpy 4x4;
+        backend (SimRobot / DigitalTwinMirror) tự xử lý frame conversion.
         """
         try:
             # Cache current joints chỉ lần đầu (trial 1) — các trial sau dùng
             # self._current_joints đã được _move_*_via_ik cập nhật ở trial trước.
-            # Tiết kiệm 1 robot.Joints() call/trial cho RoboDK Free quota nhỏ.
             if self._current_joints is None:
                 try:
                     self._current_joints = self._joints_to_list(self.robot.Joints())
                 except Exception:  # noqa: BLE001
                     pass
 
+            # UC2 — Predictive safety: solve IK cho 4 waypoint, build joint
+            # trajectory (gồm current → lift → grasp → lift → place_lift →
+            # place → place_lift), verify joint limit + self-collision pure-
+            # Python TRƯỚC khi gửi MoveJ. Reject sớm trial unsafe → tránh
+            # gửi alarm-prone command lên controller thật.
+            reason = self._predict_safety_for_trajectory(
+                [lift_T, grasp_T, lift_T, place_lift_T, place_T, place_lift_T]
+            )
+            if reason is not None:
+                logger.warning("Trial %d: predictive safety reject — %s",
+                               trial_id, reason)
+                self.stats["failed"] += 1
+                self.sm.fail(reason)
+                return False
+
             # Batch context: HSE backend gom toàn bộ motion + IO vào 1 INFORM job
             # → 1 FTP upload + 1 JOB_START/trial thay vì 5-7 lần. Backends khác
-            # (RoboDK item, SimRobot) → nullcontext, code chạy nguyên văn.
+            # (SimRobot) → nullcontext, code chạy nguyên văn.
             with self._robot_batch_ctx():
                 self.sm.transition_to(PickState.APPROACH)
                 self._move_j_via_ik(lift_T)
@@ -821,29 +787,11 @@ class Orchestrator:
             logger.warning("Không về home được: %s", e)
 
     def run_n_trials(self, n: int) -> dict[str, Any]:
-        """Chạy `n` trial liên tiếp, trả về thống kê tổng hợp.
-
-        Bail out sớm nếu phát hiện connection tới RoboDK bị drop (RoboDK Free
-        hết quota / GUI bị đóng) — tránh spam log với 100% trial fail vô ích.
-        """
+        """Chạy `n` trial liên tiếp, trả về thống kê tổng hợp."""
         logger.info("Bắt đầu %d trials", n)
         for i in range(n):
             logger.info("─── Trial %d/%d ───", i + 1, n)
             self.run_one_cycle(trial_id=i + 1)
-
-            # Auto-abort khi mất kết nối RoboDK (WinError 10053/10054).
-            # 3 trial liên tiếp fail với cùng motion_error → connection chết.
-            recent_fails = [r for r in self.sm.history[-12:]
-                            if r.note.startswith(("motion_error", "WinError"))]
-            if len(recent_fails) >= 3 and any(
-                "1005" in r.note for r in recent_fails  # WinError 10053/10054
-            ):
-                logger.error(
-                    "RoboDK API connection lost (3 motion_error liên tiếp) — abort loop. "
-                    "Dùng --headless cho batch lớn hoặc khởi động lại RoboDK."
-                )
-                break
-
             time.sleep(self.config["inter_trial_delay_s"])
 
         attempted = max(self.stats["attempted"], 1)

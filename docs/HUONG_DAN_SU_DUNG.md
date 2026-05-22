@@ -1,4 +1,4 @@
-# HƯỚNG DẪN SỬ DỤNG — pickplace_gp7 / DTwinGP7
+# HƯỚNG DẪN SỬ DỤNG — PickPlaceGP7 / DTwinGP7
 
 > File này tập trung vào **workflow + commands theo kịch bản sử dụng**.
 > Đọc xong → chạy được mọi tính năng.
@@ -6,29 +6,30 @@
 > **Phạm vi**: 5 kịch bản workflow + CLI flags + hiểu output + debug khi chạy.
 > **KHÔNG bao gồm**:
 > - Cài đặt phần mềm/phần cứng → [`HUONG_DAN_CAI_DAT.md`](HUONG_DAN_CAI_DAT.md)
-> - Kiến trúc + sơ đồ + research context → [`phat_bieu_bai_toan_v3_2_HD.md`](phat_bieu_bai_toan_v3_2_HD.md)
+> - Kiến trúc + sơ đồ + thiết kế hệ thống → [`phat_bieu_bai_toan_v3_2_HD.md`](phat_bieu_bai_toan_v3_2_HD.md)
 
 ---
 
 ## 1. Bộ code này làm gì?
 
-**Mục tiêu**: Hệ thống pick-and-place (gắp-thả) dùng robot Yaskawa GP7 với:
+**1.1. Mục tiêu**: 
+> Hệ thống pick-and-place (gắp-thả) dùng robot Yaskawa GP7 với:
 - Camera Intel RealSense D455 nhận diện vật qua **YOLOv8-seg**
 - Robot di chuyển + gắp vật + đặt vào vị trí khác
 - **Digital Twin Level-4 bidirectional** — 3D viewport phản ánh robot thật real-time
-- Statistical evaluation 500+ trials cho thesis paper
+- Statistical evaluation 500+ trials
 
-**5 thứ bạn làm được với repo này:**
+**1.2. Repo này có thể**
 
 | # | Mục đích | Cần phần cứng | Thời gian |
 |---|---|---|---|
-| 1 | Test logic code | KHÔNG (laptop bất kỳ) | ~10 giây |
-| 2 | Chạy 500 trial sim cho thống kê | KHÔNG (laptop bất kỳ) | ~30 giây |
-| 3 | Demo trực quan trên RoboDK | RoboDK Free | ~5 phút |
-| 4 | Phân tích + sinh figure cho paper | KHÔNG | ~10 giây |
+| 1 | Test logic code | KHÔNG (chỉ cần PC) | ~10 giây |
+| 2 | Chạy 500 trial sim cho thống kê | KHÔNG (chỉ cần PC) | ~30 giây |
+| 3 | Demo trực quan Open3D GUI | Open3D (pip, không license) | ~5 phút |
+| 4 | Phân tích + sinh figure | KHÔNG | ~10 giây |
 | 5 | Chạy trên GP7 thật | YRC1000 + GP7 + D455 + YOLO weights | Cần setup hardware |
 
-> **Quan trọng**: 4/5 use case **KHÔNG cần phần cứng** → chạy được ngay trên laptop.
+> **Quan trọng**: 4/5 use case **KHÔNG cần phần cứng** → chạy được ngay trên PC.
 
 ---
 
@@ -36,10 +37,10 @@
 
 ```powershell
 .venv\Scripts\Activate.ps1                      # activate venv (đã cài theo HUONG_DAN_CAI_DAT)
-pytest tests/ -q                                # → 274 passed
+pytest tests/ -q                                # → 293 passed
 ```
 
-Nếu **274 passed** → sẵn sàng dùng mọi use case không cần phần cứng.
+Nếu **293 passed** → sẵn sàng dùng mọi use case không cần phần cứng.
 
 > **Chưa cài đặt?** → [`HUONG_DAN_CAI_DAT.md`](HUONG_DAN_CAI_DAT.md) (cài đặt từ A-Z).
 
@@ -47,15 +48,15 @@ Nếu **274 passed** → sẵn sàng dùng mọi use case không cần phần c�
 
 ## 3. Cấu trúc tối thiểu cần biết
 
-3 thư mục bạn tương tác hàng ngày:
+**3.1. Thư mục thường tương tác**
 - **`scripts/`** — file `.py` ở đây = lệnh BẠN CHẠY (xem mục 4)
 - **`config/`** — file `.yaml` ở đây = tham số BẠN SỬA (KHÔNG sửa code)
 - **`results/`, `figures/`** — output sinh khi chạy
 
-3 thư mục code (logic, không chạy trực tiếp):
+**3.2. Các thư mục code (logic, không chạy trực tiếp)**
 - **`src/`** — logic Python
 - **`models/`** — STL meshes + YOLO weights
-- **`tests/`** — 274 unit/integration tests
+- **`tests/`** — 293 unit/integration tests
 
 Module tree đầy đủ: [`phat_bieu_bai_toan_v3_2_HD.md` mục 3](phat_bieu_bai_toan_v3_2_HD.md#3-cấu-trúc-thư-mục-code).
 
@@ -64,17 +65,16 @@ Module tree đầy đủ: [`phat_bieu_bai_toan_v3_2_HD.md` mục 3](phat_bieu_ba
 ## 4. Workflow theo kịch bản sử dụng
 
 ```mermaid
-%%{init: {'theme':'dark'}}%%
 flowchart TB
-    START([Bat dau]) --> Q1{Co robot<br/>GP7 that?}
-    Q1 -->|KHONG| Q2{Co RoboDK<br/>GUI mo?}
-    Q1 -->|CO| E[Kich ban E<br/>real backend hse<br/>ultra-fast]
-    Q2 -->|KHONG| B[Kich ban B<br/>sim headless<br/>500 trial thong ke]
-    Q2 -->|CO| C[Kich ban C<br/>sim minimal-build<br/>5 trial demo]
-    B --> D[Kich ban D<br/>04 analyze results<br/>06 simulate trial]
+    START([Bắt đầu]) --> Q1{Có robot<br/>GP7 thật?}
+    Q1 -->|KHÔNG| Q2{Cần demo<br/>trực quan?}
+    Q1 -->|CÓ| E[Kịcch bản E<br/>real backend hse<br/>ultra-fast<br/>+ Open3D mirror live]
+    Q2 -->|KHÔNG| B[Kịch bản B<br/>sim headless<br/>500 trial thống kê]
+    Q2 -->|CÓ| C[Kịch bản C<br/>sim Open3D GUI<br/>5 trial demo]
+    B --> D[Kịch bản D<br/>04 analyze results<br/>06 simulate trial]
     C --> D
     E --> F[05 analyze telemetry<br/>07 replay telemetry<br/>Sinh figure + MP4]
-    A_TEST([Verify code OK]) --> A[Kich ban A<br/>pytest tests<br/>274 passed]
+    A_TEST([Verify code OK]) --> A[Kịch bản A<br/>pytest tests<br/>293 passed]
 
     style A fill:#558B2F,stroke:#fff,color:#fff
     style B fill:#1565C0,stroke:#fff,color:#fff
@@ -84,9 +84,6 @@ flowchart TB
     style F fill:#D84315,stroke:#fff,color:#fff
 ```
 
-5 kịch bản chi tiết:
-
-
 ### 🎯 Kịch bản A — Test code đang hoạt động (10 giây)
 
 **Bạn muốn**: Verify code OK, chưa cần làm gì.
@@ -95,13 +92,13 @@ flowchart TB
 pytest tests/ -q
 ```
 
-→ Kỳ vọng `274 passed`. Nếu fail → có issue, xem section 6 Debug.
+→ Kỳ vọng `293 passed`. Nếu fail → có issue, xem section 6 Debug.
 
 ---
 
-### 🎯 Kịch bản B — Chạy 500 trial thống kê cho paper (30 giây, không cần gì)
+### 🎯 Kịch bản B — Chạy 500 trial thống kê quy mô lớn (30 giây, không cần gì)
 
-**Bạn muốn**: Sinh CSV success rate cho thesis paper, không có hardware.
+**Bạn muốn**: Sinh CSV success rate quy mô lớn, không có hardware.
 
 ```powershell
 python scripts/03_run_experiment.py --mode sim --trials 500 --headless
@@ -121,30 +118,27 @@ python scripts/03_run_experiment.py --mode sim --trials 500 --headless \
 
 ---
 
-### 🎯 Kịch bản C — Demo trực quan trên RoboDK GUI (cần RoboDK Free)
+### 🎯 Kịch bản C — Demo trực quan Open3D GUI
 
-**Bạn muốn**: Xem robot 3D di chuyển trong RoboDK.
+**Bạn muốn**: Xem robot 3D di chuyển trong sim viewport.
 
 ```powershell
-# 1. Mở RoboDK GUI (station rỗng)
-# 2. Sinh hand-eye matrix cho sim
+# 1. Sinh hand-eye matrix cho sim
 python scripts/calibration_from_layout.py
 
-# 3. Dựng cell trong RoboDK
-python scripts/build_station.py --minimal
-
-# 4. Chạy 5 trial (đủ trước khi RoboDK Free hết quota)
-python scripts/03_run_experiment.py --mode sim --trials 5 --minimal-build
+# 2. Chạy 20 trial — Open3D viewport tự mở (O3DGuiSimRobot, Filament)
+python scripts/03_run_experiment.py --mode sim --trials 20
 ```
 
-**Lưu ý RoboDK Free**: Chỉ chạy ~3-5 trial trước khi popup "Robot stopped by user".
-Nếu cần nhiều hơn, dùng Kịch bản B (headless).
+**Stack viewport**: SimRobot làm motion backend (pure Python) + Open3D
+Filament GUI render từ URDF model (verified match RoboDK FK 0.00mm). GUI chạy
+main thread, experiment chạy worker thread. Đóng cửa sổ Open3D để kết thúc.
 
 ---
 
 ### 🎯 Kịch bản D — Phân tích kết quả + sinh figure (10 giây)
 
-**Bạn muốn**: Đọc CSV results từ kịch bản B/C → sinh figure cho thesis paper.
+**Bạn muốn**: Đọc CSV results từ kịch bản B/C → sinh figure phân tích.
 
 ```powershell
 # Stats success rate
@@ -164,7 +158,6 @@ python scripts/06_simulate_trial.py --no-show
 **3-tier performance ladder** — chọn theo nhu cầu:
 
 ```mermaid
-%%{init: {'theme':'dark'}}%%
 graph LR
     T1[Single-shot<br/>1 FTP per move<br/>1500ms per trial<br/>Debug only] -->|backend hse flag| T2[Batch M3<br/>1 FTP per trial<br/>200ms per trial<br/>Default real mode]
     T2 -->|ultra-fast flag| T3[Ultra-fast M3++<br/>1 FTP per experiment<br/>50ms per trial<br/>Production 500+ trial]
@@ -177,21 +170,54 @@ graph LR
 **Yêu cầu phần cứng + setup 1 lần**: xem [`HUONG_DAN_CAI_DAT.md` §2.9](HUONG_DAN_CAI_DAT.md) (HSE Server function, network, REMOTE mode, CIO ladder). Pre-flight checklist:
 - ✅ `ping <IP_YRC1000>` reply OK
 - ✅ YRC1000 ở **REMOTE mode** (teach pendant)
+- ✅ **TOOL01** đã setup trên TP với TCP offset gripper — xem [`SETUP_YRC_TOOL.md`](SETUP_YRC_TOOL.md)
 - ✅ `config/cell_layout_real.yaml`: `robot_connection.ip` đã sửa đúng IP
 - ✅ `models/yolov8s-seg_best.pt` đã copy về (cho `--mode real`)
+
+**Phase 1-2 verify (trước khi production)**:
+
+```powershell
+# Phase 1: protocol verify (KHÔNG di chuyển robot)
+python scripts/11_test_yrc_cartesian.py --phase 1
+
+# Phase 2: touch test 50mm Z up @ 10% speed
+python scripts/11_test_yrc_cartesian.py --phase 2 --speed-pct 10
+```
 
 **Chạy thí nghiệm**:
 
 ```powershell
-# Mode A — Demo trực quan có viewport mirror robot thật (5-50 trial)
+# Mode A — Demo trực quan có Open3D mirror render robot THẬT @ 2Hz (5-50 trial)
+# Default --ik-source yrc: YRC1000 tự IK, 0 PC IK overhead
+# Open3D mirror tự mở (Filament GUI); đóng cửa sổ để kết thúc.
 python scripts/03_run_experiment.py --mode real --backend hse \
     --hse-ip 192.168.1.100 --trials 5
 
 # Mode B — Thống kê quy mô lớn (500+ trial, ~50ms overhead/trial)
+# Tắt live viewport để giảm overhead; telemetry CSV vẫn ghi 10Hz.
 python scripts/03_run_experiment.py --mode real --backend hse \
     --hse-ip 192.168.1.100 --trials 500 \
     --ultra-fast --no-viewport-mirror
+
+# Mode C — Backup nếu chưa setup TOOL01 trên TP
+# Dùng client DLS IK (PC compute, URDF chain match RoboDK 0.00mm)
+python scripts/03_run_experiment.py --mode real --backend hse \
+    --hse-ip 192.168.1.100 --trials 50 --ik-source client
 ```
+
+**C2 safety pipeline** (real mode tự bật):
+- **Reach envelope check** (per pose, ~µs): `ReachEnvelope.gp7_default()` sphere
+  150–927 mm tính từ J1. Reject pose ngoài envelope tại PLAN state.
+- **Predictive safety check** (per trial, **~2ms** sau optimization): solve client
+  DLS IK cho 6 waypoint (current → lift → grasp → lift → place_lift → place →
+  place_lift), interpolate trajectory, pure-Python FK verify joint limit +
+  self-collision sphere **toàn bộ path** trước khi gửi MoveJ đầu tiên. Reject
+  trial với failure_reason `predicted_joint_limit` hoặc `predicted_self_collision`.
+
+Overhead nhỏ (~2ms vs HSE+MoveJ ~200ms/trial) nhờ batched numpy FK + LRU caching
++ einsum vectorization — chi tiết kỹ thuật trong [phat_bieu §7.5.2](phat_bieu_bai_toan_v3_2_HD.md#752-kinematics-performance-optimization).
+
+Xem chi tiết: [phat_bieu §7.4 reach_envelope + §7.10 C2 safety](phat_bieu_bai_toan_v3_2_HD.md#710-c2-safety-pipeline--reachability--predictive-collision).
 
 **Sau khi chạy xong**:
 ```powershell
@@ -199,7 +225,7 @@ python scripts/03_run_experiment.py --mode real --backend hse \
 python scripts/05_analyze_telemetry.py latest --no-show
 # → figures/joint_trajectory_*.png, joint_velocity_*.png, drift_events_*.png, cycle_time_*.png
 
-# Replay thành MP4 cho thesis defense
+# Replay thành MP4 cho demo / presentation
 python scripts/07_replay_telemetry.py latest --mp4 figures/replay.mp4
 ```
 
@@ -262,23 +288,19 @@ Mỗi row = 1 tick (~100ms):
 
 ## 6. Câu hỏi thường gặp (FAQ)
 
-### Q: Tôi không có robot. Có chạy được không?
+### Q: Không có robot. Có chạy được không?
 **A**: Có. Dùng `--mode sim --headless` cho 4/5 kịch bản ở section 4 (A, B, D, và phần predictive simulation của E). Chỉ kịch bản E "chạy robot thật" mới cần hardware.
-
-### Q: Tôi không có RoboDK. Có chạy được không?
-**A**: Có. `--mode sim --headless` không cần RoboDK. Chỉ cần Python.
 
 ### Q: Có cần GPU không?
 **A**: Không cho sim/headless. Cho real mode (YOLO inference) thì CPU OK nhưng GPU nhanh hơn.
 
-### Q: Khác nhau giữa `--backend sim`, `robodk`, `hse` là gì?
+### Q: Khác nhau giữa `--backend sim` và `--backend hse` là gì?
 **A**:
-- **sim** = robot mô phỏng pure Python (không cần RoboDK)
-- **robodk** = robot trong RoboDK GUI (cần RoboDK Free cho sim, Educational cho real)
-- **hse** = nói chuyện thẳng với YRC1000 qua UDP (cần robot thật)
-
-### Q: Tại sao `--mode real --backend robodk` báo lỗi license?
-**A**: RoboDK Free **KHÔNG** support robot drivers. Phải mua Educational ($340) HOẶC dùng `--backend hse` để bypass.
+- **sim** = SimRobot (pure Python, không gửi command thật). Default cho `--mode sim`
+  hoặc `--headless`. Khi non-headless sẽ wrap trong DigitalTwinMirror + RoboDK
+  viewport để demo trực quan.
+- **hse** = nói chuyện thẳng với YRC1000 qua UDP HSE protocol (cần robot thật).
+  Default và lựa chọn duy nhất cho `--mode real`.
 
 ### Q: Ultra-fast khác batch thế nào?
 **A**:
@@ -287,7 +309,7 @@ Mỗi row = 1 tick (~100ms):
 - Ultra-fast yêu cầu cấu trúc trial giống nhau (cùng số waypoint).
 
 ### Q: Mirror @2Hz có chức năng gì?
-**A**: Mỗi 500ms: đọc joint state thật từ YRC1000 → cập nhật viewport RoboDK + log CSV + check drift + (mỗi 2.5s) check alarm. Default 2Hz an toàn cho RoboDK Free. Tăng `--telemetry-hz 10` cho phân tích chi tiết hơn.
+**A**: Mỗi 500ms (mirror-hz=2Hz): đọc joint state thật từ YRC1000 → gọi viewport_callback render Open3D mirror + log CSV @telemetry-hz (mặc định 10Hz) + check drift + (mỗi 2.5s) check alarm. Tăng `--telemetry-hz 20` cho phân tích chi tiết hơn; `--no-viewport-mirror` để tắt live render khi chạy batch lớn.
 
 ### Q: Test fail thì sao?
 **A**: Xem section 6 Debug. Đa số do thiếu STL primitive — chạy `python scripts/gen_primitive_meshes.py`.
@@ -309,11 +331,12 @@ Mỗi row = 1 tick (~100ms):
 | `pytest` báo lỗi import | Chưa activate venv | `.venv\Scripts\Activate.ps1` |
 | `FileNotFoundError: T_base_camera.npy` | Chưa sinh calibration | `python scripts/calibration_from_layout.py` |
 | `MissingMeshError: worktable.stl` | Thiếu STL | `pip install trimesh && python scripts/gen_primitive_meshes.py` |
-| `Robot stopped by user` | RoboDK Free quota hit | Restart RoboDK, dùng `--minimal-build` hoặc `--headless` |
-| `Invalid license: using robot drivers` | RoboDK Free không support driver | Dùng `--backend hse` thay vì `--backend robodk` |
+| Open3D cửa sổ không mở | Thiếu `pip install open3d` | `pip install -r requirements.txt` |
+| `--mode real chỉ chấp nhận --backend hse` | Truyền `--backend sim` cùng `--mode real` | Bỏ flag — mặc định auto-pick `hse` cho real mode |
 | `HSE request timeout` | YRC1000 không phản hồi | Check `ping IP`, HSE Server enable, REMOTE mode |
-| `Robot stopped by user` ở trial 3 | RoboDK Free chặn motion | Đổi sang headless: `--mode sim --headless` |
-| `[WinError 10053]` lặp lại | RoboDK socket chết | Restart RoboDK; orchestrator auto-abort sau 3 lỗi |
+| `Trial X: vật không với tới được` | Pose ngoài ReachEnvelope GP7 (927mm) | Kiểm tra place_position và base pose trong cell config |
+| `predictive safety reject — predicted_joint_limit` | Trajectory IK đi qua joint vượt limit | Tinh chỉnh approach_height_mm / yaw_offset_deg, hoặc đổi place_position |
+| `predictive safety reject — predicted_self_collision` | Arm tự đụng nhau ở config trung gian | Đổi `--ik-source yrc` (controller chọn config khác), hoặc thay đổi trajectory |
 | Telemetry CSV thưa | Mirror rate thấp | `--telemetry-hz 10` (mặc định) |
 
 ---
@@ -339,11 +362,12 @@ Mỗi row = 1 tick (~100ms):
 |---|---|---|
 | ★★★ Hàng ngày | `03_run_experiment.py` | Chạy trial |
 | ★★★ Hàng ngày | `04_analyze_results.py` | Phân tích success rate |
-| ★★ Demo | `build_station.py` | Dựng cell RoboDK |
 | ★★ Real mode | `05_analyze_telemetry.py` | Visualize HSE joint state |
 | ★ Setup | `calibration_from_layout.py` | Sinh T_BC sim |
 | ★ Setup | `gen_primitive_meshes.py` | Sinh STL primitive |
-| ★ Paper | `06_simulate_trial.py` | Predictive figure |
+| ★ Figure | `06_simulate_trial.py` | Predictive figure |
+| ★ Real bring-up | `13_verify_vs_robodk.py` | Verify FK + DLS IK match RoboDK trên fixed configs (bảng) + `--samples N --histogram` cho figure |
+| ★ Real bring-up | `11_test_yrc_cartesian.py` | 3-phase YRC Cartesian motion test |
 | ★ Defense | `07_replay_telemetry.py` | Replay MP4 |
 
 ### 8.3. CLI flags — bảng đầy đủ (PRIMARY reference)
@@ -353,21 +377,34 @@ Mỗi row = 1 tick (~100ms):
 | Flag | Default | Khi nào dùng |
 |---|---|---|
 | `--mode {sim, real}` | sim | Sim → không cần robot. Real → cần GP7. |
-| `--backend {sim, robodk, hse}` | auto | Override backend. Auto-pick: headless→sim, mode=sim→robodk, mode=real→hse |
-| `--headless` | off | SimRobot mock, 0 API call, scale 500+ trial |
+| `--backend {sim, hse}` | auto | Override motion backend. Auto-pick: mode=sim→sim, mode=real→hse. |
+| `--headless` | off | SimRobot mock, không viewport, scale 500+ trial. Sim non-headless tự dùng O3DGuiSimRobot; real mode tự mở Open3D mirror (xem `--no-viewport-mirror`). |
 | `--trials N` | 50 | Số trial chạy |
 | `--cell-config PATH` | auto | Override cell YAML (auto: cell_layout.yaml cho sim, cell_layout_real.yaml cho real) |
-| `--minimal-build` | off | Cell tối giản (chỉ tray), tiết kiệm RoboDK API call |
-| `--no-build` | off | Bỏ qua dựng cell (dùng station đã có sẵn trong RoboDK) |
+| `--minimal-build` | off | Open3D viewport tối giản (bỏ items phụ) |
 | `--grasp-fail-rate N` | 0.0 | (Headless only) Inject failure xác suất N |
 | `--detection-miss-rate N` | 0.0 | (Headless only) Inject detection miss xác suất N |
 | `--seed N` | 42 | (Headless only) Seed RNG |
+| **IK source** | | |
+| `--ik-source {yrc, client}` | auto | Cách compute IK. Auto: `yrc` cho real, `client` cho sim. URDF DLS verified match RoboDK 0.00mm. |
+| `--tool-no N` | 1 | TOOL coordinate trên YRC (TOOL01 default). Cần setup trên TP — xem `docs/SETUP_YRC_TOOL.md` |
 | **HSE backend specific** | | |
 | `--hse-ip IP` | (từ cell YAML) | Override IP YRC1000 |
-| `--mirror-hz N` | 2.0 | Tần số viewport setJoints (an toàn RoboDK Free nagware) |
-| `--telemetry-hz N` | 10.0 | Tần số HSE Joints poll + CSV log (resolution analysis) |
-| `--no-viewport-mirror` | off | Tắt setJoints RoboDK → 0 API call vào RoboDK |
+| `--mirror-hz N` | 2.0 | Tần số gọi viewport_callback render Open3D mirror (Hz). Real mode mirror render @ tần số này; telemetry CSV vẫn ghi @ telemetry-hz. |
+| `--telemetry-hz N` | 10.0 | Tần số backend Joints poll + CSV log (resolution analysis) |
+| `--no-viewport-mirror` | off | Tắt live Open3D mirror trong real mode (chỉ ghi telemetry CSV). Replay sau bằng `07_replay_telemetry.py`. |
 | `--ultra-fast` | off | M3++ P-variable template caching (~50ms/trial overhead) |
+
+### IK source — 2 lựa chọn
+
+| Source | Tốc độ | Accuracy | Khi nào dùng |
+|---|---|---|---|
+| `yrc` | ~50ms/move (HSE) | YRC controller's own IK | **Real mode default**, cần setup TOOL01 trên TP |
+| `client` | ~5-15ms/move (DLS) | 0.001-0.058mm (match RoboDK) | **Sim default** + real backup; URDF chain pure Python |
+
+URDF chain (`src/orchestrator/kinematics/urdf_chain.py`) lấy từ ros-industrial/motoman
+noetic-devel, đã verify match RoboDK SolveFK exactly (0.00mm/0.00°). Verify lại
+bất kỳ lúc nào: `python scripts/13_verify_vs_robodk.py`.
 
 `scripts/05_analyze_telemetry.py` (visualize HSE CSV):
 
@@ -393,21 +430,18 @@ Mỗi row = 1 tick (~100ms):
 ## 9. Workflow tổng — Cheatsheet 1 trang
 
 ```mermaid
-%%{init: {'theme':'dark'}}%%
 flowchart TB
-    START([Bat dau]) --> Q1{Co robot<br/>GP7 that?}
+    START([Bắt đầu]) --> Q1{Có robot<br/>GP7 thật?}
 
-    %% ─── Path KHONG (sim only) ───
-    Q1 -->|KHONG| TEST[TEST CODE<br/>pytest tests<br/>274 passed]
-    TEST --> STATS[THONG KE 500 TRIAL<br/>mode sim<br/>headless flag<br/>trials 500]
-    STATS --> Q2{Co RoboDK<br/>Free?}
-    Q2 -->|CO| DEMO[DEMO TRUC QUAN<br/>mode sim<br/>minimal-build<br/>trials 5]
-    Q2 -->|KHONG| ANALYZE
-    DEMO --> ANALYZE[PHAN TICH PAPER<br/>04 analyze results<br/>06 simulate trial<br/>+ figures]
+    %% ─── Path KHÔNG (sim only) ───
+    Q1 -->|KHÔNG| TEST[TEST CODE<br/>pytest tests<br/>293 passed]
+    TEST --> STATS[THỐNG KÊ 500 TRIAL<br/>mode sim<br/>headless flag<br/>trials 500]
+    STATS --> DEMO[DEMO TRỰC QUAN<br/>mode sim<br/>trials 20<br/>Open3D GUI tự mở]
+    DEMO --> ANALYZE[PHÂN TÍCH KẾT QUẢ<br/>04 analyze results<br/>06 simulate trial<br/>+ figures]
 
-    %% ─── Path CO (real robot) ───
-    Q1 -->|CO| SETUP[Setup YRC1000<br/>HSE Server ON<br/>Ping OK<br/>REMOTE mode]
-    SETUP --> TRAIN[Train YOLO tren Linux<br/>Copy pt file ve models]
+    %% ─── Path CÓ (real robot) ───
+    Q1 -->|CÓ| SETUP[Setup YRC1000<br/>HSE Server ON<br/>Ping OK<br/>REMOTE mode]
+    SETUP --> TRAIN[Train YOLO trên Linux<br/>Copy pt file về models]
     TRAIN --> CALIB[Hand-eye calibration<br/>ChArUco board<br/>02 run calibration]
     CALIB --> REAL[Real experiment<br/>backend hse<br/>ultra-fast flag<br/>trials 500]
     REAL --> ANALYZE
@@ -431,12 +465,11 @@ flowchart TB
 ## 10. Cần giúp đỡ?
 
 - **Cài đặt setup chi tiết**: `docs/HUONG_DAN_CAI_DAT.md`
-- **Cell module (cell_loader, build_station)**: `docs/Phu_luc_A_README_HD.md`
-- **Tài liệu đề tài thesis**: `docs/phat_bieu_bai_toan_v3_2_HD.md`
+- **Thiết kế hệ thống chi tiết**: `docs/phat_bieu_bai_toan_v3_2_HD.md`
 - **Architecture tổng quan**: `README.md`
 - **STL mesh + YOLO weights**: `models/README.md`
 - **GitHub issue**: https://github.com/manhhv87/DTwinGP7/issues
 
 ---
 
-*Hướng dẫn sử dụng v1.0 — pickplace_gp7 / DTwinGP7. Cập nhật cuối: 2026-05.*
+*Hướng dẫn sử dụng — DTwinGP7.*

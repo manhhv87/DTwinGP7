@@ -237,3 +237,87 @@ class TestPositionParse:
     def test_pulse_to_deg_wrong_axis_count_raises(self):
         with pytest.raises(ValueError, match="sai robot model"):
             pulse_to_deg([0, 0, 0])                # 3 ≠ 6
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# Cartesian position encoding (Option 1 — YRC IK)
+# ─────────────────────────────────────────────────────────────────────────
+
+
+from src.orchestrator.backends.hse_protocol import (   # noqa: E402
+    POSITION_UNIT_SCALE,
+    ROTATION_UNIT_SCALE,
+    DataType,
+    encode_cartesian_position,
+)
+
+
+class TestCartesianEncoding:
+    def test_payload_size_is_52_bytes(self):
+        """5 uint32 header (20B) + 8 int32 axis (32B) = 52B."""
+        payload = encode_cartesian_position(0, 0, 0, 0, 0, 0)
+        assert len(payload) == 52
+
+    def test_default_data_type_is_base(self):
+        payload = encode_cartesian_position(0, 0, 0, 0, 0, 0)
+        data_type = struct.unpack("<I", payload[0:4])[0]
+        assert data_type == DataType.BASE == 16
+
+    def test_position_units_micrometers(self):
+        """X=500mm → field = 500 × 1000 = 500000 (μm)."""
+        payload = encode_cartesian_position(500.0, 0, 0, 0, 0, 0)
+        x_field = struct.unpack("<i", payload[20:24])[0]
+        assert x_field == 500_000
+
+    def test_rotation_units_0_0001_deg(self):
+        """Rx=30° → field = 30 × 10000 = 300000."""
+        payload = encode_cartesian_position(0, 0, 0, 30.0, 0, 0)
+        rx_field = struct.unpack("<i", payload[32:36])[0]
+        assert rx_field == 300_000
+
+    def test_negative_position(self):
+        payload = encode_cartesian_position(-200.5, 0, 0, 0, 0, 0)
+        x_field = struct.unpack("<i", payload[20:24])[0]
+        assert x_field == -200_500
+
+    def test_tool_no_field(self):
+        payload = encode_cartesian_position(0, 0, 0, 0, 0, 0, tool_no=1)
+        tool = struct.unpack("<I", payload[8:12])[0]
+        assert tool == 1
+
+    def test_form_field(self):
+        payload = encode_cartesian_position(0, 0, 0, 0, 0, 0, form=0b00000111)
+        form = struct.unpack("<I", payload[4:8])[0]
+        assert form == 7
+
+    def test_user_frame_field(self):
+        payload = encode_cartesian_position(0, 0, 0, 0, 0, 0, user_frame=2)
+        uf = struct.unpack("<I", payload[12:16])[0]
+        assert uf == 2
+
+    def test_reserved_axis_7_8_are_zero(self):
+        payload = encode_cartesian_position(100, 200, 300, 10, 20, 30)
+        ax7 = struct.unpack("<i", payload[44:48])[0]
+        ax8 = struct.unpack("<i", payload[48:52])[0]
+        assert ax7 == 0 and ax8 == 0
+
+    def test_invalid_tool_no_raises(self):
+        with pytest.raises(ValueError, match="tool_no"):
+            encode_cartesian_position(0, 0, 0, 0, 0, 0, tool_no=64)
+
+    def test_full_pose_round_trip(self):
+        """Encode → manually decode → values match."""
+        payload = encode_cartesian_position(
+            x_mm=500.5, y_mm=-200.3, z_mm=600.1,
+            rx_deg=10.5, ry_deg=-20.5, rz_deg=30.0,
+            tool_no=1, form=0,
+        )
+        fields = struct.unpack("<5I 8i", payload)
+        # fields[0]=data_type, [1]=form, [2]=tool, [3]=uf, [4]=ext_form
+        # [5]=x, [6]=y, [7]=z, [8]=rx, [9]=ry, [10]=rz, [11,12]=reserved
+        assert fields[0] == 16
+        assert fields[2] == 1
+        assert fields[5] == int(round(500.5 * POSITION_UNIT_SCALE))
+        assert fields[6] == int(round(-200.3 * POSITION_UNIT_SCALE))
+        assert fields[7] == int(round(600.1 * POSITION_UNIT_SCALE))
+        assert fields[8] == int(round(10.5 * ROTATION_UNIT_SCALE))

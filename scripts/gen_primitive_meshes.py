@@ -4,7 +4,7 @@ gen_primitive_meshes.py
 ───────────────────────
 Generate các mesh STL nguyên bản (primitive) cho cell:
   - worktable.stl  : bàn 600 × 400 × 500 mm (tabletop + 4 chân)
-  - pedestal.stl   : cột 300 × 300 × 500 mm (cho hướng pedestal)
+  - pedestal.stl   : cột 300 × 300 × 300 mm (đỉnh trùng mặt lắp robot Z=300)
   - gripper.stl    : parallel-jaw 2 ngón, opening 90mm, cao 110mm
                      (thiết kế cho bottle / cup / bolt — xem make_parallel_gripper)
 
@@ -62,9 +62,14 @@ def make_worktable(
 def make_pedestal(
     width: float = 300.0,
     depth: float = 300.0,
-    height: float = 500.0,
+    height: float = 300.0,
 ) -> trimesh.Trimesh:
-    """Pedestal: hộp chữ nhật, origin ở đáy."""
+    """Pedestal: hộp chữ nhật, origin ở đáy.
+
+    Cao 300mm: đỉnh pedestal (Z=300) phải trùng mặt lắp robot. Robot J1 ở
+    world Z=630, base_link mesh bù -330mm → mặt lắp ở Z=300. Pedestal cao hơn
+    300mm sẽ nuốt phần đế robot (xem cell_layout_real.yaml robot.pose).
+    """
     box = trimesh.creation.box([width, depth, height])
     box.apply_translation([0, 0, height / 2])
     return box
@@ -204,7 +209,7 @@ def main() -> int:
         ped = make_pedestal()
         path = MODELS_DIR / "pedestal.stl"
         ped.export(str(path))
-        print(f"OK pedestal.stl: 300x300x500 mm, {len(ped.faces)} triangles")
+        print(f"OK pedestal.stl: 300x300x300 mm, {len(ped.faces)} triangles")
 
     if "gripper" in targets:
         grip = make_parallel_gripper()

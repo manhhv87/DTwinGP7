@@ -25,3 +25,6 @@ logs/*
 # ───── OS ─────
 Thumbs.db
 .DS_Store
+
+# ───── Session logs (local-only) ─────
+history.txt

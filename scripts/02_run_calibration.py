@@ -6,16 +6,22 @@ Hand-eye calibration eye-to-hand cho D455 + GP7 (xem mục 6 tài liệu).
 
 Quy trình:
     1. Robot giữ ChArUco board trên end-effector
-    2. Di chuyển robot tới 25-30 pose đa dạng (rotation ±30°)
-    3. Tại mỗi pose: gõ ENTER để script ghi (ảnh ChArUco + robot.Pose())
+    2. Di chuyển robot tới 25-30 pose đa dạng (rotation ±30°) bằng teach pendant
+    3. Tại mỗi pose: gõ ENTER → script đọc joints từ YRC1000 qua HSE, tính
+       T_gripper2base bằng URDF FK pure-Python, kết hợp frame ChArUco
     4. Gõ 's' để giải → lưu config/calibration/T_base_camera.npy
 
 Usage:
-    python scripts/02_run_calibration.py
-    python scripts/02_run_calibration.py --method park --robot "Yaskawa GP7"
+    python scripts/02_run_calibration.py --hse-ip 192.168.1.100
+    python scripts/02_run_calibration.py --method park --hse-ip 192.168.1.100
 
-Lưu ý đơn vị: target2cam (từ OpenCV) tính bằng MÉT → script quy đổi
-robot.Pose() từ mm sang mét trước khi giải, kết quả cuối xuất ra mm.
+Lưu ý:
+  - YRC1000 phải bật High-Speed Ethernet Server function (Maintenance mode)
+  - Robot mode: TEACH (không cần REMOTE — chỉ đọc joints, không gửi motion)
+  - URDF chain forward kinematics đã verify match RoboDK SolveFK 0.00mm
+    (xem scripts/13_verify_vs_robodk.py)
+  - target2cam (OpenCV) đơn vị MÉT → quy đổi mm sang mét trước khi solve,
+    output cuối T_BC ở mm
 """
 from __future__ import annotations
 
@@ -29,26 +35,28 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.calibration import CalibrationSession, CharucoBoardEstimator  # noqa: E402
+from src.cell import CellConfig  # noqa: E402
+from src.orchestrator.backends.motoman_hse import MotomanHSEBackend  # noqa: E402
 from src.orchestrator.coord_conv import save_calibration  # noqa: E402
+from src.orchestrator.kinematics.urdf_chain import (  # noqa: E402
+    forward_kinematics_urdf,
+    gp7_urdf,
+)
 from src.utils import setup_logging  # noqa: E402
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--robot", default="Yaskawa GP7")
+    parser.add_argument("--cell-config", default="config/cell_layout_real.yaml",
+                        help="Cell config (lấy robot base pose + tool offset).")
+    parser.add_argument("--hse-ip", default=None,
+                        help="IP YRC1000. Default: từ robot_connection.ip trong cell config.")
     # Mặc định "park": "tsai" sai với camera nhìn xuống (xoay ~180°).
     parser.add_argument("--method", default="park",
                         choices=["park", "horaud", "daniilidis", "andreff", "tsai"])
     parser.add_argument("--output", default="config/calibration/T_base_camera.npy")
     return parser.parse_args()
-
-
-def robodk_pose_to_matrix_m(robodk_pose) -> np.ndarray:
-    """RoboDK Mat (mm) → numpy 4x4, translation quy đổi sang mét."""
-    T = np.array(robodk_pose.Rows()).reshape(4, 4)
-    T[:3, 3] /= 1000.0
-    return T
 
 
 def main() -> int:
@@ -57,34 +65,50 @@ def main() -> int:
 
     try:
         from src.perception.camera import D455Camera
-        from robodk.robolink import Robolink
         import cv2
     except ImportError as e:
         log.error("Thiếu dependency: %s", e)
         return 1
 
-    # ─── Khởi tạo camera + robot ───
+    cell_config = CellConfig.from_yaml(PROJECT_ROOT / args.cell_config)
+    hse_ip = args.hse_ip or cell_config.robot_connection.ip
+    if not hse_ip:
+        log.error("Cần IP YRC1000 (--hse-ip hoặc robot_connection.ip trong cell).")
+        return 1
+
+    tool_offset_mm = 0.0
+    if hasattr(cell_config, "tool") and cell_config.tool:
+        tcp = getattr(cell_config.tool, "tcp_offset_mm", None)
+        if tcp:
+            tool_offset_mm = float(tcp[2])
+
+    urdf_model = gp7_urdf(
+        base_xyz_mm=tuple(cell_config.robot.pose.xyz_mm),
+        tool_offset_mm=tool_offset_mm,
+    )
+
     camera = D455Camera()
     K = np.array([
         [camera.intrinsics["fx"], 0, camera.intrinsics["ppx"]],
         [0, camera.intrinsics["fy"], camera.intrinsics["ppy"]],
         [0, 0, 1],
     ])
-    # D455 color stream đã rectified — dùng dist=0. Nếu cần độ chính xác cao
-    # hơn, calibrate intrinsics riêng và nạp coeffs thực tế vào đây.
+    # D455 color stream đã rectified — dist=0.
     dist = np.zeros(5)
 
-    rdk = Robolink()
-    robot = rdk.Item(args.robot)
-    if not robot.Valid():
-        log.error("Robot '%s' không có trong RoboDK station", args.robot)
+    backend = MotomanHSEBackend(ip=hse_ip)
+    backend.connect()
+    if not backend.Valid():
+        log.error("HSE heartbeat fail — kiểm tra ping %s + HSE Server function", hse_ip)
+        backend.disconnect()
         return 1
+    log.info("HSE connected: %s", hse_ip)
 
     estimator = CharucoBoardEstimator()
     session = CalibrationSession(estimator)
 
     log.info("=" * 60)
-    log.info("Hand-eye calibration — di chuyển robot rồi gõ ENTER để ghi pose.")
+    log.info("Hand-eye calibration — di chuyển robot bằng TP rồi gõ ENTER để ghi pose.")
     log.info("Gõ 's' để giải (cần >=10 pose), 'q' để huỷ.")
     log.info("=" * 60)
 
@@ -97,17 +121,26 @@ def main() -> int:
                 return 1
             if cmd == "s":
                 break
-            # Ghi 1 pose.
             rgb, _ = camera.get_frame()
             if rgb is None:
                 log.warning("Không lấy được frame, thử lại.")
                 continue
             gray = cv2.cvtColor(rgb, cv2.COLOR_BGR2GRAY)
-            T_gripper2base = robodk_pose_to_matrix_m(robot.Pose())
+
+            # Đọc joints từ YRC1000 qua HSE → FK pure-Python → T_gripper2base (m)
+            joints_deg = backend.Joints()
+            joints_rad = [np.deg2rad(j) for j in joints_deg]
+            T_gripper2base_mm = forward_kinematics_urdf(urdf_model, joints_rad)
+            T_gripper2base = T_gripper2base_mm.copy()
+            T_gripper2base[:3, 3] /= 1000.0          # mm → m cho OpenCV hand-eye
+
             if session.capture_pose(gray, T_gripper2base, K, dist):
-                log.info("→ Đã ghi pose #%d", session.num_poses)
+                log.info("→ Đã ghi pose #%d (joints=%s)",
+                         session.num_poses,
+                         [round(j, 1) for j in joints_deg])
     finally:
         camera.stop()
+        backend.disconnect()
 
     # ─── Giải + lưu ───
     T_BC_m = session.solve(method=args.method)
