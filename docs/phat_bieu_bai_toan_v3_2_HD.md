@@ -223,18 +223,19 @@ DTwinGP7/                               # BỘ CODE + TÀI LIỆU (repo DTwinGP7
 │   │   │   ├── open3d_gui_sim_robot.py # O3DGuiSimRobot: sim viewport + real mirror @2Hz
 │   │   │   └── urdf_gen.py             # URDF spec → tessellated mesh cho Open3D
 │   │   ├── kinematics/                 # Pure-Python FK + IK + trajectory (UC1/UC2/UC4)
-│   │   │   ├── urdf_chain.py            # GP7 URDF chain — source-of-truth, match RoboDK 0.00mm (qua scripts/13_verify_vs_robodk.py)
-│   │   │   ├── dh_model.py              # GP7 Modified DH params (legacy, backward compat)
-│   │   │   ├── forward_kinematics.py    # joints → pose 4x4 (pure numpy)
-│   │   │   ├── inverse_kinematics.py    # Damped Least Squares IK (URDF/DH polymorphic)
-│   │   │   └── trajectory.py            # interpolate + joint limit + collision check
+│   │   │   ├── urdf_chain.py           # GP7 URDF chain — source-of-truth, match RoboDK 0.00mm (qua 
+|   |   |   |                           # scripts/13_verify_vs_robodk.py)
+│   │   │   ├── dh_model.py             # GP7 Modified DH params (legacy, backward compat)
+│   │   │   ├── forward_kinematics.py   # joints → pose 4x4 (pure numpy)
+│   │   │   ├── inverse_kinematics.py   # Damped Least Squares IK (URDF/DH polymorphic)
+│   │   │   └── trajectory.py           # interpolate + joint limit + collision check
 │   │   └── backends/                   # Pluggable motion backends
-│   │       ├── base.py                  # RobotBackend Protocol
-│   │       ├── hse_protocol.py          # Yaskawa HSE packet codec (UDP 10040)
-│   │       ├── inform_codegen.py        # INFORM .JBI generator (C-var + P-var template)
-│   │       ├── motoman_hse.py           # MotomanHSEBackend (HSE + FTP + batch + ultra-fast)
-│   │       ├── reach_envelope.py        # GP7 sphere reach client-side (thay MoveJ_Test)
-│   │       └── alarm_codes.py           # YRC1000 alarm decoder + severity
+│   │       ├── base.py                 # RobotBackend Protocol
+│   │       ├── hse_protocol.py         # Yaskawa HSE packet codec (UDP 10040)
+│   │       ├── inform_codegen.py       # INFORM .JBI generator (C-var + P-var template)
+│   │       ├── motoman_hse.py          # MotomanHSEBackend (HSE + FTP + batch + ultra-fast)
+│   │       ├── reach_envelope.py       # GP7 sphere reach client-side (thay MoveJ_Test)
+│   │       └── alarm_codes.py          # YRC1000 alarm decoder + severity
 │   ├── calibration/
 │   │   ├── __init__.py
 │   │   ├── capture_calibration.py
@@ -279,10 +280,10 @@ DTwinGP7/                               # BỘ CODE + TÀI LIỆU (repo DTwinGP7
 │   ├── test_reach_envelope.py          # sphere reach model
 │   ├── test_predict_safety.py          # UC2 orchestrator integration
 │   └── test_analyze_telemetry.py       # telemetry analyzer smoke
-└── results/ · figures/ · logs/          # thư mục output khi chạy
+└── results/ · figures/ · logs/         # thư mục output khi chạy
 ```
 
-> **Lưu ý về huấn luyện model:** việc train YOLOv8 (mục 5) thực hiện trên một
+> **Lưu ý về huấn luyện model:** việc train YOLOv8 (mục 5) thực hiện trên
 > máy Linux + GPU riêng, không nằm trong `DTwinGP7/`. Repo chỉ nhận file
 > trọng số `.pt`/`.onnx` đã train để inference. Dataset thu ở `data/raw/`,
 > gán nhãn trên Roboflow rồi chuyển sang máy Linux để train.
@@ -343,7 +344,7 @@ flowchart LR
 2. **Class 2: "cup"** — hộp giấy carton nhỏ 80×60×40 mm (cuboid)
 3. **Class 3: "bolt"** — bulông M16 dài 100 mm (cylinder ngắn, kim loại sáng)
 
-→ 3 vật này có **hình dạng và màu sắc khác biệt rõ rệt** → vision không bị nhầm lẫn. Có thể đổi theo tài nguyên sẵn có, nhưng giữ nguyên tắc đa dạng.
+→ 3 vật này có **hình dạng và màu sắc khác biệt** → vision không bị nhầm lẫn. Có thể đổi theo tài nguyên sẵn có, nhưng giữ nguyên tắc đa dạng.
 
 **Lưu ý**: phải mua/in **≥ 5 cái mỗi loại** để chụp nhiều scene khác nhau (đặt 3–5 vật cùng lúc trên bàn).
 
@@ -370,7 +371,7 @@ graph TB
 - 1 tấm nỉ xám 600×400 mm (mặt bàn chính)
 - 2 tấm nỉ thay thế (xanh, nâu) — cho augmentation natural
 - 1 thước đo + bút marker để vẽ vùng làm việc
-- 1 đèn LED bar 30–50 W trắng (4500–5000 K) — đèn chính
+- 1 đèn LED bar 30–50 W trắng — đèn chính
 - 1 đèn LED nhỏ rời (cho ánh sáng nghiêng)
 - Giàn camera: extrusion nhôm 20×20 hoặc 30×30, cao ~1.2 m
 
@@ -399,7 +400,7 @@ Phân bổ chi tiết:
 
 **Script hỗ trợ chụp** — `scripts/01_collect_dataset.py`:
 
-Triển khai: `pickplace_gp7/scripts/01_collect_dataset.py` — hiển thị live view D455, phím tắt chuyển nhãn cảnh (class / lighting / overlap / background), nhấn SPACE để lưu đồng thời ảnh RGB + depth. Tên file tự sinh theo quy ước `class_lighting_angle_overlap_background_NNN` để truy vết điều kiện chụp.
+Triển khai: `DTwinGP7/scripts/01_collect_dataset.py` — hiển thị live view D455, phím tắt chuyển nhãn cảnh (class / lighting / overlap / background), nhấn SPACE để lưu đồng thời ảnh RGB + depth. Tên file tự sinh theo quy ước `class_lighting_angle_overlap_background_NNN` để truy vết điều kiện chụp.
 
 **Lịch chụp gợi ý** (2 ngày làm việc):
 - **Ngày 1 sáng** (3h): chụp 700 ảnh class "bottle" — đổi qua tất cả conditions
@@ -572,9 +573,9 @@ Các metric COCO-style được dùng: mAP@0.5 và mAP@0.5:0.95 cho cả boundin
 
 ```mermaid
 graph LR
-    A[Camera D455<br/>Frame C] -->|Camera to Base<br/>an so can tim| B[Base Robot<br/>Frame B]
-    D[ChArUco Board<br/>Frame W] -->|Board to Camera<br/>OpenCV do duoc| A
-    C[End-Effector<br/>Frame E] -->|EE to Base<br/>tu robot.Pose| B
+    A[Camera D455<br/>Frame C] -->|Camera → Base<br/>ẩn số cần tìm| B[Base Robot<br/>Frame B]
+    D[ChArUco Board<br/>Frame W] -->|Board → Camera<br/>OpenCV đo được| A
+    C[End-Effector<br/>Frame E] -->|EE → Base<br/>từ robot.Pose| B
     
     style A fill:#1565C0,stroke:#fff,stroke-width:2px,color:#fff
     style B fill:#2E7D32,stroke:#fff,stroke-width:2px,color:#fff
@@ -616,9 +617,9 @@ In trên giấy A3 **plain matte** (chống phản chiếu). Dán lên bìa cứ
 
 ### 6.3. Quy trình thu pose
 
-Triển khai: `pickplace_gp7/src/calibration/` + `scripts/02_run_calibration.py`. Thu 25–30 cặp pose — $T_W^C$ (pose board trong camera frame, đo bằng OpenCV `solvePnP` trên ChArUco corner) và $T_E^B$ (pose end-effector trong base, đọc từ `robot.Pose()`) — rồi giải bằng `cv2.calibrateHandEye` với phương pháp Park.
+Triển khai: `DTwinGP7/src/calibration/` + `scripts/02_run_calibration.py`. Thu 25–30 cặp pose — $T_W^C$ (pose board trong camera frame, đo bằng OpenCV `solvePnP` trên ChArUco corner) và $T_E^B$ (pose end-effector trong base, đọc từ `robot.Pose()`) — rồi giải bằng `cv2.calibrateHandEye` với phương pháp Park.
 
-Quy ước eye-to-hand: phải nghịch đảo `gripper2base → base2gripper` trước khi đưa vào OpenCV thì output mới đúng là `T_C^B` (camera trong base).
+Quy ước eye-to-hand: phải nghịch đảo `gripper2base → base2gripper` trước khi đưa vào OpenCV thì output mới đúng là $T_C^B$ (camera trong base).
 
 **Capture protocol** (~1.5 giờ):
 1. Robot start ở Home pose
@@ -635,7 +636,7 @@ Quy ước eye-to-hand: phải nghịch đảo `gripper2base → base2gripper` t
 
 Sau khi có `T_base_camera.npy`, **test bằng tay**:
 
-Chọn 5 điểm có toạ độ đã biết trong camera frame (vd các corner ChArUco), chuyển sang base frame qua `T_C^B`, cho robot đưa TCP tới từng điểm và quan sát/đo độ lệch thực tế.
+Chọn 5 điểm có toạ độ đã biết trong camera frame (vd các corner ChArUco), chuyển sang base frame qua $T_C^B$, cho robot đưa TCP tới từng điểm và quan sát/đo độ lệch thực tế.
 
 **Kết quả mong đợi**: TCP gripper chạm trong vòng **2–3 mm** của điểm thật. Nếu > 5 mm → calibration sai, làm lại với nhiều pose hơn.
 
@@ -657,7 +658,7 @@ Chọn 5 điểm có toạ độ đã biết trong camera frame (vd các corner 
 
 ### 7.1. Module Perception
 
-Triển khai: `pickplace_gp7/src/perception/`. Perception chạy trên thread riêng, vòng lặp: frame D455 → YOLO detect → trích pose 3D → đẩy vào queue. Gồm 4 thành phần:
+Triển khai: `DTwinGP7/src/perception/`. Perception chạy trên thread riêng, vòng lặp: frame D455 → YOLO detect → trích pose 3D → đẩy vào queue. Gồm 4 thành phần:
 
 - **Camera** (`camera.py`) — bọc D455, align depth↔color, lọc nhiễu depth.
 - **Detector** (`detector.py`) — inference YOLOv8-seg → list detection (class, confidence, mask, bbox).
@@ -668,10 +669,10 @@ Mỗi thành phần có bản giả lập (`MockCamera`, `MockDetector`) cho tes
 
 ### 7.2. Module Orchestrator
 
-Triển khai: `pickplace_gp7/src/orchestrator/`. Orchestrator điều phối một chu trình pick-and-place:
+Triển khai: `DTwinGP7/src/orchestrator/`. Orchestrator điều phối một chu trình pick-and-place:
 
 1. Nhận detection mới nhất từ queue của Perception.
-2. Chuyển pose vật từ camera frame sang base frame qua `T_C^B`.
+2. Chuyển pose vật từ camera frame sang base frame qua $T_C^B$.
 3. Chọn vật "trên cùng" (Z lớn nhất) để gắp trước.
 4. **Kiểm tra với-tới-được + va chạm bằng digital twin** (`ReachEnvelope` sphere check client-side) TRƯỚC mỗi lần gắp vật lý — lớp an toàn **C2**.
 5. **Predictive safety check C2+**: pure-Python FK trên toàn trajectory verify joint limit + self-collision TRƯỚC khi gửi MoveJ → catch unsafe path mà single-point check miss (~50ms/trial overhead).
@@ -681,9 +682,9 @@ Triển khai: `pickplace_gp7/src/orchestrator/`. Orchestrator điều phối m�
 
 Luồng trạng thái được kiểm soát bằng state machine (IDLE→DETECT→PLAN→APPROACH→…→DONE/ERROR) để bắt lỗi chuyển trạng thái.
 
-### 7.3. Module Digital Twin (Level-4 façade)
+### 7.3. Module Digital Twin (Level-4 facade)
 
-Triển khai: `pickplace_gp7/src/orchestrator/digital_twin.py`. `DigitalTwinMirror` là façade kết hợp 3 thành phần để đạt Level-4 comprehensive bidirectional digital twin:
+Triển khai: `DTwinGP7/src/orchestrator/digital_twin.py`. `DigitalTwinMirror` là facade kết hợp 3 thành phần để đạt Level-4 comprehensive bidirectional digital twin:
 
 | Thành phần | Vai trò |
 |---|---|
@@ -699,7 +700,7 @@ Triển khai: `pickplace_gp7/src/orchestrator/digital_twin.py`. `DigitalTwinMirr
 
 ### 7.4. Module Backends (pluggable motion drivers)
 
-Triển khai: `pickplace_gp7/src/orchestrator/backends/`. Interface chung `RobotBackend` (Protocol) cho phép Orchestrator dùng nguyên văn `MoveJ()/MoveL()/setDO()` qua các backend:
+Triển khai: `DTwinGP7/src/orchestrator/backends/`. Interface chung `RobotBackend` (Protocol) cho phép Orchestrator dùng nguyên văn `MoveJ()/MoveL()/setDO()` qua các backend:
 
 | Backend | Use case | Dependency |
 |---|---|---|
@@ -733,7 +734,7 @@ Ultra-fast pattern: upload INFORM template với P-variables 1 lần, mỗi tria
 
 ### 7.5. Module Kinematics (pure-Python FK)
 
-Triển khai: `pickplace_gp7/src/orchestrator/kinematics/`. Forward kinematics + inverse kinematics (DLS) + trajectory interpolation + safety check **pure numpy**, 0 vendor SDK runtime dependency. Foundation cho 3 use case:
+Triển khai: `DTwinGP7/src/orchestrator/kinematics/`. Forward kinematics + inverse kinematics (DLS) + trajectory interpolation + safety check **pure numpy**. Foundation cho 3 use case:
 
 | UC | Script / API | Mục đích |
 |---|---|---|
@@ -758,9 +759,9 @@ Core modules:
 
 ### 7.5.1. URDF vs Modified DH — vì sao chọn URDF
 
-Trong implementation đầu, tôi dùng Modified DH (Craig 1986) — convention truyền
-thống cho robotics textbook. Khi verify vs RoboDK SolveFK qua
-`scripts/13_verify_vs_robodk.py`, tìm thấy diff hàng nghìn mm vì:
+Với Modified DH (Craig 1986) — convention truyền thống cho robotics textbook — 
+khi verify vs RoboDK SolveFK qua `scripts/13_verify_vs_robodk.py`, tìm thấy 
+diff hàng nghìn mm vì:
 
 1. **Joint axis sign convention**: Yaskawa/RoboDK URDF có joints J3/J4/J5/J6
    axes negative direction (`(0,-1,0)`, `(-1,0,0)`...). Modified DH convention
@@ -899,19 +900,16 @@ parse + validate file, cấp:
 - **Camera pose** cho hand-eye sim (`scripts/calibration_from_layout.py`)
 - **Mesh paths** (table, gripper, objects) cho Open3D viewport render
 
-Không còn bước "dựng station" runtime — Open3D viewport tự load mesh khi
-`O3DGuiSimRobot.__init__()`.
-
-Triển khai: `pickplace_gp7/src/cell/cell_models.py`.
+Triển khai: `DTwinGP7/src/cell/cell_models.py`.
 
 ### 7.8. IK source — 2 paths
 
 Orchestrator có 2 phương án compute IK, chọn qua CLI `--ik-source`:
 
-| Path | Cách hoạt động | API/IK | Accuracy | Use case |
-|---|---|---|---|---|
-| `--ik-source yrc` | PC gửi pose Cartesian thẳng qua HSE → YRC1000 tự IK | 0 vendor SDK | YRC controller's own IK (chuẩn nhất) | **Real mode default** — khi đã setup TOOL01 trên TP |
-| `--ik-source client` | DLS numerical IK pure Python với URDF chain | 0 vendor SDK | Match RoboDK SolveFK 0.00mm (verified qua `scripts/13_verify_vs_robodk.py`) | **Sim default**, hoặc real backup khi không có TP setup |
+| Path | Cách hoạt động | Accuracy | Use case |
+|---|---|---|---|
+| `--ik-source yrc` | PC gửi pose Cartesian thẳng qua HSE → YRC1000 tự IK | YRC controller's own IK (chuẩn nhất) | **Real mode default** — khi đã setup TOOL01 trên TP |
+| `--ik-source client` | DLS numerical IK pure Python với URDF chain | Match RoboDK SolveFK 0.00mm (verified qua `scripts/13_verify_vs_robodk.py`) | **Sim default**, hoặc real backup khi không có TP setup |
 
 **Default**: `yrc` cho `--mode real`, `client` cho `--mode sim`.
 
@@ -928,18 +926,13 @@ match RoboDK SolveFK 0.00mm). ~5-15ms/call, accuracy 0.001-0.058mm trên random
 samples (`scripts/13_verify_vs_robodk.py --samples 500 --histogram`).
 
 Khi DLS fail (singularity / out-of-reach), orchestrator raise lỗi rõ ràng và
-ghi vào trial log; không có vendor SDK fallback runtime.
+ghi vào trial log.
 
 #### 7.8.3. Frame conversion
 
 `src/orchestrator/frame_convert.py`: convert pose 4x4 giữa frames:
 - `world_to_robot_base(T_world, base_xyz, base_rpy) → T_base` — cho HSE Cartesian
 - `matrix_to_xyzrpy_yaskawa(T) → (x,y,z, Rx,Ry,Rz)` — encoding Yaskawa XYZ-fixed RPY
-
-> **Lưu ý d1=330mm**: trong DH/URDF spec, đây là kích thước INTERNAL của GP7
-> (từ mặt đáy robot lên J2 axis). KHÔNG phải pedestal/bệ đặt — pedestal cấu
-> hình riêng qua `cell_config.robot.pose.xyz_mm`. RoboDK convention coi
-> "robot base frame" = J1 axis (đã skip d1 internal).
 
 ### 7.9. Gripper subsystem — PC ↔ YRC1000 ↔ PLC qua 2 giao thức
 
@@ -1117,9 +1110,8 @@ chỉ cần sửa PLC ladder, code PC + YRC giữ nguyên.
 ### 7.10. C2 safety pipeline — Reachability + Predictive collision
 
 C2 là **lớp an toàn dựa trên digital twin** — verify mọi pose + trajectory bằng
-pure-Python TRƯỚC khi gửi command vật lý lên YRC1000. Mục tiêu: catch unsafe
-motion sớm ở PC, tránh trigger alarm trên controller (mỗi alarm major mất
-~30s recovery + có thể yêu cầu reset TP).
+pure-Python TRƯỚC khi gửi command vật lý lên YRC1000. Mục tiêu: catch unsafe motion sớm ở PC, 
+tránh trigger alarm trên controller (mỗi alarm major mất ~30s recovery + có thể yêu cầu reset TP).
 
 **2 tầng kiểm tra, tăng dần độ chặt**:
 
@@ -1239,9 +1231,7 @@ graph LR
 
 Thư viện phần cứng (`pyrealsense2`, `ultralytics`, `pyserial`) đều lazy-import → L1–L2 chạy được trên máy không có phần cứng. Open3D + numpy là core dependencies, không cần GPU.
 
-Hiện có **293 test case** ở `pickplace_gp7/tests/` cover L1–L3. Bao quát: HSE protocol + Cartesian encode, HSE backend mock socket, INFORM codegen, ultra-fast P-var, digital twin mirror, kinematics FK, inverse kinematics DLS, frame conversion, và các unit khác. Toàn bộ chạy được trên máy không phần cứng (lazy-import + mock).
-
-Lịch tham chiếu: L1 từ Tuần 4 (ongoing) · L4 ≈ Tuần 14 · **L5 HSE ≈ Tuần 20+** (path real).
+Hiện có **293 test case** ở `DTwinGP7/tests/` cover L1–L3. Bao quát: HSE protocol + Cartesian encode, HSE backend mock socket, INFORM codegen, ultra-fast P-var, digital twin mirror, kinematics FK, inverse kinematics DLS, frame conversion, và các unit khác. Toàn bộ chạy được trên máy không phần cứng (lazy-import + mock).
 
 ## 9. Hiệu chỉnh (Tuning)
 
@@ -1286,10 +1276,10 @@ graph TB
 
 **Đừng tune tất cả cùng lúc!** Làm theo thứ tự:
 
-1. **Vision first** (tuần 11): tune confidence/NMS để detection chính xác. Đo metric mAP.
-2. **Pose extraction** (tuần 12): tune depth window, kiểm tra localization error.
-3. **Motion params** (tuần 13): tune speed, blending — bắt đầu chậm, tăng dần.
-4. **Gripper timing** (tuần 14): tune close delay để gripper kẹp chặt trước khi lift.
+1. **Vision first**: tune confidence/NMS để detection chính xác. Đo metric mAP.
+2. **Pose extraction**: tune depth window, kiểm tra localization error.
+3. **Motion params**: tune speed, blending — bắt đầu chậm, tăng dần.
+4. **Gripper timing**: tune close delay để gripper kẹp chặt trước khi lift.
 
 Mỗi parameter, **vary 5–10 giá trị**, chạy 10 trials mỗi giá trị, plot success rate.
 
@@ -1359,11 +1349,6 @@ sequenceDiagram
     H->>H: Dat lai vat cho trial tiep
     Note over H,R: Lap lai 50 lan
 ```
-
-#### Giải thích chi tiết từng bước
-
-Để học viên/người mới có thể tự chạy được 1 thí nghiệm chuẩn, từng bước trong
-sequence trên cụ thể như sau:
 
 **0. Chuẩn bị trước khi bắt đầu** (làm 1 lần đầu session, không lặp mỗi trial)
 
@@ -1453,7 +1438,7 @@ sequence trên cụ thể như sau:
   ~10-15 phút.
 - Sau 50, đổi `--lighting` hoặc `--overlap`, chạy 50 trial khác.
 
-#### Best practices cho học viên
+#### Best practices
 
 | Tình huống | Cách xử |
 |---|---|
@@ -1476,7 +1461,7 @@ sequence trên cụ thể như sau:
 - [ ] Sổ ghi note hoặc spreadsheet để log trial bất thường
 - [ ] Ổ đĩa đủ free space (~100 MB cho 500 trial telemetry CSV)
 
-**Tự động hóa đặt vật**: không khả thi với master. Thực hiện bằng tay là OK, nhưng:
+**Tự động đặt vật**: không khả thi với master. Thực hiện bằng tay là OK, nhưng:
 - Dùng **template position cards** (in giấy có vị trí số 1–20) → bốc random
 - Lăn xúc xắc → chọn vị trí + góc
 - Đảm bảo người đặt vật **không nhìn camera output** (tránh bias)
@@ -1580,7 +1565,7 @@ gantt
 
 **Ngày 1–2** (Setup):
 - [ ] Cài Python 3.10 + venv
-- [ ] `pip install -r requirements.txt` (xem `pickplace_gp7/requirements.txt`)
+- [ ] `pip install -r requirements.txt` (xem `DTwinGP7/requirements.txt`)
 - [ ] Cài RealSense SDK 2.0
 - [ ] `pytest tests/` → 293 passed
 - [ ] `python scripts/03_run_experiment.py --mode sim --trials 1` → Open3D viewport hiện
