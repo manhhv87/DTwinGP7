@@ -37,10 +37,12 @@ from typing import Any, Iterator
 
 from .hse_protocol import (
     Command,
+    DataType,
     HSEDecodeError,
     HSEResponse,
     HSERequest,
     Service,
+    encode_cartesian_position,
     parse_position_response,
     pulse_to_deg,
 )
@@ -72,6 +74,11 @@ class MotomanHSEBackend:
         request_id_seed: Giá trị bắt đầu của request_id (auto-increment).
     """
 
+    # Class-level marker: backend support pose 4x4 input cho MoveJ/MoveL
+    # (YRC1000 tự IK). DigitalTwinMirror check flag này để distinguish với
+    # MagicMock / generic backends — tránh false-positive duck-type detection.
+    supports_cartesian_pose: bool = True
+
     def __init__(
         self,
         ip: str,
@@ -85,6 +92,7 @@ class MotomanHSEBackend:
         job_name_prefix: str = "DTWIN",
         wait_completion_timeout_s: float = 30.0,
         reach_envelope: Any = None,
+        tool_no: int = 1,
     ) -> None:
         self.ip = ip
         self.port = port
@@ -105,6 +113,9 @@ class MotomanHSEBackend:
         self.wait_completion_timeout_s = wait_completion_timeout_s
         # Optional kinematic envelope cho MoveJ_Test client-side khi không có RoboDK item.
         self.reach_envelope = reach_envelope
+        # TOOL coordinate number — phải khớp với TOOL01 đã setup trên teach pendant
+        # (TCP offset của gripper). Default = 1 (TOOL01).
+        self.tool_no = int(tool_no)
         # Batch state: None = non-batch (mỗi MoveJ = 1 INFORM upload). Active builder
         # khi đang trong `with backend.batch():` — motion + IO calls gom vào đây.
         self._batch_builder: InformJobBuilder | None = None
@@ -339,6 +350,51 @@ class MotomanHSEBackend:
         )
         logger.debug("HSE WRITE_POS_VAR P%03d ← %s deg", p_index, joints_deg)
 
+    def write_pose_var(
+        self,
+        p_index: int,
+        T_base: Any,                           # 4x4 numpy in robot BASE frame
+        tool_no: int = 0,
+        user_frame: int = 0,
+        form: int = 0,
+        data_type: int = DataType.BASE,
+    ) -> None:
+        """Ghi P-variable dạng Cartesian pose (BASE coordinate) qua HSE.
+
+        Path này cho phép YRC1000 tự tính IK (controller's own kinematics)
+        thay vì PC compute. Tránh sai DH params phía PC.
+
+        Args:
+            p_index: 0-127 — P-variable index.
+            T_base: 4x4 pose trong robot BASE frame (mm). Orchestrator gọi
+                `world_to_robot_base()` để convert từ world frame trước.
+            tool_no: TCP tool number (1 = gripper TOOL01 đã setup trên TP).
+            user_frame: 0 cho BASE coordinate.
+            form: IK config branch (0 = front + elbow up + no flip default).
+            data_type: BASE/ROBOT/USER/TOOL (default BASE).
+        """
+        from src.orchestrator.frame_convert import matrix_to_xyzrpy_yaskawa
+
+        if not (0 <= p_index <= 127):
+            raise ValueError(f"P-variable index 0-127, got {p_index}")
+
+        x, y, z, rx, ry, rz = matrix_to_xyzrpy_yaskawa(T_base)
+        payload = encode_cartesian_position(
+            x_mm=x, y_mm=y, z_mm=z,
+            rx_deg=rx, ry_deg=ry, rz_deg=rz,
+            tool_no=tool_no, user_frame=user_frame,
+            form=form, data_type=int(data_type),
+        )
+        self._send_request(
+            Command.WRITE_POS_VAR, instance=p_index, attribute=0,
+            service=Service.SET_ATTRIBUTE_ALL, payload=payload,
+        )
+        logger.debug(
+            "HSE WRITE_POS_VAR P%03d Cartesian: xyz=(%.1f, %.1f, %.1f)mm "
+            "rpy=(%.1f, %.1f, %.1f)° tool=%d form=%d",
+            p_index, x, y, z, rx, ry, rz, tool_no, form,
+        )
+
     def read_alarm(self) -> tuple[int, int]:
         """READ_ALARM (0x70): đọc alarm code hiện tại + sub-code.
 
@@ -551,13 +607,36 @@ class MotomanHSEBackend:
             self._batch_builder.movl(pos_name)
 
     # ─── Motion (M3 — branched theo batch state) ───
+    def _is_pose_4x4(self, target: Any) -> bool:
+        """Detect target là pose 4x4 (numpy/list-of-lists) không."""
+        try:
+            arr = target if hasattr(target, "shape") else None
+            if arr is not None and getattr(arr, "shape", None) == (4, 4):
+                return True
+            # list of lists 4x4
+            if (isinstance(target, (list, tuple)) and len(target) == 4
+                    and all(hasattr(r, "__len__") and len(r) == 4 for r in target)):
+                return True
+        except Exception:                                # noqa: BLE001
+            pass
+        return False
+
     def MoveJ(self, target: Any) -> None:
-        """Joint move tới target (joints list 6 phần tử).
+        """Joint move tới target.
+
+        Polymorphic — auto-detect target type:
+          - list/tuple 6 floats → joint angles (degrees) → P-variable PULSE
+          - 4x4 matrix → Cartesian pose in BASE frame → P-variable BASE,
+            YRC1000 tự compute IK
 
         Non-batch: 1 INFORM upload + JOB_START + wait (200-300ms overhead).
         Batch (M3): append instruction vào batch builder (immediate return).
         Ultra-fast batch (M3++): append vào pvar buffer.
         """
+        # Cartesian path (4x4 numpy/list-of-lists)
+        if self._is_pose_4x4(target):
+            return self._move_pose(target, kind="movj")
+
         if self._pvar_batch_buffer is not None:
             self._pvar_batch_buffer.append(("movj", self._to_joint_list(target)))
             return
@@ -580,7 +659,10 @@ class MotomanHSEBackend:
         self._wait_idle()
 
     def MoveL(self, target: Any) -> None:
-        """Linear move — tương tự MoveJ nhưng dùng MOVL."""
+        """Linear move — polymorphic giống MoveJ (joints hoặc 4x4 Cartesian)."""
+        if self._is_pose_4x4(target):
+            return self._move_pose(target, kind="movl")
+
         if self._pvar_batch_buffer is not None:
             self._pvar_batch_buffer.append(("movl", self._to_joint_list(target)))
             return
@@ -596,6 +678,65 @@ class MotomanHSEBackend:
             .comment(f"Auto-gen MoveL #{self._job_counter}")
             .movl("target", speed_mm_s=80.0)
             .render()
+        )
+        self.upload_job(job_text, job_name)
+        self.job_select(job_name)
+        self.job_start()
+        self._wait_idle()
+
+    def _move_pose(self, T_base: Any, kind: str) -> None:
+        """Single-shot Cartesian move qua P-variable BASE + small INFORM job.
+
+        Workflow:
+          1. WRITE_POS_VAR P000 ← Cartesian pose (data_type=BASE)
+          2. Upload tiny INFORM job tham chiếu P000 với MOVJ/MOVL
+          3. JOB_SELECT + START + wait_idle
+
+        Cùng pattern non-batch joint MoveJ nhưng dùng P-var thay vì C-var.
+        Trong batch mode hiện chỉ joint được support — Cartesian batch là
+        future work (cần INFORM template với BASE-typed P-vars).
+        """
+        if self._batch_builder is not None or self._pvar_batch_buffer is not None:
+            raise NotImplementedError(
+                "Cartesian MoveJ/MoveL trong batch context chưa hỗ trợ. "
+                "Gọi ngoài batch hoặc dùng joint path."
+            )
+
+        from src.orchestrator.frame_convert import matrix_to_xyzrpy_yaskawa
+        tool_no = getattr(self, "tool_no", 1)               # TOOL01 default
+        user_frame = 0
+        form = 0                                            # default IK branch
+
+        # 1. Write P000 with Cartesian pose
+        self.write_pose_var(p_index=0, T_base=T_base,
+                            tool_no=tool_no, user_frame=user_frame,
+                            form=form, data_type=DataType.BASE)
+
+        # 2. Upload INFORM job that references P000 with MOVJ/MOVL
+        x, y, z, rx, ry, rz = matrix_to_xyzrpy_yaskawa(T_base)
+        job_name = self._next_job_name()
+        # Inline INFORM với P-variable + BASE position
+        instr = ("MOVJ P000" if kind == "movj" else "MOVL P000")
+        if kind == "movj":
+            instr += f" VJ={self.max_speed_pct:.2f}"
+        else:
+            instr += " V=80.0"
+        job_text = (
+            "/JOB\r\n"
+            f"//NAME {job_name}\r\n"
+            "//POS\r\n"
+            "///NPOS 0,0,0,0,0,0\r\n"
+            f"///TOOL {tool_no}\r\n"
+            "///POSTYPE BASE\r\n"
+            "///BASE\r\n"
+            "//INST\r\n"
+            "///DATE 2026/01/01 00:00\r\n"
+            "///ATTR SC,RW\r\n"
+            "///GROUP1 RB1\r\n"
+            "NOP\r\n"
+            f"'Cartesian {kind} target=({x:.1f},{y:.1f},{z:.1f})mm\r\n"
+            f"{instr}\r\n"
+            "END\r\n"
         )
         self.upload_job(job_text, job_name)
         self.job_select(job_name)
@@ -673,6 +814,51 @@ class MotomanHSEBackend:
             service=Service.SET_ATTRIBUTE_SINGLE, payload=payload,
         )
         logger.debug("HSE setDO(index=%d → bit %d) = %d", index, bit_addr, value)
+
+    def set_io(self, bit_addr: int, value: int) -> None:
+        """Ghi 1 bit network I/O qua HSE WRITE_IO ở ABSOLUTE bit address.
+
+        Khác với `setDO(index)` (relative tới NETWORK_IO_BASE), `set_io` dùng
+        absolute address — cần thiết cho CC-Link bits (range ~30010+) hoặc
+        các module I/O không gắn vào general network range 27010.
+
+        Args:
+            bit_addr: Absolute bit address (vd 30010 cho CC-Link output).
+            value: 0 hoặc 1.
+        """
+        payload = struct.pack("<I", 1 if value else 0)
+        self._send_request(
+            Command.WRITE_IO, instance=bit_addr, attribute=1,
+            service=Service.SET_ATTRIBUTE_SINGLE, payload=payload,
+        )
+        logger.debug("HSE set_io(bit=%d) = %d", bit_addr, value)
+
+    def read_io(self, bit_addr: int) -> int:
+        """Đọc 1 bit network I/O qua HSE READ_IO (cmd 0x78).
+
+        Dùng để đọc sensor feedback từ PLC qua CC-Link bridge:
+        - Gripper position sensors (X503 UnClamp, X504 Clamp)
+        - Object detect sensor (X505 Carrier)
+
+        Args:
+            bit_addr: Absolute bit address. Vd 30050 cho clamp sensor (CC-Link mapped).
+
+        Returns:
+            0 hoặc 1. -1 nếu lỗi.
+        """
+        try:
+            resp = self._send_request(
+                Command.READ_IO, instance=bit_addr, attribute=1,
+                service=Service.GET_ATTRIBUTE_SINGLE,
+            )
+            if not resp.payload:
+                return -1
+            # Payload: 4-byte uint32 = value (0 or 1)
+            value = struct.unpack("<I", resp.payload[:4])[0]
+            return int(value & 0x01)
+        except Exception as e:                              # noqa: BLE001
+            logger.warning("read_io(%d) lỗi: %s", bit_addr, e)
+            return -1
 
     def setSpeed(self, linear_mm_s: float, joint_deg_s: float = -1) -> None:
         """No-op — HSE không control speed trực tiếp. Tốc độ set trong INFORM job."""

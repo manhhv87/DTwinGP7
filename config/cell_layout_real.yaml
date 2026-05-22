@@ -12,7 +12,10 @@
 #   2. PC và controller cùng subnet (vd 192.168.1.x)
 #   3. Đã ping được IP của YRC1000
 #   4. High Speed Ethernet Server function đã enable trên YRC1000
-#   5. RoboDK Educational/Professional license (Free KHÔNG hỗ trợ robot drivers)
+#   5. RoboDK Free là đủ — RoboDK chỉ làm viewport 3D, KHÔNG là motion driver.
+#      Motion đi qua HSE UDP (MotomanHSEBackend), KHÔNG gọi robot.Connect() nên
+#      KHÔNG cần tier RoboDK có robot driver.
+#   6. TOOL01 đã setup trên teach pendant (cho --ik-source yrc) — xem SETUP_YRC_TOOL.md
 #
 # Khi cell vật lý KHÁC sim (vd không có pedestal, bàn ở vị trí khác), copy file
 # này thành biến thể riêng + đo lại các pose cho đúng cell thật.
@@ -174,9 +177,13 @@ objects:
 # REAL ROBOT CONNECTION
 # ─────────────────────────────────────────────────────────────────────────────
 robot_connection:
-  enabled: true                           # BẬT — gửi command tới GP7 thật
-  ip: "192.168.1.100"                     # ĐỔI theo IP YRC1000 thực tế
-  port: 80
-  driver: "Motoman"
-  max_speed_percent: 30                   # safety: hạ tốc độ thí nghiệm xuống 30%
+  # HSE-only architecture: enabled=false để CellLoader KHÔNG gọi robot.Connect()
+  # (RoboDK chỉ là viewport, không là motion driver). Motion đi qua
+  # MotomanHSEBackend (UDP 10040). enabled=true sẽ kích hoạt RoboDK driver
+  # (cần license tier cao + crash với RoboDK Free) — KHÔNG dùng. Xem Phu_luc_A §A.9.
+  enabled: false                          # PHẢI false cho HSE-only
+  ip: "192.168.1.100"                     # ĐỔI theo IP YRC1000 thực tế (= default cho --hse-ip)
+  port: 80                                # cosmetic — HSE thực dùng UDP 10040
+  driver: "Motoman"                       # cosmetic — ghi brand, không gọi driver
+  max_speed_percent: 30                   # safety: cap tốc độ INFORM VJ xuống 30%
   acceleration_percent: 50                # safety: gia tốc 50%

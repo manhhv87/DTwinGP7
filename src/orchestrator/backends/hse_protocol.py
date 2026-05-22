@@ -77,7 +77,111 @@ class Command(IntEnum):
     START = 0x86                   # start job (after JOB_SELECT)
     # P-variable read/write (M3++ ultra-fast mode)
     READ_POS_VAR = 0x7F            # read P-variable (instance = P-index)
-    WRITE_POS_VAR = 0x7F           # same command, service SET_ATTRIBUTE_ALL
+    WRITE_POS_VAR = 0x7F            # same command, service SET_ATTRIBUTE_ALL
+
+
+class DataType(IntEnum):
+    """Position variable data type field cho WRITE_POSITION_VAR / READ_POSITION.
+
+    Per Yaskawa HSE spec HW1485553. Quyết định cách interpret 8 axis values:
+      - PULSE: joint angles in encoder pulse units (cần convert qua pulse_per_deg)
+      - BASE: Cartesian pose trong robot BASE frame (X,Y,Z,Rx,Ry,Rz)
+      - ROBOT: giống BASE cho non-track robot (single arm GP7)
+      - USER01-63: Cartesian trong user-defined frame
+      - TOOL: Cartesian trong current tool frame (hiếm dùng)
+    """
+
+    PULSE = 0
+    BASE = 16                       # Robot base coordinate (recommended cho pick-place)
+    ROBOT = 17                      # = BASE cho GP7 (no track axis)
+    USER01 = 18                     # USER01 frame; +N cho USER02..USER63 (max 80)
+    USER63 = 80
+    TOOL = 65                       # tool frame
+
+
+# ───── Yaskawa Cartesian field unit conventions ─────
+# Position field value = mm × POSITION_UNIT_SCALE (i.e., μm precision).
+POSITION_UNIT_SCALE = 1000.0
+# Rotation field value = degrees × ROTATION_UNIT_SCALE (0.0001° precision).
+ROTATION_UNIT_SCALE = 10000.0
+
+
+def encode_cartesian_position(
+    x_mm: float, y_mm: float, z_mm: float,
+    rx_deg: float, ry_deg: float, rz_deg: float,
+    tool_no: int = 0,
+    user_frame: int = 0,
+    form: int = 0,
+    data_type: int = DataType.BASE,
+) -> bytes:
+    """Encode Cartesian pose → 52-byte payload cho WRITE_POSITION_VAR (cmd 0x7F).
+
+    Layout giống joint variant nhưng axis values là Cartesian thay vì pulse:
+        [0-3]    data_type (BASE=16 cho robot base frame)
+        [4-7]    form bits (IK config branch — bit 0=back, 1=elbow, 2=flip, ...)
+        [8-11]   tool_no (0-63, gripper TCP)
+        [12-15]  user_frame (0 nếu BASE, 1-63 nếu USER)
+        [16-19]  extended_form (0 cho GP7 — không có track)
+        [20-23]  X position (int32, đơn vị 0.001mm = μm)
+        [24-27]  Y position
+        [28-31]  Z position
+        [32-35]  Rx rotation (int32, đơn vị 0.0001° degree)
+        [36-39]  Ry rotation
+        [40-43]  Rz rotation
+        [44-47]  Reserved (0)
+        [48-51]  Reserved (0)
+
+    Convention rotation: Yaskawa dùng XYZ-fixed (= ZYX-intrinsic Tait-Bryan).
+    Caller phải convert pose matrix → (rx, ry, rz) đúng convention này — xem
+    `frame_convert.matrix_to_rpy_yaskawa()`.
+
+    Args:
+        x_mm, y_mm, z_mm: Position trong frame chỉ định bởi `data_type`.
+        rx_deg, ry_deg, rz_deg: Rotation degrees (XYZ-fixed convention).
+        tool_no: 0-63 — gripper TCP đã setup trên teach pendant.
+        user_frame: 0 cho BASE, 1-63 cho USER01-USER63.
+        form: IK config bits (0 = front + elbow up + no flip — default pick-place).
+        data_type: 16 (BASE), 17 (ROBOT), 18-80 (USER), 65 (TOOL).
+
+    Returns:
+        52-byte payload sẵn sàng gửi qua HSE.
+
+    Raises:
+        ValueError: Bất kỳ field nào ngoài int32 range sau khi scale.
+    """
+    if not (0 <= tool_no <= 63):
+        raise ValueError(f"tool_no phải 0-63, got {tool_no}")
+    if not (0 <= user_frame <= 63):
+        raise ValueError(f"user_frame phải 0-63, got {user_frame}")
+    if not (0 <= form <= 0xFF):
+        raise ValueError(f"form bits phải 0-255 (8 bit), got {form}")
+
+    # Scale to Yaskawa integer units
+    x_i = int(round(x_mm * POSITION_UNIT_SCALE))
+    y_i = int(round(y_mm * POSITION_UNIT_SCALE))
+    z_i = int(round(z_mm * POSITION_UNIT_SCALE))
+    rx_i = int(round(rx_deg * ROTATION_UNIT_SCALE))
+    ry_i = int(round(ry_deg * ROTATION_UNIT_SCALE))
+    rz_i = int(round(rz_deg * ROTATION_UNIT_SCALE))
+
+    # int32 range check (~2.1 billion → ±2147km position, ±214748° rotation)
+    INT32_MAX, INT32_MIN = 2_147_483_647, -2_147_483_648
+    for name, v in (("X", x_i), ("Y", y_i), ("Z", z_i),
+                    ("Rx", rx_i), ("Ry", ry_i), ("Rz", rz_i)):
+        if not (INT32_MIN <= v <= INT32_MAX):
+            raise ValueError(f"{name} value sau scale ngoài int32 range: {v}")
+
+    return struct.pack(
+        "<5I 8i",
+        int(data_type),     # [0-3] data_type
+        int(form),          # [4-7] form
+        int(tool_no),       # [8-11] tool_no
+        int(user_frame),    # [12-15] user_frame
+        0,                  # [16-19] extended_form
+        x_i, y_i, z_i,      # [20-31] X, Y, Z (μm)
+        rx_i, ry_i, rz_i,   # [32-43] Rx, Ry, Rz (0.0001°)
+        0, 0,               # [44-51] reserved
+    )
 
 
 # ───── Errors ─────

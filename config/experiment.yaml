@@ -1,7 +1,7 @@
 # =============================================================================
 # experiment.yaml — Cấu hình thí nghiệm pick-and-place
 # =============================================================================
-# Dùng bởi scripts/05_run_experiment.py. Các key dưới được nạp trực tiếp vào
+# Dùng bởi scripts/03_run_experiment.py. Các key dưới được nạp trực tiếp vào
 # Orchestrator (xem src/orchestrator/orchestrator.py :: _DEFAULT_CONFIG).
 # =============================================================================
 
@@ -21,7 +21,33 @@ yaw_offset_deg: 90.0            # 90°: gripper jaws spread vuông góc PCA majo
 
 # ───── Gripper ─────
 gripper_do_index: 1             # chỉ số Digital Output điều khiển gripper
-gripper_delay_s: 0.3            # chờ gripper đóng/mở ổn định
+# gripper_delay_s: fallback blind delay khi KHÔNG có CC-Link sensor feedback
+# (sim/headless, hoặc real chưa wire sensor). Real chain PC → YRC → PLC
+# Mitsubishi → solenoid → pneumatic total ~150-415ms tùy hardware. 0.5s an toàn.
+# Tăng nếu PLC scan time chậm hoặc pneumatic cylinder lớn.
+gripper_delay_s: 0.5
+
+# ───── Gripper CC-Link (Path A — double-acting + sensor feedback) ─────
+# Gripper khí nén điều khiển qua PLC Mitsubishi, PC ↔ PLC qua YRC1000 làm
+# CC-Link bridge (set_io/read_io absolute bit). Khi block này active,
+# orchestrator dùng _gripper_cc_link(): toggle solenoid → chờ position sensor
+# → (close) verify detect sensor, thay vì blind delay.
+#
+# --mode real TỰ ĐỘNG bật block dưới với mapping mặc định (xem
+# scripts/03_run_experiment.py). Bỏ comment ở đây để OVERRIDE nếu bit address
+# trên YRC TP khác (Setup → I/O Module → CC-Link). Chi tiết: docs §7.9 +
+# HUONG_DAN_CAI_DAT §2.9 Bước 4.
+#
+# Sim/headless: GIỮ comment (= None) → dùng blind-delay đơn giản ở trên.
+# gripper_cc_link:
+#   clamp_bit:               30010   # OUT → PLC Y502 (Clamp solenoid)
+#   unclamp_bit:             30011   # OUT → PLC Y503 (UnClamp solenoid)
+#   clamp_sensor_bit:        30050   # IN  ← PLC X504 (cylinder tại vị trí Clamp)
+#   unclamp_sensor_bit:      30051   # IN  ← PLC X503 (cylinder tại vị trí UnClamp)
+#   detect_bit:              30052   # IN  ← PLC X505 (Carrier Detect — có vật trong gripper)
+#   wait_sensor_timeout_s:   2.0     # timeout chờ position sensor ON → raise gripper_timeout
+#   wait_sensor_poll_s:      0.05    # chu kỳ poll sensor (giây)
+#   require_detect_on_close: true    # sau close, verify detect ON → raise grasp_failed nếu OFF
 
 # ───── Điều phối ─────
 inter_trial_delay_s: 1.0        # nghỉ giữa các trial

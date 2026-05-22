@@ -13,7 +13,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from .dh_model import RobotDHModel
-from .forward_kinematics import joint_positions
+from .forward_kinematics import joint_positions, joint_positions_batch
 
 
 @dataclass
@@ -79,9 +79,11 @@ def check_joint_limits(
     Returns:
         List violations: (sample_idx, joint_idx, value_rad). Rỗng = OK.
     """
+    # Polymorphic: URDFRobot dùng `.joints`, RobotDHModel dùng `.links`
+    link_attr = getattr(model, "joints", None) or getattr(model, "links", None)
     violations: list[tuple[int, int, float]] = []
     for s_idx, sample in enumerate(samples):
-        for j_idx, (q, link) in enumerate(zip(sample.joints_rad, model.links)):
+        for j_idx, (q, link) in enumerate(zip(sample.joints_rad, link_attr)):
             if not (link.joint_min <= q <= link.joint_max):
                 violations.append((s_idx, j_idx, float(q)))
     return violations
@@ -124,16 +126,34 @@ def check_self_collision_spheres(
     Returns:
         List (sample_idx, joint_i, joint_j, distance_mm). Rỗng = OK.
     """
-    violations: list[tuple[int, int, int, float]] = []
-    for s_idx, sample in enumerate(samples):
-        positions = joint_positions(model, sample.joints_rad)
-        n = len(positions)
-        # Lấy radii khớp số position; nếu thiếu thì pad với last value.
-        radii = list(radii_mm[:n]) + [radii_mm[-1]] * max(0, n - len(radii_mm))
+    if not samples:
+        return []
 
-        for i in range(n):
-            for j in range(i + min_non_adjacent_gap, n):
-                dist = float(np.linalg.norm(positions[i] - positions[j]))
-                if dist < radii[i] + radii[j]:
-                    violations.append((s_idx, i, j, dist))
+    # Batch FK toàn bộ samples 1 lần (matmul vectorized) thay vì N call lẻ —
+    # positions[p] là array (N,3), bit-identical với joint_positions từng sample.
+    joints_batch = np.array([s.joints_rad for s in samples], dtype=float)
+    positions = joint_positions_batch(model, joints_batch)
+    n = len(positions)
+    # Lấy radii khớp số position; nếu thiếu thì pad với last value.
+    radii = list(radii_mm[:n]) + [radii_mm[-1]] * max(0, n - len(radii_mm))
+    # (N, n, 3): vị trí mọi joint cho mọi sample.
+    P = np.stack(positions, axis=1)
+
+    violations: list[tuple[int, int, int, float]] = []
+    for i in range(n):
+        for j in range(i + min_non_adjacent_gap, n):
+            thr = radii[i] + radii[j]
+            diff = P[:, i, :] - P[:, j, :]
+            # Khoảng cách BÌNH PHƯƠNG vectorized làm bộ lọc thô (superset):
+            # ngưỡng nới rộng đảm bảo KHÔNG bỏ sót cặp nào < thr (sai số ULP).
+            dist_sq = np.einsum("kc,kc->k", diff, diff)
+            thr_sq_pad = (thr * (1.0 + 1e-9) + 1e-6) ** 2
+            for k in np.nonzero(dist_sq < thr_sq_pad)[0]:
+                # Xác nhận bằng ĐÚNG công thức cũ (np.linalg.norm + so sánh <)
+                # → danh sách vi phạm + giá trị dist bit-identical với bản cũ.
+                dist = float(np.linalg.norm(P[k, i] - P[k, j]))
+                if dist < thr:
+                    violations.append((int(k), i, j, dist))
+    # Sắp theo (sample, i, j) — khớp đúng thứ tự vòng lặp lồng của bản cũ.
+    violations.sort(key=lambda t: (t[0], t[1], t[2]))
     return violations

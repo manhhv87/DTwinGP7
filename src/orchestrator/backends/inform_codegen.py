@@ -130,22 +130,35 @@ class InformJobBuilder:
         return f"C{self._pos_index[position_name]:05d}"
 
     # ─── Motion instructions ───
-    def movj(self, position_name: str, speed_pct: float | None = None) -> "InformJobBuilder":
-        """Joint move tới position (cao tốc, không quan tâm path)."""
+    def movj(self, position_name: str, speed_pct: float | None = None,
+             tool_no: int | None = None) -> "InformJobBuilder":
+        """Joint move tới position (cao tốc, không quan tâm path).
+
+        Args:
+            tool_no: Override TOOL coordinate. None = không thêm TL= (dùng
+                TOOL hiện tại). Đặt 1 cho TOOL01 (gripper).
+        """
         cvar = self._resolve_cvar(position_name)
         vj = self._clamp_joint_speed(speed_pct)
-        self._instructions.append(_Instruction(f"MOVJ {cvar} VJ={vj:.2f}"))
+        inst = f"MOVJ {cvar} VJ={vj:.2f}"
+        if tool_no is not None:
+            inst += f" TL={tool_no}"
+        self._instructions.append(_Instruction(inst))
         return self
 
     def movl(
         self,
         position_name: str,
         speed_mm_s: float = 100.0,
+        tool_no: int | None = None,
     ) -> "InformJobBuilder":
         """Linear (Cartesian) move."""
         cvar = self._resolve_cvar(position_name)
         v = max(1.0, min(float(speed_mm_s), MAX_LINEAR_MM_S))
-        self._instructions.append(_Instruction(f"MOVL {cvar} V={v:.1f}"))
+        inst = f"MOVL {cvar} V={v:.1f}"
+        if tool_no is not None:
+            inst += f" TL={tool_no}"
+        self._instructions.append(_Instruction(inst))
         return self
 
     # ─── I/O + timing ───

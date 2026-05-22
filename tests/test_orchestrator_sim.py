@@ -3,8 +3,8 @@ test_orchestrator_sim.py
 ────────────────────────
 Integration test cho Orchestrator với robot giả lập (MagicMock).
 
-Không cần RoboDK: robot được inject sẵn, _to_robodk_pose bị monkeypatch
-thành passthrough numpy → toàn bộ chu trình run_one_cycle chạy được.
+Mock robot duck-types interface (Joints, MoveJ, MoveL, MoveJ_Test, setDO,
+setSpeed). Tất cả pose ở world-frame numpy 4x4 — backend tự lo frame conversion.
 
 Run:
     pytest tests/test_orchestrator_sim.py -v
@@ -53,17 +53,24 @@ def mock_robot():
 
 
 @pytest.fixture
-def orchestrator(calibration_file, mock_robot, monkeypatch):
-    """Orchestrator sẵn sàng — _to_robodk_pose passthrough numpy."""
-    monkeypatch.setattr(
-        Orchestrator, "_to_robodk_pose", lambda self, T: np.asarray(T)
-    )
+def orchestrator(calibration_file, mock_robot):
+    """Orchestrator sẵn sàng. Robot mock duck-types backend interface.
+
+    Robot base ở (0,0,630) mm (pedestal — khớp cell_layout_real.yaml) để
+    reach envelope (927 mm) cover được toàn bộ workspace bàn (xyz mặc định
+    place_position=(700,120,700)).
+
+    Dùng use_yrc_ik=True → MoveJ nhận pose 4x4 trực tiếp (controller-side IK
+    convention), không cần client DLS converge — phù hợp test với MagicMock.
+    """
     det_queue: queue.Queue = queue.Queue(maxsize=3)
     config = {
         "calibration_path": str(calibration_file),
         "inter_trial_delay_s": 0.0,
         "gripper_delay_s": 0.0,
         "skip_reachability_check": False,    # test verify hành vi reach check
+        "use_yrc_ik": True,                  # MoveJ pose passthrough
+        "robot_base_xyz_mm": (0.0, 0.0, 630.0),  # khớp pedestal cell layout
     }
     return Orchestrator(det_queue, config=config, robot=mock_robot)
 
@@ -84,76 +91,68 @@ class TestSelectObjects:
         assert objs[0]["class_name"] == "cup"  # Z cao hơn → gắp trước
 
 
-class TestObjectMirror:
-    """Real mode: detection update RoboDK item pose để twin khớp camera view."""
+class TestGripperCcLink:
+    """CC-Link path: 2 solenoid (clamp/unclamp) + 3 sensors (X503/X504/X505)."""
 
-    def test_object_pose_mirrored_to_robodk_item(
-        self, calibration_file, mock_robot, monkeypatch
-    ):
-        # Setup orchestrator với robodk_objects (mock item)
-        monkeypatch.setattr(
-            Orchestrator, "_to_robodk_pose", lambda self, T: np.asarray(T)
-        )
-        mock_item = MagicMock(name="trayItem")
-        orch = Orchestrator(
+    def _make_orch(self, calibration_file, mock_robot, **cc_overrides):
+        cc = {
+            "clamp_bit": 30010, "unclamp_bit": 30011,
+            "clamp_sensor_bit": 30050, "unclamp_sensor_bit": 30051,
+            "detect_bit": 30052,
+            "wait_sensor_timeout_s": 0.1,
+            "wait_sensor_poll_s": 0.01,
+            "require_detect_on_close": True,
+            **cc_overrides,
+        }
+        # MagicMock has set_io/read_io auto-created — read_io returns 1 by default
+        mock_robot.read_io = MagicMock(return_value=1)
+        mock_robot.set_io = MagicMock()
+        return Orchestrator(
             queue.Queue(maxsize=3),
             config={"calibration_path": str(calibration_file),
-                    "inter_trial_delay_s": 0, "gripper_delay_s": 0},
+                    "gripper_cc_link": cc, "gripper_delay_s": 0.0,
+                    "inter_trial_delay_s": 0.0},
             robot=mock_robot,
-            robodk_objects={"tray": mock_item},
         )
-        msg = make_detection_msg([
-            make_object("tray", xyz=(500, 200, 600), yaw=0.5),
-        ])
-        orch._select_objects(msg)
-        # setPose được gọi với pose 4x4 chứa xyz và yaw
-        mock_item.setPose.assert_called_once()
-        pose_arg = mock_item.setPose.call_args[0][0]
-        np.testing.assert_array_almost_equal(pose_arg[:3, 3], [500, 200, 600])
-        # Top-left 2x2 phản ánh rotation Z theo yaw
-        assert abs(pose_arg[0, 0] - np.cos(0.5)) < 1e-6
-        assert abs(pose_arg[1, 0] - np.sin(0.5)) < 1e-6
 
-    def test_no_robodk_objects_skips_mirror(self, orchestrator):
-        """Không có robodk_objects → _select_objects vẫn chạy."""
-        msg = make_detection_msg([make_object("tray", xyz=(100, 0, 50))])
-        objs = orchestrator._select_objects(msg)
-        assert len(objs) == 1                       # no crash
+    def test_close_sets_clamp_bit_after_unclamp_off(self, calibration_file, mock_robot):
+        """An toàn cylinder: tắt UnClamp trước → bật Clamp."""
+        orch = self._make_orch(calibration_file, mock_robot)
+        orch._gripper(close=True, obj_class=None)
+        # Order: set_io(unclamp_bit, 0) trước set_io(clamp_bit, 1)
+        calls = mock_robot.set_io.call_args_list
+        assert calls[0].args == (30011, 0)              # unclamp OFF
+        assert calls[1].args == (30010, 1)              # clamp ON
 
-    def test_unknown_class_name_no_setpose(
-        self, calibration_file, mock_robot, monkeypatch
-    ):
-        monkeypatch.setattr(
-            Orchestrator, "_to_robodk_pose", lambda self, T: np.asarray(T)
-        )
-        mock_item = MagicMock()
-        orch = Orchestrator(
-            queue.Queue(maxsize=3),
-            config={"calibration_path": str(calibration_file)},
-            robot=mock_robot,
-            robodk_objects={"tray": mock_item},
-        )
-        # Detection của 'cup' không có trong robodk_objects
-        msg = make_detection_msg([make_object("cup", xyz=(100, 0, 50))])
-        orch._select_objects(msg)
-        mock_item.setPose.assert_not_called()       # tray item KHÔNG bị đổi pose
+    def test_open_sets_unclamp_bit_after_clamp_off(self, calibration_file, mock_robot):
+        orch = self._make_orch(calibration_file, mock_robot)
+        orch._gripper(close=False, obj_class=None)
+        calls = mock_robot.set_io.call_args_list
+        assert calls[0].args == (30010, 0)              # clamp OFF
+        assert calls[1].args == (30011, 1)              # unclamp ON
 
-    def test_attached_object_not_updated(self, calibration_file, mock_robot, monkeypatch):
-        """Khi object đang được attach vào gripper → không update pose."""
-        monkeypatch.setattr(
-            Orchestrator, "_to_robodk_pose", lambda self, T: np.asarray(T)
-        )
-        mock_item = MagicMock()
-        orch = Orchestrator(
-            queue.Queue(maxsize=3),
-            config={"calibration_path": str(calibration_file)},
-            robot=mock_robot,
-            robodk_objects={"tray": mock_item},
-        )
-        orch._attached_obj = mock_item                   # đã gắp
-        msg = make_detection_msg([make_object("tray", xyz=(100, 0, 50))])
-        orch._select_objects(msg)
-        mock_item.setPose.assert_not_called()
+    def test_grasp_fail_when_detect_sensor_off(self, calibration_file, mock_robot):
+        """X505 detect OFF khi close → raise grasp_failed."""
+        orch = self._make_orch(calibration_file, mock_robot)
+        # read_io trả 1 cho position sensor (clamp_sensor), 0 cho detect
+        def read_io_mock(bit):
+            return 0 if bit == 30052 else 1
+        mock_robot.read_io.side_effect = read_io_mock
+        with pytest.raises(RuntimeError, match="grasp_failed"):
+            orch._gripper(close=True, obj_class=None)
+
+    def test_sensor_timeout_raises(self, calibration_file, mock_robot):
+        """Position sensor không ON trong timeout → raise gripper_timeout."""
+        orch = self._make_orch(calibration_file, mock_robot)
+        mock_robot.read_io.return_value = 0              # never ON
+        with pytest.raises(RuntimeError, match="gripper_timeout"):
+            orch._gripper(close=True, obj_class=None)
+
+    def test_require_detect_false_allows_no_object(self, calibration_file, mock_robot):
+        """require_detect_on_close=False → skip detect verify."""
+        orch = self._make_orch(calibration_file, mock_robot, require_detect_on_close=False)
+        mock_robot.read_io.side_effect = lambda bit: 0 if bit == 30052 else 1
+        orch._gripper(close=True, obj_class=None)        # no raise
 
 
 class TestRunOneCycle:
@@ -175,9 +174,10 @@ class TestRunOneCycle:
         ok = orchestrator.run_one_cycle(trial_id=1)
         assert ok is False
 
-    def test_unreachable_object_skipped(self, orchestrator, mock_robot):
-        mock_robot.MoveJ_Test.return_value = -1  # ngoài tầm với
-        orchestrator.queue.put(make_detection_msg([make_object()]))
+    def test_unreachable_object_skipped(self, orchestrator):
+        """Reach envelope của GP7 ~927mm từ base (0,0,630). Object ở
+        (4000, 0, 0) cách base sqrt(4000² + 630²) ≈ 4050 mm — chắc chắn ngoài."""
+        orchestrator.queue.put(make_detection_msg([make_object(xyz=(4000, 0, 0))]))
         ok = orchestrator.run_one_cycle(trial_id=1)
         assert ok is False
         assert orchestrator.stats["successful"] == 0

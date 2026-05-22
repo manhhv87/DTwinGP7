@@ -205,11 +205,47 @@ class TestStubsAndPoseRejection:
         backend, _ = backend_with_mock_socket
         assert backend.MoveJ_Test([0] * 6, None) == 0
 
-    def test_movej_rejects_4x4_pose_until_ik_implemented(self, backend_with_mock_socket):
+    def test_movej_with_4x4_pose_routes_to_cartesian_path(
+        self, backend_with_mock_socket, monkeypatch,
+    ):
+        """4x4 pose → MoveJ Cartesian path (YRC IK). Verify _move_pose called."""
         import numpy as np
         backend, _ = backend_with_mock_socket
-        with pytest.raises(NotImplementedError, match="IK solver"):
-            backend.MoveJ(np.eye(4))
+        called: dict[str, object] = {}
+        monkeypatch.setattr(
+            backend, "_move_pose",
+            lambda T, kind: called.update(T=T, kind=kind),
+        )
+        T_target = np.eye(4)
+        T_target[:3, 3] = [500.0, 200.0, 600.0]
+        backend.MoveJ(T_target)
+        assert called["kind"] == "movj"
+        np.testing.assert_array_equal(called["T"], T_target)
+
+    def test_movel_with_4x4_pose_routes_to_cartesian_path(
+        self, backend_with_mock_socket, monkeypatch,
+    ):
+        import numpy as np
+        backend, _ = backend_with_mock_socket
+        called: dict[str, object] = {}
+        monkeypatch.setattr(
+            backend, "_move_pose",
+            lambda T, kind: called.update(T=T, kind=kind),
+        )
+        backend.MoveL(np.eye(4))
+        assert called["kind"] == "movl"
+
+    def test_is_pose_4x4_detects_numpy_and_list(self, backend_with_mock_socket):
+        import numpy as np
+        backend, _ = backend_with_mock_socket
+        assert backend._is_pose_4x4(np.eye(4)) is True
+        assert backend._is_pose_4x4([[1, 0, 0, 0]] * 4) is True
+        assert backend._is_pose_4x4([0, 0, 0, 0, 0, 0]) is False           # joints
+        assert backend._is_pose_4x4("not a pose") is False
+
+    def test_supports_cartesian_pose_class_flag(self):
+        from src.orchestrator.backends.motoman_hse import MotomanHSEBackend
+        assert MotomanHSEBackend.supports_cartesian_pose is True
 
 
 # ─────────────────────────────────────────────────────────────────────────

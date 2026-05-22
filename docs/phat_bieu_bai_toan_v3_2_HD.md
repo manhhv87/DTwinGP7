@@ -1,71 +1,72 @@
-# RoboDK Free + Python
+# HỆ THỐNG PICK-AND-PLACE CÙNG ROBOT GP7
 
-**Đề tài:** Tích hợp mô hình học sâu vào hệ thống Digital Twin cho bài toán gắp–thả sản phẩm có vị trí ngẫu nhiên bằng robot Yaskawa GP7
+Vision-guided pick-and-place dùng Yaskawa GP7, YOLOv8-seg cho perception, RealSense
+D455 cho RGB-D, Open3D Filament GUI làm viewport 3D, pure-Python kinematics
+client-side cho FK/IK.
 
-**Phiên bản:** v3.3 (cập nhật HSE backend bypass + Level-4 Bidirectional Digital Twin)
-
-**Cập nhật v3.3 vs v3.2**:
-- Architecture diagram (mục 2) thêm `MotomanHSEBackend` path bypass RoboDK driver license
-- Cấu trúc code (mục 3) bổ sung modules: `backends/`, `kinematics/`, `digital_twin.py`, `telemetry.py`
-- Pipeline integration (mục 7) tách thành 7 sub-section: backends pluggable, digital twin façade, kinematics module
-- Test count: 79 → **274 test cases** (sau Option C — HSE + L4 twin + ultra-fast + predictive)
-- Thí nghiệm (mục 10) thêm Experiment 4 — HSE backend performance benchmark
-- Test strategy (mục 8) tách L5 thành L5a (HSE) + L5b (RoboDK driver)
-
----
-
-## Mục lục
-
-- **Phần A**. Kiến trúc tổng thể (mục 1–3)
-- **Phần B**. Xây dựng dataset (mục 4) — **Chi tiết**
-- **Phần C**. Xây dựng & huấn luyện model (mục 5) — **Chi tiết**
-- **Phần D**. Hand-eye calibration (mục 6) — **Chi tiết**
-- **Phần E**. Tích hợp model vào hệ thống (mục 7) — **Chi tiết**
-- **Phần F**. Test, hiệu chỉnh, thí nghiệm (mục 8–10) — **Chi tiết**
-- **Phần G**. Lộ trình ~7 tháng + Action items (mục 11–13)
+**Tóm tắt kiến trúc**:
+- HSE là motion path cho robot thật — Python nói chuyện thẳng với YRC1000 qua
+  UDP HSE protocol. Không có vendor driver trong motion stack. FK/IK chạy
+  client-side bằng URDF chain pure numpy (verified match RoboDK SolveFK
+  0.00mm qua `scripts/13_verify_vs_robodk.py`).
+- Hai motion backend: `SimRobot` (dev / headless / sim GUI) và `MotomanHSEBackend`
+  (real). CLI `--backend {sim, hse}`. `--mode real` force `hse`.
+- Sim non-headless + real cùng pattern: motion backend wrap trong DigitalTwinMirror
+  façade, Open3D viewport (`O3DGuiSimRobot`) nhận setJoints @2Hz qua mirror
+  thread để mirror state thật.
+- 293 test case cover L1–L3 (HSE protocol + backend, INFORM codegen,
+  ultra-fast P-var, digital twin mirror, kinematics FK + IK, frame conversion, ...).
 
 ---
 
-# PHẦN A — KIẾN TRÚC TỔNG THỂ
+## MỤC LỤC
+
+1. Kiến trúc tổng thể (mục 1–3)
+2. Xây dựng dataset (mục 4)
+3. Xây dựng & huấn luyện model (mục 5)
+4. Hand-eye calibration (mục 6)
+5. Tích hợp model vào hệ thống (mục 7)
+6. Test, hiệu chỉnh, thí nghiệm (mục 8–10)
+7. Lộ trình triển khai + checklist (mục 11–13)
+
+---
+
+# PHẦN A: KIẾN TRÚC TỔNG THỂ
 
 ## 1. Stack
 
 ```mermaid
-%%{init: {'theme':'dark'}}%%
 graph LR
-    A[RoboDK Software Free<br/>━━━━━━━━━━<br/>Engine + GUI viewer<br/>~600 MB] -->|API calls<br/>localhost socket| B[RoboDK API for Python<br/>━━━━━━━━━━<br/>pip install robodk<br/>~5 MB]
-    B --> C[Code Python<br/>━━━━━━━━━━<br/>YOLO + OpenCV +<br/>Orchestrator + Digital Twin<br/>~5500 LOC]
-    C -->|Path 2 - HSE bypass<br/>UDP socket| D[Yaskawa YRC1000<br/>━━━━━━━━━━<br/>HSE Server function<br/>built-in, free]
+    A[Open3D Filament GUI<br/>O3DGuiSimRobot viewport<br/>~50 MB pip] -->|setJoints 2Hz<br/>viewport mirror| B[Code Python<br/>URDF chain FK/IK<br/>pure numpy]
+    B --> C[Code Python<br/>YOLO OpenCV<br/>Orchestrator Digital Twin<br/>~6000 LOC]
+    C ==>|HSE bypass<br/>UDP socket| D[Yaskawa YRC1000<br/>HSE Server function<br/>built-in]
 
-    style A fill:#C62828,stroke:#fff,stroke-width:2px,color:#fff
-    style B fill:#2E7D32,stroke:#fff,stroke-width:2px,color:#fff
+    style A fill:#2E7D32,stroke:#fff,stroke-width:2px,color:#fff
+    style B fill:#33691E,stroke:#fff,stroke-width:2px,color:#fff
     style C fill:#1565C0,stroke:#fff,stroke-width:2px,color:#fff
     style D fill:#E65100,stroke:#fff,stroke-width:2px,color:#fff
 ```
 
-**Stack đầy đủ** gồm 2 đường:
-- **Path 1 — RoboDK driver** (legacy): Python → RoboDK API → RoboDK Driver → GP7.
-  Cần **RoboDK Educational ($340)** cho real mode.
-- **Path 2 — HSE bypass** (mới, khuyến nghị): Python → UDP HSE → YRC1000 → GP7.
-  **0đ license** — HSE Server là function built-in của YRC1000.
+**Stack** dùng 1 motion path cho robot thật:
+- Python → UDP HSE → YRC1000 → GP7. HSE Server là function built-in của
+  YRC1000, không phụ thuộc vendor driver license.
+- Open3D Filament GUI (`O3DGuiSimRobot`) là viewport 3D mirror robot thật @2Hz.
+  Không tham gia motion path.
+- FK/IK client-side dùng URDF chain pure numpy (`urdf_chain.py` +
+  `inverse_kinematics.py`). Verified match RoboDK SolveFK 0.00mm qua
+  `scripts/13_verify_vs_robodk.py`.
 
-**Không cần**: Unity 3D, ROS 2, Linux, Gazebo, Isaac Sim, MotoCom32 SDK, ROS MotoPlus flash.
+**Không cần**: vendor driver license, Unity 3D, ROS 2, Linux, Gazebo,
+Isaac Sim, MotoCom32 SDK, ROS MotoPlus flash.
 
-> **Lưu ý về RoboDK Free** (đã verified): cơ chế giới hạn của Free có 2 loại:
-> 1. **Driver license lock** — `robot.Connect()` bị chặn cứng → cần Educational
->    cho real mode qua RoboDK driver. **Đã bypass** bằng HSE backend (Path 2).
-> 2. **Rate-limit ~10-15 calls/giây** cho operations thông thường (setJoints,
->    setPose). Pattern thí nghiệm bình thường (`gripper_delay_s=0.3` +
->    `inter_trial_delay_s=1.0`) chạy ở ~4-5 calls/giây → 100/100 trials không
->    hit limit. Mirror thread default **2 Hz** (120 calls/phút) — an toàn.
->
-> Tổng kết: **toàn bộ luận văn (sim + real) chạy được với RoboDK Free**
-> nhờ HSE bypass cho real mode.
+> **Lưu ý**: tất cả thư viện chạy local (Open3D + numpy + scipy), không có quota
+> hay license lock cho runtime. RoboDK Free chỉ cần khi chạy
+> `scripts/13_verify_vs_robodk.py` để cross-check FK/IK — đóng RoboDK ngay sau khi
+> verify xong.
 
 ## 2. Sơ đồ kết nối hệ thống — Level-4 Bidirectional Digital Twin
 
 ```mermaid
-%%{init: {'theme':'dark'}}%%
 flowchart TB
     subgraph PC["Windows 10/11 PC"]
         subgraph PY["Python Process"]
@@ -78,44 +79,42 @@ flowchart TB
 
         subgraph DT["DigitalTwinMirror facade L4"]
             DTm[Mirror Thread<br/>10Hz telemetry / 2Hz viewport<br/>drift detection<br/>alarm auto-poll]
-            DTk[Kinematic helper<br/>SolveIK + reach check<br/>via RoboDK item]
+            DTk[Kinematic helper<br/>DLS IK + reach check<br/>pure-Python URDF chain]
         end
 
-        subgraph BE["Robot Backends"]
-            BE1[SimRobot mock<br/>headless mode]
-            BE2[RoboDK Item<br/>backend robodk]
-            BE3[MotomanHSEBackend<br/>backend hse<br/>HSE UDP codec<br/>INFORM job generator<br/>FTP upload + batch<br/>ultra-fast P-vars]
+        subgraph BE["Motion Backends"]
+            BE1[SimRobot mock<br/>backend sim<br/>dev or headless]
+            BE3[MotomanHSEBackend<br/>backend hse<br/>HSE UDP codec<br/>INFORM job generator<br/>FTP upload batch<br/>ultra-fast P-vars]
         end
 
-        subgraph RDK["RoboDK Software Free"]
-            R1[3D Viewer GUI<br/>= Digital Twin display]
-            R2[IK + Motion Planner]
-            R3[Cell Builder]
+        subgraph VP["Open3D viewport"]
+            R1[O3DGuiSimRobot<br/>Filament GUI main thread<br/>Digital Twin display]
         end
 
         P2 <--> DT
         DT --> BE1
-        DT --> BE2
         DT --> BE3
         DT -.->|setJoints 2Hz<br/>viewport mirror| R1
-        DTk <--> R2
     end
 
     subgraph HW["Hardware"]
         CAM[Intel RealSense D455]
-        GP7[Yaskawa GP7 + YRC1000<br/>HSE Server function ON<br/>FTP server port 21<br/>CIO ladder for gripper]
+        GP7[Yaskawa GP7 + YRC1000<br/>HSE Server function ON<br/>FTP server port 21<br/>CIO ladder]
+        PLC[PLC Mitsubishi<br/>Gripper control]
+        GRIP[Pneumatic gripper<br/>Solenoid valve]
     end
 
     CAM -->|USB 3.0| P1
 
-    BE2 -.->|Ethernet via RoboDK driver<br/>NEEDS Educational license| GP7
-    BE3 ==>|UDP 10040 HSE + FTP 21 INFORM<br/>FREE no license| GP7
+    BE3 ==>|UDP 10040 HSE + FTP 21 INFORM| GP7
     GP7 -.->|Joints poll 10Hz<br/>bidirectional state| BE3
+    GP7 <==>|CC-Link cyclic<br/>YRC1000 lam bridge| PLC
+    PLC -->|Solenoid + sensor 24V| GRIP
 
     style PY fill:#2E7D32,stroke:#fff,stroke-width:2px,color:#fff
     style DT fill:#9C27B0,stroke:#fff,stroke-width:3px,color:#fff
     style BE fill:#1565C0,stroke:#fff,stroke-width:2px,color:#fff
-    style RDK fill:#B71C1C,stroke:#fff,stroke-width:2px,color:#fff
+    style VP fill:#33691E,stroke:#fff,stroke-width:2px,color:#fff
     style HW fill:#5D4037,stroke:#fff,stroke-width:2px,color:#fff
     style BE3 fill:#E65100,stroke:#fff,stroke-width:3px,color:#fff
 ```
@@ -129,8 +128,8 @@ flowchart TB
 | **1. Perception** | `perception_node`, YOLO, D455 | RGB-D → detection 3D pose |
 | **2. Orchestrator** | `orchestrator.py` | State machine pick-and-place + planning + safety C2+ |
 | **3. Digital Twin Façade** | `digital_twin.py` `DigitalTwinMirror` | **Tầng then chốt L4** — façade kết hợp motion backend + kinematic helper + mirror thread |
-| **4. Robot Backends (pluggable)** | `backends/` — 3 implementations | Driver thực tế: SimRobot mock / RoboDK Item / **MotomanHSEBackend** |
-| **5. Hardware/Sim** | RoboDK GUI hoặc YRC1000+GP7 thật | Engine sim hoặc robot vật lý |
+| **4. Motion Backends (pluggable)** | `backends/` — 2 implementations | `SimRobot` (dev/headless) + **`MotomanHSEBackend`** (real). |
+| **5. Hardware/Sim** | Open3D viewport (`O3DGuiSimRobot`) + YRC1000+GP7 thật (motion) | Open3D chỉ display, motion qua HSE UDP |
 
 ### Vai trò "Digital Twin" cấp Level-4 trong stack này
 
@@ -138,37 +137,41 @@ Theo phân loại Gartner (L1–L5 digital twin maturity), hệ thống đạt *
 
 | Cấp | Khả năng | Implementation |
 |---|---|---|
-| L1 — Descriptive | Mô hình 3D tĩnh | RoboDK cell từ YAML |
+| L1 — Descriptive | Mô hình 3D tĩnh | Open3D viewport mesh từ YAML |
 | L2 — Informative | + sensor data | Telemetry CSV @10Hz |
 | L3 — Predictive | + simulate future | Pure-Python FK + trajectory check (mục 7.5) |
 | **L4 — Comprehensive** | + bidirectional + analytics + auto-response | Mirror thread + drift detection + alarm auto-Stop |
-| L5 — Autonomous | self-optimizing | Ngoài scope thesis |
+| L5 — Autonomous | self-optimizing | Ngoài scope project |
 
-### Bidirectional state sync (đóng góp chính C2+)
+### Bidirectional state sync
 
 Mirror thread trong `digital_twin.py` chạy 2 luồng dữ liệu song song:
 
 1. **Command path** (PC → robot): Orchestrator gọi `MoveJ()/setDO()` → backend gửi
    INFORM job qua FTP + JOB_START qua HSE UDP → robot thật chạy.
 2. **State sync path** (robot → PC): Mỗi 100ms, mirror thread đọc joint state thật
-   qua HSE `READ_POSITION` (0x75) → `setJoints()` lên RoboDK item → viewport phản
-   ánh **vị trí THẬT** của robot, không phải vị trí được lệnh.
+   qua HSE `READ_POSITION` (0x75) → `setJoints()` lên Open3D viewport
+   (`O3DGuiSimRobot`) → viewport phản ánh **vị trí THẬT** của robot, không phải
+   vị trí được lệnh.
 
 Tách rời 2 rate (`telemetry_hz=10`, `mirror_hz=2`) để:
 - CSV resolution cao cho post-analysis (velocity, cycle time)
-- Viewport setJoints thấp tránh RoboDK Free nagware
+- Viewport setJoints thấp giảm tải GUI rendering thread
 
-### HSE vs RoboDK driver — bảng so sánh
+### Lý do chọn HSE làm motion path
 
-| Yếu tố | Path 1: RoboDK driver | Path 2: HSE bypass |
+Bảng dưới so sánh HSE với phương án vendor driver (không dùng) để làm rõ
+quyết định kiến trúc:
+
+| Yếu tố | Vendor driver | HSE (chọn) |
 |---|---|---|
-| License | Educational $340 hoặc Pro $3000 | **0 đ** — HSE Server built-in |
+| License | Cần tier có driver | **Không cần** — HSE Server built-in |
 | Setup phía YRC1000 | Driver IP + port | HSE Server function ON (Maintenance mode) |
-| Per-trial overhead | ~50ms (Educational) | ~200ms (M3 batch) hoặc **~50ms (M3++ ultra-fast)** |
+| Per-trial overhead | ~50ms | ~200ms (M3 batch) hoặc **~50ms (M3++ ultra-fast)** |
 | Visibility | Black-box | Open protocol, byte-level testable |
-| Foundation cho thesis độc lập | ❌ Phụ thuộc commercial tool | ✅ Standalone, citable |
+| Foundation độc lập | ❌ Phụ thuộc commercial tool | ✅ Standalone, citable |
 
-**Đóng góp kỹ thuật của luận văn**: implement Path 2 hoàn chỉnh từ public protocol
+**Đóng góp kỹ thuật của project**: implement HSE path hoàn chỉnh từ public protocol
 spec (Yaskawa HSE Server Function Manual HW1485553), bao gồm packet codec, INFORM
 job generator, P-variable ultra-fast pattern.
 
@@ -180,10 +183,11 @@ pickplace_gp7/                          # BỘ CODE + TÀI LIỆU (repo DTwinGP7
 ├── requirements.txt
 ├── pyproject.toml
 ├── clean.bat                           # tiện ích xóa __pycache__
-├── docs/                               # TÀI LIỆU (đã move từ tai_lieu/)
+├── docs/                               # TÀI LIỆU
 │   ├── phat_bieu_bai_toan_v3_2_HD.md
-│   ├── Phu_luc_A_README_HD.md
-│   └── HUONG_DAN_CAI_DAT.md
+│   ├── HUONG_DAN_CAI_DAT.md
+│   ├── HUONG_DAN_SU_DUNG.md            # workflow + CLI flags theo kịch bản
+│   └── SETUP_YRC_TOOL.md               # setup TOOL01 trên teach pendant (real mode)
 ├── config/
 │   ├── cell_layout.yaml                # cell mô phỏng
 │   ├── cell_layout_real.yaml           # cell cho robot thật
@@ -198,10 +202,9 @@ pickplace_gp7/                          # BỘ CODE + TÀI LIỆU (repo DTwinGP7
 │   ├── gripper.stl                     # parallel-jaw 2-finger 120×50×110mm
 │   └── objects/                        # mesh STL: bottle/cup/bolt
 ├── src/
-│   ├── cell/                           # Phụ lục A — "Cell là code"
+│   ├── cell/                           # Cell config schema (Pydantic)
 │   │   ├── __init__.py
-│   │   ├── cell_models.py              # Pydantic schemas
-│   │   ├── cell_loader.py              # dựng RoboDK station (hỗ trợ minimal_build)
+│   │   ├── cell_models.py              # Pydantic schemas (CellConfig.from_yaml)
 │   │   ├── exceptions.py
 │   │   └── pose_utils.py
 │   ├── perception/
@@ -216,18 +219,22 @@ pickplace_gp7/                          # BỘ CODE + TÀI LIỆU (repo DTwinGP7
 │   │   ├── state_machine.py
 │   │   ├── orchestrator.py             # pick-place state machine + predictive safety C2+
 │   │   ├── sim_robot.py                # SimRobot mock thuần Python (--headless)
-│   │   ├── digital_twin.py             # ★ L4 façade: mirror, telemetry, drift, alarm
-│   │   ├── telemetry.py                # ★ CSV logger thread-safe (joint + alarm)
-│   │   ├── kinematics/                 # ★ Pure-Python FK + trajectory (UC1/UC2/UC4)
-│   │   │   ├── dh_model.py              # GP7 DH parameters (Modified DH)
+│   │   ├── digital_twin.py             # L4 façade: mirror, telemetry, drift, alarm
+│   │   ├── telemetry.py                # CSV logger thread-safe (joint + alarm)
+│   │   ├── frame_convert.py            # world → robot BASE + Yaskawa XYZ-fixed RPY (HSE Cartesian)
+│   │   ├── viewports/                  # Open3D GUI viewport (O3DGuiSimRobot)
+│   │   ├── kinematics/                 # Pure-Python FK + IK + trajectory (UC1/UC2/UC4)
+│   │   │   ├── urdf_chain.py            # GP7 URDF chain — source-of-truth, match RoboDK 0.00mm (qua scripts/13_verify_vs_robodk.py)
+│   │   │   ├── dh_model.py              # GP7 Modified DH params (legacy, backward compat)
 │   │   │   ├── forward_kinematics.py    # joints → pose 4x4 (pure numpy)
+│   │   │   ├── inverse_kinematics.py    # Damped Least Squares IK (URDF/DH polymorphic)
 │   │   │   └── trajectory.py            # interpolate + joint limit + collision check
-│   │   └── backends/                   # ★ Pluggable robot drivers
+│   │   └── backends/                   # Pluggable motion backends
 │   │       ├── base.py                  # RobotBackend Protocol
 │   │       ├── hse_protocol.py          # Yaskawa HSE packet codec (UDP 10040)
 │   │       ├── inform_codegen.py        # INFORM .JBI generator (C-var + P-var template)
 │   │       ├── motoman_hse.py           # MotomanHSEBackend (HSE + FTP + batch + ultra-fast)
-│   │       ├── reach_envelope.py        # GP7 sphere reach model client-side
+│   │       ├── reach_envelope.py        # GP7 sphere reach client-side (thay MoveJ_Test)
 │   │       └── alarm_codes.py           # YRC1000 alarm decoder + severity
 │   ├── calibration/
 │   │   ├── __init__.py
@@ -240,71 +247,68 @@ pickplace_gp7/                          # BỘ CODE + TÀI LIỆU (repo DTwinGP7
 │       ├── __init__.py
 │       └── helpers.py
 ├── scripts/
-│   ├── build_station.py                # dựng cell từ config YAML (--minimal)
 │   ├── 01_collect_dataset.py
 │   ├── 02_run_calibration.py
-│   ├── 03_run_experiment.py            # main: --mode sim/real, --backend sim/robodk/hse,
+│   ├── 03_run_experiment.py            # main: --mode sim/real, --backend sim/hse,
 │   │                                   #   --headless, --ultra-fast, --no-viewport-mirror
 │   ├── 04_analyze_results.py
-│   ├── 05_analyze_telemetry.py         # ★ visualize CSV telemetry → 4 PNG (joint, velocity, alarm, cycle)
-│   ├── 06_simulate_trial.py            # ★ UC1: predictive simulation offline → 3D figure
-│   ├── 07_replay_telemetry.py          # ★ UC4: replay CSV → 3D animation/MP4
+│   ├── 05_analyze_telemetry.py         # visualize CSV telemetry → 4 PNG (joint, velocity, alarm, cycle)
+│   ├── 06_simulate_trial.py            # UC1: predictive simulation offline → 3D figure
+│   ├── 07_replay_telemetry.py          # UC4: replay CSV → 3D animation/MP4
+│   ├── 08_verify_ik.py                 # DLS IK round-trip self-test
+│   ├── 11_test_yrc_cartesian.py        # 3-phase test YRC Cartesian motion trên robot thật
+│   ├── 13_verify_vs_robodk.py          # FK fidelity + DLS IK round-trip vs RoboDK; --samples N --histogram cho figure
 │   ├── calibration_from_layout.py      # sinh T_BC từ camera.pose cho headless
 │   ├── convert_glb_to_stl.py           # GLB → STL utility
-│   ├── diagnose_layout.py              # check cell_layout.yaml hợp lý
-│   ├── gen_primitive_meshes.py         # sinh STL primitive (gripper, ...)
-│   └── save_current_as_home.py         # capture joints hiện tại → home YAML
-├── tests/                              # 274 test cases (pytest, 100% pass)
-│   ├── test_cell_loader.py             # 22 test
+│   └── gen_primitive_meshes.py         # sinh STL primitive (gripper, ...)
+├── tests/                              # 293 test cases (pytest, 100% pass)
 │   ├── test_coord_conv.py
 │   ├── test_postprocess.py
 │   ├── test_state_machine.py
 │   ├── test_hand_eye_solver.py
-│   ├── test_orchestrator_sim.py        # integration với MagicMock robot
+│   ├── test_orchestrator_sim.py        # integration với MagicMock robot + CC-Link gripper
 │   ├── test_sim_robot.py               # test SimRobot reach + grasp injection
-│   ├── test_hse_protocol.py            # ★ HSE packet codec byte-level verify
-│   ├── test_motoman_hse.py             # ★ HSE backend với mock socket
-│   ├── test_inform_codegen.py          # ★ INFORM .JBI generator
-│   ├── test_ultra_fast.py              # ★ M3++ P-variable template caching
-│   ├── test_digital_twin.py            # ★ mirror thread + drift + alarm
-│   ├── test_telemetry.py               # ★ CSV logger thread-safety
-│   ├── test_kinematics.py              # ★ forward kinematics + trajectory
-│   ├── test_alarm_codes.py             # ★ alarm severity decoder
-│   ├── test_reach_envelope.py          # ★ sphere reach model
-│   ├── test_predict_safety.py          # ★ UC2 orchestrator integration
-│   └── test_analyze_telemetry.py       # ★ telemetry analyzer smoke
+│   ├── test_hse_protocol.py            # HSE packet codec byte-level verify + Cartesian encode
+│   ├── test_motoman_hse.py             # HSE backend với mock socket + Cartesian routing
+│   ├── test_inform_codegen.py          # INFORM .JBI generator
+│   ├── test_ultra_fast.py              # M3++ P-variable template caching
+│   ├── test_digital_twin.py            # mirror thread + drift + alarm + sim backend compat
+│   ├── test_telemetry.py               # CSV logger thread-safety
+│   ├── test_kinematics.py              # forward kinematics + trajectory
+│   ├── test_inverse_kinematics.py      # Damped Least Squares IK round-trip
+│   ├── test_frame_convert.py           # world→base + Yaskawa RPY round-trip
+│   ├── test_alarm_codes.py             # alarm severity decoder
+│   ├── test_reach_envelope.py          # sphere reach model
+│   ├── test_predict_safety.py          # UC2 orchestrator integration
+│   └── test_analyze_telemetry.py       # telemetry analyzer smoke
 └── results/ · figures/ · logs/          # thư mục output khi chạy
 ```
-
-> ★ = module **mới** từ phiên Option C (HSE bypass + Level-4 digital twin + ultra-fast).
 
 > **Lưu ý về huấn luyện model:** việc train YOLOv8 (mục 5) thực hiện trên một
 > máy Linux + GPU riêng, không nằm trong `pickplace_gp7/`. Repo chỉ nhận file
 > trọng số `.pt`/`.onnx` đã train để inference. Dataset thu ở `data/raw/`,
 > gán nhãn trên Roboflow rồi chuyển sang máy Linux để train.
 
-> **Lưu ý về 5 chế độ chạy thí nghiệm**:
+> **Lưu ý về 4 chế độ chạy thí nghiệm**:
 >
 > | Chế độ | CLI | Phụ thuộc | Use case |
 > |---|---|---|---|
-> | Sim với RoboDK GUI | `--mode sim` | RoboDK Free | Demo trực quan |
+> | Sim với Open3D GUI | `--mode sim` | Open3D | Demo trực quan (SimRobot + Open3D viewport mirror) |
 > | Sim headless | `--mode sim --headless` | KHÔNG | Thống kê 500+ trial, failure injection |
-> | Real qua RoboDK driver | `--mode real --backend robodk` | RoboDK **Educational** | Real test có driver (yêu cầu license) |
-> | **Real qua HSE** | `--mode real --backend hse` | YRC1000 HSE | **Real test bypass driver — KHÔNG cần license** |
-> | **Real ultra-fast** | `--mode real --backend hse --ultra-fast` | Như trên | **Thống kê 500+ trial trên robot thật, ~50ms/trial overhead** |
+> | **Real qua HSE** | `--mode real` | YRC1000 HSE | **Motion path cho real** |
+> | **Real ultra-fast** | `--mode real --ultra-fast` | Như trên | **Thống kê 500+ trial trên robot thật, ~50ms/trial overhead** |
 >
 > Xem `docs/HUONG_DAN_SU_DUNG.md` và `docs/HUONG_DAN_CAI_DAT.md` §2.9.
 
 ---
 
-# PHẦN B — XÂY DỰNG DATASET
+# PHẦN B: XÂY DỰNG DATASET
 
 ## 4. Quy trình xây dựng dataset chi tiết
 
 ### 4.1. Tổng quan workflow
 
 ```mermaid
-%%{init: {'theme':'dark'}}%%
 flowchart LR
     A[Chốt 3 loại vật] --> B[Setup cell vật lý:<br/>D455 + đèn + nền]
     B --> C[Capture protocol:<br/>3 điều kiện × 3 góc ×<br/>3 mức chồng lấn]
@@ -332,7 +336,7 @@ flowchart LR
 | Hình dạng | Đơn giản (hộp, trụ, khối), tránh dạng phức tạp lúc đầu |
 | Vật liệu | Không trong suốt, không phản chiếu gương |
 | Màu sắc | Khác biệt nhau (để vision dễ tách) |
-| Có CAD model | Yes (cho build_station.py + augmentation) |
+| Có CAD model | Yes (cho viewport mesh + augmentation) |
 | Sẵn có / dễ mua | Yes (để in 5–10 cái mỗi loại) |
 
 **Gợi ý 3 loại điển hình**:
@@ -348,7 +352,6 @@ flowchart LR
 ### 4.3. Setup cell vật lý cho data capture
 
 ```mermaid
-%%{init: {'theme':'dark'}}%%
 graph TB
     subgraph "Cell setup cho capture"
         direction TB
@@ -425,7 +428,7 @@ Triển khai: `pickplace_gp7/scripts/01_collect_dataset.py` — hiển thị liv
 
 **Tips tăng tốc labeling**:
 - Dùng Smart Polygon (Roboflow AI assist) cho vật rời rạc → click 1 lần ra mask gần đúng, chỉnh nhẹ
-- Outsource cho team labeling rẻ Việt Nam (~\$15–30/1000 ảnh) nếu có ngân sách
+- Outsource cho team labeling Việt Nam nếu có ngân sách
 - Train sơ một model trên 200 ảnh đầu, dùng nó **pre-label** 1900 ảnh còn lại → chỉnh sửa, nhanh hơn 5–10x
 
 ### 4.6. Data Augmentation chiến lược
@@ -469,7 +472,7 @@ Roboflow tự lo split khi Generate dataset. **Verify thủ công** rằng split
 
 ### 4.8. Dataset versioning
 
-Đề tài tốt cần track version dataset:
+Track version dataset thường xuyên:
 - **v1.0**: Initial 2100 ảnh, baseline
 - **v1.1**: Sau thêm 200 ảnh edge cases (chồng lấn nặng, vật bị che)
 - **v1.2**: Thêm 100 ảnh "fail mode" — sau khi phân tích thấy model fail ở scene nào
@@ -478,7 +481,7 @@ Roboflow tự lo split khi Generate dataset. **Verify thủ công** rằng split
 
 ---
 
-# PHẦN C — XÂY DỰNG & HUẤN LUYỆN MODEL
+# PHẦN C: XÂY DỰNG & HUẤN LUYỆN MODEL
 
 ## 5. Pipeline huấn luyện chi tiết
 
@@ -505,16 +508,15 @@ Roboflow tự lo split khi Generate dataset. **Verify thủ công** rằng split
 ### 5.2. Chọn variant: n / s / m
 
 ```mermaid
-%%{init: {'theme':'dark'}}%%
 graph LR
-    A[YOLOv8n-seg<br/>━━━━━━<br/>3.4M params<br/>~140 FPS<br/>mAP 30.5] --> B[YOLOv8s-seg<br/>━━━━━━<br/>11.8M params<br/>~80 FPS<br/>mAP 36.8] --> C[YOLOv8m-seg<br/>━━━━━━<br/>27.3M params<br/>~50 FPS<br/>mAP 40.8]
-    
+    A[YOLOv8n-seg<br/>3.4M params<br/>~140 FPS<br/>mAP 30.5] --> B[YOLOv8s-seg<br/>11.8M params<br/>~80 FPS<br/>mAP 36.8] --> C[YOLOv8m-seg<br/>27.3M params<br/>~50 FPS<br/>mAP 40.8]
+
     style B fill:#2E7D32,stroke:#fff,stroke-width:2px,color:#fff
 ```
 
 **Chiến lược**:
 - Train **cả 3 variants** trong pha đầu
-- So sánh trên test set → bảng trade-off accuracy/speed → **đóng góp C2 của paper**
+- So sánh trên test set → bảng trade-off accuracy/speed
 - Production: dùng **YOLOv8s-seg** (cân bằng tốt nhất)
 
 ### 5.3. Hyperparameters huấn luyện
@@ -541,7 +543,7 @@ Sau training, evaluate trên test set:
 
 Các metric COCO-style được dùng: mAP@0.5 và mAP@0.5:0.95 cho cả bounding box lẫn segmentation mask, AP từng class, và tốc độ inference (ms / FPS).
 
-**Target metrics cho luận văn**:
+**Target metrics**:
 
 | Metric | Target | Reason |
 |---|---|---|
@@ -564,14 +566,13 @@ Các metric COCO-style được dùng: mAP@0.5 và mAP@0.5:0.95 cho cả boundin
 
 ---
 
-# PHẦN D — HAND-EYE CALIBRATION
+# PHẦN D: HAND-EYE CALIBRATION
 
 ## 6. Hiệu chuẩn camera ↔ robot
 
 ### 6.1. Bài toán + setup
 
 ```mermaid
-%%{init: {'theme':'dark'}}%%
 graph LR
     A[Camera D455<br/>Frame C] -->|Camera to Base<br/>an so can tim| B[Base Robot<br/>Frame B]
     D[ChArUco Board<br/>Frame W] -->|Board to Camera<br/>OpenCV do duoc| A
@@ -652,7 +653,7 @@ Chọn 5 điểm có toạ độ đã biết trong camera frame (vd các corner 
 
 ---
 
-# PHẦN E — TÍCH HỢP MODEL VÀO HỆ THỐNG
+# PHẦN E: TÍCH HỢP MODEL VÀO HỆ THỐNG
 
 ## 7. Pipeline integration
 
@@ -674,39 +675,41 @@ Triển khai: `pickplace_gp7/src/orchestrator/`. Orchestrator điều phối m�
 1. Nhận detection mới nhất từ queue của Perception.
 2. Chuyển pose vật từ camera frame sang base frame qua `T_C^B`.
 3. Chọn vật "trên cùng" (Z lớn nhất) để gắp trước.
-4. **Kiểm tra với-tới-được + va chạm bằng digital twin** (`MoveJ_Test`) TRƯỚC mỗi lần gắp vật lý — lớp an toàn **C2** (một đóng góp của paper).
-5. **Predictive safety check C2+** (mới): pure-Python FK trên toàn trajectory verify joint limit + self-collision TRƯỚC khi gửi MoveJ → catch unsafe path mà single-point check miss (~50ms/trial overhead).
+4. **Kiểm tra với-tới-được + va chạm bằng digital twin** (`ReachEnvelope` sphere check client-side) TRƯỚC mỗi lần gắp vật lý — lớp an toàn **C2**.
+5. **Predictive safety check C2+**: pure-Python FK trên toàn trajectory verify joint limit + self-collision TRƯỚC khi gửi MoveJ → catch unsafe path mà single-point check miss (~50ms/trial overhead).
 6. Thực thi chuỗi chuyển động approach → grasp → lift → transfer → place → retreat; điều khiển gripper qua Digital Output.
 7. Ghi kết quả từng trial (thành/bại, lý do, cycle time) ra CSV.
 8. **Batch context manager** (HSE backend): gom toàn bộ motion + IO của 1 trial vào 1 INFORM job → giảm overhead từ ~1500ms xuống ~200ms/trial.
 
 Luồng trạng thái được kiểm soát bằng state machine (IDLE→DETECT→PLAN→APPROACH→…→DONE/ERROR) để bắt lỗi chuyển trạng thái.
 
-### 7.3. Module Digital Twin (Level-4 façade) — mới
+### 7.3. Module Digital Twin (Level-4 façade)
 
 Triển khai: `pickplace_gp7/src/orchestrator/digital_twin.py`. `DigitalTwinMirror` là façade kết hợp 3 thành phần để đạt Level-4 comprehensive bidirectional digital twin:
 
 | Thành phần | Vai trò |
 |---|---|
-| **Motion backend** (HSE/RoboDK/Sim) | Gửi command tới robot |
-| **Kinematic helper** (RoboDK item) | SolveIK + reachability check client-side |
-| **Mirror thread** | Poll joint state thật @10Hz → setJoints viewport @2Hz (decoupled rates) + log telemetry CSV + drift detection + alarm auto-poll |
+| **Motion backend** (HSE hoặc Sim) | Gửi command tới robot |
+| **Kinematic helper** (pure-Python URDF chain) | DLS IK + sphere reach check client-side |
+| **Mirror thread** | Poll joint state thật @10Hz → setJoints Open3D viewport @2Hz (decoupled rates) + log telemetry CSV + drift detection + alarm auto-poll |
 
 **Đặc trưng L4**:
 - **Bidirectional state sync**: command path (PC→robot) song song với state sync path (robot→PC).
 - **Drift detection**: so sánh commanded vs actual mỗi tick, warn ≥ 2°.
 - **Alarm auto-response**: severity MAJOR/SYSTEM → auto-trigger `Stop()` (servo off).
-- **Decoupled rates**: telemetry @10Hz (resolution cao cho analysis), viewport @2Hz (an toàn RoboDK Free nagware).
+- **Decoupled rates**: telemetry @10Hz (resolution cao cho analysis), viewport @2Hz (giảm tải GUI render thread).
 
-### 7.4. Module Backends (pluggable robot drivers) — mới
+### 7.4. Module Backends (pluggable motion drivers)
 
-Triển khai: `pickplace_gp7/src/orchestrator/backends/`. Interface chung `RobotBackend` (Protocol) cho phép Orchestrator dùng nguyên văn `MoveJ()/MoveL()/setDO()` qua nhiều driver:
+Triển khai: `pickplace_gp7/src/orchestrator/backends/`. Interface chung `RobotBackend` (Protocol) cho phép Orchestrator dùng nguyên văn `MoveJ()/MoveL()/setDO()` qua các backend:
 
 | Backend | Use case | Dependency |
 |---|---|---|
-| `SimRobot` | `--headless` thuần Python | Không |
-| RoboDK Item | `--backend robodk` | RoboDK GUI |
-| **`MotomanHSEBackend`** | **`--backend hse`** (mới) | YRC1000 HSE Server |
+| `SimRobot` | `--backend sim` — dev / headless / sim với Open3D viewport | Không |
+| **`MotomanHSEBackend`** | **`--backend hse`** — production cho robot thật | YRC1000 HSE Server |
+
+> Open3D viewport (`O3DGuiSimRobot`) chỉ làm render mirror cho cả sim non-headless
+> lẫn real mode. KHÔNG tham gia motion path.
 
 #### 7.4.1. MotomanHSEBackend chi tiết
 
@@ -717,7 +720,7 @@ Implement từ public spec Yaskawa HSE Server Function Manual (HW1485553):
 | `hse_protocol.py` | Packet codec: 32-byte sub-header "YERC" + payload, command 0x70-0x87 |
 | `inform_codegen.py` | INFORM .JBI generator: C-variable (per-trial) hoặc P-variable template (ultra-fast) |
 | `motoman_hse.py` | UDP socket wrapper + FTP upload + batch context manager + ultra-fast logic |
-| `reach_envelope.py` | Sphere reach model GP7 client-side (fallback khi không có RoboDK) |
+| `reach_envelope.py` | Sphere reach model GP7 client-side (150–927 mm từ J1, dùng cho `Orchestrator._is_reachable` PLAN-state check) |
 | `alarm_codes.py` | Decode 12+ alarm codes với severity + recovery hint |
 
 **3-tier performance ladder cho real motion**:
@@ -726,100 +729,559 @@ Implement từ public spec Yaskawa HSE Server Function Manual (HW1485553):
 |---|---|---|---|---|
 | Single-shot | 5-7 | 15-21 | ~1500ms | Debug |
 | **Batch M3** | 1 | 3-4 | **~200ms** | Production (1-100 trials) |
-| **Ultra-fast M3++** | **1 cho cả thí nghiệm** | 8-12 (mostly UDP) | **~50ms** | Thống kê 500+ trial cho paper |
+| **Ultra-fast M3++** | **1 cho cả thí nghiệm** | 8-12 (mostly UDP) | **~50ms** | Thống kê 500+ trial quy mô lớn |
 
 Ultra-fast pattern: upload INFORM template với P-variables 1 lần, mỗi trial chỉ `WRITE_POS_VAR` (UDP ~10ms) cho từng waypoint + `JOB_START`. Signature-based template caching để tránh upload lại khi structure không đổi.
 
-### 7.5. Module Kinematics (pure-Python FK) — mới
+### 7.5. Module Kinematics (pure-Python FK)
 
-Triển khai: `pickplace_gp7/src/orchestrator/kinematics/`. Forward kinematics + trajectory interpolation + safety check **pure numpy**, 0 dependency vào RoboDK API. Foundation cho 3 use case:
+Triển khai: `pickplace_gp7/src/orchestrator/kinematics/`. Forward kinematics + inverse kinematics (DLS) + trajectory interpolation + safety check **pure numpy**, 0 vendor SDK runtime dependency. Foundation cho 3 use case:
 
 | UC | Script / API | Mục đích |
 |---|---|---|
-| **UC1** Offline sanity check | `scripts/06_simulate_trial.py` | Sinh figure 3D TCP path + joint timeline cho thesis paper |
+| **UC1** Offline sanity check | `scripts/06_simulate_trial.py` | Sinh figure 3D TCP path + joint timeline cho phân tích |
 | **UC2** Online predictive safety C2+ | `Orchestrator._predict_safety()` | Verify joint limit + self-collision toàn trajectory **TRƯỚC** khi gửi MoveJ |
-| **UC4** Replay mode | `scripts/07_replay_telemetry.py` | Replay CSV telemetry → 3D animation/MP4 cho defense video |
+| **UC4** Replay mode | `scripts/07_replay_telemetry.py` | Replay CSV telemetry → 3D animation/MP4 cho demo video |
 
-Core (~250 LoC):
-- `dh_model.py` — Yaskawa GP7 Modified DH parameters (Craig 1986 convention)
-- `forward_kinematics.py` — joints (radian) → TCP pose 4x4 mm, ~50µs/call
-- `trajectory.py` — linear joint interpolation + joint limit check + sphere self-collision
+Core modules:
+- `urdf_chain.py` — Yaskawa GP7 URDF chain (từ ros-industrial/motoman noetic-devel
+  `gp7_macro.xacro`). Origin xyz + axis cho mỗi joint, flange offset (80mm X),
+  tool0 rotation rpy(180°,-90°,0). **Verified match RoboDK SolveFK 0.00mm/0.00°**
+  qua `scripts/13_verify_vs_robodk.py`.
+- `dh_model.py` — Modified DH parameters (Craig 1986). Giữ cho backward compat.
+  URDF chain là source-of-truth.
+- `forward_kinematics.py` — joints → TCP pose, ~60µs/call. Polymorphic giữa URDF
+  và DH model. Hỗ trợ `joint_positions_batch(model, joints_NJ)` vectorized cho
+  N trajectory samples.
+- `inverse_kinematics.py` — Damped Least Squares IK, ~3ms/call. Dùng URDF chain
+  → IK joints match RoboDK chính xác → không cần vendor SDK ở runtime.
+- `trajectory.py` — linear joint interpolation + joint limit check + sphere
+  self-collision (vectorized batch FK, ~30× nhanh hơn naive per-sample loop).
+
+### 7.5.1. URDF vs Modified DH — vì sao chọn URDF
+
+Trong implementation đầu, tôi dùng Modified DH (Craig 1986) — convention truyền
+thống cho robotics textbook. Khi verify vs RoboDK SolveFK qua
+`scripts/13_verify_vs_robodk.py`, tìm thấy diff hàng nghìn mm vì:
+
+1. **Joint axis sign convention**: Yaskawa/RoboDK URDF có joints J3/J4/J5/J6
+   axes negative direction (`(0,-1,0)`, `(-1,0,0)`...). Modified DH convention
+   thông thường giả định positive — gây mismatch.
+2. **Flange + tool0 frames**: URDF có 2 fixed joints SAU joint_6_t (flange
+   offset 80mm + tool0 rotation rpy(180°,-90°,0)). Modified DH gộp vào d6/last
+   link nhưng convention rotation khác.
+3. **Robot base frame**: RoboDK SolveFK trả pose relative to **J1 axis** (không
+   phải base_link / floor). URDF có `joint_1_s origin (0,0,0.33)` = 330mm
+   từ base_link đến J1. Để match RoboDK, set joint_1 origin = (0,0,0) và move
+   d1=330mm vào `base_xyz_mm` của caller.
+
+→ URDF chain trực tiếp ánh xạ datasheet vật lý, tránh các DH convention pitfall.
+Code tổ chức theo URDF, FK chạy bằng `T = base · ∏ (Translate(origin_i) ·
+Rotate(axis_i, q_i))`.
+
+### 7.5.2. Kinematics performance optimization
+
+Hot path real-mode predictive safety check (`_predict_safety_for_trajectory`)
+gọi FK + IK + collision check trên 6 waypoint × ~50-200 samples/trial. Pure-
+Python naive impl tốn ~25-50ms/trial overhead → khó scale 500+ trial. Áp dụng
+3 kỹ thuật pure-Python/numpy để đạt **12-32× speedup** mà giữ kết quả
+bit-identical (verify trên 3000+ random configs, max_error = 0.0).
+
+**Kỹ thuật 1 — LRU caching cho per-model constants** (`functools.lru_cache`):
+
+```python
+@lru_cache(maxsize=None)
+def _dh_link_consts(link: DHLink):
+    """cos(α), sin(α), theta_offset + template matrix với các entry hằng
+    (a, -sa, -sa·d, ca, ca·d, hàng cuối) — không phụ thuộc joint angle."""
+    ca, sa = np.cos(link.alpha), np.sin(link.alpha)
+    tpl = np.zeros((4, 4))
+    tpl[0, 3] = link.a
+    tpl[1, 2] = -sa; tpl[1, 3] = -sa * link.d
+    tpl[2, 2] = ca;  tpl[2, 3] = ca * link.d
+    tpl[3, 3] = 1.0
+    return ca, sa, link.theta_offset, tpl
+```
+
+FK chỉ phải set 6 entry phụ thuộc `theta`, sao chép template từ cache → tiết
+kiệm `np.array([[...]])` parsing + trig của `alpha` mỗi call. Cùng trick cho
+`_base_transform_cached(model)` và `_urdf_consts(model)` (pre-compute base +
+unit-normalized axes + translate matrices).
+
+**Kỹ thuật 2 — Batched FK cho trajectory** (`_dh_transform_batch`,
+`joint_positions_batch`):
+
+```python
+def _dh_transform_batch(link, q_col):
+    """Stack (N, 4, 4) DH transform — vectorized cho N samples cùng lúc."""
+    ca, sa, off, _ = _dh_link_consts(link)
+    theta = q_col + off
+    ct, st = np.cos(theta), np.sin(theta)
+    M = np.zeros((q_col.shape[0], 4, 4))
+    M[:, 0, 0] = ct; M[:, 0, 1] = -st; M[:, 0, 3] = link.a
+    # ... (5 entries phụ thuộc theta + 5 entries hằng)
+    return M
+```
+
+`joint_positions_batch(model, joints_NJ)` chain các batched matmul → tính FK
+cho toàn trajectory trong **vài phép matmul (N,4,4)** thay vì N call lẻ. Hiệu
+ứng kết hợp với BLAS auto-parallel + cache locality.
+
+**Kỹ thuật 3 — Vectorized self-collision với pre-filter** (`trajectory.py`):
+
+Naive O(N · K · K) với K = số joint (~8) tính `np.linalg.norm(p_i - p_j)` cho
+mỗi sample → ~27ms/trial. Vectorize:
+
+```python
+P = np.stack(joint_positions_batch(model, J), axis=1)   # (N, K, 3)
+for i in range(K):
+    for j in range(i + gap, K):
+        diff = P[:, i, :] - P[:, j, :]
+        # Pre-filter: squared-distance vectorized cho cả N samples (numpy SIMD)
+        dist_sq = np.einsum("kc,kc->k", diff, diff)
+        thr_sq_pad = (thr * (1 + 1e-9) + 1e-6) ** 2   # superset, ULP-safe
+        for k in np.nonzero(dist_sq < thr_sq_pad)[0]:
+            # Xác nhận bằng ĐÚNG công thức cũ → bit-identical với reference
+            dist = float(np.linalg.norm(P[k, i] - P[k, j]))
+            if dist < thr:
+                violations.append((k, i, j, dist))
+```
+
+`einsum("kc,kc->k", diff, diff)` tính N giá trị d² trong 1 BLAS call (SIMD).
+Superset filter với threshold padded `(thr·(1+1e-9) + 1e-6)²` đảm bảo KHÔNG
+bỏ sót cặp nào < thr (sai số ULP). Cặp pass-filter mới chạy exact
+`np.linalg.norm` + `< thr` → vi phạm + giá trị dist bit-identical với reference.
+
+**Kỹ thuật 4 — DLS IK redundant-FK removal** (`inverse_kinematics.py`):
+
+Inner loop DLS: tính `T_cur = FK(q)` cho convergence check (so `pos_err`,
+`rot_err` với tol), sau đó gọi `_jacobian_numerical(model, q)` mà bên trong
+TÍNH LẠI `T0 = FK(q)` để làm reference cho finite-differences. Thêm param
+`T0=T_cur` để reuse → tiết kiệm 1 FK call/iter:
+
+```python
+T_cur = _fk(model, q)
+err = _pose_error(T_cur, target)
+if np.linalg.norm(err[:3]) < tol_mm and np.linalg.norm(err[3:]) < tol_rad:
+    return q.tolist()
+J = _jacobian_numerical(model, q, T0=T_cur)    # ← reuse, không tính lại
+```
+
+**Kết quả benchmark** (single trial, 224 samples):
+
+| Hot path | Naive | Optimized | Speedup |
+|---|---:|---:|---:|
+| `forward_kinematics_urdf` | 135 µs | 111 µs | 1.22× |
+| `joint_positions` (DH) | 70 µs | 58 µs | 1.21× |
+| `inverse_kinematics` (DH) | 3,538 µs | 2,830 µs | 1.25× |
+| `check_self_collision_spheres` | 27,373 µs | **853 µs** | **32.1×** |
+| `interpolate + limits + collision` (trial) | 26,685 µs | **2,095 µs** | **12.7×** |
+
+**Verify bit-identical**: 3000 random configs FK max_err = 0.00, 266 collision
+violations IDENTICAL (order + indices + float distances), IK convergence rate
++ accuracy không đổi (177/200, median pos err 0.26 µmm).
+
+Tác động real mode: predictive safety overhead **~25ms → ~2ms/trial** → vô
+hại so với HSE FTP + MoveJ ~200ms/trial → C2 safety auto-bật cho mọi trial
+real mode mà không impact throughput. Test suite **293/293 pass** confirm
+không regression hành vi.
 
 ### 7.6. Điểm vào thí nghiệm
 
-`scripts/03_run_experiment.py` ghép toàn bộ: dựng cell trong RoboDK, khởi động Perception, chạy N trial qua Orchestrator, ghi kết quả ra `results/`. **5 chế độ** (xem bảng cuối Section 3).
+`scripts/03_run_experiment.py` ghép toàn bộ: load cell config YAML → mở Open3D viewport (nếu non-headless), khởi động Perception, chạy N trial qua Orchestrator, ghi kết quả ra `results/`. **4 chế độ** (xem bảng cuối Section 3).
 
 CLI flags đầy đủ + workflow scenarios: xem [`HUONG_DAN_SU_DUNG.md`](HUONG_DAN_SU_DUNG.md) §4 + §8.3.
 
-### 7.7. Dựng cell bằng code
+### 7.7. Cell config YAML
 
-RoboDK Free không lưu được file `.rdk`, nên cell được mô tả bằng config YAML và dựng lại bằng code mỗi lần mở RoboDK (paradigm "Cell là code" — xem Phụ lục A). `scripts/build_station.py` đọc `config/cell_layout.yaml`, validate bằng Pydantic, rồi nạp robot GP7 + bàn + camera + gripper + frame + mesh vật vào station.
+Cell được mô tả bằng config YAML (`config/cell_layout.yaml` cho sim,
+`config/cell_layout_real.yaml` cho real). `CellConfig.from_yaml()` (Pydantic v2)
+parse + validate file, cấp:
+- **Base pose robot** (`robot.pose.xyz_mm/rpy_deg`) cho FK/IK frame
+- **Camera pose** cho hand-eye sim (`scripts/calibration_from_layout.py`)
+- **Mesh paths** (table, gripper, objects) cho Open3D viewport render
 
-Triển khai: `pickplace_gp7/src/cell/` (chi tiết trong `Phu_luc_A_README_HD.md`).
+Không còn bước "dựng station" runtime — Open3D viewport tự load mesh khi
+`O3DGuiSimRobot.__init__()`.
+
+Triển khai: `pickplace_gp7/src/cell/cell_models.py`.
+
+### 7.8. IK source — 2 paths
+
+Orchestrator có 2 phương án compute IK, chọn qua CLI `--ik-source`:
+
+| Path | Cách hoạt động | API/IK | Accuracy | Use case |
+|---|---|---|---|---|
+| `--ik-source yrc` | PC gửi pose Cartesian thẳng qua HSE → YRC1000 tự IK | 0 vendor SDK | YRC controller's own IK (chuẩn nhất) | **Real mode default** — khi đã setup TOOL01 trên TP |
+| `--ik-source client` | DLS numerical IK pure Python với URDF chain | 0 vendor SDK | Match RoboDK SolveFK 0.00mm (verified qua `scripts/13_verify_vs_robodk.py`) | **Sim default**, hoặc real backup khi không có TP setup |
+
+**Default**: `yrc` cho `--mode real`, `client` cho `--mode sim`.
+
+#### 7.8.1. YRC IK (controller-side) — recommended cho real
+
+Pipeline: orchestrator → `world_to_robot_base(T_world)` → `MotomanHSEBackend.MoveJ(T_base)` → HSE `WRITE_POS_VAR` với data_type=BASE (Cartesian) → INFORM `MOVJ P000 TL=1` → YRC1000 internal IK + motion.
+
+Yêu cầu: TOOL01 trên teach pendant nhập TCP offset gripper (xem `docs/SETUP_YRC_TOOL.md`).
+
+#### 7.8.2. Client DLS IK (PC-side numerical)
+
+Damped Least Squares iterative, dùng URDF chain forward kinematics (verified
+match RoboDK SolveFK 0.00mm). ~5-15ms/call, accuracy 0.001-0.058mm trên random
+samples (`scripts/13_verify_vs_robodk.py --samples 500 --histogram`).
+
+Khi DLS fail (singularity / out-of-reach), orchestrator raise lỗi rõ ràng và
+ghi vào trial log; không có vendor SDK fallback runtime.
+
+#### 7.8.3. Frame conversion
+
+`src/orchestrator/frame_convert.py`: convert pose 4x4 giữa frames:
+- `world_to_robot_base(T_world, base_xyz, base_rpy) → T_base` — cho HSE Cartesian
+- `matrix_to_xyzrpy_yaskawa(T) → (x,y,z, Rx,Ry,Rz)` — encoding Yaskawa XYZ-fixed RPY
+
+> **Lưu ý d1=330mm**: trong DH/URDF spec, đây là kích thước INTERNAL của GP7
+> (từ mặt đáy robot lên J2 axis). KHÔNG phải pedestal/bệ đặt — pedestal cấu
+> hình riêng qua `cell_config.robot.pose.xyz_mm`. RoboDK convention coi
+> "robot base frame" = J1 axis (đã skip d1 internal).
+
+### 7.9. Gripper subsystem — PC ↔ YRC1000 ↔ PLC qua 2 giao thức
+
+Gripper khí nén double-acting được điều khiển bằng PLC Mitsubishi, KHÔNG bởi
+robot trực tiếp. PC giao tiếp với PLC **qua YRC1000 làm bridge** (Path A):
+PC chỉ biết HSE protocol, PLC chỉ biết CC-Link, YRC1000 handle conversion.
+
+#### 7.9.1. Layered architecture — 3 devices, 2 protocols
+
+```mermaid
+flowchart TB
+    subgraph PC["PC Digital Twin"]
+        ORC[Orchestrator]
+        HSE_C[HSE Backend<br/>UDP 10040 plus FTP 21]
+        ORC --> HSE_C
+    end
+
+    subgraph YRC["YRC1000 Controller"]
+        HSE_S[HSE Server function]
+        MEM[Internal I/O memory<br/>Network range 27010 plus<br/>CC-Link area 30000 plus]
+        CC_M[CC-Link Master Module]
+        HSE_S <--> MEM
+        MEM <--> CC_M
+    end
+
+    subgraph PLC["PLC Mitsubishi"]
+        CC_S[CC-Link Slave Module<br/>RX RY area]
+        LAD[PLC ladder<br/>X to Y mapping plus bridge]
+        CC_S <--> LAD
+    end
+
+    subgraph HW["Hardware"]
+        SOL[Solenoid valves<br/>Y502 Clamp<br/>Y503 UnClamp]
+        SEN[Sensors<br/>X503 X504 X505]
+        CYL[Pneumatic cylinder<br/>plus gripper fingers]
+        SOL --> CYL
+        CYL --> SEN
+    end
+
+    HSE_C <==>|Ethernet HSE<br/>~2-5ms RTT| HSE_S
+    CC_M <==>|CC-Link cyclic<br/>3-10ms scan| CC_S
+    LAD -->|24V wire| SOL
+    SEN -->|24V wire| LAD
+
+    style PC fill:#2E7D32,stroke:#fff,color:#fff
+    style YRC fill:#E65100,stroke:#fff,color:#fff
+    style PLC fill:#1565C0,stroke:#fff,color:#fff
+    style HW fill:#5D4037,stroke:#fff,color:#fff
+```
+
+PC chỉ kết nối qua HSE. PLC chỉ kết nối qua CC-Link. YRC1000 đóng vai trò
+**bridge** giữa 2 giao thức.
+
+#### 7.9.2. Sequence — close gripper command
+
+```mermaid
+sequenceDiagram
+    box rgb(46,125,50) PC
+        participant PC as Orchestrator
+    end
+    box rgb(230,81,0) YRC
+        participant YRC as YRC1000
+    end
+    box rgb(21,101,192) PLC
+        participant PLC as Mitsubishi
+    end
+    box rgb(93,64,55) Hardware
+        participant HW as Pneumatic
+    end
+
+    PC->>YRC: HSE WRITE_IO bit=30010 val=1
+    Note over PC,YRC: UDP 10040 ~2ms
+    YRC->>YRC: Internal bit 30010 ON
+
+    YRC->>PLC: CC-Link cyclic transfer
+    Note over YRC,PLC: ~5-10ms
+    PLC->>PLC: X100 (=RY0) ON
+
+    PLC->>PLC: Ladder scan
+    Note over PLC: X100 ON to Y502 ON
+    PLC->>HW: 24V to Clamp solenoid
+
+    HW->>HW: Solenoid energize ~30ms
+    HW->>HW: Cylinder stroke ~200ms
+    HW->>HW: Reed switch X504 ON
+
+    HW->>PLC: 24V back to X504
+    PLC->>PLC: Ladder X504 to RY0
+    PLC->>YRC: CC-Link cyclic transfer
+    YRC->>YRC: Internal bit 30050 ON
+
+    PC->>YRC: HSE READ_IO bit=30050 (poll @20Hz)
+    YRC-->>PC: value=1
+    Note over PC: Clamp confirmed
+
+    PC->>YRC: HSE READ_IO bit=30052 (detect)
+    YRC-->>PC: value=1
+    Note over PC: Object grasped OK
+```
+
+Total latency: ~150-400ms (dominated bởi pneumatic stroke, không network).
+
+#### 7.9.3. Sequence — sensor feedback polling
+
+```mermaid
+sequenceDiagram
+    box rgb(93,64,55) Hardware
+        participant HW as Cylinder
+    end
+    box rgb(21,101,192) PLC
+        participant PLC as Mitsubishi
+    end
+    box rgb(230,81,0) YRC
+        participant YRC as YRC1000
+    end
+    box rgb(46,125,50) PC
+        participant PC as Orchestrator
+    end
+
+    HW->>PLC: Sensor wire 24V X504 ON
+    Note over PLC: Physical input
+
+    PLC->>PLC: Ladder execute 1-10ms scan
+    Note over PLC: X504 to RY0 in CC-Link area
+
+    PLC->>YRC: CC-Link cyclic refresh 3-10ms
+    YRC->>YRC: Internal bit 30050 updated
+
+    PC->>YRC: HSE READ_IO bit=30050
+    YRC-->>PC: value=1
+    Note over PC: 5ms RTT total chain
+```
+
+Sensor → PC total latency: **15-50ms**. Đủ nhanh cho closed-loop gripper control.
+
+#### 7.9.4. Memory mapping — 5 bits cho gripper subsystem
+
+| PLC physical | Direction | PLC ladder bridge | CC-Link slot | YRC bit | PC HSE call |
+|---|---|---|---|---|---|
+| Y502 Clamp solenoid | OUT to HW | RY0 to Y502 | RY0 | 30010 | `set_io(30010, 1)` |
+| Y503 UnClamp solenoid | OUT to HW | RY1 to Y503 | RY1 | 30011 | `set_io(30011, 1)` |
+| X504 Clamp sensor | IN from HW | X504 to RX0 | RX0 | 30050 | `read_io(30050)` |
+| X503 UnClamp sensor | IN from HW | X503 to RX1 | RX1 | 30051 | `read_io(30051)` |
+| X505 Carrier Detect | IN from HW | X505 to RX2 | RX2 | 30052 | `read_io(30052)` |
+
+⚠ Bảng giả định — verify trên YRC TP `Setup → I/O Module → CC-Link` + PLC ladder
+project. Override mapping nếu khác trong `config["gripper_cc_link"]`.
+
+#### 7.9.5. Latency budget per layer
+
+| Layer | Direction | Typical | Worst case |
+|---|---|---|---|
+| HSE UDP (PC ↔ YRC) | RTT | 2-5 ms | 20 ms |
+| YRC CC-Link cyclic | one-way | 3-10 ms | 50 ms (config max) |
+| PLC ladder scan | one-way | 1-10 ms | 50 ms (slow CPU) |
+| Solenoid energize | one-way | 20-50 ms | 100 ms |
+| Pneumatic stroke | one-way | 100-300 ms | 500 ms (large cylinder) |
+| Sensor wire + debounce | one-way | <1 ms | 10 ms |
+| **Total close command** | | **150-400 ms** | ~700 ms |
+| **Total sensor read** | | **15-50 ms** | 200 ms |
+
+→ Pneumatic stroke dominate. Optimizing network không cải thiện đáng kể.
+
+#### 7.9.6. Tách trách nhiệm 3 thiết bị
+
+| Device | Biết gì | Không biết gì |
+|---|---|---|
+| **PC** | HSE protocol, bit number cần read/write | PLC ladder, CC-Link, sensor wiring |
+| **YRC1000** | HSE server, CC-Link master, I/O memory mapping | Solenoid, sensor logic |
+| **PLC Mitsubishi** | CC-Link slave, ladder logic, X/Y physical wiring | Robot motion, HSE |
+
+→ Mỗi device 1 responsibility. Đổi gripper hardware (vd analog servo gripper)
+chỉ cần sửa PLC ladder, code PC + YRC giữ nguyên.
+
+### 7.10. C2 safety pipeline — Reachability + Predictive collision
+
+C2 là **lớp an toàn dựa trên digital twin** — verify mọi pose + trajectory bằng
+pure-Python TRƯỚC khi gửi command vật lý lên YRC1000. Mục tiêu: catch unsafe
+motion sớm ở PC, tránh trigger alarm trên controller (mỗi alarm major mất
+~30s recovery + có thể yêu cầu reset TP).
+
+**2 tầng kiểm tra, tăng dần độ chặt**:
+
+```mermaid
+flowchart LR
+    DETECT[Perception<br/>D455 + YOLO] --> PLAN[PLAN state<br/>tính 4 pose:<br/>lift / grasp / place_lift / place]
+    PLAN --> R1{Reach envelope<br/>per pose<br/>~µs}
+    R1 -->|in 150-927mm sphere| PRED{Predictive trajectory<br/>solve IK + interpolate<br/>+ joint limit + self-collision<br/>~50ms}
+    R1 -->|out of envelope| SKIP[Skip object<br/>thử object kế]
+    PRED -->|safe| EXEC[Execute MoveJ<br/>via HSE]
+    PRED -->|unsafe| FAIL[Reject trial<br/>log predicted_*]
+
+    style PLAN fill:#1565C0,stroke:#fff,color:#fff
+    style R1 fill:#558B2F,stroke:#fff,color:#fff
+    style PRED fill:#7B1FA2,stroke:#fff,stroke-width:3px,color:#fff
+    style EXEC fill:#E65100,stroke:#fff,color:#fff
+    style FAIL fill:#C62828,stroke:#fff,color:#fff
+    style SKIP fill:#9E9E9E,stroke:#fff,color:#fff
+```
+
+#### 7.10.1. Tầng 1 — Reach envelope (per-pose, ~µs)
+
+`Orchestrator._is_reachable(target_T)` (lines ~161-189 trong `orchestrator.py`):
+
+```python
+def _is_reachable(self, target_T: np.ndarray) -> bool:
+    from .backends.reach_envelope import ReachEnvelope
+    base_xyz = tuple(self.config.get("robot_base_xyz_mm", (0,0,0)))
+    if not hasattr(self, "_reach_env_cached"):
+        self._reach_env_cached = ReachEnvelope.gp7_default(base_xyz_mm=base_xyz)
+    target_xyz = np.asarray(target_T)[:3, 3]
+    return self._reach_env_cached.can_reach(target_xyz)
+```
+
+- **Model**: sphere envelope từ J1, datasheet GP7 (`reach_max=927mm`, `reach_min=150mm`)
+- **Cost**: ~µs/check (numpy norm), cached object
+- **Khi**: PLAN state, gọi cho 4 pose (approach, grasp, place_lift, place).
+  Nếu vật nào fail → skip vật đó, thử vật kế tiếp (failure_reason=`unreachable`)
+- **Triết lý**: cheap filter để loại early. Sphere không model joint limit
+  từng axis nên có thể false-positive (báo reachable nhưng IK fail) — đó là
+  job của tầng 2.
+
+#### 7.10.2. Tầng 2 — Predictive trajectory check (per-trial, ~50ms)
+
+`Orchestrator._predict_safety_for_trajectory()` (mới wire vào `_execute_pick_place`):
+
+1. Solve client DLS IK cho 6 waypoint world frame (current → lift → grasp →
+   lift → place_lift → place → place_lift) — pure-Python URDF chain
+2. Interpolate trajectory joint-space @ `predict_max_speed_deg_s` (default 30°/s),
+   sample mỗi 50ms
+3. Pure-Python FK trên TỪNG sample:
+   - **Joint limit check**: bất kỳ joint nào vượt `[joint_min, joint_max]` từ
+     URDF → fail với reason `predicted_joint_limit: J{i}=...° @ sample {s_idx}`
+   - **Self-collision check**: sphere model 6 link, khoảng cách min < `r_i + r_j`
+     → fail `predicted_self_collision: joint {i} vs {j} dist={d}mm`
+
+Đoạn code chính trong `orchestrator.py:_execute_pick_place`:
+
+```python
+reason = self._predict_safety_for_trajectory(
+    [lift_T, grasp_T, lift_T, place_lift_T, place_T, place_lift_T]
+)
+if reason is not None:
+    logger.warning("Trial %d: predictive safety reject — %s", trial_id, reason)
+    self.stats["failed"] += 1
+    self.sm.fail(reason)
+    return False
+```
+
+**Khi bật**: `config["predictive_safety_enabled"]=True`. Real mode tự bật
+(`03_run_experiment.py`). Sim mode default OFF để chạy fast — nhưng có thể
+bật để stress-test trajectory.
+
+**Đóng góp C2 cho luận văn**: lớp safety pure-Python này không phụ thuộc
+controller — catch unsafe trajectory BẰNG kinematic model digital twin, không
+phải đợi alarm vật lý. Đặc biệt cho self-collision arm-vs-arm mà single-point
+reach check không bắt được. Verified bằng `tests/test_predict_safety.py`
+(5 case: disabled / safe / joint limit / too-few-waypoints / speed param).
+
+#### 7.10.3. Failure reason taxonomy
+
+Khi safety reject, `failure_reason` ghi vào CSV để phân tích sau:
+
+| Reason | Nguồn | Khắc phục |
+|---|---|---|
+| `unreachable` | Reach envelope (tất cả objects) | Đổi `place_position` gần robot hơn, hoặc dời object về workspace |
+| `predicted_joint_limit: J{i}=...° @ sample {s}/{n}` | Predictive interpolation | Tinh chỉnh `approach_height_mm` / `yaw_offset_deg`; URDF joint limit từ datasheet GP7 |
+| `predicted_self_collision: joint {i} vs {j} dist={d}mm @ sample {s}/{n}` | Sphere self-collision | Đổi `--ik-source yrc` (YRC chọn config khác), hoặc thay đổi `place_position` để planner tránh elbow-down config |
+
+→ Trial nào fail tại C2 KHÔNG bao giờ tới HSE → controller thật KHÔNG nhận
+command unsafe → giảm rate alarm trong runtime + log CSV chi tiết failure
+mode để tuning iterate.
 
 ---
 
-# PHẦN F — TEST, HIỆU CHỈNH, THÍ NGHIỆM
+# PHẦN F: TEST, HIỆU CHỈNH, THÍ NGHIỆM
 
 ## 8. Test strategy 5 lớp
 
 ```mermaid
-%%{init: {'theme':'dark'}}%%
 graph LR
-    A[L1<br/>Unit] --> B[L2<br/>Component] --> C[L3<br/>Integration] --> D[L4<br/>System SIM] --> E[L5a<br/>System REAL<br/>HSE bypass]
-    A --> F[L5b<br/>System REAL<br/>RoboDK driver]
+    A[L1<br/>Unit] --> B[L2<br/>Component] --> C[L3<br/>Integration] --> D[L4<br/>System SIM] --> E[L5<br/>System REAL<br/>HSE]
     style A fill:#2E7D32,stroke:#fff,color:#fff
     style B fill:#33691E,stroke:#fff,color:#fff
     style C fill:#558B2F,stroke:#fff,color:#fff
     style D fill:#1565C0,stroke:#fff,color:#fff
     style E fill:#D84315,stroke:#fff,color:#fff
-    style F fill:#7E57C2,stroke:#fff,color:#fff
 ```
 
 | Lớp | Phạm vi | Phần cứng | Cách chạy |
 |---|---|---|---|
 | **L1** Unit | Hàm độc lập: `coord_conv`, `postprocess`, state machine, hand-eye solver, HSE codec, INFORM gen, kinematics FK | Không | `pytest tests/` |
 | **L2** Component | Module isolation: perception (Mock), orchestrator (mock robot), MotomanHSEBackend (mock socket), DigitalTwinMirror (mock backend) | Không | `pytest tests/test_orchestrator_sim.py tests/test_motoman_hse.py tests/test_digital_twin.py` |
-| **L3** Integration | 2–3 module ghép: vision → transform → RoboDK | RoboDK GUI | `pytest tests/` có RoboDK |
-| **L4** System SIM | Full pipeline + digital twin, detection giả lập | RoboDK GUI | `03_run_experiment.py --mode sim` |
-| **L5a** System REAL (HSE) | Full pipeline + D455 + GP7 qua HSE bypass | YRC1000 HSE + D455 + GP7 | `03_run_experiment.py --mode real --backend hse` |
-| **L5b** System REAL (RoboDK driver) | Full pipeline + D455 + GP7 qua RoboDK driver | RoboDK Educational + D455 + GP7 | `03_run_experiment.py --mode real --backend robodk` |
+| **L3** Integration | 2–3 module ghép: vision → transform → Open3D viewport | Open3D | `pytest tests/` |
+| **L4** System SIM | Full pipeline + digital twin, detection giả lập | Open3D | `03_run_experiment.py --mode sim` |
+| **L5** System REAL (HSE) | Full pipeline + D455 + GP7 qua HSE — path DUY NHẤT cho real | YRC1000 HSE + D455 + GP7 | `03_run_experiment.py --mode real` |
 
-Thư viện phần cứng (`pyrealsense2`, `robodk`, `ultralytics`, `pyserial`) đều lazy-import → L1–L2 chạy được trên máy không có phần cứng.
+Thư viện phần cứng (`pyrealsense2`, `ultralytics`, `pyserial`) đều lazy-import → L1–L2 chạy được trên máy không có phần cứng. Open3D + numpy là core dependencies, không cần GPU.
 
-Hiện có **274 test case** ở `pickplace_gp7/tests/` cover L1–L3 (lên từ 79 sau phase Option C). 18 file test bao quát: cell loader (22), HSE protocol (22), HSE backend mock socket (31), INFORM codegen (19), ultra-fast P-var (18), digital twin mirror (30), kinematics FK (21), và 11 file unit khác. Toàn bộ chạy được trên máy không phần cứng (lazy-import + mock).
+Hiện có **293 test case** ở `pickplace_gp7/tests/` cover L1–L3. Bao quát: HSE protocol + Cartesian encode, HSE backend mock socket, INFORM codegen, ultra-fast P-var, digital twin mirror, kinematics FK, inverse kinematics DLS, frame conversion, và các unit khác. Toàn bộ chạy được trên máy không phần cứng (lazy-import + mock).
 
-Lịch tham chiếu: L1 từ Tuần 4 (ongoing) · L4 ≈ Tuần 14 · **L5a HSE ≈ Tuần 20+** (sớm hơn L5b vì 0 license) · L5b RoboDK ≈ Tuần 23+ (cần Educational).
+Lịch tham chiếu: L1 từ Tuần 4 (ongoing) · L4 ≈ Tuần 14 · **L5 HSE ≈ Tuần 20+** (path real).
 
 ## 9. Hiệu chỉnh (Tuning)
 
 ### 9.1. Các parameter cần tune
 
 ```mermaid
-%%{init: {'theme':'dark'}}%%
 graph TB
-    subgraph "Vision Tuning"
+    subgraph Vision["Vision Tuning"]
         V1[Confidence threshold<br/>0.3 – 0.7]
         V2[NMS IoU<br/>0.3 – 0.6]
         V3[Min mask area<br/>1000 – 5000 px]
     end
-    
-    subgraph "Pose Tuning"
+
+    subgraph Pose["Pose Tuning"]
         P1[Approach height<br/>30 – 80 mm]
         P2[Depth filter window<br/>5 – 15 pixels]
         P3[Yaw offset<br/>0 – 90°]
     end
-    
-    subgraph "Motion Tuning"
+
+    subgraph Motion["Motion Tuning"]
         M1[Speed Joint<br/>10 – 50%]
         M2[Speed Linear<br/>20 – 100 mm/s]
         M3[Blending radius<br/>0 – 10 mm]
     end
-    
-    subgraph "Gripper Tuning"
+
+    subgraph Gripper["Gripper Tuning"]
         G1[Close delay<br/>0.2 – 0.5 s]
         G2[Approach overshoot<br/>0 – 5 mm]
     end
+
+    classDef vision fill:#1565C0,stroke:#fff,stroke-width:2px,color:#fff
+    classDef pose fill:#2E7D32,stroke:#fff,stroke-width:2px,color:#fff
+    classDef motion fill:#E65100,stroke:#fff,stroke-width:2px,color:#fff
+    classDef gripper fill:#7E57C2,stroke:#fff,stroke-width:2px,color:#fff
+    class V1,V2,V3 vision
+    class P1,P2,P3 pose
+    class M1,M2,M3 motion
+    class G1,G2 gripper
 ```
 
 ### 9.2. Tuning workflow
@@ -849,7 +1311,7 @@ Cuối thí nghiệm, build failure mode matrix:
 | collision | 0 | 0% | OK |
 | unreachable | 2 | 4% | Adjust workspace |
 
-→ **Đây là Discussion section quan trọng của paper**.
+→ **Đây là phần discussion quan trọng cần ghi lại**.
 
 ## 10. Thí nghiệm chính thức
 
@@ -867,22 +1329,27 @@ Cuối thí nghiệm, build failure mode matrix:
 - 50 trials × 3 điều kiện ánh sáng (sáng/vừa/yếu)
 - Đo success rate degradation
 
-**Experiment 4 — HSE backend performance (mới)**
+**Experiment 4 — HSE backend performance**
 - 500 trials với `--ultra-fast --no-viewport-mirror` trên robot thật
 - Đo: per-trial overhead (kỳ vọng ~50ms), drift rate (commanded vs actual ≥ 2°), alarm frequency
-- So sánh với batch M3 (200ms/trial) và RoboDK driver Educational (~50ms/trial)
+- So sánh 3-tier: single-shot (~1500ms) vs batch M3 (~200ms) vs ultra-fast M3++ (~50ms)
 - Telemetry CSV 10Hz → vẽ joint trajectory, velocity profile, cycle time histogram
 
-**Tổng**: ~700 trials (200 cho L5b RoboDK + 500 cho L5a HSE). HSE ultra-fast cho phép scale lên 500 trial trong ~30 phút thí nghiệm thực (cycle time chính + 50ms overhead).
+**Tổng**: ~650 trials (50+50+50 cho Exp1-3 sim + 500 cho Exp4 real HSE). HSE ultra-fast cho phép scale lên 500 trial trong ~30 phút thí nghiệm thực (cycle time chính + 50ms overhead).
 
 ### 10.2. Protocol mỗi trial
 
 ```mermaid
-%%{init: {'theme':'dark'}}%%
 sequenceDiagram
-    actor H as Human
-    participant S as PC software
-    participant R as Robot GP7 + YRC1000
+    box rgb(46,125,50) Human
+        actor H as Operator
+    end
+    box rgb(21,101,192) PC
+        participant S as PC software
+    end
+    box rgb(230,81,0) Robot
+        participant R as GP7 + YRC1000
+    end
 
     H->>H: Dat 1-3 vat ngau nhien tren ban
     H->>+S: Press SPACE start trial
@@ -895,6 +1362,122 @@ sequenceDiagram
     Note over H,R: Lap lai 50 lan
 ```
 
+#### Giải thích chi tiết từng bước
+
+Để học viên/người mới có thể tự chạy được 1 thí nghiệm chuẩn, từng bước trong
+sequence trên cụ thể như sau:
+
+**0. Chuẩn bị trước khi bắt đầu** (làm 1 lần đầu session, không lặp mỗi trial)
+
+- Bật YRC1000, đặt teach pendant về **REMOTE mode**, servo ON.
+- Verify cell config: `python -c "from src.cell.cell_models import CellConfig; CellConfig.from_yaml('config/cell_layout_real.yaml')"`.
+- Verify HSE: `ping <IP_YRC1000>` reply OK.
+- Khởi động script chính:
+  ```powershell
+  python scripts/03_run_experiment.py --mode real --trials 50 \
+      --lighting bright --overlap none
+  ```
+- Script sẽ in `Trial 1/50 - chờ detection...` và đứng chờ.
+
+**Bước 1 — Operator đặt 1-3 vật ngẫu nhiên trên bàn** (`H->>H`)
+
+- Dùng **template position cards** (in giấy 20 ô đánh số) → bốc thăm vài ô,
+  đặt vật vào đúng ô đó. Hoặc lăn xúc xắc chọn (x, y, yaw).
+- **Quan trọng**: KHÔNG nhìn output camera khi đặt → tránh bias (vô thức đặt
+  vào vị trí "dễ" cho robot).
+- Đảm bảo vật nằm gọn trong workspace 600×400 mm, không tràn ra mép bàn.
+
+**Bước 2 — Bấm SPACE để start trial** (`H->>+S`)
+
+- Trong terminal đang chạy `03_run_experiment.py`, nhấn `SPACE` (hoặc Enter,
+  tùy CLI flag).
+- Lúc này operator **không cần làm gì nữa** cho đến khi trial xong.
+
+**Bước 3 — PC capture + detection** (`S->>S: Capture detection D455`)
+
+- Code tự động (chạy trong `perception_node.py` thread, ~15Hz):
+  1. RealSense D455 chụp RGB + depth frame
+  2. YOLOv8-seg detect → ra bbox + mask + class cho từng vật
+  3. Postprocess: deproject pixel + depth → tọa độ 3D trong camera frame
+  4. Áp `T_BC` (hand-eye matrix) → tọa độ trong base frame robot
+  5. PCA trên mask → yaw angle để gripper align
+- Output: list các vật, mỗi vật có `(x, y, z, yaw, class, confidence)`.
+
+**Bước 4 — PC gửi command MoveJ qua HSE** (`S->>+R: Execute pick MoveJ via HSE`)
+
+- Orchestrator (`orchestrator.py`) làm:
+  1. Chọn vật top-Z (nằm cao nhất → gắp trước)
+  2. Tính grasp pose (xyz + yaw + offset)
+  3. **Predictive safety check C2+**: pure-Python FK verify trajectory không
+     vi phạm joint limit / self-collision → reject nếu unsafe
+  4. Gen INFORM job: approach → grasp → lift → transfer → place → retreat
+  5. FTP upload `.JBI` lên YRC1000 (`/MPRAM1/JBI/`)
+  6. HSE `JOB_SELECT` + `START` → YRC1000 chạy job
+- Đồng thời: **mirror thread @10Hz** poll joint state thật từ HSE → setJoints
+  lên Open3D viewport (operator có thể nhìn 3D robot di chuyển real-time).
+
+**Bước 5 — Robot trả về kết quả** (`R-->>-S: Done success or fail`)
+
+- Robot chạy xong job → READ_STATUS trả `Running = False`.
+- PC kiểm tra: gripper có còn nắm vật không (qua force sensor hoặc Y-output
+  feedback), vật có ở đúng place position không (visual confirm tùy chọn).
+- Failure modes có thể: `detection_miss` (không thấy vật), `unreachable`
+  (vật ngoài tầm với), `grasp_slip` (gắp trượt), `motion_error` (HSE timeout
+  / alarm), `predicted_unsafe` (C2 reject).
+
+**Bước 6 — Log result + cycle time** (`S->>S: Log result + cycle time`)
+
+- `TrialLogger` ghi 1 row vào `results/experiment_real_<timestamp>.csv` với:
+  - `trial_id`, `class_name`, `success` (True/False)
+  - `failure_reason` (rỗng nếu success)
+  - `cycle_time_s` (từ Bước 2 đến Bước 5)
+  - `lighting`, `overlap` (từ CLI flag, dùng để phân tích sau)
+- `TelemetryLogger` đã ghi sẵn joint trajectory @10Hz vào CSV riêng
+  (`results/telemetry_<timestamp>.csv`).
+
+**Bước 7 — Trial completed** (`S-->>-H: Trial completed`)
+
+- Console in: `Trial 5/50 - success - cycle 6.2s | stats: 4/5 = 80%`.
+- Script tự động chờ operator setup trial kế.
+
+**Bước 8 — Operator đặt lại vật cho trial tiếp** (`H->>H: Dat lai vat cho trial tiep`)
+
+- **Pattern 1 (recommended)**: vật vẫn ở place position cũ → operator bốc về
+  starting area, đặt vị trí mới ngẫu nhiên.
+- **Pattern 2**: nếu vật rơi / lệch / robot làm hỏng → ghi note vào trial log
+  manually, sau bỏ qua row đó khi phân tích.
+- Lặp lại từ Bước 1.
+
+**Lặp 50 lần** (`Note over H,R: Lap lai 50 lan`)
+
+- 50 trials cho 1 condition (1 lighting + 1 overlap setting).
+- Mỗi trial ~10-15s (cycle time robot ~7-10s + setup operator 3-5s) → tổng
+  ~10-15 phút.
+- Sau 50, đổi `--lighting` hoặc `--overlap`, chạy 50 trial khác.
+
+#### Best practices cho học viên
+
+| Tình huống | Cách xử |
+|---|---|
+| Tay run khi đặt vật → vị trí không đều | Dùng template card cứng, đặt vật vào lỗ cố định |
+| Quên không đặt vật trước khi bấm SPACE | Detection sẽ trả `[]`, log `detection_miss`, trial bỏ qua, không sao |
+| Robot báo alarm giữa session | DigitalTwinMirror auto-trigger `Stop()`, reset alarm trên TP, restart script |
+| RealSense D455 disconnect | Restart script + verify USB 3.0 |
+| Trial bất thường cần loại | Note `trial_id` riêng, lọc khi phân tích bằng `04_analyze_results.py --exclude` |
+| Cần dừng giữa chừng | `Ctrl+C` — script auto-call `robot.Stop()` an toàn |
+
+#### Checklist trước session
+
+- [ ] YRC1000 ở **REMOTE mode**, servo ON
+- [ ] `ping <IP_YRC1000>` OK
+- [ ] D455 USB 3.0 connect (`scripts/check_d455.py`)
+- [ ] `models/yolov8s-seg_best.pt` đã có
+- [ ] `config/calibration/T_base_camera.npy` ≤ 3 mm sai số
+- [ ] Workspace bàn sạch, đủ ánh sáng đồng đều
+- [ ] Template position cards in sẵn
+- [ ] Sổ ghi note hoặc spreadsheet để log trial bất thường
+- [ ] Ổ đĩa đủ free space (~100 MB cho 500 trial telemetry CSV)
+
 **Tự động hóa đặt vật**: không khả thi với master. Thực hiện bằng tay là OK, nhưng:
 - Dùng **template position cards** (in giấy có vị trí số 1–20) → bốc random
 - Lăn xúc xắc → chọn vị trí + góc
@@ -904,7 +1487,7 @@ sequenceDiagram
 
 `scripts/04_analyze_results.py` đọc các file CSV trial, tính success rate tổng / theo class / theo điều kiện, dựng ma trận failure-mode, kiểm định **paired t-test** so sánh RGB-only với RGB-D fusion, và xuất figure tổng hợp (bar chart success rate + boxplot cycle time) vào `figures/`.
 
-**Kết quả mong đợi cho paper**:
+**Kết quả mong đợi**:
 
 | Metric | Target |
 |---|---|
@@ -916,12 +1499,11 @@ sequenceDiagram
 
 ---
 
-# PHẦN G — LỘ TRÌNH + ACTION ITEMS
+# PHẦN G: LỘ TRÌNH & CHECKLIST
 
 ## 11. Lộ trình
 
 ```mermaid
-%%{init: {'theme':'dark'}}%%
 gantt
     title Lo trinh trien khai 7 thang
     dateFormat YYYY-MM-DD
@@ -957,30 +1539,30 @@ gantt
     Motion + gripper tuning                :p6b, after p6a, 14d
 
     section Pha 7 Experiments
-    Exp 1-2-3 tren RoboDK sim              :p7a, after p6b, 14d
+    Exp 1-2-3 tren sim Open3D              :p7a, after p6b, 14d
     Exp tren GP7 that (HSE)                :crit, p7b, after p7a, 14d
     Analysis                               :p7c, after p7b, 7d
     Milestone all data                     :milestone, m7, after p7c, 0d
 
-    section Pha 8 Writing
-    Draft paper                            :p8a, after p7c, 21d
-    Revise + proofread                     :p8b, after p8a, 14d
-    Submit                                 :crit, p8c, after p8b, 7d
-    Milestone submit                       :milestone, m8, after p8c, 0d
+    section Pha 8 Documentation
+    Draft documentation                    :p8a, after p7c, 21d
+    Revise + review                        :p8b, after p8a, 14d
+    Release v1                             :crit, p8c, after p8b, 7d
+    Milestone release                      :milestone, m8, after p8c, 0d
 ```
 
 ### Chi tiết từng pha
 
 | Pha | Tuần | Nội dung | Deliverable |
 |---|---|---|---|
-| 1 — Foundation | 1–2 | Install + verify stack, dựng cell mô phỏng | `build_station.py` dựng cell OK |
+| 1 — Foundation | 1–2 | Install + verify stack, mở Open3D viewport sim | `03_run_experiment.py --mode sim` mở viewport OK |
 | 2 — Dataset | 2–8 | Capture + label + augment | Dataset v1.0 (~2100 ảnh labeled) |
 | 3 — Model | 8–11 | Train n/s/m + chọn best (máy GPU sẵn có) | Best model `.pt` + bảng so sánh |
 | 4 — Calibration | 11–13 | Hand-eye + touch test | T_base_camera.npy ≤ 3 mm |
 | 5 — Integration | 13–15 | Hardware bring-up + end-to-end real | Robot pick-place đầu tiên chạy |
 | 6 — Tuning | 15–19 | Tune params từng layer | Pipeline tuned ready for exp |
-| 7 — Experiments | 19–24 | 3 experiments + analysis | Tables + figures cho paper |
-| 8 — Writing | 24–30 | Draft + revise + submit | Manuscript submitted |
+| 7 — Experiments | 19–24 | 3 experiments + analysis | Tables + figures phân tích |
+| 8 — Documentation | 24–30 | Draft docs + revise + release | Release v1 |
 
 ## 12. Rủi ro tổng hợp
 
@@ -991,9 +1573,8 @@ gantt
 | R3 | Hand-eye calibration sai | TB | Repeat với 35 poses, more rotation |
 | R4 | Gripper không tin cậy | TB | Force feedback từ DI controller |
 | R5 | Lab time conflict GP7 | Thấp | Đã có GP7; đặt lịch lab từ Tuần 1, plan sim làm backup nếu trùng |
-| R6 | Coordinate confusion (RoboDK) | Cao | Unit test sớm, RoboDK Z-up mm consistent |
-| R7 | Reviewer chê novelty | TB | Nhấn 3 đóng góp engineering |
-| R8 | Save .rdk vướng license | Đã xử | build_station.py script |
+| R6 | Coordinate confusion (frame conversion) | Cao | Unit test sớm (`test_frame_convert.py`), Z-up mm consistent |
+| R7 | Khó argue value của approach | TB | Nhấn 3 điểm engineering rõ ràng |
 
 ## 13. Action items 2 tuần đầu — chi tiết theo ngày
 
@@ -1002,21 +1583,19 @@ gantt
 **Ngày 1–2** (Setup):
 - [ ] Cài Python 3.10 + venv
 - [ ] `pip install -r requirements.txt` (xem `pickplace_gp7/requirements.txt`)
-- [ ] Cài RoboDK Software Free (`robodk.com/download`)
 - [ ] Cài RealSense SDK 2.0
-- [ ] Test `test_connection.py` → "Robot found"
+- [ ] `pytest tests/` → 293 passed
+- [ ] `python scripts/03_run_experiment.py --mode sim --trials 1` → Open3D viewport hiện
 
-**Ngày 3–4** (Robot + Camera basics):
-- [ ] Drag GP7 từ Library vào RoboDK
-- [ ] Save dummy `.rdk` (sẽ không dùng nữa, chỉ để verify install)
+**Ngày 3–4** (Camera basics):
 - [ ] Verify D455 với `rs-viewer.exe` Windows
 - [ ] Viết `test_realsense.py` → save 1 RGB + 1 depth PNG
+- [ ] Verify kinematics: `python scripts/08_verify_ik.py` → IK round-trip OK
 
-**Ngày 5–7** (Build cell):
-- [ ] Vẽ phác cell trong RoboDK GUI (thử nghiệm layout)
-- [ ] Ghi tọa độ các item (bàn, gripper, frames)
-- [ ] Review + verify `build_station.py` — tái tạo cell
-- [ ] Verify: delete tất cả → chạy `build_station.py` → cell xuất hiện
+**Ngày 5–7** (Cell + verify):
+- [ ] Review `config/cell_layout.yaml` — chỉnh table/camera/object position theo lab thực
+- [ ] Verify cell load: `python -c "from src.cell.cell_models import CellConfig; CellConfig.from_yaml('config/cell_layout.yaml')"`
+- [ ] (Tuỳ chọn) Mở RoboDK Free + chạy `python scripts/13_verify_vs_robodk.py --samples 100` → confirm FK/IK match RoboDK 0.00mm
 - [ ] Họp GVHD: chốt 3 vật + gripper + lịch GP7
 
 ### Tuần 2
@@ -1036,7 +1615,7 @@ gantt
 - [ ] Review + verify `01_collect_dataset.py`
 - [ ] Test capture với 30 ảnh đầu — verify naming, depth save OK
 - [ ] **MILESTONE TUẦN 2**: Video screencast 3 phút:
-  - Show RoboDK build_station.py tự dựng cell
+  - Show `03_run_experiment.py --mode sim` mở Open3D viewport, robot animate
   - Show D455 streaming
   - Show 30 ảnh đã capture
 - [ ] Push code lên GitHub private
@@ -1045,7 +1624,7 @@ gantt
 
 ## 14. Phụ lục: Checklist tổng
 
-### Trước khi submit luận văn:
+### Trước khi ship / release:
 
 - [ ] Dataset v1.0+ với ≥ 2000 ảnh labeled
 - [ ] Model YOLOv8s-seg với mAP@0.5 ≥ 0.85 trên test set
@@ -1054,8 +1633,8 @@ gantt
 - [ ] Code chạy end-to-end trên GP7 thật (≥ 30 trials, nếu có)
 - [ ] Pipeline log đầy đủ vào CSV
 - [ ] 3 experiments hoàn thành với statistical analysis
-- [ ] Tables + figures cho paper
+- [ ] Tables + figures phân tích
 - [ ] Code public GitHub với README + setup guide
-- [ ] Video demo 3–5 phút cho bảo vệ
+- [ ] Video demo 3–5 phút
 
 ---
