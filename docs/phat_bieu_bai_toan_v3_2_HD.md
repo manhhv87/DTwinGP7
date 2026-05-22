@@ -6,13 +6,12 @@ client-side cho FK/IK.
 
 **Tóm tắt kiến trúc**:
 - HSE là motion path cho robot thật — Python nói chuyện thẳng với YRC1000 qua
-  UDP HSE protocol. Không có vendor driver trong motion stack. FK/IK chạy
-  client-side bằng URDF chain pure numpy (verified match RoboDK SolveFK
-  0.00mm qua `scripts/13_verify_vs_robodk.py`).
+  UDP HSE protocol. FK/IK chạy client-side bằng URDF chain pure numpy (verified 
+  match RoboDK SolveFK 0.00mm qua `scripts/13_verify_vs_robodk.py`).
 - Hai motion backend: `SimRobot` (dev / headless / sim GUI) và `MotomanHSEBackend`
   (real). CLI `--backend {sim, hse}`. `--mode real` force `hse`.
 - Sim non-headless + real cùng pattern: motion backend wrap trong DigitalTwinMirror
-  façade, Open3D viewport (`O3DGuiSimRobot`) nhận setJoints @2Hz qua mirror
+  facade, Open3D viewport (`O3DGuiSimRobot`) nhận setJoints @2Hz qua mirror
   thread để mirror state thật.
 - 293 test case cover L1–L3 (HSE protocol + backend, INFORM codegen,
   ultra-fast P-var, digital twin mirror, kinematics FK + IK, frame conversion, ...).
@@ -38,7 +37,7 @@ client-side cho FK/IK.
 ```mermaid
 graph LR
     A[Open3D Filament GUI<br/>O3DGuiSimRobot viewport<br/>~50 MB pip] -->|setJoints 2Hz<br/>viewport mirror| B[Code Python<br/>URDF chain FK/IK<br/>pure numpy]
-    B --> C[Code Python<br/>YOLO OpenCV<br/>Orchestrator Digital Twin<br/>~6000 LOC]
+    B --> C[Code Python<br/>YOLO OpenCV<br/>Orchestrator Digital Twin]
     C ==>|HSE bypass<br/>UDP socket| D[Yaskawa YRC1000<br/>HSE Server function<br/>built-in]
 
     style A fill:#2E7D32,stroke:#fff,stroke-width:2px,color:#fff
@@ -55,14 +54,6 @@ graph LR
 - FK/IK client-side dùng URDF chain pure numpy (`urdf_chain.py` +
   `inverse_kinematics.py`). Verified match RoboDK SolveFK 0.00mm qua
   `scripts/13_verify_vs_robodk.py`.
-
-**Không cần**: vendor driver license, Unity 3D, ROS 2, Linux, Gazebo,
-Isaac Sim, MotoCom32 SDK, ROS MotoPlus flash.
-
-> **Lưu ý**: tất cả thư viện chạy local (Open3D + numpy + scipy), không có quota
-> hay license lock cho runtime. RoboDK Free chỉ cần khi chạy
-> `scripts/13_verify_vs_robodk.py` để cross-check FK/IK — đóng RoboDK ngay sau khi
-> verify xong.
 
 ## 2. Sơ đồ kết nối hệ thống — Level-4 Bidirectional Digital Twin
 
@@ -127,7 +118,7 @@ flowchart TB
 |---|---|---|
 | **1. Perception** | `perception_node`, YOLO, D455 | RGB-D → detection 3D pose |
 | **2. Orchestrator** | `orchestrator.py` | State machine pick-and-place + planning + safety C2+ |
-| **3. Digital Twin Façade** | `digital_twin.py` `DigitalTwinMirror` | **Tầng then chốt L4** — façade kết hợp motion backend + kinematic helper + mirror thread |
+| **3. Digital Twin Facade** | `digital_twin.py` `DigitalTwinMirror` | **Tầng then chốt L4** — facade kết hợp motion backend + kinematic helper + mirror thread |
 | **4. Motion Backends (pluggable)** | `backends/` — 2 implementations | `SimRobot` (dev/headless) + **`MotomanHSEBackend`** (real). |
 | **5. Hardware/Sim** | Open3D viewport (`O3DGuiSimRobot`) + YRC1000+GP7 thật (motion) | Open3D chỉ display, motion qua HSE UDP |
 
@@ -178,7 +169,7 @@ job generator, P-variable ultra-fast pattern.
 ## 3. Cấu trúc thư mục code
 
 ```
-pickplace_gp7/                          # BỘ CODE + TÀI LIỆU (repo DTwinGP7)
+DTwinGP7/                               # BỘ CODE + TÀI LIỆU (repo DTwinGP7)
 ├── README.md
 ├── requirements.txt
 ├── pyproject.toml
@@ -200,7 +191,13 @@ pickplace_gp7/                          # BỘ CODE + TÀI LIỆU (repo DTwinGP7
 │   ├── README.md
 │   ├── yolov8s-seg_best.pt             # trọng số (copy từ máy train Linux)
 │   ├── gripper.stl                     # parallel-jaw 2-finger 120×50×110mm
-│   └── objects/                        # mesh STL: bottle/cup/bolt
+│   ├── worktable.stl                   # bàn làm việc (primitive procedural)
+│   ├── floor.stl                       # sàn cell (primitive procedural)
+│   ├── pedestal.stl                    # bệ robot GP7
+│   ├── gp7_links/                      # 7 STL link Yaskawa GP7 cho URDF chain
+│   │   ├── gp7_base_link.stl
+│   │   ├── gp7_link_1_s.stl … gp7_link_6_t.stl
+│   └── objects/                        # mesh STL: tray + bottle/cup/bolt
 ├── src/
 │   ├── cell/                           # Cell config schema (Pydantic)
 │   │   ├── __init__.py
@@ -222,7 +219,9 @@ pickplace_gp7/                          # BỘ CODE + TÀI LIỆU (repo DTwinGP7
 │   │   ├── digital_twin.py             # L4 façade: mirror, telemetry, drift, alarm
 │   │   ├── telemetry.py                # CSV logger thread-safe (joint + alarm)
 │   │   ├── frame_convert.py            # world → robot BASE + Yaskawa XYZ-fixed RPY (HSE Cartesian)
-│   │   ├── viewports/                  # Open3D GUI viewport (O3DGuiSimRobot)
+│   │   ├── viewports/                  # Open3D Filament GUI viewport
+│   │   │   ├── open3d_gui_sim_robot.py # O3DGuiSimRobot: sim viewport + real mirror @2Hz
+│   │   │   └── urdf_gen.py             # URDF spec → tessellated mesh cho Open3D
 │   │   ├── kinematics/                 # Pure-Python FK + IK + trajectory (UC1/UC2/UC4)
 │   │   │   ├── urdf_chain.py            # GP7 URDF chain — source-of-truth, match RoboDK 0.00mm (qua scripts/13_verify_vs_robodk.py)
 │   │   │   ├── dh_model.py              # GP7 Modified DH params (legacy, backward compat)
@@ -255,7 +254,6 @@ pickplace_gp7/                          # BỘ CODE + TÀI LIỆU (repo DTwinGP7
 │   ├── 05_analyze_telemetry.py         # visualize CSV telemetry → 4 PNG (joint, velocity, alarm, cycle)
 │   ├── 06_simulate_trial.py            # UC1: predictive simulation offline → 3D figure
 │   ├── 07_replay_telemetry.py          # UC4: replay CSV → 3D animation/MP4
-│   ├── 08_verify_ik.py                 # DLS IK round-trip self-test
 │   ├── 11_test_yrc_cartesian.py        # 3-phase test YRC Cartesian motion trên robot thật
 │   ├── 13_verify_vs_robodk.py          # FK fidelity + DLS IK round-trip vs RoboDK; --samples N --histogram cho figure
 │   ├── calibration_from_layout.py      # sinh T_BC từ camera.pose cho headless
@@ -285,7 +283,7 @@ pickplace_gp7/                          # BỘ CODE + TÀI LIỆU (repo DTwinGP7
 ```
 
 > **Lưu ý về huấn luyện model:** việc train YOLOv8 (mục 5) thực hiện trên một
-> máy Linux + GPU riêng, không nằm trong `pickplace_gp7/`. Repo chỉ nhận file
+> máy Linux + GPU riêng, không nằm trong `DTwinGP7/`. Repo chỉ nhận file
 > trọng số `.pt`/`.onnx` đã train để inference. Dataset thu ở `data/raw/`,
 > gán nhãn trên Roboflow rồi chuyển sang máy Linux để train.
 
