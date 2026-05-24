@@ -155,11 +155,6 @@ class MotomanHSEBackend:
             pass
 
     # ─── Helpers ───
-    def _next_request_id(self) -> int:
-        with self._lock:
-            self._request_id = (self._request_id + 1) % 256
-            return self._request_id
-
     def _send_request(
         self,
         command: int,
@@ -168,25 +163,36 @@ class MotomanHSEBackend:
         service: int = Service.GET_ATTRIBUTE_ALL,
         payload: bytes = b"",
     ) -> HSEResponse:
-        """Gửi request, chờ response. Raise nếu timeout / decode lỗi / status != 0."""
+        """Gửi request, chờ response. Raise nếu timeout / decode lỗi / status != 0.
+
+        Thread-safe: toàn bộ sendto + recvfrom được wrap trong `self._lock` để
+        2 threads concurrent không thể swap responses. UDP không guarantee
+        ordering nên previously có thể happen: thread A send req_id=5, thread
+        B send req_id=6, response B về trước → A nhận response B với id mismatch.
+        """
         if self._sock is None:
             raise RuntimeError("HSE socket chưa connect — gọi connect() trước")
 
-        request_id = self._next_request_id()
-        req = HSERequest(
-            command=command, instance=instance, attribute=attribute,
-            service=service, payload=payload, request_id=request_id,
-        )
-        packet = req.encode()
-        self._sock.sendto(packet, (self.ip, self.port))
+        with self._lock:
+            # Atomic: id increment + send + recv. UDP delivery vẫn có thể out-of-order
+            # với multi-packet bursts, nhưng vì 1 request → 1 response và lock chỉ
+            # release sau khi nhận, không có thread khác chen.
+            self._request_id = (self._request_id + 1) % 256
+            request_id = self._request_id
+            req = HSERequest(
+                command=command, instance=instance, attribute=attribute,
+                service=service, payload=payload, request_id=request_id,
+            )
+            packet = req.encode()
+            self._sock.sendto(packet, (self.ip, self.port))
 
-        try:
-            raw, _ = self._sock.recvfrom(2048)
-        except socket.timeout as e:
-            raise TimeoutError(
-                f"HSE request 0x{command:02X} timeout {self.timeout_s}s — "
-                f"YRC1000 không phản hồi. Check ping + HSE Server function."
-            ) from e
+            try:
+                raw, _ = self._sock.recvfrom(2048)
+            except socket.timeout as e:
+                raise TimeoutError(
+                    f"HSE request 0x{command:02X} timeout {self.timeout_s}s — "
+                    f"YRC1000 không phản hồi. Check ping + HSE Server function."
+                ) from e
 
         try:
             resp = HSEResponse.decode(raw)

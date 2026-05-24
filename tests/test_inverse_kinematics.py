@@ -137,6 +137,47 @@ class TestEdgeCases:
             assert link.joint_min - 1e-6 <= q <= link.joint_max + 1e-6, \
                 f"Joint {i} = {np.rad2deg(q):.1f}° out of limits"
 
+    def test_pose_error_180deg_rotation_stable(self):
+        """`_pose_error` corner case: rotation exactly π giữa current và target.
+
+        Bug cũ: diagonal extraction có thể fail khi 2 diagonal entries gần
+        bằng nhau. Fix mới: column-norm extraction từ R+I luôn numerically stable.
+        """
+        from src.orchestrator.kinematics.inverse_kinematics import _pose_error
+        # R = 180° rotation about X axis: diag = (1, -1, -1)
+        T_current = np.eye(4)
+        T_target = np.eye(4)
+        T_target[:3, :3] = np.array([[1, 0, 0], [0, -1, 0], [0, 0, -1]])
+        err = _pose_error(T_current, T_target)
+        # rot_err magnitude = π, direction = ±X axis
+        rot_err = err[3:]
+        assert abs(np.linalg.norm(rot_err) - np.pi) < 1e-6
+        # Axis should be (±1, 0, 0)
+        axis = rot_err / np.linalg.norm(rot_err)
+        assert abs(abs(axis[0]) - 1.0) < 1e-6
+        assert abs(axis[1]) < 1e-6
+        assert abs(axis[2]) < 1e-6
+
+    def test_pose_error_180deg_around_yz_diagonal(self):
+        """Edge case khó nhất: 180° rotation around (0, 1, 1)/√2 axis →
+        diag entries của R đều âm + 2 entries bằng nhau. Robust column-norm
+        algorithm phải pick đúng axis."""
+        from src.orchestrator.kinematics.inverse_kinematics import _pose_error
+        # 180° about axis (0, 1, 1)/√2: R = 2·n·n^T - I
+        n = np.array([0.0, 1.0, 1.0]) / np.sqrt(2)
+        R = 2 * np.outer(n, n) - np.eye(3)
+        T_current = np.eye(4)
+        T_target = np.eye(4); T_target[:3, :3] = R
+        err = _pose_error(T_current, T_target)
+        rot_err = err[3:]
+        # Magnitude = π
+        assert abs(np.linalg.norm(rot_err) - np.pi) < 1e-6
+        axis = rot_err / np.linalg.norm(rot_err)
+        # Axis should be ±(0, 1, 1)/√2 (sign ambiguous for 180°)
+        assert abs(axis[0]) < 1e-6
+        assert abs(abs(axis[1]) - 1/np.sqrt(2)) < 1e-6
+        assert abs(abs(axis[2]) - 1/np.sqrt(2)) < 1e-6
+
 
 # ─────────────────────────────────────────────────────────────────────────
 # Performance benchmark

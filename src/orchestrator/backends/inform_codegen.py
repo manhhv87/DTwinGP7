@@ -85,13 +85,27 @@ class InformJobBuilder:
         pulse_per_deg: tuple[float, ...] = GP7_PULSE_PER_DEG,
         max_speed_pct: float = MAX_SPEED_PCT_DEFAULT,
         group: str = "RB1",
+        emit_axis_count: int = 0,
     ) -> None:
+        """Args:
+            emit_axis_count: Số axis values emit trong C-var line.
+                0 (default) = len(pulse_per_deg), tức 6 cho GP7. Một số YRC1000
+                firmware/parameter configs yêu cầu 8 (pad axis 7-8 = 0); set
+                emit_axis_count=8 khi đó. Verify bằng dry-upload trên controller
+                trước khi production.
+        """
         self._validate_name(name)
         self.name = name
         self.pos_type = pos_type
         self.pulse_per_deg = pulse_per_deg
         self.max_speed_pct = max_speed_pct
         self.group = group
+        self.emit_axis_count = (int(emit_axis_count) if emit_axis_count > 0
+                                 else len(pulse_per_deg))
+        if self.emit_axis_count < len(pulse_per_deg):
+            raise ValueError(
+                f"emit_axis_count ({self.emit_axis_count}) phải ≥ số joints "
+                f"({len(pulse_per_deg)})")
         self._positions: list[_Position] = []
         self._pos_index: dict[str, int] = {}      # name → idx trong _positions
         self._instructions: list[_Instruction] = []
@@ -102,6 +116,11 @@ class InformJobBuilder:
             raise ValueError(f"Job name phải 1-32 ký tự, nhận '{name}'")
         if not name.replace("_", "").isalnum():
             raise ValueError(f"Job name chỉ chữ/số/_, nhận '{name}'")
+        # INFORM convention: phải start by letter (digit-start không stable trên
+        # nhiều YRC1000 firmware — JOB_SELECT có thể fail silently).
+        if not name[0].isalpha():
+            raise ValueError(
+                f"Job name phải bắt đầu bằng chữ cái, nhận '{name}'")
 
     # ─── Positions ───
     def add_position(self, name: str, joints_deg: list[float]) -> "InformJobBuilder":
@@ -130,19 +149,39 @@ class InformJobBuilder:
         return f"C{self._pos_index[position_name]:05d}"
 
     # ─── Motion instructions ───
+    @staticmethod
+    def _motion_modifiers(
+        pl: int | None,
+        tool_no: int | None,
+        user_frame: int | None,
+    ) -> str:
+        """Helper: build " PL=n TL=n UF#=n" tail. Yaskawa convention."""
+        parts: list[str] = []
+        if pl is not None:
+            if not (0 <= int(pl) <= 8):
+                raise ValueError(f"PL phải 0..8, nhận {pl}")
+            parts.append(f"PL={int(pl)}")
+        if tool_no is not None:
+            parts.append(f"TL={int(tool_no)}")
+        if user_frame is not None:
+            parts.append(f"UF#({int(user_frame)})")
+        return (" " + " ".join(parts)) if parts else ""
+
     def movj(self, position_name: str, speed_pct: float | None = None,
-             tool_no: int | None = None) -> "InformJobBuilder":
+             tool_no: int | None = None,
+             pl: int | None = None,
+             user_frame: int | None = None) -> "InformJobBuilder":
         """Joint move tới position (cao tốc, không quan tâm path).
 
         Args:
-            tool_no: Override TOOL coordinate. None = không thêm TL= (dùng
-                TOOL hiện tại). Đặt 1 cho TOOL01 (gripper).
+            tool_no: TOOL coordinate (TL=). None = không emit modifier.
+            pl: Position level / rounding 0..8 (PL=). None = không emit.
+            user_frame: User frame index (UF#). None = không emit.
         """
         cvar = self._resolve_cvar(position_name)
         vj = self._clamp_joint_speed(speed_pct)
         inst = f"MOVJ {cvar} VJ={vj:.2f}"
-        if tool_no is not None:
-            inst += f" TL={tool_no}"
+        inst += self._motion_modifiers(pl, tool_no, user_frame)
         self._instructions.append(_Instruction(inst))
         return self
 
@@ -151,13 +190,35 @@ class InformJobBuilder:
         position_name: str,
         speed_mm_s: float = 100.0,
         tool_no: int | None = None,
+        pl: int | None = None,
+        user_frame: int | None = None,
     ) -> "InformJobBuilder":
         """Linear (Cartesian) move."""
         cvar = self._resolve_cvar(position_name)
         v = max(1.0, min(float(speed_mm_s), MAX_LINEAR_MM_S))
         inst = f"MOVL {cvar} V={v:.1f}"
-        if tool_no is not None:
-            inst += f" TL={tool_no}"
+        inst += self._motion_modifiers(pl, tool_no, user_frame)
+        self._instructions.append(_Instruction(inst))
+        return self
+
+    def movc(
+        self,
+        position_name: str,
+        speed_mm_s: float = 100.0,
+        tool_no: int | None = None,
+        pl: int | None = None,
+        user_frame: int | None = None,
+    ) -> "InformJobBuilder":
+        """Circular move (1 waypoint trên arc).
+
+        INFORM MOVC cần ≥3 MOVC waypoints liên tiếp để tạo cung tròn
+        (start = MOVC trước đó hoặc previous pose, mid = MOVC2, end = MOVC3).
+        Caller phải emit đúng số lượng MOVC.
+        """
+        cvar = self._resolve_cvar(position_name)
+        v = max(1.0, min(float(speed_mm_s), MAX_LINEAR_MM_S))
+        inst = f"MOVC {cvar} V={v:.1f}"
+        inst += self._motion_modifiers(pl, tool_no, user_frame)
         self._instructions.append(_Instruction(inst))
         return self
 
@@ -170,11 +231,44 @@ class InformJobBuilder:
         self._instructions.append(_Instruction(f"DOUT OT#({output_index}) {state}"))
         return self
 
+    def wait_in(
+        self,
+        input_index: int,
+        on: bool = True,
+        timeout_s: float = 0.0,
+    ) -> "InformJobBuilder":
+        """WAIT IN#(n)=ON/OFF [T=...]. timeout_s=0 → block vô hạn."""
+        if not (1 <= input_index <= 1024):
+            raise ValueError(f"WAIT IN index ngoài range 1..1024: {input_index}")
+        state = "ON" if on else "OFF"
+        inst = f"WAIT IN#({input_index})={state}"
+        if timeout_s > 0:
+            if timeout_s > 600:
+                raise ValueError(f"WAIT timeout ngoài range 0-600s: {timeout_s}")
+            inst += f" T={timeout_s:.2f}"
+        self._instructions.append(_Instruction(inst))
+        return self
+
     def timer(self, seconds: float) -> "InformJobBuilder":
         """Pause `seconds` giây (gripper settle time, etc)."""
         if seconds < 0 or seconds > 600:
             raise ValueError(f"TIMER ngoài range 0-600s: {seconds}")
         self._instructions.append(_Instruction(f"TIMER T={seconds:.2f}"))
+        return self
+
+    def msg(self, text: str) -> "InformJobBuilder":
+        """MSG "string" — hiển thị message trên teach pendant (≤ 32 ASCII)."""
+        # INFORM MSG hỗ trợ ≤ 32 ký tự, ASCII printable, không quote bên trong.
+        clean = "".join(c for c in text if 0x20 <= ord(c) < 0x7F and c != '"')
+        clean = clean[:32]
+        self._instructions.append(_Instruction(f'MSG "{clean}"'))
+        return self
+
+    def call_job(self, job_name: str) -> "InformJobBuilder":
+        """CALL JOB:job_name — invoke sub-program. job_name validate giống
+        _validate_name (≤32 ASCII alphanumeric/_)."""
+        self._validate_name(job_name)
+        self._instructions.append(_Instruction(f"CALL JOB:{job_name}"))
         return self
 
     def comment(self, text: str) -> "InformJobBuilder":
@@ -208,7 +302,10 @@ class InformJobBuilder:
         lines.append(f"///{self.pos_type}")
         for p in self._positions:
             cvar = f"C{self._pos_index[p.name]:05d}"
-            values = ",".join(str(v) for v in p.joints_pulse)
+            # Pad với 0 cho axis 7-8 nếu emit_axis_count > số joints (GP7: 6→8).
+            padded = list(p.joints_pulse) + [0] * (
+                self.emit_axis_count - len(p.joints_pulse))
+            values = ",".join(str(v) for v in padded)
             lines.append(f"{cvar}={values}")
 
         lines.append("//INST")

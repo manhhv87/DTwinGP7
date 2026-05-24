@@ -33,6 +33,9 @@ from __future__ import annotations
 
 import logging
 import math
+import os
+import re
+import sys
 import threading
 import time
 from pathlib import Path
@@ -44,6 +47,77 @@ from ..kinematics.urdf_chain import URDFRobot, gp7_urdf, link_frames_urdf
 from ..sim_robot import SimRobot
 
 logger = logging.getLogger(__name__)
+
+
+# ───── Filament stderr filter ─────
+# Open3D's Filament renderer in một cảnh báo "Camera preconditions not met"
+# qua C-stderr (FD 2) khi nó tự gọi setProjection ở frame render đầu tiên
+# (trước khi widget có viewport size). Cảnh báo vô hại (Filament dùng default
+# projection rồi user code override sau ở tick #3) nhưng làm bẩn output.
+#
+# Python không bắt được vì in qua libc stderr, không đi qua sys.stderr. Cách
+# DUY NHẤT chặn: dup2 FD 2 sang pipe + thread filter line-based, drop dòng
+# match pattern Filament, forward phần còn lại về terminal thật.
+_FILAMENT_NOISE = (
+    re.compile(rb"FCamera::setProjection"),
+    re.compile(rb"Camera preconditions not met"),
+)
+_stderr_filter_installed = False
+
+
+def _install_filament_stderr_filter() -> None:
+    """Cài filter cho FD 2 (idempotent, 1 lần / process).
+
+    Pipe stderr qua daemon thread; drop line khớp `_FILAMENT_NOISE` + drop
+    blank line ngay sau đó (Filament thường đệm bằng newline trên/dưới). Mọi
+    output khác (Python logging, traceback…) đi qua nguyên vẹn.
+    """
+    global _stderr_filter_installed
+    if _stderr_filter_installed:
+        return
+    try:
+        sys.stderr.flush()
+        real_fd = os.dup(2)                            # giữ ref tới terminal thật
+        r_fd, w_fd = os.pipe()
+        os.dup2(w_fd, 2)                               # FD 2 → write end of pipe
+        os.close(w_fd)
+    except OSError as e:                               # noqa: BLE001
+        logger.debug("Không cài được Filament stderr filter: %s", e)
+        return
+
+    def _pump() -> None:
+        # Đọc từng dòng từ pipe; nếu match noise pattern → drop + cũng drop
+        # blank line ngay sau. Còn lại ghi thẳng ra FD terminal thật.
+        drop_next_blank = False
+        try:
+            with os.fdopen(r_fd, "rb", buffering=0) as r:
+                buf = b""
+                while True:
+                    chunk = r.read(4096)
+                    if not chunk:
+                        return
+                    buf += chunk
+                    while b"\n" in buf:
+                        line, buf = buf.split(b"\n", 1)
+                        stripped = line.strip()
+                        if drop_next_blank and not stripped:
+                            drop_next_blank = False
+                            continue
+                        if any(p.search(line) for p in _FILAMENT_NOISE):
+                            drop_next_blank = True
+                            continue
+                        drop_next_blank = False
+                        try:
+                            os.write(real_fd, line + b"\n")
+                        except OSError:
+                            return
+        except Exception:                              # noqa: BLE001
+            pass
+
+    threading.Thread(
+        target=_pump, name="filament-stderr-filter", daemon=True,
+    ).start()
+    _stderr_filter_installed = True
 
 
 # ── GP7 mesh constants (shared with potential mirror-only renderers) ──
@@ -133,7 +207,8 @@ class O3DGuiSimRobot(SimRobot):
         self._anim_dt = anim_duration_s / self._anim_steps
         self._open = True
         self._running = False
-        self._cam_done = False                        # camera set lazy ở frame post đầu
+        self._cam_done = False                        # camera set lazy ở tick sau render
+        self._cam_tick = 0                            # đếm tick để defer setup_camera
 
         # Object follow-gripper state (world_T 4x4 ở MÉT cho mỗi object)
         self._objects: dict[str, dict[str, Any]] = {}
@@ -634,11 +709,12 @@ class O3DGuiSimRobot(SimRobot):
                     scene.set_geometry_transform(name, Tm)
                 except Exception:                     # noqa: BLE001
                     pass
-            # Camera set 1 lần ở frame post đầu sau khi loop chạy (viewport đã
-            # layout xong → aspect ratio hợp lệ). Sau đó để user tự điều khiển.
-            if self._running and not self._cam_done:
-                self._cam_done = True
-                self._setup_camera()
+            # Camera setup KHÔNG làm ở đây nữa: post_to_main_thread có thể fire
+            # trước khi widget hoàn thành layout đầu tiên → Filament
+            # `setProjection` thấy aspect ratio = 0/0 → in cảnh báo
+            # "Camera preconditions not met" + dùng default projection. Camera
+            # giờ được set lazy trong `_on_anim_tick` khi content_rect đã có
+            # kích thước thật (xem `_on_anim_tick`).
             try:
                 self._vis.post_redraw()
             except Exception:                         # noqa: BLE001
@@ -666,7 +742,19 @@ class O3DGuiSimRobot(SimRobot):
 
         Trả REDRAW mỗi frame: cost vsync-capped, không đáng kể với cảnh này, và
         đảm bảo các transform vừa post từ worker hiện ngay, không cần rê chuột.
+
+        Đây cũng là chỗ ĐÚNG để set camera lần đầu — NHƯNG phải đợi đủ vài
+        tick. Lý do: `content_rect` trả ngay kích thước cấu hình (1280×800) từ
+        constructor, KHÔNG phản ánh state thực của Filament view (vốn chỉ có
+        viewport hợp lệ SAU khi render frame đầu). Tick fires TRƯỚC render mỗi
+        frame; render đầu chỉ chạy SAU tick #1 → tick #2 trở đi mới đảm bảo
+        view đã sized. Đợi tick ≥3 cho chắc (cộng thêm 1 frame buffer).
         """
+        if not self._cam_done:
+            self._cam_tick += 1
+            if self._cam_tick >= 3:                   # 2 render frames đã chạy
+                self._cam_done = True
+                self._setup_camera()
         return self._o3d.visualization.O3DVisualizer.TickResult.REDRAW
 
     def _setup_camera(self):
