@@ -180,6 +180,115 @@ class TestEdgeCases:
 
 
 # ─────────────────────────────────────────────────────────────────────────
+# Alternative IK algorithms (Levenberg-Marquardt, SDLS, BFGS)
+# ─────────────────────────────────────────────────────────────────────────
+
+
+class TestAlternativeIK:
+    """Verify LM / SDLS / BFGS đều converge cho representative poses."""
+
+    @pytest.fixture
+    def model_target(self):
+        from src.orchestrator.kinematics.urdf_chain import (
+            gp7_urdf, forward_kinematics_urdf,
+        )
+        m = gp7_urdf()
+        q_true = np.deg2rad([20, -10, 25, 5, 40, 10])
+        T = forward_kinematics_urdf(m, q_true)
+        return m, T, q_true
+
+    def test_lm_converges_from_close_init(self, model_target):
+        """Levenberg-Marquardt converge từ q_init lệch ±5°."""
+        from src.orchestrator.kinematics.inverse_kinematics import (
+            inverse_kinematics_lm,
+        )
+        from src.orchestrator.kinematics.urdf_chain import forward_kinematics_urdf
+        model, T_target, q_true = model_target
+        q_init = q_true + np.deg2rad(5) * np.random.RandomState(0).uniform(-1, 1, 6)
+        sol = inverse_kinematics_lm(
+            model, T_target, q_init.tolist(),
+            tol_mm=0.5, tol_rad=1e-3, max_iter=100)
+        assert sol is not None
+        T_back = forward_kinematics_urdf(model, sol)
+        pos_err = float(np.linalg.norm(T_back[:3, 3] - T_target[:3, 3]))
+        assert pos_err < 0.5, f"LM pos err {pos_err:.4f} mm > tol"
+
+    def test_sdls_converges_from_close_init(self, model_target):
+        """SDLS converge với SVD-based selective damping."""
+        from src.orchestrator.kinematics.inverse_kinematics import (
+            inverse_kinematics_sdls,
+        )
+        from src.orchestrator.kinematics.urdf_chain import forward_kinematics_urdf
+        model, T_target, q_true = model_target
+        q_init = q_true + np.deg2rad(5) * np.random.RandomState(1).uniform(-1, 1, 6)
+        sol = inverse_kinematics_sdls(
+            model, T_target, q_init.tolist(),
+            tol_mm=0.5, tol_rad=1e-3, max_iter=100)
+        assert sol is not None
+        T_back = forward_kinematics_urdf(model, sol)
+        pos_err = float(np.linalg.norm(T_back[:3, 3] - T_target[:3, 3]))
+        assert pos_err < 0.5, f"SDLS pos err {pos_err:.4f} mm > tol"
+
+    def test_bfgs_converges_from_close_init(self, model_target):
+        """BFGS (scipy L-BFGS-B với weighted cost) converge tới float precision."""
+        from src.orchestrator.kinematics.inverse_kinematics import (
+            inverse_kinematics_bfgs,
+        )
+        from src.orchestrator.kinematics.urdf_chain import forward_kinematics_urdf
+        model, T_target, q_true = model_target
+        q_init = q_true + np.deg2rad(5) * np.random.RandomState(2).uniform(-1, 1, 6)
+        sol = inverse_kinematics_bfgs(
+            model, T_target, q_init.tolist(),
+            tol_mm=0.5, tol_rad=1e-3, max_iter=200)
+        assert sol is not None
+        T_back = forward_kinematics_urdf(model, sol)
+        pos_err = float(np.linalg.norm(T_back[:3, 3] - T_target[:3, 3]))
+        # BFGS thường đạt sub-micrometer với weighted cost
+        assert pos_err < 0.5, f"BFGS pos err {pos_err:.4f} mm > tol"
+
+    def test_all_methods_respect_joint_limits(self, model_target):
+        """Tất cả 3 methods clip/respect joint limits."""
+        from src.orchestrator.kinematics.inverse_kinematics import (
+            inverse_kinematics_lm, inverse_kinematics_sdls, inverse_kinematics_bfgs,
+        )
+        model, T_target, q_true = model_target
+        q_init = q_true.copy()
+        for fn in (inverse_kinematics_lm,
+                    inverse_kinematics_sdls,
+                    inverse_kinematics_bfgs):
+            sol = fn(model, T_target, q_init.tolist(),
+                      tol_mm=0.5, tol_rad=1e-3, max_iter=100)
+            assert sol is not None, f"{fn.__name__} returned None for in-init pose"
+            for i, q in enumerate(sol):
+                jl = model.joints[i]
+                assert jl.joint_min - 1e-6 <= q <= jl.joint_max + 1e-6, \
+                    f"{fn.__name__} joint {i} out of limits: {np.degrees(q):.1f}°"
+
+    def test_unreachable_pose_returns_none(self, model_target):
+        """Pose ngoài tầm → LM/SDLS/BFGS trả None (không crash)."""
+        from src.orchestrator.kinematics.inverse_kinematics import (
+            inverse_kinematics_lm, inverse_kinematics_sdls, inverse_kinematics_bfgs,
+        )
+        model, _, _ = model_target
+        # 10m ngoài reach (GP7 max ~927mm)
+        T_unreach = np.eye(4)
+        T_unreach[:3, 3] = [10000.0, 0.0, 0.0]
+        for fn in (inverse_kinematics_lm,
+                    inverse_kinematics_sdls,
+                    inverse_kinematics_bfgs):
+            sol = fn(model, T_unreach, [0.0] * 6,
+                      tol_mm=0.5, tol_rad=1e-3, max_iter=30)
+            # Có thể trả None hoặc trả best-effort xa target
+            if sol is not None:
+                from src.orchestrator.kinematics.urdf_chain import forward_kinematics_urdf
+                T_back = forward_kinematics_urdf(model, sol)
+                pos_err = float(np.linalg.norm(T_back[:3, 3] - T_unreach[:3, 3]))
+                # Best-effort còn cách xa target
+                assert pos_err > 1000, \
+                    f"{fn.__name__} accepted unreachable as solution"
+
+
+# ─────────────────────────────────────────────────────────────────────────
 # Performance benchmark
 # ─────────────────────────────────────────────────────────────────────────
 

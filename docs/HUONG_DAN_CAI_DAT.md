@@ -23,7 +23,7 @@ flowchart TB
     S2B --> S3[Section 2.9<br/>YRC1000 HSE setup<br/>Maintenance mode<br/>HSE Server ON<br/>Network config<br/>CIO ladder gripper<br/>REMOTE mode]
     S2A --> S4[Section 3-5<br/>Linux train YOLO<br/>Copy *.pt file về<br/>config YAML]
     S3 --> S4
-    S4 --> S5[Section 6<br/>Verify cài đặt<br/>pytest tests<br/>293 passed]
+    S4 --> S5[Section 6<br/>Verify cài đặt<br/>pytest tests<br/>300 passed]
     S5 --> DONE([Sang HUONG_DAN_SU_DUNG.md<br/>để chạy thí nghiệm])
 
     style S0 fill:#9E9E9E,stroke:#fff,color:#fff
@@ -94,8 +94,9 @@ pip install -r requirements.txt
 ```
 
 > Nếu `pip` báo lỗi ở gói `pyrealsense2`: mở `requirements.txt`, thêm `#` vào
-> đầu dòng `pyrealsense2`, rồi chạy lại lệnh trên. Gói này chỉ cần khi chụp
-> dataset / calibration bằng D455; phần sim + test vẫn chạy đầy đủ khi thiếu.
+> đầu dòng `pyrealsense2`, rồi chạy lại lệnh trên. Gói này chỉ cần khi dùng D455
+> thật (chụp dataset / calibration / dock Camera trong app); phần sim + test +
+> dock Camera ở chế độ Mock vẫn chạy đầy đủ khi thiếu.
 
 ### 2.3. PyTorch bản GPU cho inference nhanh (Tùy chọn) 
 
@@ -108,8 +109,9 @@ pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
 
 ### 2.4. RoboDK Free — chỉ cho FK/IK verification (Tùy chọn)
 
-Chỉ cài khi muốn chạy `scripts/13_verify_vs_robodk.py` để verify FK/IK client-side 
-so với RoboDK reference (chủ yếu cho luận văn defense).
+Chỉ cài khi muốn chạy `scripts/13_verify_vs_robodk.py` (verify FK/IK client-side
+so với RoboDK reference) hoặc `scripts/17_compare_fk_ik.py` (benchmark 6 IK có
+RoboDK SolveIK làm reference) — chủ yếu cho luận văn defense.
 
 1. Tải tại https://robodk.com/download (Free tier đủ).
 2. Cài đặt (mặc định vào `C:\RoboDK\`).
@@ -221,19 +223,9 @@ Gripper khí nén double-acting điều khiển bằng PLC Mitsubishi. PC giao t
 PLC **qua YRC1000 làm CC-Link bridge** (Path A) — PC chỉ dùng HSE protocol,
 PLC chỉ dùng CC-Link, YRC1000 convert giữa 2 networks.
 
-```mermaid
-flowchart LR
-    PC[PC HSE Backend] <==>|UDP 10040<br/>~2-5ms| YRC[YRC1000<br/>CC-Link Master]
-    YRC <==>|CC-Link<br/>~3-10ms cyclic| PLC[PLC Mitsubishi<br/>CC-Link Slave]
-    PLC --> SOL[Solenoid Y502 Y503]
-    SEN[Sensors X503 X504 X505] --> PLC
-    SOL --> CYL[Pneumatic cylinder]
-    CYL --> SEN
-
-    style PC fill:#2E7D32,stroke:#fff,color:#fff
-    style YRC fill:#E65100,stroke:#fff,color:#fff
-    style PLC fill:#1565C0,stroke:#fff,color:#fff
-```
+> Sơ đồ kiến trúc 3 thiết bị / 2 giao thức + sequence diagram + latency budget:
+> [`phat_bieu_bai_toan_v3_2_HD.md` §7.9](phat_bieu_bai_toan_v3_2_HD.md).
+> Phần dưới đây chỉ là **các bước setup** cho production.
 
 💫 **Setup 3 components:**
 
@@ -320,24 +312,75 @@ Nếu controller ở TEACH mode → HSE báo alarm 1010 (REMOTE_MODE_REQUIRED).
 
 ---
 
-### 2.10. Setup TOOL01 trên teach pendant (Real mode) 
+### 2.10. Setup TOOL01 trên teach pendant (Real mode)
 
 Bắt buộc cho `--ik-source yrc` (default cho real mode). Nhập TCP offset của
 gripper vào TOOL01 trên YRC1000 teach pendant — YRC1000 tự bù offset khi
 compute IK từ Cartesian pose.
 
-**Quick steps**:
-1. Key switch → MAINTENANCE/MANAGEMENT mode
-2. **MAIN MENU → ROBOT → TOOL** → cursor lên TOOL: 1
-3. Press **SELECT** → nhập:
-   - X = 0, Y = 0, **Z = 100** mm (theo `tcp_offset_mm[2]` trong cell config)
-   - Rx, Ry, Rz = 0
-4. Press **COMPLETE** → confirm
+**Vì sao cần TOOL01:** robot có sẵn TOOL00 = flange (gốc tại mặt cuối arm);
+gripper thêm offset Z ≈ 100 mm (chiều dài gripper). TOOL01 lưu offset này → khi
+PC gửi pose Cartesian, YRC tự bù để **fingertip** (không phải flange) tới đúng
+pose target. Không setup → robot đi lệch 100 mm → gripper đâm bàn hoặc gắp hụt.
 
-Chi tiết + verify: [`SETUP_YRC_TOOL.md`](SETUP_YRC_TOOL.md).
+**Cần chuẩn bị:**
+- YRC1000 ở **MAINTENANCE** hoặc **MANAGEMENT** mode (key switch trên TP).
+- TCP offset gripper theo `cell_layout.yaml`:
+  ```yaml
+  gripper:
+    tcp_offset_xyz_mm: [0.0, 0.0, 100.0]   # ← lấy giá trị này
+  ```
+- Teach pendant trong tay, robot **servo OFF** (an toàn).
 
-Backup (chưa setup TOOL01): chạy `--ik-source client` — PC compute IK qua DLS
-+ URDF chain, gửi joints xuống YRC.
+**Các bước (trên TP):**
+1. **MAIN MENU → ROBOT → TOOL** → màn hình list TOOL00–TOOL63 (mặc định zero).
+2. Cursor xuống **TOOL: 1** → **SELECT** → hiện 6 field (X/Y/Z mm, Rx/Ry/Rz deg).
+3. Cursor lên **Z** → **EDIT/MODIFY** → gõ `100.000` (theo
+   `gripper.tcp_offset_xyz_mm[2]`) → **ENTER**. X, Y giữ `0.000`; Rx/Ry/Rz giữ
+   `0.0000`. (Gripper lệch X/Y hoặc kẹp xoay thì nhập offset/Rz tương ứng.)
+4. **COMPLETE/REGISTER** → hiện "TOOL DATA REGISTERED" → **TOP MENU** thoát.
+
+**Verify (vẫn ở ROBOT → TOOL):** cursor lên TOOL: 1 → **DISP** → confirm
+Z = 100.000, các trục khác = 0.
+
+**Test với robot (servo ON, REDUCED SPEED):**
+> ⚠ Robot SẼ di chuyển. Key switch ở **REMOTE**, speed limit **10%** (slider TP),
+> tay sẵn sàng E-stop.
+
+```powershell
+python scripts/11_test_yrc_cartesian.py --tool-no 1 --speed-pct 10
+```
+
+Script gửi 3 Cartesian pose (home → Z+50mm → home), verify: robot di chuyển
+smoothly, fingertip tới đúng pose (không lệch 100 mm), không alarm.
+
+**Optional — USER01 frame** (nếu workspace có origin custom, vd góc worktable
+thay vì robot base): **MAIN MENU → ROBOT → USER COORD** → chọn USER: 1 → define
+3-point teaching (Origin / X-axis / Y-axis: JOG robot tới từng vị trí, press
+**REGISTER** mỗi điểm) → Save. Rồi trong config:
+
+```yaml
+robot_connection:
+  user_frame_no: 1   # dùng UF01 thay vì BASE
+```
+
+Project default dùng BASE (UF=0) — đủ cho hầu hết pick-place; UF01 chỉ cần khi
+muốn config tương đối với workpiece.
+
+**Troubleshooting TOOL01:**
+
+| Triệu chứng | Nguyên nhân | Fix |
+|---|---|---|
+| TOOL không edit được | Key switch ở PLAY mode | Đổi sang MAINTENANCE/MANAGEMENT |
+| "TOOL CONST ERROR" sau khi save | Giá trị nhập vượt limit | Z < 600 mm, các trục < ±360° |
+| Robot vẫn lệch 100mm | TP cache stale | Power-cycle YRC1000 |
+| HSE READ_POSITION trả tool_no=0 | INFORM job không có TL=1 | Verify `motoman_hse.py` constructor `tool_no=1` |
+
+> Tham chiếu: Yaskawa Operator's Manual YRC1000 §"Tool File Setting"; INFORM
+> Language Manual (RE-CKI-A464) §"TL Coordinate".
+
+**Backup (chưa setup TOOL01):** chạy `--ik-source client` — PC compute IK qua
+DLS + URDF chain, gửi joints xuống YRC.
 
 ---
 
@@ -414,7 +457,7 @@ python -m src.cell.cell_models validate config/cell_layout.yaml
 pytest tests/ -q
 ```
 
-**Kỳ vọng:** bước 1 in `✓ Config hợp lệ: ...`; bước 2 báo `293 passed`.
+**Kỳ vọng:** bước 1 in `✓ Config hợp lệ: ...`; bước 2 báo `300 passed`.
 Hai bước này đạt → code + dependencies đã cài đúng.
 
 ### 6.2. Kiểm tra sim viewport — Open3D
@@ -437,7 +480,7 @@ Tóm tắt nhanh sau khi cài xong:
 
 ```powershell
 # Test cài đặt OK
-pytest tests/ -q                                          # → 293 passed
+pytest tests/ -q                                          # → 300 passed
 
 # Sim không cần robot
 python scripts/03_run_experiment.py --mode sim --headless --trials 500
@@ -469,8 +512,9 @@ python scripts/03_run_experiment.py --mode real --backend hse --trials 50
 ## 9. Liên kết
 
 - **Entry point + tổng quan**: [`../README.md`](../README.md)
+- **Giới thiệu phần mềm + chức năng các phần**: [`GIOI_THIEU_PHAN_MEM.md`](GIOI_THIEU_PHAN_MEM.md)
+- **Học lập trình (GUI + INFORM + Python + SDK)**: [`HUONG_DAN_LAP_TRINH.md`](HUONG_DAN_LAP_TRINH.md)
 - **Workflow + commands hàng ngày**: [`HUONG_DAN_SU_DUNG.md`](HUONG_DAN_SU_DUNG.md)
 - **Trọng số + mesh + CIO ladder**: [`../models/README.md`](../models/README.md)
 - **Thiết kế hệ thống + kiến trúc**: [`phat_bieu_bai_toan_v3_2_HD.md`](phat_bieu_bai_toan_v3_2_HD.md)
-- **Workflow sử dụng**: [`HUONG_DAN_SU_DUNG.md`](HUONG_DAN_SU_DUNG.md)
 - Repo GitHub: https://github.com/manhhv87/DTwinGP7

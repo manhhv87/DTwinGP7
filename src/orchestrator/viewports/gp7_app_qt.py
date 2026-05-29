@@ -34,10 +34,10 @@ from typing import Any
 import numpy as np
 import pyvista as pv
 import vtk
-from PyQt6.QtCore import QEvent, QObject, QSize, Qt, QTimer, pyqtSignal
+from PyQt6.QtCore import QEvent, QPoint, QSize, Qt, QTimer
 from PyQt6.QtGui import (
-    QAction, QActionGroup, QCloseEvent, QColor, QIcon, QKeySequence,
-    QPainter, QPen, QPixmap, QShortcut,
+    QAction, QActionGroup, QCloseEvent, QColor, QFont, QImage, QKeySequence,
+    QPixmap, QShortcut,
 )
 from PyQt6.QtWidgets import (
     QApplication,
@@ -60,6 +60,7 @@ from PyQt6.QtWidgets import (
     QLineEdit,
     QListWidget,
     QMainWindow,
+    QMenu,
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
@@ -69,8 +70,13 @@ from PyQt6.QtWidgets import (
     QSlider,
     QSpinBox,
     QStatusBar,
+    QTableWidget,
+    QTableWidgetItem,
+    QHeaderView,
     QTabWidget,
     QToolBar,
+    QTreeWidget,
+    QTreeWidgetItem,
     QVBoxLayout,
     QWidget,
 )
@@ -80,9 +86,20 @@ from ..backends.inform_codegen import InformJobBuilder
 from ..backends.motoman_hse import MotomanHSEBackend
 from ..kinematics.inverse_kinematics import (
     inverse_kinematics, inverse_kinematics_batch, inverse_kinematics_seeded,
+    manipulability,
+)
+from ..kinematics.pieper_gp7 import (
+    inverse_kinematics_pieper_gp7,
+    inverse_kinematics_pieper_gp7_nearest,
+    inverse_kinematics_pieper_gp7_tagged,
 )
 from ..kinematics.urdf_chain import (
     URDFRobot, forward_kinematics_urdf, gp7_urdf, link_frames_urdf,
+)
+from ...cell import CellConfig
+from ...cell.cell_models import (
+    FrameConfig, ObjectConfig, FloorConfig, WorktableConfig,
+    PedestalConfig, CameraMountConfig, CameraConfig, CameraIntrinsics, PoseConfig,
 )
 from .control_panel import (
     _build_ref_frames,
@@ -91,179 +108,57 @@ from .control_panel import (
     _rotation_about_axis_3x3,
     _xyz_rpy_to_matrix,
 )
-from .gp7_app import Instruction  # reuse Program instruction model
+from .mixin_about import AboutMixin
+from .mixin_camera import CameraMixin
+from .mixin_connection import ConnectionMixin
+from .mixin_job_target import JobTargetMixin
+from .mixin_program_io import ProgramIOMixin
+from .mixin_program_playback import ProgramPlaybackMixin
 from .open3d_gui_sim_robot import _GP7_MESH_MAP, _YASKAWA_BLUE
+from .program_model import Instruction
+from .qt_helpers import (
+    draw_arrow_down_icon as _draw_arrow_down_icon,
+    draw_arrow_up_icon as _draw_arrow_up_icon,
+    draw_copy_icon as _draw_copy_icon,
+    draw_menu_icon as _draw_menu_icon,
+    draw_paste_icon as _draw_paste_icon,
+    draw_plus_icon as _draw_plus_icon,
+    draw_rename_icon as _draw_rename_icon,
+    draw_trash_icon as _draw_trash_icon,
+    draw_x_icon as _draw_x_icon,
+    numpy_to_vtk_matrix as _numpy_to_vtk_matrix,
+)
+from .qt_widgets import CollapsibleSection, WorkerSignals as _WorkerSignals
+from .script_api import ScriptProgramAPI as _ScriptProgramAPI
 
 logger = logging.getLogger(__name__)
 
+# Preferred dock widths (px). Jog + Cell + Program docks tabified chung vùng
+# trái → Qt buộc chúng cùng width. Khi 1 tab được kích hoạt, resize vùng về
+# preferred width của tab đó (jog rộng cho 3-col layout, cell hẹp cho tree,
+# program vừa cho playback bar). minimumWidth của jog/program hạ xuống = cell
+# để vùng co được khi cell active (tab ẩn sau có QScrollArea nên không vấn đề).
+_JOG_DOCK_W = 580
+_CELL_DOCK_W = 180
+_PROG_DOCK_W = 440
 
-# ──────────────────────────────────────────────────────────────────────────
-# Helpers
-# ──────────────────────────────────────────────────────────────────────────
-
-def _numpy_to_vtk_matrix(T: np.ndarray) -> vtk.vtkMatrix4x4:
-    """numpy 4x4 → vtkMatrix4x4 (cho actor.SetUserMatrix)."""
-    m = vtk.vtkMatrix4x4()
-    for i in range(4):
-        for j in range(4):
-            m.SetElement(i, j, float(T[i, j]))
-    return m
-
-
-# ──────────────────────────────────────────────────────────────────────────
-# CollapsibleSection — header button + content area, click to expand/collapse
-# ──────────────────────────────────────────────────────────────────────────
-
-class CollapsibleSection(QWidget):
-    """Section có nút header xổ/gập content. Default expanded=True or False.
-
-    Qt KHÔNG có collapsible widget built-in (QGroupBox.checkable chỉ disable
-    children, không hide). Custom: QPushButton header (text-align left,
-    ▼/▶ arrow) + QWidget content có thể toggle visible.
-    """
-
-    def __init__(self, title: str, expanded: bool = True,
-                  parent: QWidget | None = None) -> None:
-        super().__init__(parent)
-        self._title = title
-        self._expanded = expanded
-
-        outer = QVBoxLayout(self)
-        outer.setContentsMargins(0, 0, 0, 0)
-        outer.setSpacing(0)
-
-        self._toggle_btn = QPushButton()
-        self._toggle_btn.setStyleSheet(
-            "QPushButton {"
-            "  text-align: left; padding: 5px 10px; "
-            "  background-color: #3a3a3a; color: #e0e0e0; "
-            "  border: none; border-bottom: 1px solid #2a2a2a; "
-            "  font-weight: bold;"
-            "}"
-            "QPushButton:hover { background-color: #4a4a4a; }"
-        )
-        self._toggle_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._update_text()
-        self._toggle_btn.clicked.connect(self._toggle)
-        outer.addWidget(self._toggle_btn)
-
-        self._content = QWidget()
-        self._content_layout = QVBoxLayout(self._content)
-        self._content_layout.setContentsMargins(8, 6, 8, 6)
-        self._content_layout.setSpacing(4)
-        self._content.setVisible(expanded)
-        outer.addWidget(self._content)
-
-    def _update_text(self) -> None:
-        arrow = "▼" if self._expanded else "▶"
-        self._toggle_btn.setText(f"{arrow}  {self._title}")
-
-    def _toggle(self) -> None:
-        self._expanded = not self._expanded
-        self._content.setVisible(self._expanded)
-        self._update_text()
-
-    def content_layout(self) -> QVBoxLayout:
-        return self._content_layout
-
-    def add_widget(self, w: QWidget) -> None:
-        self._content_layout.addWidget(w)
-
-    def add_layout(self, layout) -> None:
-        self._content_layout.addLayout(layout)
+# Chiều sâu nón frustum camera: mặc định kéo theo trục quang tới khi chạm sàn
+# (Z=0) → đúng vùng quan sát thực. Nếu camera không hướng xuống thì dùng far
+# mặc định này (m). Clamp trong khoảng tầm hữu dụng của D455 (~0.4–6 m).
+_CAM_FRUSTUM_FAR_M = 1.5
+_CAM_FRUSTUM_MIN_M = 0.15
+_CAM_FRUSTUM_MAX_M = 6.0
 
 
-# ──────────────────────────────────────────────────────────────────────────
-# Worker signals — emit từ worker thread, slot chạy trên main thread
-# ──────────────────────────────────────────────────────────────────────────
-
-class _WorkerSignals(QObject):
-    """Bridge worker thread → main thread (PyQt6 thread-safe pattern)."""
-
-    joints_update = pyqtSignal(list)        # joints_deg
-    status        = pyqtSignal(str, str)    # message, level (info/ok/warn/err)
-    gripper       = pyqtSignal(bool)        # close
-    demo_done     = pyqtSignal()
-    program_done  = pyqtSignal()
-
-
-# ──────────────────────────────────────────────────────────────────────────
-# Main app
-# ──────────────────────────────────────────────────────────────────────────
-
-class _ScriptProgramAPI:
-    """Read/write façade exposed tới user Python script qua biến `p`.
-
-    Cho phép script append instruction vào job hiện tại + đọc target library.
-    Tách lớp khỏi GP7AppQt để hạn chế surface mà script có thể đụng.
-    """
-    def __init__(self, app: "GP7AppQt") -> None:
-        self._app = app
-
-    @property
-    def targets(self) -> dict:
-        """Read-only view của target library."""
-        return dict(self._app._targets)
-
-    @property
-    def active_job(self) -> str:
-        return self._app._active_job
-
-    def add_movej(self, joints: list[float]) -> None:
-        """MoveJ với joints (6 deg)."""
-        if len(joints) != 6:
-            raise ValueError(f"joints phải 6 phần tử, got {len(joints)}")
-        self._app._program.append(
-            Instruction(type="MoveJ", joints=[float(q) for q in joints]))
-
-    def add_movel(self, tcp_pose: list[float]) -> None:
-        """MoveL với TCP pose [X,Y,Z mm, Rx,Ry,Rz deg] (WORLD frame)."""
-        if len(tcp_pose) != 6:
-            raise ValueError(f"tcp_pose phải 6 phần tử, got {len(tcp_pose)}")
-        self._app._program.append(
-            Instruction(type="MoveL", tcp_pose=[float(v) for v in tcp_pose]))
-
-    def add_movej_to(self, target_name: str) -> None:
-        """MoveJ → named target."""
-        if target_name not in self._app._targets:
-            raise KeyError(f"Target '{target_name}' không tồn tại")
-        self._app._program.append(
-            Instruction(type="MoveJ", target_name=target_name))
-
-    def add_movel_to(self, target_name: str) -> None:
-        """MoveL → named target."""
-        if target_name not in self._app._targets:
-            raise KeyError(f"Target '{target_name}' không tồn tại")
-        self._app._program.append(
-            Instruction(type="MoveL", target_name=target_name))
-
-    def add_grip(self, close: bool) -> None:
-        """SetGripper. close=True → CLOSE / False → OPEN."""
-        self._app._program.append(
-            Instruction(type="SetGripper", gripper_close=bool(close)))
-
-    def add_wait(self, seconds: float) -> None:
-        self._app._program.append(
-            Instruction(type="Wait", wait_seconds=float(seconds)))
-
-    def add_setspeed(self, vj_pct: float, v_mm_s: float) -> None:
-        self._app._program.append(Instruction(
-            type="SetSpeed",
-            speed_joint_pct=float(vj_pct),
-            speed_linear_mm_s=float(v_mm_s)))
-
-    def add_msg(self, text: str) -> None:
-        self._app._program.append(
-            Instruction(type="ShowMessage", message=str(text)[:32]))
-
-    def add_call(self, job_name: str) -> None:
-        safe = "".join(c for c in str(job_name) if c.isalnum() or c == "_")[:32].upper()
-        if not safe:
-            raise ValueError(f"job_name không hợp lệ: '{job_name}'")
-        self._app._program.append(Instruction(type="CallJob", job_name=safe))
-
-
-class GP7AppQt(QMainWindow):
+class GP7AppQt(
+    QMainWindow,
+    ConnectionMixin,
+    ProgramIOMixin,
+    JobTargetMixin,
+    ProgramPlaybackMixin,
+    AboutMixin,
+    CameraMixin,
+):
     """GP7 Digital Twin — PyQt6 main window + pyvistaqt 3D viewport."""
 
     JOG_FRAMES = ("Tool Frame", "Reference Frame", "Base")
@@ -295,27 +190,40 @@ class GP7AppQt(QMainWindow):
 
     def __init__(
         self,
-        cell_config: Any,
-        project_root: str | Path,
+        cell_config: Any = None,
+        project_root: str | Path = ".",
         parent: QWidget | None = None,
+        program_path: str | Path | None = None,
     ) -> None:
         super().__init__(parent)
-        self.setWindowTitle("GP7 Digital Twin — PyQt6 + VTK")
+        self.setWindowTitle("Yaskawa GP7 Programming")
         self.resize(1600, 950)
+        self.setMinimumSize(1200, 720)
+        # Modern unified appearance: borderless dock margins, no system separator.
+        self.setDockOptions(
+            QMainWindow.DockOption.AnimatedDocks
+            | QMainWindow.DockOption.AllowNestedDocks
+            | QMainWindow.DockOption.AllowTabbedDocks)
 
+        # Cell config có thể None khi cold start — robot/cell load deferred qua
+        # menu File → Load Robot GP7 / Load Cell from YAML.
         self._cell_config = cell_config
         self._project_root = Path(project_root)
+        # Optional: auto-load program (.json) lúc khởi động (--program). Load
+        # sau khi robot sẵn sàng trong _post_show_setup.
+        self._startup_program_path = (Path(program_path) if program_path
+                                       else None)
 
-        # Robot model + state
-        base_xyz = tuple(cell_config.robot.pose.xyz_mm) \
-            if getattr(cell_config.robot, "pose", None) else (0.0, 0.0, 630.0)
-        self._base_xyz = base_xyz
-        self._model = gp7_urdf(base_xyz_mm=base_xyz)
-        self._home_joints = list(cell_config.robot.home_joints_deg) \
-            if getattr(cell_config.robot, "home_joints_deg", None) else [0.0] * 6
-        self._joints = list(self._home_joints)
+        # Robot model + state — KHỞI TẠO RỖNG. Sẽ được fill khi _load_robot_gp7
+        # chạy (từ menu hoặc auto-trigger trong _post_show_setup nếu cell_config
+        # đã có sẵn).
+        self._base_xyz: tuple[float, float, float] = (0.0, 0.0, 0.0)
+        self._model = None
+        self._home_joints: list[float] = [0.0] * 6
+        self._joints: list[float] = [0.0] * 6
 
-        # Frames + jog state
+        # Frames — defaults trống (1 entry trung tính). _build_tool_frames /
+        # _build_ref_frames đã handle cell_config=None.
         self._tool_frames = _build_tool_frames(cell_config)
         self._ref_frames = _build_ref_frames(cell_config)
         self._tool_idx = len(self._tool_frames) - 1 if len(self._tool_frames) > 1 else 0
@@ -333,18 +241,14 @@ class GP7AppQt(QMainWindow):
 
         # Show Frames — dynamic triad actors (vtkAxesActor) per frame key
         self._frame_actors: dict[str, Any] = {}
-        self._frame_triad_size = 0.12                     # m, resizable
+        # 240mm (= 300mm - tip portion 60mm). RoboDK-style.
+        self._frame_triad_size = 0.24
         # WorkSpace — single translucent sphere actor (or None)
         self._workspace_actor: Any = None
         # Fullscreen toggle state
         self._fullscreen = False
 
-        # Custom toggle action state: action → [bool], action → base_text.
-        # Vì native QAction.checkable + QSS không loại bỏ được ô vuông qua
-        # Qt platform style trên Windows, ta KHÔNG dùng checkable. Thay vào
-        # đó manage state qua dict + prefix text "✓ " khi active.
-        self._toggle_states: dict[QAction, list] = {}
-        self._toggle_texts: dict[QAction, str] = {}
+        # (Text-prefix toggle — không cần icon cache)
         # Press-hold continuous jog timer
         self._jog_timer = QTimer(self)
         self._jog_timer.setInterval(120)
@@ -352,8 +256,6 @@ class GP7AppQt(QMainWindow):
         self._jog_active: tuple[str, int, int] | None = None  # (mode, axis, sign)
 
         # Worker control
-        self._demo_thread: threading.Thread | None = None
-        self._demo_stop = threading.Event()
         self._prog_thread: threading.Thread | None = None
         self._prog_stop = threading.Event()
         self._prog_pause = threading.Event()        # set = pause (held)
@@ -364,6 +266,10 @@ class GP7AppQt(QMainWindow):
         self._active_job: str = "MAIN"
         # Target library: name → {"joints": [..6 deg..], "tcp_pose": [..6..]}
         self._targets: dict[str, dict] = {}
+        # Dirty-check baseline: signature của project tại lần Save/Load gần nhất.
+        # closeEvent so sánh để cảnh báo "thay đổi chưa lưu". App rỗng lúc mở =
+        # clean (không hỏi nếu user chưa add gì).
+        self._saved_signature: str = self._project_signature()
         # Sim speed multiplier (1.0 = nominal). Tăng → animate faster.
         self._sim_speed_mult: float = 1.0
         # Post-processor settings (INFORM .JBI generation tuning).
@@ -390,19 +296,46 @@ class GP7AppQt(QMainWindow):
         self._hse_thread: threading.Thread | None = None
         self._hse_stop = threading.Event()
 
+        # Camera (D455) state — thu ảnh live + vision-guided control (CameraMixin).
+        self._cam_thread: threading.Thread | None = None
+        self._cam_stop = threading.Event()
+        self._cam_running: bool = False
+        self._cam_source: str = "Auto"
+        self._cam_use_detector: bool = False
+        self._cam_color_size: tuple[int, int] = (1280, 720)
+        self._cam_fps: int = 30
+        self._last_camera_objects: list[dict] = []
+        self._last_depth = None
+        self._last_rgb = None
+        self._last_display = None            # ảnh RGB đã xử lý (worker dựng)
+        self._last_fps: float = 0.0
+        self._last_intrinsics = None
+        self._last_source = None
+        self._cam_frame_pending: bool = False  # backpressure worker→UI
+        self._cam_closing: bool = False        # chặn slot chạm widget khi đóng app
+        self._cam_capture_seq: int = 0         # counter tên file capture
+        self._cam_show_depth: bool = False
+        self._cam_show_overlay: bool = True
+        self._last_grasp_target: str | None = None
+        self._last_grasp_T = None
+
         # Worker → main signals
         self._signals = _WorkerSignals()
         self._signals.joints_update.connect(self._apply_joints_main)
         self._signals.status.connect(self._set_status)
         self._signals.gripper.connect(self._toggle_gripper)
-        self._signals.demo_done.connect(self._on_demo_done)
+        self._signals.sim_reset.connect(self._on_reset_scene)
         self._signals.program_done.connect(self._on_program_done)
+        self._signals.camera_result.connect(self._on_camera_result)
 
         # Build UI (fast — Qt widget construction only)
         self._build_viewport()
         self._build_menu_bar()
         self._build_jog_dock()
+        self._build_cell_tree_dock()
         self._build_program_dock()
+        self._build_camera_dock()
+        self._connect_group_dock_redock()
         self._build_status_bar()
 
         # Defer scene load (STL parse + VTK actor creation ~1-2s) — window
@@ -411,12 +344,38 @@ class GP7AppQt(QMainWindow):
         _QT.singleShot(0, self._post_show_setup)
 
     def _post_show_setup(self) -> None:
-        """Chạy sau khi window đã show() — load scene + cam preset."""
-        self._set_status("Loading scene...", level="info")
-        self._load_scene()
-        self._apply_joints_main(self._joints)
+        """Chạy sau khi window đã show() — init scene base. Robot/cell sẽ load
+        deferred qua menu File. Nếu cell_config đã được truyền lúc khởi tạo
+        (backward compat với `python scripts/16_app_qt.py --config ...`),
+        tự động load luôn để giữ behavior cũ.
+        """
+        self._set_status("Initializing…", level="info")
+        # Scene base: axes + lighting. KHÔNG add floor — floor mặc định tắt,
+        # user tự bật qua View → Visibility → Floor.
+        self._add_world_axes_triad()
+        self._setup_lighting()
         self._set_camera_preset("Iso")
-        self._set_status("Ready", level="ok")
+
+        # Backward compat: nếu cell_config được pass trong ctor thì auto-load
+        # cả robot lẫn cell mesh.
+        if self._cell_config is not None:
+            self._load_robot_gp7()
+            self._load_cell_assets()
+        elif self._startup_program_path is not None:
+            # --program: cần robot để play sim → auto-load GP7 default.
+            self._load_robot_gp7()
+        else:
+            # Empty state: disable robot-dependent UI; status hint.
+            self._set_robot_dependent_enabled(False)
+            self._set_status(
+                "Chưa load robot — File → Load Robot GP7 để bắt đầu",
+                level="info")
+
+        # Auto-load program file (--program) — sau khi robot sẵn sàng.
+        if self._startup_program_path is not None:
+            self._load_program_file(self._startup_program_path)
+            self._program_dock.setVisible(True)
+            self._program_dock.raise_()
 
     # ══════════════════════════════════════════════════════════════════
     # UI construction
@@ -439,53 +398,65 @@ class GP7AppQt(QMainWindow):
         self._plotter.add_axes(line_width=3, labels_off=False)
         self.setCentralWidget(self._plotter.interactor)
 
-    # ── Custom toggle helpers (text prefix "✓ ", NOT native checkable) ──
+    # ── Toggle action: Qt native checkable + custom indicator QSS ──
+    # Indicator column reserve cùng width cho TẤT CẢ items trong menu
+    # (checkable + plain) → text căn lề pixel-perfect. ✓ render qua
+    # generated check.png referenced từ QSS (xem qt_theme.py).
+
     def _make_toggle(self, base_text: str, initial: bool = False,
                        callback=None) -> QAction:
-        """QAction với visual ✓ prefix khi state True. KHÔNG dùng
-        `checkable=True` để tránh native indicator (Qt platform style vẫn
-        vẽ box trên Windows kể cả khi QSS hide).
+        """QAction Word/VSCode-style — ✓ ở indicator column native, text căn
+        lề perfect (đồng nhất giữa checked / unchecked / plain items).
 
         callback(new_state: bool) — fire khi user click. Có thể None.
         """
-        act = QAction(self)
-        self._toggle_states[act] = [bool(initial)]
-        self._toggle_texts[act] = base_text
-
-        def _on_clicked():
-            new_state = not self._toggle_states[act][0]
-            self._toggle_states[act][0] = new_state
-            self._refresh_toggle_text(act)
-            if callback is not None:
-                callback(new_state)
-        act.triggered.connect(_on_clicked)
-        self._refresh_toggle_text(act)
+        act = QAction(base_text, self)
+        act.setCheckable(True)
+        act.setChecked(bool(initial))
+        if callback is not None:
+            act.toggled.connect(callback)
         return act
 
-    def _refresh_toggle_text(self, act: QAction) -> None:
-        state = self._toggle_states[act][0]
-        base = self._toggle_texts[act]
-        # EM SPACE ( ) ≈ width of '✓' trong font tỉ lệ → text luôn
-        # thẳng hàng giữa rows checked/unchecked.
-        prefix = "✓ " if state else "  "
-        act.setText(prefix + base)
-
     def _set_toggle(self, act: QAction, state: bool) -> None:
-        """External setter: cập nhật state + refresh text WITHOUT fire callback."""
-        if act in self._toggle_states:
-            self._toggle_states[act][0] = bool(state)
-            self._refresh_toggle_text(act)
+        """External setter: cập nhật state mà KHÔNG fire toggled signal."""
+        act.blockSignals(True)
+        act.setChecked(bool(state))
+        act.blockSignals(False)
 
     def _build_menu_bar(self) -> None:
-        """Menu bar — File / View / Robot / Run / Program / Help.
+        """Menu bar — File / Edit / View / Robot / Program / Help.
 
         Mọi toggle action dùng custom prefix "✓  " (visible) hoặc "      "
         (6 spaces, ~ width của "✓  "). Không native checkable → không box.
+
+        Tổ chức:
+          • File:    cell I/O + program file I/O + cell info + exit
+          • Edit:    add components (cùng action với cell tree context menu)
+          • View:    Camera ▶ / Visibility ▶ / Window ▶ + Reset scene
+          • Robot:   Home/Zero + Demo motion + Parameters + Teach surface
+                     + Connection settings (có Test button trong dialog)
+          • Program: Play / Pause / Stop / Run on Robot + Clear + PP/Script
+          • Help:    About
         """
         mb = self.menuBar()
 
-        # ── FILE ── File ops (Open / Save / Export) + Exit
+        # ── FILE ── Cell + Program file I/O + Cell info + Exit
         m_file = mb.addMenu("&File")
+        # Robot/Cell load — deferred (cold start: app trống, user pick từ menu)
+        act_load_robot = QAction("Load Robot &GP7", self)
+        act_load_robot.triggered.connect(self._on_action_load_robot_gp7)
+        m_file.addAction(act_load_robot)
+        act_load_cell = QAction("Load &Cell from YAML…", self)
+        act_load_cell.triggered.connect(self._on_action_load_cell)
+        m_file.addAction(act_load_cell)
+        act_save_cell = QAction("Sa&ve Cell to YAML…", self)
+        act_save_cell.triggered.connect(self._on_action_save_cell)
+        m_file.addAction(act_save_cell)
+        # Cell info — cell-context dialog (frames + objects + base xyz)
+        act_cellinfo = QAction("Cell &info...", self)
+        act_cellinfo.triggered.connect(self._show_cell_info)
+        m_file.addAction(act_cellinfo)
+        m_file.addSeparator()
         act_open = QAction("&Open program (.json)...", self)
         act_open.setShortcut(QKeySequence.StandardKey.Open)
         act_open.triggered.connect(self._on_prog_load_dlg)
@@ -503,12 +474,40 @@ class GP7AppQt(QMainWindow):
         act_exit.triggered.connect(self.close)
         m_file.addAction(act_exit)
 
-        # ── VIEW ── 2 submenus + camera ops + window ops
+        # ── EDIT ── Cell design: Add components (Robot/Object/Frame/...)
+        # Cùng các action với context menu trên Cell tree — discoverable hơn.
+        m_edit = mb.addMenu("&Edit")
+        act_add_robot = QAction("Add &Robot…", self)
+        act_add_robot.triggered.connect(self._show_add_robot_dlg)
+        m_edit.addAction(act_add_robot)
+        act_add_gripper = QAction("Add &Gripper…", self)
+        act_add_gripper.triggered.connect(self._show_add_gripper_dlg)
+        m_edit.addAction(act_add_gripper)
+        m_edit.addSeparator()
+        act_add_obj = QAction("Add &Object…", self)
+        act_add_obj.triggered.connect(self._show_add_object_dlg)
+        m_edit.addAction(act_add_obj)
+        act_add_frame = QAction("Add &Frame…", self)
+        act_add_frame.triggered.connect(self._show_add_frame_dlg)
+        m_edit.addAction(act_add_frame)
+        m_edit.addSeparator()
+        for kind, label in (("worktable", "Add &Worktable…"),
+                              ("robot_pedestal", "Add &Pedestal…"),
+                              ("floor", "Add Floo&r…"),
+                              ("camera_mount", "Add Camera &Mount…")):
+            act = QAction(label, self)
+            act.triggered.connect(
+                lambda _checked=False, k=kind: self._show_add_single_dlg(k))
+            m_edit.addAction(act)
+        act_add_cam = QAction("Add &Camera…", self)
+        act_add_cam.triggered.connect(self._show_add_camera_dlg)
+        m_edit.addAction(act_add_cam)
+
+        # ── VIEW ── Camera ▶ / Visibility ▶ / Window ▶ + Reset scene
         m_view = mb.addMenu("&View")
 
-        # Camera submenu: Iso + 5 chính diện (RoboDK convention).
-        # QActionGroup exclusive → checkable, click 1 preset thì các preset
-        # khác auto-uncheck (kiểu radio button menu).
+        # Camera submenu: presets (Iso + 5 chính diện, RoboDK convention)
+        # + camera ops (Fit all, Perspective).
         # Camera presets — radio-style (exclusive) qua manual click handler.
         # KHÔNG dùng QActionGroup vì cần plain QAction (no checkable).
         cam_menu = m_view.addMenu("&Camera")
@@ -521,73 +520,86 @@ class GP7AppQt(QMainWindow):
             act.setShortcut(f"Alt+{key}")
             cam_menu.addAction(act)
             self._cam_actions[name] = act
+        cam_menu.addSeparator()
+        # Camera ops: Fit + Perspective toggle (gộp vào Camera submenu)
+        act_fit = QAction("&Fit all (reset camera)", self)
+        act_fit.setShortcut("Alt+7")                       # RoboDK: Alt+7
+        act_fit.triggered.connect(self._on_fit_all)
+        cam_menu.addAction(act_fit)
+        self._act_perspective = self._make_toggle(
+            "Perspective view", initial=True,
+            callback=self._on_toggle_perspective)
+        cam_menu.addAction(self._act_perspective)
 
-        # Visibility submenu — Background / Floor / Axes + size adjust
+        # Visibility submenu — Floor / Axes + triad size adjust.
+        # (Background gradient là DEFAULT cố định, KHÔNG có toggle.)
         vis_menu = m_view.addMenu("&Visibility")
-        self._act_bg = self._make_toggle(
-            "Background (gradient)", initial=True,
-            callback=self._toggle_background)
-        vis_menu.addAction(self._act_bg)
         self._act_floor = self._make_toggle(
-            "Floor", initial=True,
-            callback=lambda c: self._toggle_actor("__floor", c))
+            "Floor", initial=False,
+            callback=lambda c: self._toggle_floor(c))
         vis_menu.addAction(self._act_floor)
         self._act_axes = self._make_toggle(
             "World axes triad", initial=True,
             callback=lambda c: self._toggle_actor("__world_axes", c))
         vis_menu.addAction(self._act_axes)
-        vis_menu.addSeparator()
-        act_triads_bigger = QAction("Reference frames &larger (+)", self)
-        act_triads_bigger.setShortcut("+")
-        act_triads_bigger.triggered.connect(lambda: self._resize_triads(1.25))
-        vis_menu.addAction(act_triads_bigger)
-        act_triads_smaller = QAction("Reference frames &smaller (-)", self)
-        act_triads_smaller.setShortcut("-")
-        act_triads_smaller.triggered.connect(lambda: self._resize_triads(0.8))
-        vis_menu.addAction(act_triads_smaller)
+        # Camera frustum (nón nhìn của cell `camera`) — RoboDK-style camera viz.
+        self._act_cam_frustum = self._make_toggle(
+            "Camera frustum", initial=True,
+            callback=lambda c: self._toggle_camera_frustum(c))
+        vis_menu.addAction(self._act_cam_frustum)
+        # (Removed: Reference frames +/- — niche, +/- shortcuts có thể conflict
+        # với jog. Default triad size set qua self._frame_triad_size init.)
 
-        m_view.addSeparator()
-        # Camera ops: Fit + Perspective toggle
-        act_fit = QAction("&Fit all (reset camera)", self)
-        act_fit.setShortcut("Alt+7")                       # RoboDK: Alt+7
-        act_fit.triggered.connect(self._on_fit_all)
-        m_view.addAction(act_fit)
-        self._act_perspective = self._make_toggle(
-            "Perspective view", initial=True,
-            callback=self._on_toggle_perspective)
-        m_view.addAction(self._act_perspective)
-
-        m_view.addSeparator()
-        # Window ops: Fullscreen + Close side panels
+        # Window submenu — Fullscreen + 3 dock toggles (gom 1 chỗ).
+        win_menu = m_view.addMenu("&Window")
         self._act_fullscreen = self._make_toggle(
             "Fullscreen", initial=False,
             callback=self._on_toggle_fullscreen)
         self._act_fullscreen.setShortcut("F11")
-        m_view.addAction(self._act_fullscreen)
-        act_close_panels = QAction("Close side &windows", self)
-        act_close_panels.setShortcut("Alt+C")              # RoboDK: Alt+C
-        act_close_panels.triggered.connect(self._on_close_side_panels)
-        m_view.addAction(act_close_panels)
+        win_menu.addAction(self._act_fullscreen)
+        win_menu.addSeparator()
+        # Controls panel (HIDDEN by default — user bật khi cần jog).
+        self._act_jog_dock = self._make_toggle(
+            "Controls panel", initial=False,
+            callback=lambda c: self._open_dock_tab(self._jog_dock, c))
+        win_menu.addAction(self._act_jog_dock)
+        # Cell tree dock (visible by default — editor chính).
+        self._act_cell_dock = self._make_toggle(
+            "Cell components", initial=True,
+            callback=lambda c: self._open_dock_tab(self._cell_tree_dock, c))
+        self._act_cell_dock.setShortcut("Ctrl+Shift+C")
+        win_menu.addAction(self._act_cell_dock)
+        # Program dock (HIDDEN by default) — gom cùng View → Window thay vì
+        # tản mác trong menu Program.
+        self._act_prog_dock = self._make_toggle(
+            "Program panel", initial=False,
+            callback=lambda c: self._open_dock_tab(self._program_dock, c))
+        win_menu.addAction(self._act_prog_dock)
+        # Camera dock (HIDDEN by default) — live D455 + vision-guided control.
+        # (visibilityChanged sync nối trong _build_camera_dock — dock dựng sau menu.)
+        self._act_camera_dock = self._make_toggle(
+            "Camera (D455)", initial=False,
+            callback=lambda c: self._open_dock_tab(self._camera_dock, c))
+        win_menu.addAction(self._act_camera_dock)
 
         m_view.addSeparator()
-        # Controls panel toggle (HIDDEN by default — user bật khi cần jog)
-        self._act_jog_dock = self._make_toggle(
-            "Show controls panel", initial=False,
-            callback=lambda c: self._jog_dock.setVisible(c))
-        m_view.addAction(self._act_jog_dock)
+        # Reset scene — restore object positions sau khi đã move/grasp.
+        # Đặt ở View (scene op) thay vì Run menu riêng (đã bỏ).
+        act_reset = QAction("&Reset scene (restore objects)", self)
+        act_reset.triggered.connect(self._on_reset_scene)
+        m_view.addAction(act_reset)
 
-        # ── ROBOT ── motion + cell context
+        # ── ROBOT ── motion + Demo + Parameters + Teach + Connection
         m_robot = mb.addMenu("&Robot")
         for label, cb in (("Home", self._on_home), ("Zero", self._on_zero)):
             act = QAction(label, self); act.triggered.connect(cb)
             m_robot.addAction(act)
         m_robot.addSeparator()
+        # (Removed: Demo motion — dev-test 4-pose hard-coded loop, thay thế
+        # bằng Program → Play với user-defined sequence đầy đủ hơn.)
         act_params = QAction("&Parameters (URDF/DH)...", self)
         act_params.triggered.connect(self._show_parameters_dlg)
         m_robot.addAction(act_params)
-        act_cellinfo = QAction("Cell &info...", self)
-        act_cellinfo.triggered.connect(self._show_cell_info)
-        m_robot.addAction(act_cellinfo)
         m_robot.addSeparator()
         # Teach on surface — toggle mode để pick scene 3D tạo target
         self._act_surface_pick = self._make_toggle(
@@ -596,34 +608,33 @@ class GP7AppQt(QMainWindow):
         self._act_surface_pick.setShortcut("Ctrl+Shift+T")
         m_robot.addAction(self._act_surface_pick)
         m_robot.addSeparator()
-        # HSE connection
+        # HSE connection — dialog có nút Test bên trong (đã merge từ menu
+        # entry "Test connection" cũ → bớt 1 mục, hợp UX).
         act_conn = QAction("&Connection settings... (HSE IP)", self)
         act_conn.triggered.connect(self._on_show_connection_settings)
         m_robot.addAction(act_conn)
-        act_ping = QAction("&Test connection (ping HSE)", self)
-        act_ping.triggered.connect(self._on_test_connection)
-        m_robot.addAction(act_ping)
 
-        # ── RUN ── runtime / scene operations
-        m_run = mb.addMenu("R&un")
-        self._act_demo = QAction("&Demo motion (start/stop)", self)
-        self._act_demo.triggered.connect(self._on_demo_toggle)
-        m_run.addAction(self._act_demo)
-        act_reset = QAction("&Reset scene (restore objects)", self)
-        act_reset.triggered.connect(self._on_reset_scene)
-        m_run.addAction(act_reset)
-
-        # ── PROGRAM ── panel toggle + runtime ops (Save/Load/Export ở File)
+        # ── PROGRAM ── Play / Pause / Stop / Run on Robot + ops
+        # Program panel đã chuyển sang View → Window submenu.
         m_prog = mb.addMenu("&Program")
-        self._act_prog_dock = self._make_toggle(
-            "Show program panel", initial=False,
-            callback=lambda c: self._program_dock.setVisible(c))
-        m_prog.addAction(self._act_prog_dock)
-        m_prog.addSeparator()
-        act_play = QAction("P&lay", self); act_play.triggered.connect(self._on_prog_play)
+        act_play = QAction("P&lay", self)
+        act_play.triggered.connect(self._on_prog_play)
         m_prog.addAction(act_play)
-        act_stop = QAction("&Stop", self); act_stop.triggered.connect(self._on_prog_stop)
+        # Pause — bù dock playback bar cho keyboard-only user.
+        act_pause = QAction("Pa&use / Resume", self)
+        act_pause.triggered.connect(self._on_prog_toggle_pause)
+        m_prog.addAction(act_pause)
+        act_stop = QAction("&Stop", self)
+        # Stop callback = _on_stop_all (dual-purpose: sim playback + servo OFF
+        # robot). Trùng behavior với nút ⏹ Stop trong dock — tránh bug user
+        # nghĩ menu Stop = full stop nhưng thực ra chỉ stop sim.
+        act_stop.triggered.connect(self._on_stop_all)
         m_prog.addAction(act_stop)
+        m_prog.addSeparator()
+        # Run on Robot — bù dock playback bar cho keyboard-only user.
+        act_run_robot = QAction("&Run on Robot…", self)
+        act_run_robot.triggered.connect(self._on_run_on_robot)
+        m_prog.addAction(act_run_robot)
         m_prog.addSeparator()
         act_clr = QAction("&Clear all", self); act_clr.triggered.connect(self._on_prog_clear)
         m_prog.addAction(act_clr)
@@ -646,9 +657,21 @@ class GP7AppQt(QMainWindow):
 
     def _build_status_bar(self) -> None:
         sb = QStatusBar(self)
+        sb.setContentsMargins(8, 0, 8, 0)
         self.setStatusBar(sb)
+        # Colored dot badge (level indicator) + text label.
+        self._status_dot = QLabel("●")
+        self._status_dot.setStyleSheet("color: #969696; font-size: 16px;")
+        self._status_dot.setFixedWidth(20)
         self._status_lbl = QLabel("Ready")
+        self._status_lbl.setStyleSheet("color: #cccccc;")
+        sb.addWidget(self._status_dot)
         sb.addWidget(self._status_lbl, 1)
+        # Right-side: job + active joint summary chips (read-only info).
+        self._status_right_lbl = QLabel("")
+        self._status_right_lbl.setStyleSheet(
+            "color: #969696; padding: 0 8px;")
+        sb.addPermanentWidget(self._status_right_lbl)
 
     # ── Jog dock (left) — RoboDK-style: Cartesian TRÊN, Joint DƯỚI ────
     def _build_jog_dock(self) -> None:
@@ -659,120 +682,134 @@ class GP7AppQt(QMainWindow):
           3. Other configurations (alternative IK solutions dropdown)
         """
         dock = QDockWidget("Yaskawa GP7 panel", self)
-        dock.setAllowedAreas(Qt.DockWidgetArea.LeftDockWidgetArea
-                              | Qt.DockWidgetArea.RightDockWidgetArea)
-        dock.setFeatures(QDockWidget.DockWidgetFeature.DockWidgetMovable
-                          | QDockWidget.DockWidgetFeature.DockWidgetFloatable
-                          | QDockWidget.DockWidgetFeature.DockWidgetClosable)
+        # FIXED ở Left — không Floatable / Movable (Qt 6 bug khi re-dock from
+        # floating). User chỉ show/hide qua menu hoặc ✕ button.
+        dock.setAllowedAreas(Qt.DockWidgetArea.LeftDockWidgetArea)
+        dock.setFeatures(QDockWidget.DockWidgetFeature.DockWidgetClosable)
         self._jog_dock = dock
 
         inner = QWidget()
         vbox = QVBoxLayout(inner)
-        vbox.setContentsMargins(8, 8, 8, 8)
-        vbox.setSpacing(8)
+        vbox.setContentsMargins(4, 4, 4, 4)
+        vbox.setSpacing(4)
 
         # ──────────────────────────────────────────────────────
-        # 1. CARTESIAN JOG  (Name + Parameters moved to toolbar)
+        # 1. CARTESIAN JOG  — compact: combo row, pose row, jog row, 2-col grid
         # ──────────────────────────────────────────────────────
         grp_cart = QGroupBox("Cartesian Jog")
+        # Override default QGroupBox padding to be much tighter (defaults
+        # are 10/8/8/8 with 14px margin-top — too tall for compact panel).
+        grp_cart.setStyleSheet(
+            "QGroupBox { margin-top: 10px; padding: 6px 5px 4px 5px; }")
         cv = QVBoxLayout(grp_cart)
-        cv.setSpacing(4)
+        cv.setContentsMargins(2, 2, 2, 2)
+        cv.setSpacing(3)
 
-        # Tool + Ref combos on 1 row each (compact, no extra "w.r.t." text)
-        combo_form = QFormLayout()
-        combo_form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
-        combo_form.setHorizontalSpacing(8)
-        combo_form.setVerticalSpacing(4)
-
+        # ── Tool + Ref combos + Step (mm/°) trên CÙNG 1 ROW ──
+        # Tool/Ref combo co giãn (stretch); Step spinbox fixed width nhỏ gọn ở
+        # cuối row. Gom mọi "thiết lập jog" vào 1 dòng → tiết kiệm chiều cao.
+        tr_row = QHBoxLayout(); tr_row.setSpacing(4)
+        l_tool = QLabel("Tool"); l_tool.setStyleSheet("font-size: 9pt;")
+        tr_row.addWidget(l_tool)
         self._tool_combo = QComboBox()
         for name, _T in self._tool_frames: self._tool_combo.addItem(name)
         self._tool_combo.setCurrentIndex(self._tool_idx)
         self._tool_combo.currentIndexChanged.connect(self._on_tool_changed)
-        combo_form.addRow("Tool", self._tool_combo)
-
+        tr_row.addWidget(self._tool_combo, 2)
+        l_ref = QLabel("Ref"); l_ref.setStyleSheet("font-size: 9pt;")
+        tr_row.addWidget(l_ref)
         self._ref_combo = QComboBox()
         for name, _T in self._ref_frames: self._ref_combo.addItem(name)
         self._ref_combo.setCurrentIndex(self._ref_idx)
         self._ref_combo.currentIndexChanged.connect(self._on_ref_changed)
-        combo_form.addRow("Ref", self._ref_combo)
-        cv.addLayout(combo_form)
+        tr_row.addWidget(self._ref_combo, 1)
+        # Step (increment jog) — cùng row, fixed width
+        ls = QLabel("Step"); ls.setStyleSheet("font-size: 9pt; color: #969696;")
+        tr_row.addWidget(ls)
+        self._step_mm_spin = QDoubleSpinBox()
+        self._step_mm_spin.setRange(0.1, 500.0)
+        self._step_mm_spin.setValue(self._jog_step_mm)
+        self._step_mm_spin.setSuffix(" mm"); self._step_mm_spin.setFixedWidth(94)
+        self._step_mm_spin.setToolTip("Bước tịnh tiến (Translation jog)")
+        self._step_mm_spin.valueChanged.connect(
+            lambda v: setattr(self, "_jog_step_mm", float(v)))
+        tr_row.addWidget(self._step_mm_spin)
+        self._step_deg_spin = QDoubleSpinBox()
+        self._step_deg_spin.setRange(0.1, 90.0)
+        self._step_deg_spin.setValue(self._jog_step_deg)
+        self._step_deg_spin.setSuffix(" °"); self._step_deg_spin.setFixedWidth(74)
+        self._step_deg_spin.setToolTip("Bước xoay (Rotation jog)")
+        self._step_deg_spin.valueChanged.connect(
+            lambda v: setattr(self, "_jog_step_deg", float(v)))
+        tr_row.addWidget(self._step_deg_spin)
+        cv.addLayout(tr_row)
 
-        # ── TCP pose (Tool / Reference) — PRIMARY readout, always visible ──
-        tcp_lbl = QLabel("Tool / Reference  (live TCP pose)")
-        tcp_lbl.setStyleSheet("color: #88c8ff; font-weight: bold; padding-top: 4px;")
-        cv.addWidget(tcp_lbl)
+        # ── TCP pose — pose row trực tiếp, không cần label header ──
+        # Pose row đã color-coded X/Y/Z/Rx/Ry/Rz và combo "Tool / Ref" ở trên
+        # đã chỉ rõ context → bỏ label "Tool / Reference (live TCP pose)" cho gọn.
         self._tcp_pose_lbls = self._make_colored_pose_row(cv)
 
-        # ── Tool/Flange + Ref/Base poses — COLLAPSED by default (static info) ──
-        adv_sec = CollapsibleSection(
-            "Frame poses — Tool / Flange + Ref / Base (static, advanced)",
-            expanded=False)
+        # ── Frame poses (Tool/Flange + Ref/Base) — collapsed, advanced ──
+        adv_sec = CollapsibleSection("Frame poses (advanced)", expanded=False)
         adv_sec.add_widget(QLabel("Tool / Flange:"))
         self._tool_pose_lbls = self._make_colored_pose_row(adv_sec.content_layout())
         adv_sec.add_widget(QLabel("Reference / Base:"))
         self._ref_pose_lbls = self._make_colored_pose_row(adv_sec.content_layout())
         cv.addWidget(adv_sec)
 
-        # Jog frame + Step combined into 1 compact row
-        jog_step_row = QHBoxLayout()
-        jog_step_row.addWidget(QLabel("Jog"))
+        # ── 3-column layout (RoboDK-style): jog control | WorkSpace | Show Frames ──
+        # Column 1 = "Jog control" group: gom TẤT CẢ thiết lập jog vào 1 chỗ —
+        #   frame combo + axis grid (X/Y/Z × Trans/Rot radio) + Step (mm/°) + dial.
+        # Step là BƯỚC NHẢY của jog nên đặt cùng nhóm (trước đây đứng riêng,
+        # label "Step" cách spinbox quá xa do addStretch — khó quan sát).
+        # RADIO: 6 radio (Trans X/Y/Z + Rot X/Y/Z) chung 1 QButtonGroup exclusive
+        # → user chọn 1 → dial điều khiển đúng selection đó.
+        cols_row = QHBoxLayout()
+        cols_row.setSpacing(6)
+
+        # === Column 1: jog control group ===
+        left_col = QVBoxLayout(); left_col.setSpacing(4)
         self._jog_frame_combo = QComboBox()
         for n in self.JOG_FRAMES: self._jog_frame_combo.addItem(n)
         self._jog_frame_combo.setCurrentIndex(self._jog_frame_idx)
         self._jog_frame_combo.currentIndexChanged.connect(
             lambda i: setattr(self, "_jog_frame_idx", int(i)))
-        jog_step_row.addWidget(self._jog_frame_combo, 1)
-        self._step_mm_spin = QDoubleSpinBox()
-        self._step_mm_spin.setRange(0.1, 500.0); self._step_mm_spin.setValue(self._jog_step_mm)
-        self._step_mm_spin.setSuffix(" mm"); self._step_mm_spin.setFixedWidth(90)
-        self._step_mm_spin.valueChanged.connect(
-            lambda v: setattr(self, "_jog_step_mm", float(v)))
-        jog_step_row.addWidget(self._step_mm_spin)
-        self._step_deg_spin = QDoubleSpinBox()
-        self._step_deg_spin.setRange(0.1, 90.0); self._step_deg_spin.setValue(self._jog_step_deg)
-        self._step_deg_spin.setSuffix(" °"); self._step_deg_spin.setFixedWidth(80)
-        self._step_deg_spin.valueChanged.connect(
-            lambda v: setattr(self, "_jog_step_deg", float(v)))
-        jog_step_row.addWidget(self._step_deg_spin)
-        cv.addLayout(jog_step_row)
+        left_col.addWidget(self._jog_frame_combo)
 
-        # ── 3-column layout: jog grid+dial | WorkSpace | Show Frames ──
-        # Như RoboDK panel: 3 columns side-by-side, không stack vertical.
-        # RADIO BUTTONS: gộp 6 radio (Translate X/Y/Z + Rotate X/Y/Z) vào
-        # CÙNG 1 QButtonGroup — exclusive → user chỉ chọn 1 trong 6 → dial
-        # điều khiển ĐÚNG 1 selection đó.
-        cols_row = QHBoxLayout()
-        cols_row.setSpacing(8)
-
-        # === Column 1: axis grid + dial ===
-        left_col = QVBoxLayout(); left_col.setSpacing(6)
         mode_grid = QGridLayout()
-        mode_grid.setHorizontalSpacing(6); mode_grid.setVerticalSpacing(2)
+        mode_grid.setHorizontalSpacing(4); mode_grid.setVerticalSpacing(2)
         for c, axis in enumerate(self.AXIS_NAMES):
             lbl = QLabel(axis); lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            lbl.setStyleSheet("font-weight: bold;")
+            lbl.setStyleSheet("font-weight: bold; font-size: 9pt;")
             mode_grid.addWidget(lbl, 0, c + 1)
-        mode_grid.addWidget(QLabel("Translation"), 1, 0)
-        mode_grid.addWidget(QLabel("Rotation"),    2, 0)
+        l_tr = QLabel("Translation"); l_tr.setStyleSheet("font-size: 9pt;")
+        mode_grid.addWidget(l_tr, 1, 0)
+        l_rt = QLabel("Rotation"); l_rt.setStyleSheet("font-size: 9pt;")
+        mode_grid.addWidget(l_rt, 2, 0)
 
         # SINGLE shared group cho cả 6 radio — exclusive across BOTH rows.
         # Button id encoding: 0/1/2 = Trans X/Y/Z, 3/4/5 = Rot X/Y/Z.
         self._jog_axis_group = QButtonGroup(self)
+
+        def _radio_cell(rb: QRadioButton) -> QWidget:
+            # Wrapper QWidget để căn giữa radio. Cần transparent — nếu không,
+            # rule global QWidget{bg:#1e1e1e} tạo ô đen sau radio trên nền group.
+            cell = QWidget()
+            cell.setStyleSheet("background-color: transparent;")
+            ch = QHBoxLayout(cell)
+            ch.setContentsMargins(0, 0, 0, 0); ch.addStretch()
+            ch.addWidget(rb); ch.addStretch()
+            return cell
+
         for i in range(3):
             rb = QRadioButton()
             if i == 0: rb.setChecked(True)                  # default: Translate X
             self._jog_axis_group.addButton(rb, i)
-            cell = QWidget(); ch = QHBoxLayout(cell)
-            ch.setContentsMargins(0, 0, 0, 0); ch.addStretch()
-            ch.addWidget(rb); ch.addStretch()
-            mode_grid.addWidget(cell, 1, i + 1)
+            mode_grid.addWidget(_radio_cell(rb), 1, i + 1)
         for i in range(3):
             rb = QRadioButton()
             self._jog_axis_group.addButton(rb, 3 + i)
-            cell = QWidget(); ch = QHBoxLayout(cell)
-            ch.setContentsMargins(0, 0, 0, 0); ch.addStretch()
-            ch.addWidget(rb); ch.addStretch()
-            mode_grid.addWidget(cell, 2, i + 1)
+            mode_grid.addWidget(_radio_cell(rb), 2, i + 1)
         left_col.addLayout(mode_grid)
 
         # Jog Dial — ROTARY ENCODER style:
@@ -786,7 +823,7 @@ class GP7AppQt(QMainWindow):
         self._jog_dial.setValue(0)
         self._jog_dial.setNotchesVisible(True)
         self._jog_dial.setWrapping(True)                  # xoay không giới hạn
-        self._jog_dial.setFixedSize(80, 80)
+        self._jog_dial.setFixedSize(64, 64)
         self._jog_dial.setToolTip(
             "Xoay dial (như rotary encoder) → jog từng step theo radio đã chọn.\n"
             "Xoay phải = sign +, xoay trái = sign −. Thả ra giữ nguyên vị trí.")
@@ -794,11 +831,11 @@ class GP7AppQt(QMainWindow):
         self._dial_accumulator = 0.0
         self._jog_dial.valueChanged.connect(self._on_dial_value_changed)
         left_col.addWidget(self._jog_dial, 0, Qt.AlignmentFlag.AlignCenter)
-        cols_row.addLayout(left_col, 1)
+        left_col.addStretch()
+        cols_row.addLayout(left_col, 0)
 
-        # === Column 2: WorkSpace ===
-        cols_row.addWidget(self._build_workspace_group(), 1)
-        # === Column 3: Show Frames ===
+        # === Column 2: WorkSpace | Column 3: Show Frames (side-by-side) ===
+        cols_row.addWidget(self._build_workspace_group(), 0)
         cols_row.addWidget(self._build_show_frames_group(), 1)
         cv.addLayout(cols_row)
 
@@ -823,29 +860,40 @@ class GP7AppQt(QMainWindow):
         grid.setHorizontalSpacing(8); grid.setVerticalSpacing(4)
         self._joint_sliders: list[QSlider] = []
         self._joint_value_lbls: list[QLabel] = []
-        for i, joint in enumerate(self._model.joints):
-            jmin = math.degrees(joint.joint_min)
-            jmax = math.degrees(joint.joint_max)
+        # Khi build jog dock, robot có thể CHƯA load (deferred). Dùng GP7
+        # datasheet limits làm placeholder; sau khi _load_robot_gp7 chạy thì
+        # sliders sẽ áp value đúng (range KHÔNG đổi vì cùng GP7 thực).
+        _GP7_LIMITS_DEG = [(-170, 170), (-65, 145), (-116, 255),
+                           (-190, 190), (-135, 135), (-360, 360)]
+        if self._model is not None:
+            joints_iter = [(math.degrees(j.joint_min), math.degrees(j.joint_max))
+                           for j in self._model.joints]
+        else:
+            joints_iter = _GP7_LIMITS_DEG
+        for i, (jmin, jmax) in enumerate(joints_iter):
             tlbl = QLabel(f"θ{i+1}")
-            tlbl.setStyleSheet("font-weight: bold;")
+            tlbl.setStyleSheet("font-weight: bold; font-size: 9pt;")
             grid.addWidget(tlbl, i, 0)
             val_lbl = QLabel(f"{self._joints[i]:+7.2f}°")
-            val_lbl.setFixedWidth(70)
+            val_lbl.setFixedWidth(60)
+            val_lbl.setStyleSheet("font-size: 9pt;")
             val_lbl.setAlignment(Qt.AlignmentFlag.AlignRight)
             grid.addWidget(val_lbl, i, 1)
             min_lbl = QLabel(f"{jmin:+.0f}")
-            min_lbl.setFixedWidth(40)
+            min_lbl.setFixedWidth(32)
+            min_lbl.setStyleSheet("font-size: 9pt; color: #969696;")
             min_lbl.setAlignment(Qt.AlignmentFlag.AlignRight)
             grid.addWidget(min_lbl, i, 2)
             slider = QSlider(Qt.Orientation.Horizontal)
             slider.setRange(int(jmin * 100), int(jmax * 100))
             slider.setValue(int(self._joints[i] * 100))
-            slider.setMinimumWidth(180)
+            slider.setMinimumWidth(140)                     # compact drag
             slider.valueChanged.connect(
                 lambda v, idx=i: self._on_joint_slider(idx, v / 100.0))
             grid.addWidget(slider, i, 3)
             max_lbl = QLabel(f"{jmax:+.0f}")
-            max_lbl.setFixedWidth(40)
+            max_lbl.setFixedWidth(32)
+            max_lbl.setStyleSheet("font-size: 9pt; color: #969696;")
             grid.addWidget(max_lbl, i, 4)
             self._joint_sliders.append(slider)
             self._joint_value_lbls.append(val_lbl)
@@ -856,14 +904,21 @@ class GP7AppQt(QMainWindow):
         # 3. OTHER CONFIGURATIONS — collapsible, CLOSED by default
         # ──────────────────────────────────────────────────────
         other_sec = CollapsibleSection(
-            "Other configurations — alternative IK branches", expanded=False)
+            "Other configurations — robot postures (8 IK branches)",
+            expanded=False)
         oh = QHBoxLayout()
         oh.addWidget(QLabel("(θ1..θ6)"))
         oh.addStretch()
         find_btn = QPushButton("Find branches")
-        find_btn.setToolTip("Search IK alternative solutions for current TCP pose")
+        find_btn.setToolTip("List 8 robot configurations (Pieper analytical) "
+                             "for current TCP pose")
         find_btn.clicked.connect(self._on_find_alternates)
         oh.addWidget(find_btn)
+        cfg_btn = QPushButton("Configurations…")
+        cfg_btn.setToolTip("Robot Configurations table (Front/Rear · Elbow "
+                            "Up/Down · Flip/Non-Flip) — như RoboDK")
+        cfg_btn.clicked.connect(self._show_configurations_dlg)
+        oh.addWidget(cfg_btn)
         other_sec.add_layout(oh)
         self._alt_combo = QComboBox()
         self._alt_combo.addItem("(no alternates — click \"Find branches\")")
@@ -880,20 +935,33 @@ class GP7AppQt(QMainWindow):
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setWidget(inner)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        # Cho phép horizontal scroll khi width hẹp — content overflow vẫn xem được.
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         dock.setWidget(scroll)
         self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, dock)
-        # 6 colored cells × 50px + dial 80px + grid → ~400px đủ
-        dock.setMinimumWidth(400)
-        # ẨN MẶC ĐỊNH — user vào menu View > Show controls panel để bật.
+        # minimumWidth = _CELL_DOCK_W (KHÔNG phải 580) để vùng tab chung co được
+        # về cell width khi cell tab active. Khi jog tab active, _sync_jog_dock_check
+        # resize vùng về _JOG_DOCK_W (580) → 3-col layout đủ rộng, không scroll.
+        # Content có QScrollArea (ScrollBarAsNeeded) nên lúc bị ép hẹp (ẩn sau
+        # tab) vẫn an toàn.
+        dock.setMinimumWidth(_CELL_DOCK_W)
+        # ẨN MẶC ĐỊNH — user vào menu View > Controls panel để bật.
         dock.setVisible(False)
-        # SYNC menu checkbox khi user đóng dock bằng X trên title bar
         dock.visibilityChanged.connect(self._sync_jog_dock_check)
+        # Set initial width — resizeDocks chỉ work sau khi window show().
+        QTimer.singleShot(0, lambda: self.resizeDocks(
+            [dock], [_JOG_DOCK_W], Qt.Orientation.Horizontal))
 
     # ── WorkSpace + Show Frames groupboxes (used INSIDE Cartesian Jog) ──
     def _build_workspace_group(self) -> QGroupBox:
         grp = QGroupBox("WorkSpace")
+        # title bg = #252526 (SURFACE của group cha Cartesian Jog) để KHÔNG
+        # tạo ô tối #1e1e1e sau chữ. Group lồng nhau cần match nền cha.
+        grp.setStyleSheet(
+            "QGroupBox { margin-top: 9px; padding: 4px 4px 2px 4px; }"
+            "QGroupBox::title { background-color: #252526; }")
         v = QVBoxLayout(grp)
+        v.setContentsMargins(2, 2, 2, 2); v.setSpacing(1)
         self._ws_group = QButtonGroup(self)
         opts = [
             ("none",   "Do not show"),
@@ -903,6 +971,7 @@ class GP7AppQt(QMainWindow):
         ]
         for i, (key, label) in enumerate(opts):
             rb = QRadioButton(label)
+            rb.setStyleSheet("font-size: 9pt;")
             if i == 0: rb.setChecked(True)
             self._ws_group.addButton(rb, i)
             v.addWidget(rb)
@@ -912,39 +981,45 @@ class GP7AppQt(QMainWindow):
 
     def _build_show_frames_group(self) -> QGroupBox:
         grp = QGroupBox("Show Frames")
+        grp.setStyleSheet(
+            "QGroupBox { margin-top: 9px; padding: 4px 4px 2px 4px; }"
+            "QGroupBox::title { background-color: #252526; }")
         g = QGridLayout(grp)
-        g.setHorizontalSpacing(8); g.setVerticalSpacing(2)
+        g.setContentsMargins(2, 2, 2, 2)
+        g.setHorizontalSpacing(4); g.setVerticalSpacing(1)
         self._frame_checks: dict[str, QCheckBox] = {}
-        # Row 0: All/None + Base
-        cb_all = QCheckBox("All/None")
+        def _mk(text: str) -> QCheckBox:
+            cb = QCheckBox(text)
+            cb.setStyleSheet("font-size: 9pt;")
+            return cb
+        # Layout giống ảnh tham chiếu RoboDK:
+        #   row0: All/None  | Base (0)
+        #   row1: Tool Frame | Robot Flange
+        #   row2: Ref. Frame
+        #   row3: 1 2 3   row4: 4 5 6   (J1..J6 dạng 3 cột)
+        cb_all = _mk("All/None")
         cb_all.stateChanged.connect(self._on_show_frames_all)
-        g.addWidget(cb_all, 0, 0)
-        cb_base = QCheckBox("Base (0)")
+        g.addWidget(cb_all, 0, 0, 1, 2)
+        cb_base = _mk("Base (0)")
         cb_base.stateChanged.connect(
             lambda s: self._on_toggle_frame("base", bool(s)))
-        g.addWidget(cb_base, 0, 1)
-        self._frame_checks["base"] = cb_base
-        # Row 1: Tool + Robot Flange
-        cb_tool = QCheckBox("Tool Frame")
+        g.addWidget(cb_base, 0, 2); self._frame_checks["base"] = cb_base
+        cb_tool = _mk("Tool Frame")
         cb_tool.stateChanged.connect(
             lambda s: self._on_toggle_frame("tool", bool(s)))
-        g.addWidget(cb_tool, 1, 0)
-        self._frame_checks["tool"] = cb_tool
-        cb_fl = QCheckBox("Robot Flange")
+        g.addWidget(cb_tool, 1, 0, 1, 2); self._frame_checks["tool"] = cb_tool
+        cb_fl = _mk("Robot Flange")
         cb_fl.stateChanged.connect(
             lambda s: self._on_toggle_frame("flange", bool(s)))
-        g.addWidget(cb_fl, 1, 1)
-        self._frame_checks["flange"] = cb_fl
-        # Row 2: Ref Frame
-        cb_ref = QCheckBox("Ref. Frame")
+        g.addWidget(cb_fl, 1, 2); self._frame_checks["flange"] = cb_fl
+        cb_ref = _mk("Ref. Frame")
         cb_ref.stateChanged.connect(
             lambda s: self._on_toggle_frame("ref", bool(s)))
-        g.addWidget(cb_ref, 2, 0)
-        self._frame_checks["ref"] = cb_ref
-        # Row 3-4: J1..J6 in 2 rows × 3 cols
+        g.addWidget(cb_ref, 2, 0, 1, 2); self._frame_checks["ref"] = cb_ref
+        # J1..J6 — 2 rows × 3 cols, narrow digit checkboxes
         for i in range(6):
             key = f"joint_{i+1}"
-            cb = QCheckBox(str(i + 1))
+            cb = _mk(str(i + 1))
             cb.stateChanged.connect(
                 lambda s, k=key: self._on_toggle_frame(k, bool(s)))
             g.addWidget(cb, 3 + (i // 3), i % 3)
@@ -956,37 +1031,96 @@ class GP7AppQt(QMainWindow):
                     "#a8e8e8", "#f0a8f0", "#f0f0a8")
     AXIS_NAMES_FULL = ("X", "Y", "Z", "Rx", "Ry", "Rz")
 
-    def _make_colored_pose_row(self, parent_layout) -> list[QLabel]:
-        """1 dòng duy nhất: 6 cells color-coded narrow (50px) + ⎘ 📋 icons.
+    # Header text mô tả format pose (RoboDK style). GP7 = Yaskawa Motoman →
+    # convention Motoman. Đặt sẵn để dùng chung cho 3 pose row.
+    _POSE_FMT_HEADER = "[X,Y,Z] mm  |  Rot[X,Y,Z] deg  ·  Motoman"
 
-        Header format ("[X,Y,Z]mm Rot[X,Y,Z]deg") đã bỏ — title của
-        CollapsibleSection (hoặc Label trên) đã chỉ rõ pose nào. Tiết kiệm
-        1 dòng/pose × 3 poses = 3 dòng.
+    def _make_colored_pose_row(self, parent_layout) -> list[QLabel]:
+        """Bố trí như RoboDK:
+          • Header: label format "[X,Y,Z]mm | Rot[X,Y,Z]deg · Motoman"
+            + 3 nút (copy / paste / menu ≡) căn phải
+          • Value row: 6 cells color-coded, giá trị căn PHẢI (RoboDK convention)
         """
+        container = QVBoxLayout()
+        container.setSpacing(2)
+
+        # ── Header row: format label (trái) + copy/paste/menu (phải) ──
+        hdr = QHBoxLayout(); hdr.setSpacing(3)
+        fmt_lbl = QLabel(self._POSE_FMT_HEADER)
+        fmt_lbl.setStyleSheet(
+            "color: #969696; font-size: 8pt; background-color: transparent;")
+        hdr.addWidget(fmt_lbl)
+        hdr.addStretch()
+
+        _btn_style = "QPushButton { padding: 2px; }"
+        cpy = QPushButton(); cpy.setIcon(_draw_copy_icon())
+        cpy.setIconSize(QSize(14, 14)); cpy.setFixedWidth(26)
+        cpy.setStyleSheet(_btn_style); cpy.setToolTip("Copy pose to clipboard")
+        pst = QPushButton(); pst.setIcon(_draw_paste_icon())
+        pst.setIconSize(QSize(14, 14)); pst.setFixedWidth(26)
+        pst.setStyleSheet(_btn_style)
+        pst.setToolTip("Paste pose from clipboard (TCP target)")
+        mnu = QPushButton(); mnu.setIcon(_draw_menu_icon())
+        mnu.setIconSize(QSize(14, 14)); mnu.setFixedWidth(26)
+        mnu.setStyleSheet(_btn_style)
+        mnu.setToolTip("More pose options (copy as list / JSON)")
+        hdr.addWidget(cpy); hdr.addWidget(pst); hdr.addWidget(mnu)
+        container.addLayout(hdr)
+
+        # ── Value row: 6 colored cells, giá trị căn phải ──
         row = QHBoxLayout()
         row.setSpacing(1)
         labels = []
         for bg in self.AXIS_BG_HEX:
             lbl = QLabel("0.000")
-            lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            lbl.setMinimumWidth(50)
+            lbl.setAlignment(Qt.AlignmentFlag.AlignRight
+                              | Qt.AlignmentFlag.AlignVCenter)
+            lbl.setMinimumWidth(46)
             lbl.setStyleSheet(
                 f"background-color: {bg}; color: #000; "
-                f"padding: 3px; border: 1px solid #555;"
+                f"padding: 3px 6px 3px 2px; border: 1px solid #555;"
                 f"font-family: Consolas, 'Courier New', monospace;"
-                f"font-size: 11px;"
+                f"font-size: 10px; font-weight: 600;"
             )
             row.addWidget(lbl, 1)
             labels.append(lbl)
-        cpy = QPushButton("⎘"); cpy.setFixedWidth(24)
-        cpy.setToolTip("Copy pose to clipboard")
-        pst = QPushButton("📋"); pst.setFixedWidth(24)
-        pst.setToolTip("Paste pose from clipboard (TCP target)")
-        row.addWidget(cpy); row.addWidget(pst)
-        parent_layout.addLayout(row)
+        container.addLayout(row)
+
+        parent_layout.addLayout(container)
         cpy.clicked.connect(lambda: self._copy_pose_to_clipboard(labels))
         pst.clicked.connect(self._paste_pose_from_clipboard)
+        mnu.clicked.connect(lambda: self._show_pose_menu(mnu, labels))
         return labels
+
+    def _show_pose_menu(self, anchor: QPushButton,
+                         labels: list[QLabel]) -> None:
+        """Popup menu (≡) — copy/paste + export pose dạng list / JSON."""
+        m = QMenu(self)
+        m.addAction("Copy values",
+                    lambda: self._copy_pose_to_clipboard(labels))
+        m.addAction("Paste values", self._paste_pose_from_clipboard)
+        m.addSeparator()
+        m.addAction("Copy as Python list",
+                    lambda: self._copy_pose_as(labels, "py"))
+        m.addAction("Copy as JSON",
+                    lambda: self._copy_pose_as(labels, "json"))
+        m.exec(anchor.mapToGlobal(anchor.rect().bottomLeft()))
+
+    def _copy_pose_as(self, labels: list[QLabel], fmt: str) -> None:
+        """Export 6 pose values theo format `py` (list) hoặc `json`."""
+        vals = []
+        for lbl in labels:
+            try:
+                vals.append(float(lbl.text()))
+            except ValueError:
+                vals.append(0.0)
+        if fmt == "py":
+            s = "[" + ", ".join(f"{v:.3f}" for v in vals) + "]"
+        else:                                          # json
+            s = json.dumps(
+                {"xyz_mm": vals[:3], "rpy_deg": vals[3:]})
+        QApplication.clipboard().setText(s)
+        self._set_status(f"Pose copied ({fmt})", level="ok")
 
     def _copy_pose_to_clipboard(self, labels: list[QLabel]) -> None:
         """Copy 6 raw values từ labels (no axis prefix) ra clipboard."""
@@ -1022,17 +1156,18 @@ class GP7AppQt(QMainWindow):
         T_world_tool = T_world_ref @ T_ref_tool
         self._apply_cartesian_target(T_world_tool, "Paste pose")
 
-    # ── Program dock (right) ──────────────────────────────────────────
+    # ── Program dock (left, tabified với Jog + Cell) ──────────────────
     def _build_program_dock(self) -> None:
         """Layout: program list (top, primary) → edit toolbar → Targets group →
         Add tabs (Motion / Logic / Modal) → Playback bar → File bar.
-        Workflow top-down: Teach targets → Add instructions → Run → Save."""
+        Workflow top-down: Teach targets → Add instructions → Run → Save.
+
+        Dock nằm CÙNG vùng trái, tabified với Jog + Cell (1 tab group) thay vì
+        tách riêng bên phải."""
         dock = QDockWidget("Program", self)
-        dock.setAllowedAreas(Qt.DockWidgetArea.LeftDockWidgetArea
-                              | Qt.DockWidgetArea.RightDockWidgetArea)
-        dock.setFeatures(QDockWidget.DockWidgetFeature.DockWidgetMovable
-                          | QDockWidget.DockWidgetFeature.DockWidgetFloatable
-                          | QDockWidget.DockWidgetFeature.DockWidgetClosable)
+        # FIXED ở Left — tabified với jog/cell, non-floatable, predictable layout.
+        dock.setAllowedAreas(Qt.DockWidgetArea.LeftDockWidgetArea)
+        dock.setFeatures(QDockWidget.DockWidgetFeature.DockWidgetClosable)
         self._program_dock = dock
 
         root = QWidget()
@@ -1047,12 +1182,14 @@ class GP7AppQt(QMainWindow):
         self._job_combo.setMinimumWidth(120)
         self._job_combo.currentTextChanged.connect(self._on_job_changed)
         job_row.addWidget(self._job_combo, 1)
-        for label, cb, tip in (
-            ("+",  self._on_job_add,    "Add new job"),
-            ("⟲",  self._on_job_rename, "Rename current job"),
-            ("✕",  self._on_job_delete, "Delete current job"),
+        # Icon vẽ tay (QPainter) — glyph ⟲/✕ không render trong Segoe UI nên
+        # trước đây nút trống trơn. Đồng bộ với copy/paste/menu icons.
+        for icon, cb, tip in (
+            (_draw_plus_icon(),   self._on_job_add,    "Add new job"),
+            (_draw_rename_icon(), self._on_job_rename, "Rename current job"),
+            (_draw_trash_icon(),  self._on_job_delete, "Delete current job"),
         ):
-            b = QPushButton(label); b.setToolTip(tip); b.setFixedWidth(28)
+            b = QPushButton(); b.setIcon(icon); b.setToolTip(tip); b.setFixedWidth(28)
             b.clicked.connect(cb)
             job_row.addWidget(b)
         jw = QWidget(); jw.setLayout(job_row)
@@ -1063,17 +1200,24 @@ class GP7AppQt(QMainWindow):
         self._prog_list.setMinimumHeight(180)
         vbox.addWidget(self._prog_list, 3)
 
-        # ── 1b. Edit toolbar (↑ ↓ Edit ✕) ─────────────────────────────
+        # ── 1b. Edit toolbar — icon vẽ tay (↑↓✕ glyph không render Segoe UI),
+        # "Edit" giữ text cho rõ nghĩa. Tooltip đầy đủ cho mọi nút.
         edit_row = QHBoxLayout(); edit_row.setSpacing(4)
-        for label, cb, tip, width in (
-            ("↑",      self._on_prog_move_up,   "Move selected up",      40),
-            ("↓",      self._on_prog_move_down, "Move selected down",    40),
-            ("Edit",   self._on_prog_modify,    "F2 — edit selected",    50),
-            ("✕",      self._on_prog_delete,    "Delete selected",       40),
+        for icon, cb, tip in (
+            (_draw_arrow_up_icon(),   self._on_prog_move_up,   "Move selected instruction up"),
+            (_draw_arrow_down_icon(), self._on_prog_move_down, "Move selected instruction down"),
         ):
-            b = QPushButton(label); b.setToolTip(tip); b.setFixedWidth(width)
+            b = QPushButton(); b.setIcon(icon); b.setToolTip(tip); b.setFixedWidth(40)
             b.clicked.connect(cb)
             edit_row.addWidget(b)
+        b_edit = QPushButton("Edit")
+        b_edit.setToolTip("F2 — edit selected instruction (or double-click)")
+        b_edit.setFixedWidth(56); b_edit.clicked.connect(self._on_prog_modify)
+        edit_row.addWidget(b_edit)
+        b_pdel = QPushButton(); b_pdel.setIcon(_draw_x_icon())
+        b_pdel.setToolTip("Delete selected instruction")
+        b_pdel.setFixedWidth(40); b_pdel.clicked.connect(self._on_prog_delete)
+        edit_row.addWidget(b_pdel)
         edit_row.addStretch()
         eb = QWidget(); eb.setLayout(edit_row)
         vbox.addWidget(eb)
@@ -1084,7 +1228,7 @@ class GP7AppQt(QMainWindow):
         QShortcut(QKeySequence("F2"), self,
                    activated=self._on_prog_modify)
 
-        # ══ 2. TARGETS group (anchored — workflow starts here) ═══════
+        # ══ 2. TARGETS group (manage targets — teach/modify/goto/config) ═
         tgt_grp = QGroupBox("Targets")
         tgt_lay = QVBoxLayout(tgt_grp); tgt_lay.setSpacing(4)
         self._tgt_list = QListWidget()
@@ -1103,40 +1247,68 @@ class GP7AppQt(QMainWindow):
         tname_row.addWidget(b_teach)
         tnw = QWidget(); tnw.setLayout(tname_row)
         tgt_lay.addWidget(tnw)
-        # Modify/Delete/Go-to/Config + use-as-move (1 row, separated by stretch)
-        tact_row = QHBoxLayout()
+        # Manage row: Modify / Delete / Go to / Config (4 nút đều nhau, full-width).
+        # (+ MoveJ→/MoveL→ chuyển sang tab Motion để gom mọi "tạo move" 1 chỗ.)
+        tact_row = QHBoxLayout(); tact_row.setSpacing(4)
         b_mod = QPushButton("Modify"); b_mod.setShortcut("F3")
         b_mod.setToolTip("F3 — replace selected target with current pose")
         b_mod.clicked.connect(self._on_tgt_modify)
-        b_del = QPushButton("Delete"); b_del.clicked.connect(self._on_tgt_delete)
+        b_del = QPushButton("Delete"); b_del.setToolTip("Delete selected target")
+        b_del.clicked.connect(self._on_tgt_delete)
         b_goto = QPushButton("Go to")
         b_goto.setToolTip("Animate robot to selected target (preview)")
         b_goto.clicked.connect(self._on_tgt_goto)
-        b_cfg = QPushButton("Config")
+        b_cfg = QPushButton("Config"); b_cfg.setShortcut("F4")
         b_cfg.setToolTip("F4 — pick alternative IK configuration for selected target")
-        b_cfg.setShortcut("F4")
         b_cfg.clicked.connect(self._on_tgt_change_config)
-        b_uj = QPushButton("+ MoveJ→")
-        b_uj.setToolTip("Add MoveJ → selected target")
-        b_uj.clicked.connect(lambda: self._on_prog_add_move_to_target("MoveJ"))
-        b_ul = QPushButton("+ MoveL→")
-        b_ul.setToolTip("Add MoveL → selected target")
-        b_ul.clicked.connect(lambda: self._on_prog_add_move_to_target("MoveL"))
-        tact_row.addWidget(b_mod); tact_row.addWidget(b_del)
-        tact_row.addWidget(b_goto); tact_row.addWidget(b_cfg)
-        tact_row.addStretch()
-        tact_row.addWidget(b_uj); tact_row.addWidget(b_ul)
+        for b in (b_mod, b_del, b_goto, b_cfg):
+            tact_row.addWidget(b)
         taw = QWidget(); taw.setLayout(tact_row)
         tgt_lay.addWidget(taw)
         vbox.addWidget(tgt_grp)
 
-        # ══ 3. ADD INSTRUCTION (3 tabs: Motion / Logic / Modal) ═════
+        # ══ 3. ADD INSTRUCTION (Motion / I-O & Flow / Modal) ═════════
+        # Mọi row dùng grid 3-cột [label | inputs(stretch) | + button(fixed)]
+        # → các nút "+ Add" thẳng hàng dọc, gọn & pro. Helper bên dưới.
+        _BTN_W = 90
         tabs = QTabWidget()
         tabs.setDocumentMode(True)
+        # Maximum vertical policy → tabs widget chỉ cao = content, KHÔNG nở ra
+        # lấp đầy. Space thừa dồn cho program list (stretch=3, primary) thay vì
+        # để trống dưới Motion tab. (Trước đây tabs nở → khoảng trống lớn.)
+        tabs.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
 
-        # ─ Tab: Motion ─
+        def _hwrap(*widgets, fill=False):
+            """Gom input nhỏ vào 1 widget. fill=True: widget CUỐI giãn lấp đầy
+            col (bỏ khoảng trống giữa input và nút). fill=False: stretch đẩy
+            input về trái."""
+            w = QWidget(); h = QHBoxLayout(w)
+            h.setContentsMargins(0, 0, 0, 0); h.setSpacing(3)
+            last = len(widgets) - 1
+            for i, x in enumerate(widgets):
+                h.addWidget(x, 1 if (fill and i == last) else 0)
+            if not fill:
+                h.addStretch()
+            return w
+
+        # Label col cố định (căn nhãn thẳng), input col STRETCH lấp hết bề
+        # rộng còn lại → KHÔNG trống rìa phải ở mọi dock width; inputs fill
+        # col1 (fill=True) nên cũng không gap. Button col fixed → +Add căn cột.
+        _LABEL_W = 52
+
+        def _grid_row(grid, r, label, mid, btn):
+            """label@col0 (fixed) | mid@col1 (stretch, fill) | btn@col2 (fixed)."""
+            lbl = QLabel(label); lbl.setFixedWidth(_LABEL_W)
+            grid.addWidget(lbl, r, 0)
+            if mid is not None:
+                grid.addWidget(mid, r, 1)
+            btn.setFixedWidth(_BTN_W)
+            grid.addWidget(btn, r, 2)
+
+        # ─ Tab: Motion (inline + to-target moves) ─
         mot_w = QWidget()
         mot_lay = QGridLayout(mot_w); mot_lay.setSpacing(4)
+        mot_lay.setColumnStretch(0, 1); mot_lay.setColumnStretch(1, 1)
         b_mj = QPushButton("+ MoveJ"); b_mj.setToolTip("Joint move tới pose hiện tại")
         b_mj.clicked.connect(self._on_prog_add_movej)
         b_ml = QPushButton("+ MoveL"); b_ml.setToolTip("Linear move tới pose hiện tại")
@@ -1145,184 +1317,224 @@ class GP7AppQt(QMainWindow):
         self._btn_movec.setToolTip("2-step: click 1 = MID waypoint, click 2 = END")
         self._btn_movec.clicked.connect(self._on_prog_add_movec)
         self._pending_movc_mid: list[float] | None = None
-        mot_lay.addWidget(b_mj,            0, 0)
-        mot_lay.addWidget(b_ml,            0, 1)
-        mot_lay.addWidget(self._btn_movec, 1, 0, 1, 2)
-        mot_lay.setRowStretch(2, 1)
+        mot_lay.addWidget(QLabel("At current pose:"), 0, 0, 1, 2)
+        mot_lay.addWidget(b_mj,            1, 0)
+        mot_lay.addWidget(b_ml,            1, 1)
+        mot_lay.addWidget(self._btn_movec, 2, 0, 1, 2)
+        _line = QFrame(); _line.setFrameShape(QFrame.Shape.HLine)
+        _line.setFrameShadow(QFrame.Shadow.Sunken)
+        mot_lay.addWidget(_line, 3, 0, 1, 2)
+        mot_lay.addWidget(QLabel("To selected target:"), 4, 0, 1, 2)
+        b_uj = QPushButton("+ MoveJ →")
+        b_uj.setToolTip("Add MoveJ → target đang chọn trong list Targets")
+        b_uj.clicked.connect(lambda: self._on_prog_add_move_to_target("MoveJ"))
+        b_ul = QPushButton("+ MoveL →")
+        b_ul.setToolTip("Add MoveL → target đang chọn trong list Targets")
+        b_ul.clicked.connect(lambda: self._on_prog_add_move_to_target("MoveL"))
+        mot_lay.addWidget(b_uj, 5, 0); mot_lay.addWidget(b_ul, 5, 1)
+        mot_lay.setRowStretch(6, 1)
         tabs.addTab(mot_w, "Motion")
 
-        # ─ Tab: Logic (gripper + waits + msg) ─
+        # ─ Tab: I/O & Flow (DOUT / WaitIO / Wait / MSG / Call / SimEvent) ─
         log_w = QWidget()
-        log_lay = QVBoxLayout(log_w); log_lay.setSpacing(4)
-        # Gripper row
-        gr_row = QHBoxLayout()
-        b_go = QPushButton("+ Grip OPEN")
-        b_go.clicked.connect(lambda: self._on_prog_add_gripper(False))
-        b_gc = QPushButton("+ Grip CLOSE")
-        b_gc.clicked.connect(lambda: self._on_prog_add_gripper(True))
-        gr_row.addWidget(b_go); gr_row.addWidget(b_gc)
-        gw = QWidget(); gw.setLayout(gr_row); log_lay.addWidget(gw)
-        # Wait row
-        w_row = QHBoxLayout()
-        w_row.addWidget(QLabel("Wait"))
-        self._prog_wait_spin = QDoubleSpinBox()
-        self._prog_wait_spin.setRange(0.0, 600.0); self._prog_wait_spin.setValue(0.5)
-        self._prog_wait_spin.setSuffix(" s")
-        w_row.addWidget(self._prog_wait_spin)
-        b_wait = QPushButton("+ Wait"); b_wait.clicked.connect(self._on_prog_add_wait)
-        w_row.addWidget(b_wait)
-        ww = QWidget(); ww.setLayout(w_row); log_lay.addWidget(ww)
-        # WaitIO row
-        io_row = QHBoxLayout()
-        io_row.addWidget(QLabel("IN#"))
-        self._prog_io_idx = QSpinBox(); self._prog_io_idx.setRange(1, 1024); self._prog_io_idx.setValue(1)
-        io_row.addWidget(self._prog_io_idx)
-        io_row.addWidget(QLabel("="))
+        log_lay = QGridLayout(log_w); log_lay.setSpacing(4)
+        # col1 (input) stretch → lấp hết width, không trống rìa phải.
+        log_lay.setColumnStretch(1, 1)
+        r = 0
+        # DOUT — generic digital output (THAY cho gripper-specific). Phần mềm
+        # tổng quát: control bất kỳ output bit nào (gripper/valve/clamp…).
+        self._prog_do_idx = QSpinBox(); self._prog_do_idx.setRange(1, 1024)
+        self._prog_do_idx.setValue(1); self._prog_do_idx.setFixedWidth(64)
+        self._prog_do_state = QComboBox(); self._prog_do_state.addItems(["ON", "OFF"])
+        self._prog_do_state.setMinimumWidth(64)   # đủ rộng cho "OFF" + arrow
+        b_do = QPushButton("+ DOUT")
+        b_do.setToolTip("Set digital output bit (DOUT OT#n = ON/OFF)")
+        b_do.clicked.connect(self._on_prog_add_setdo)
+        _grid_row(log_lay, r, "OUT#",
+                  _hwrap(self._prog_do_idx, QLabel("="), self._prog_do_state, fill=True),
+                  b_do); r += 1
+        # WaitIO (input)
+        self._prog_io_idx = QSpinBox(); self._prog_io_idx.setRange(1, 1024)
+        self._prog_io_idx.setValue(1); self._prog_io_idx.setFixedWidth(64)
         self._prog_io_state = QComboBox(); self._prog_io_state.addItems(["ON", "OFF"])
-        io_row.addWidget(self._prog_io_state)
-        io_row.addWidget(QLabel("T"))
+        self._prog_io_state.setMinimumWidth(64)   # đủ rộng cho "OFF" + arrow
         self._prog_io_tout = QDoubleSpinBox()
         self._prog_io_tout.setRange(0.0, 600.0); self._prog_io_tout.setValue(0.0)
-        self._prog_io_tout.setSuffix("s"); self._prog_io_tout.setToolTip("0 = block vô hạn")
-        io_row.addWidget(self._prog_io_tout)
+        self._prog_io_tout.setSuffix("s"); self._prog_io_tout.setMinimumWidth(64)
+        self._prog_io_tout.setToolTip("0 = block vô hạn")
         b_wio = QPushButton("+ WaitIO"); b_wio.clicked.connect(self._on_prog_add_waitio)
-        io_row.addWidget(b_wio)
-        iow = QWidget(); iow.setLayout(io_row); log_lay.addWidget(iow)
-        # MSG row
-        msg_row = QHBoxLayout()
-        msg_row.addWidget(QLabel("MSG"))
+        b_wio.setToolTip("Wait until input IN#n = ON/OFF (timeout 0 = block forever)")
+        # idx/=/state pack trái; addStretch đẩy nhóm "T + timeout" sang phải →
+        # tạo khoảng trống rõ ràng bên trái label "T" (thay vì T dính sát combo).
+        _io_mid = QWidget(); _io_h = QHBoxLayout(_io_mid)
+        _io_h.setContentsMargins(0, 0, 0, 0); _io_h.setSpacing(3)
+        _io_h.addWidget(self._prog_io_idx)
+        _io_h.addWidget(QLabel("="))
+        _io_h.addWidget(self._prog_io_state)
+        _io_h.addStretch(1)                            # gap bên trái "T"
+        _io_h.addWidget(QLabel("T"))
+        _io_h.addWidget(self._prog_io_tout)
+        _grid_row(log_lay, r, "IN#", _io_mid, b_wio); r += 1
+        # Wait (timer)
+        self._prog_wait_spin = QDoubleSpinBox()
+        self._prog_wait_spin.setRange(0.0, 600.0); self._prog_wait_spin.setValue(0.5)
+        self._prog_wait_spin.setSuffix(" s"); self._prog_wait_spin.setMinimumWidth(80)
+        b_wait = QPushButton("+ Wait"); b_wait.clicked.connect(self._on_prog_add_wait)
+        b_wait.setToolTip("Pause program for N seconds (INFORM TIMER)")
+        _grid_row(log_lay, r, "Wait", _hwrap(self._prog_wait_spin, fill=True), b_wait); r += 1
+        # MSG
         self._prog_msg_edit = QLineEdit()
         self._prog_msg_edit.setMaxLength(32)
         self._prog_msg_edit.setPlaceholderText("≤ 32 ASCII")
-        msg_row.addWidget(self._prog_msg_edit, 1)
         b_msg = QPushButton("+ MSG"); b_msg.clicked.connect(self._on_prog_add_msg)
-        msg_row.addWidget(b_msg)
-        mw = QWidget(); mw.setLayout(msg_row); log_lay.addWidget(mw)
-        # CallJob row (sub-program invocation)
-        call_row = QHBoxLayout()
-        call_row.addWidget(QLabel("Call"))
+        b_msg.setToolTip("Show a message on the teach pendant (INFORM MSG)")
+        _grid_row(log_lay, r, "MSG", self._prog_msg_edit, b_msg); r += 1
+        # CallJob (sub-program)
         self._prog_call_edit = QLineEdit()
         self._prog_call_edit.setMaxLength(32)
         self._prog_call_edit.setPlaceholderText("sub-job name (e.g. WELD_A)")
-        call_row.addWidget(self._prog_call_edit, 1)
         b_call = QPushButton("+ Call"); b_call.clicked.connect(self._on_prog_add_calljob)
-        call_row.addWidget(b_call)
-        cw = QWidget(); cw.setLayout(call_row); log_lay.addWidget(cw)
-        # SimEvent row (sim-only checkpoint, không export INFORM)
-        ev_row = QHBoxLayout()
-        ev_row.addWidget(QLabel("Event"))
+        b_call.setToolTip("Call another job as sub-program (INFORM CALL JOB)")
+        _grid_row(log_lay, r, "Call", self._prog_call_edit, b_call); r += 1
+        # SimEvent (sim-only checkpoint)
         self._prog_ev_edit = QLineEdit()
         self._prog_ev_edit.setMaxLength(32)
         self._prog_ev_edit.setPlaceholderText("sim checkpoint name")
-        ev_row.addWidget(self._prog_ev_edit, 1)
         b_ev = QPushButton("+ SimEvent")
         b_ev.setToolTip("Sim checkpoint — không export ra .JBI")
         b_ev.clicked.connect(self._on_prog_add_simevent)
-        ev_row.addWidget(b_ev)
-        ew = QWidget(); ew.setLayout(ev_row); log_lay.addWidget(ew)
-        log_lay.addStretch()
-        tabs.addTab(log_w, "Logic")
+        _grid_row(log_lay, r, "Event", self._prog_ev_edit, b_ev); r += 1
+        log_lay.setRowStretch(r, 1)
+        tabs.addTab(log_w, "I/O && Flow")
 
         # ─ Tab: Modal (Speed / Rounding / Tool / RefFrame) ─
         mod_w = QWidget()
-        mod_lay = QVBoxLayout(mod_w); mod_lay.setSpacing(4)
-        # SetSpeed
-        sp_row = QHBoxLayout()
-        sp_row.addWidget(QLabel("VJ"))
+        mod_lay = QGridLayout(mod_w); mod_lay.setSpacing(4)
+        # Cùng cấu hình cột như I/O & Flow tab: col1 (input) stretch lấp hết.
+        mod_lay.setColumnStretch(1, 1)
+        r = 0
+        # Speed row có 2 input (VJ% joint + V mm/s linear). Cả 2 spinbox giữ
+        # width tự nhiên (no stretch); chỉ addStretch(1) giữa VJ và "V" hấp thụ
+        # space dư → toàn bộ khoảng trống dồn về bên trái label "V" (gap to,
+        # tách rõ 2 nhóm thị giác) thay vì để V spinbox giãn rộng.
         self._prog_spd_vj = QDoubleSpinBox()
-        self._prog_spd_vj.setRange(1.0, 30.0); self._prog_spd_vj.setValue(10.0); self._prog_spd_vj.setSuffix("%")
-        sp_row.addWidget(self._prog_spd_vj)
-        sp_row.addWidget(QLabel("V"))
+        self._prog_spd_vj.setRange(1.0, 30.0); self._prog_spd_vj.setValue(10.0)
+        self._prog_spd_vj.setDecimals(2); self._prog_spd_vj.setSuffix(" %")
+        self._prog_spd_vj.setMinimumWidth(100); self._prog_spd_vj.setMaximumWidth(120)
         self._prog_spd_v = QDoubleSpinBox()
-        self._prog_spd_v.setRange(1.0, 250.0); self._prog_spd_v.setValue(100.0); self._prog_spd_v.setSuffix("mm/s")
-        sp_row.addWidget(self._prog_spd_v)
+        self._prog_spd_v.setRange(1.0, 250.0); self._prog_spd_v.setValue(100.0)
+        self._prog_spd_v.setDecimals(1); self._prog_spd_v.setSuffix(" mm/s")
+        self._prog_spd_v.setMinimumWidth(100)
+        _spd_mid = QWidget(); _spd_h = QHBoxLayout(_spd_mid)
+        _spd_h.setContentsMargins(0, 0, 0, 0); _spd_h.setSpacing(4)
+        _spd_h.addWidget(QLabel("VJ"))
+        _spd_h.addWidget(self._prog_spd_vj)            # no stretch → ~100px
+        _spd_h.addStretch(1)                            # gap giữa VJ và "V"
+        _spd_h.addWidget(QLabel("V"))
+        _spd_h.addWidget(self._prog_spd_v)             # width tự nhiên; gap nằm bên trái "V"
         b_spd = QPushButton("+ SetSpeed"); b_spd.clicked.connect(self._on_prog_add_setspeed)
-        sp_row.addWidget(b_spd)
-        spw = QWidget(); spw.setLayout(sp_row); mod_lay.addWidget(spw)
-        # SetRounding
-        pl_row = QHBoxLayout()
-        pl_row.addWidget(QLabel("PL"))
+        b_spd.setToolTip("Set speed VJ% (joint) + V mm/s (linear) for following moves")
+        _grid_row(mod_lay, r, "Speed", _spd_mid, b_spd); r += 1
         self._prog_pl = QSpinBox(); self._prog_pl.setRange(0, 8); self._prog_pl.setValue(0)
-        pl_row.addWidget(self._prog_pl); pl_row.addStretch()
-        b_pl = QPushButton("+ SetRounding"); b_pl.clicked.connect(self._on_prog_add_setrounding)
-        pl_row.addWidget(b_pl)
-        plw = QWidget(); plw.setLayout(pl_row); mod_lay.addWidget(plw)
-        # SetTool
-        tl_row = QHBoxLayout()
-        tl_row.addWidget(QLabel("TL#"))
-        self._prog_tool_no = QSpinBox(); self._prog_tool_no.setRange(0, 15); self._prog_tool_no.setValue(0)
-        tl_row.addWidget(self._prog_tool_no); tl_row.addStretch()
+        self._prog_pl.setMinimumWidth(64)
+        b_pl = QPushButton("+ Rounding"); b_pl.clicked.connect(self._on_prog_add_setrounding)
+        b_pl.setToolTip("Corner rounding PL (0 = sharp/exact … 8 = smooth/fast)")
+        _grid_row(mod_lay, r, "PL", _hwrap(self._prog_pl, fill=True), b_pl); r += 1
+        self._prog_tool_no = QSpinBox(); self._prog_tool_no.setRange(0, 15)
+        self._prog_tool_no.setValue(0); self._prog_tool_no.setMinimumWidth(64)
         b_tool = QPushButton("+ SetTool"); b_tool.clicked.connect(self._on_prog_add_settool)
-        tl_row.addWidget(b_tool)
-        tlw = QWidget(); tlw.setLayout(tl_row); mod_lay.addWidget(tlw)
-        # SetRefFrame
-        uf_row = QHBoxLayout()
-        uf_row.addWidget(QLabel("UF#"))
-        self._prog_uf_no = QSpinBox(); self._prog_uf_no.setRange(0, 15); self._prog_uf_no.setValue(0)
-        uf_row.addWidget(self._prog_uf_no); uf_row.addStretch()
-        b_uf = QPushButton("+ SetRefFrame"); b_uf.clicked.connect(self._on_prog_add_setrefframe)
-        uf_row.addWidget(b_uf)
-        ufw = QWidget(); ufw.setLayout(uf_row); mod_lay.addWidget(ufw)
-        mod_lay.addStretch()
+        b_tool.setToolTip("Select tool coordinate TL# for following moves")
+        _grid_row(mod_lay, r, "TL#", _hwrap(self._prog_tool_no, fill=True), b_tool); r += 1
+        self._prog_uf_no = QSpinBox(); self._prog_uf_no.setRange(0, 15)
+        self._prog_uf_no.setValue(0); self._prog_uf_no.setMinimumWidth(64)
+        b_uf = QPushButton("+ RefFrame"); b_uf.clicked.connect(self._on_prog_add_setrefframe)
+        b_uf.setToolTip("Select user/reference frame UF# for following moves")
+        _grid_row(mod_lay, r, "UF#", _hwrap(self._prog_uf_no, fill=True), b_uf); r += 1
+        mod_lay.setRowStretch(r, 1)
         tabs.addTab(mod_w, "Modal")
+
+        # Căn giữa giá trị trong mọi spinbox — vì input fill hết col1 (rộng),
+        # số canh giữa trông cân đối thay vì lệch trái để trống bên phải.
+        for _sp in (self._prog_do_idx, self._prog_io_idx, self._prog_io_tout,
+                    self._prog_wait_spin, self._prog_spd_vj, self._prog_spd_v,
+                    self._prog_pl, self._prog_tool_no, self._prog_uf_no):
+            _sp.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        # Tab area co theo content của tab ĐANG chọn (không cao bằng tab cao
+        # nhất) → bỏ khoảng trống khi đang ở tab ngắn (vd Motion). Page ẩn set
+        # Ignored policy để không đẩy sizeHint của QTabWidget lên = max.
+        self._prog_tabs = tabs
+        tabs.currentChanged.connect(self._on_prog_tab_changed)
+        self._on_prog_tab_changed(tabs.currentIndex())
 
         vbox.addWidget(tabs)
 
-        # ══ 4. PLAYBACK bar (always visible) ═════════════════════════
-        pb_row = QHBoxLayout(); pb_row.setSpacing(6)
-        b_play = QPushButton("▶ Sim")
-        b_play.setMinimumHeight(34)
-        b_play.setToolTip("Play program in simulation (no robot)")
-        b_play.setStyleSheet(
-            "QPushButton { background-color: #2da44e; color: white; "
-            "font-weight: bold; border-radius: 4px; }"
-            "QPushButton:hover { background-color: #2c974b; }")
+        # ══ 4. PLAYBACK bar — 2 hàng tách Sim ↔ Real robot ══════════════
+        # Hàng 1 = điều khiển SIMULATION (an toàn): Run Sim / Pause / Stop +
+        # tốc độ. Hàng 2 = REAL ROBOT (nguy hiểm, tách riêng cho chủ đích):
+        # Run on Robot full-width. Mọi nút có tên đầy đủ + tooltip.
+        _GREEN = ("QPushButton { background-color: #2da44e; color: white; "
+                  "font-weight: bold; border-radius: 4px; padding: 4px 8px; }"
+                  "QPushButton:hover { background-color: #2c974b; }")
+        _RED = ("QPushButton { background-color: #cf222e; color: white; "
+                "font-weight: bold; border-radius: 4px; padding: 4px 8px; }"
+                "QPushButton:hover { background-color: #a40e26; }")
+        _ORANGE = ("QPushButton { background-color: #fb8500; color: white; "
+                   "font-weight: bold; border-radius: 4px; padding: 6px 8px; }"
+                   "QPushButton:hover { background-color: #d96e00; }")
+
+        # ─ Hàng 1: Sim controls ─
+        sim_row = QHBoxLayout(); sim_row.setSpacing(6)
+        b_play = QPushButton("▶  Run Sim")
+        b_play.setMinimumHeight(34); b_play.setStyleSheet(_GREEN)
+        b_play.setToolTip("Run the program in simulation (no real robot moves)")
         b_play.clicked.connect(self._on_prog_play)
-        b_run_robot = QPushButton("⚙ Run on Robot")
-        b_run_robot.setMinimumHeight(34)
-        b_run_robot.setToolTip(
-            "Upload + execute current job trên YRC1000 thật via HSE")
-        b_run_robot.setStyleSheet(
-            "QPushButton { background-color: #fb8500; color: white; "
-            "font-weight: bold; border-radius: 4px; }"
-            "QPushButton:hover { background-color: #d96e00; }")
-        b_run_robot.clicked.connect(self._on_run_on_robot)
-        self._btn_pause = QPushButton("⏸")
-        self._btn_pause.setCheckable(True)
-        self._btn_pause.setMinimumHeight(34)
-        self._btn_pause.setToolTip("Pause/Resume sim playback")
+        self._btn_pause = QPushButton("▮▮  Pause")
+        self._btn_pause.setCheckable(True); self._btn_pause.setMinimumHeight(34)
+        self._btn_pause.setToolTip("Pause / Resume the running simulation")
         self._btn_pause.clicked.connect(self._on_prog_toggle_pause)
-        b_stop = QPushButton("⏹ Stop")
-        b_stop.setMinimumHeight(34)
-        b_stop.setToolTip("Stop sim OR emergency-stop robot (servo OFF)")
-        b_stop.setStyleSheet(
-            "QPushButton { background-color: #cf222e; color: white; "
-            "font-weight: bold; border-radius: 4px; }"
-            "QPushButton:hover { background-color: #a40e26; }")
+        b_stop = QPushButton("■  Stop")
+        b_stop.setMinimumHeight(34); b_stop.setStyleSheet(_RED)
+        b_stop.setToolTip(
+            "Stop simulation — or emergency-stop the real robot (servo OFF)")
         b_stop.clicked.connect(self._on_stop_all)
-        pb_row.addWidget(b_play, 2)
-        pb_row.addWidget(b_run_robot, 2)
-        pb_row.addWidget(self._btn_pause, 1)
-        pb_row.addWidget(b_stop, 1)
-        pb_row.addWidget(QLabel("Speed"))
+        sim_row.addWidget(b_play, 3)
+        sim_row.addWidget(self._btn_pause, 2)
+        sim_row.addWidget(b_stop, 2)
+        lbl_spd = QLabel("Speed")
+        lbl_spd.setToolTip("Simulation playback speed multiplier (0.25× – 5×)")
+        sim_row.addWidget(lbl_spd)
         self._sim_speed_spin = QDoubleSpinBox()
         self._sim_speed_spin.setRange(0.25, 5.0); self._sim_speed_spin.setSingleStep(0.25)
         self._sim_speed_spin.setValue(1.0); self._sim_speed_spin.setSuffix("×")
+        self._sim_speed_spin.setToolTip("Simulation playback speed multiplier")
         self._sim_speed_spin.valueChanged.connect(
             lambda v: setattr(self, "_sim_speed_mult", float(v)))
-        pb_row.addWidget(self._sim_speed_spin)
-        pbw = QWidget(); pbw.setLayout(pb_row)
-        vbox.addWidget(pbw)
+        sim_row.addWidget(self._sim_speed_spin)
+        simw = QWidget(); simw.setLayout(sim_row)
+        vbox.addWidget(simw)
+
+        # ─ Hàng 2: Real robot (tách riêng — deliberate) ─
+        robot_row = QHBoxLayout(); robot_row.setSpacing(6)
+        b_run_robot = QPushButton("⚙  Run on Robot  (real — HSE)")
+        b_run_robot.setMinimumHeight(34); b_run_robot.setStyleSheet(_ORANGE)
+        b_run_robot.setToolTip(
+            "Upload + execute the current job on the real YRC1000 controller "
+            "via HSE. Robot WILL move — safety dialog appears first.")
+        b_run_robot.clicked.connect(self._on_run_on_robot)
+        robot_row.addWidget(b_run_robot, 1)
+        rbw = QWidget(); rbw.setLayout(robot_row)
+        vbox.addWidget(rbw)
 
         # ══ 5. FILE bar (Save / Load / Export / Clear) ════════════════
         file_row = QHBoxLayout(); file_row.setSpacing(4)
-        for label, cb in (
-            ("Save",        self._on_prog_save_dlg),
-            ("Load",        self._on_prog_load_dlg),
-            ("Export .JBI", self._on_prog_export_dlg),
-            ("Clear all",   self._on_prog_clear),
+        for label, cb, tip in (
+            ("Save",        self._on_prog_save_dlg,   "Save project (all jobs + targets) to JSON"),
+            ("Load",        self._on_prog_load_dlg,   "Load project from JSON (v1/v2/v3 compatible)"),
+            ("Export .JBI", self._on_prog_export_dlg, "Export current job to Yaskawa INFORM .JBI"),
+            ("Clear all",   self._on_prog_clear,      "Delete all jobs + targets (reset to empty MAIN)"),
         ):
-            b = QPushButton(label); b.clicked.connect(cb)
+            b = QPushButton(label); b.setToolTip(tip); b.clicked.connect(cb)
             file_row.addWidget(b)
         fw = QWidget(); fw.setLayout(file_row)
         vbox.addWidget(fw)
@@ -1335,7 +1547,15 @@ class GP7AppQt(QMainWindow):
         scroll.setWidgetResizable(True)
         scroll.setWidget(root)
         dock.setWidget(scroll)
-        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, dock)
+        # minimumWidth = _CELL_DOCK_W để vùng tab chung co được về cell width
+        # khi cell active. Khi program tab active, _sync_prog_dock_check resize
+        # vùng về _PROG_DOCK_W. Content có QScrollArea nên lúc ẩn sau tab vẫn ổn.
+        dock.setMinimumWidth(_CELL_DOCK_W)
+        self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, dock)
+        # Tabify vào group trái (jog + cell). jog/cell đã build trước (order:
+        # jog → cell → program trong __init__).
+        if hasattr(self, "_jog_dock"):
+            self.tabifyDockWidget(self._jog_dock, dock)
         dock.setVisible(False)
         dock.visibilityChanged.connect(self._sync_prog_dock_check)
 
@@ -1344,33 +1564,2011 @@ class GP7AppQt(QMainWindow):
     # ══════════════════════════════════════════════════════════════════
 
     def _load_scene(self) -> None:
-        """Load tất cả mesh + lights vào pyvista plotter."""
-        self._add_floor()
+        """Load tất cả mesh + lights vào pyvista plotter (legacy — bằng việc
+        gọi _load_robot_gp7 + _load_cell_assets sau khi đã init base scene).
+        Floor KHÔNG load mặc định (toggle qua menu)."""
         self._add_world_axes_triad()
+        self._setup_lighting()
+        self._load_robot_assets()
+        self._load_cell_assets()
+
+    # ══════════════════════════════════════════════════════════════════
+    # Deferred robot/cell loaders (menu-triggered hoặc auto từ ctor)
+    # ══════════════════════════════════════════════════════════════════
+
+    def _load_robot_gp7(self,
+                          base_xyz_mm: tuple[float, float, float] | None = None,
+                          home_joints_deg: list[float] | None = None,
+                          ) -> None:
+        """Build GP7 URDF model + STL meshes + enable robot-dependent UI.
+        Idempotent — nếu đã load thì chỉ báo status.
+
+        Priority for base_xyz / home_joints:
+          1. Caller-provided params (vd từ Add Robot dialog).
+          2. cell_config.robot nếu đã có.
+          3. Defaults: (0, 0, 630) mm và [0]*6 deg.
+        """
+        if self._model is not None:
+            self._set_status("Robot GP7 đã load rồi", level="info")
+            return
+        cc = self._cell_config
+        if base_xyz_mm is not None:
+            self._base_xyz = tuple(base_xyz_mm)
+        elif cc is not None and getattr(cc, "robot", None) is not None:
+            self._base_xyz = tuple(cc.robot.pose.xyz_mm)
+        else:
+            # Default Z=330: stand built-in của GP7 (330mm) chạm sàn (Z=0).
+            # Nếu user thêm pedestal 300mm sau, đổi Z lên 630 trong Edit dialog.
+            self._base_xyz = (0.0, 0.0, 330.0)
+        if home_joints_deg is not None:
+            self._home_joints = list(home_joints_deg)
+        elif cc is not None and getattr(cc, "robot", None) is not None:
+            self._home_joints = list(cc.robot.home_joints_deg)
+        else:
+            self._home_joints = [0.0] * 6
+        self._joints = list(self._home_joints)
+        self._model = gp7_urdf(base_xyz_mm=self._base_xyz)
+
+        # Load STL meshes + apply home pose
+        self._load_robot_assets()
+        self._apply_joints_main(self._joints)
+        self._refresh_pose_readout()
+        # Re-build jog dock sliders với joint limits từ model (cần model live)
+        self._rebuild_jog_sliders_if_needed()
+        self._set_robot_dependent_enabled(True)
+        # Auto-fit camera để toàn robot lọt khung — tránh user phải cuộn
+        # chuột để zoom out sau khi load. Sau đó set Iso preset cho góc
+        # nhìn nhất quán.
+        try:
+            self._plotter.reset_camera()
+            self._set_camera_preset("Iso")
+        except Exception:                                  # noqa: BLE001
+            pass
+        # Đảm bảo có _cell_config tối thiểu để user add components ngay
+        # vào tree mà không cần Load Cell trước.
+        self._ensure_cell_config()
+        # Sync robot pose/home vào _cell_config để Save Cell nhận đúng giá trị
+        # vừa load (đặc biệt khi user gọi Add Robot với custom params).
+        self._cell_config.robot.pose = PoseConfig(
+            xyz_mm=self._base_xyz, rpy_deg=(0.0, 0.0, 0.0))
+        self._cell_config.robot.home_joints_deg = list(self._home_joints)
+        self._refresh_cell_tree()
+        # Auto-show triads Base + Tool (RoboDK convention): user thấy ngay
+        # XYZ axes ở base + end-effector mà không cần manual toggle.
+        if hasattr(self, "_frame_checks"):
+            for key in ("base", "tool"):
+                cb = self._frame_checks.get(key)
+                if cb is not None and not cb.isChecked():
+                    cb.setChecked(True)                     # fire toggle → add triad
+        self._set_status("Robot GP7 loaded", level="ok")
+
+    def _load_cell_from_yaml(self, path: str | Path) -> None:
+        """Load cell config từ YAML file, áp vào scene. Cell config bao gồm
+        cả robot pose + home joints, nên đồng thời **auto-load robot GP7**
+        (nếu chưa load) — user thường không muốn cell mà thiếu robot."""
+        path = Path(path)
+        try:
+            cfg = CellConfig.from_yaml(path)
+        except Exception as e:                                   # noqa: BLE001
+            self._set_status(f"Lỗi load cell '{path.name}': {e}", level="err")
+            return
+        self._cell_config = cfg
+        # Auto-load robot GP7 trước (nếu chưa) để base_xyz + home joints lấy
+        # từ cfg.robot, và STL meshes hiện cùng cell. Nếu robot đã load mà
+        # base_xyz lệch với cfg.robot.pose, rebuild model + apply home joints
+        # để robot đúng vị trí cell yêu cầu.
+        if self._model is None:
+            self._load_robot_gp7()
+        else:
+            new_base = tuple(cfg.robot.pose.xyz_mm) \
+                if getattr(cfg.robot, "pose", None) else self._base_xyz
+            if new_base != self._base_xyz:
+                self._base_xyz = new_base
+                self._model = gp7_urdf(base_xyz_mm=new_base)
+            self._home_joints = list(cfg.robot.home_joints_deg) \
+                if getattr(cfg.robot, "home_joints_deg", None) \
+                else self._home_joints
+            self._joints = list(self._home_joints)
+            self._apply_joints_main(self._joints)
+        # Re-build tool/ref frames để jog/IK dùng đúng config
+        self._tool_frames = _build_tool_frames(cfg)
+        self._ref_frames = _build_ref_frames(cfg)
+        self._tool_idx = (len(self._tool_frames) - 1
+                          if len(self._tool_frames) > 1 else 0)
+        self._ref_idx = 0
+        # Refresh combo UI nếu có (tool/ref combos)
+        self._refresh_tool_ref_combos_if_present()
+        # Load cell meshes (worktable, pedestal, objects)
+        self._load_cell_assets()
+        # Refresh Cell tree để hiện structure mới
+        self._refresh_cell_tree()
+        # HSE connection update nếu config có
+        rc = getattr(cfg, "robot_connection", None)
+        if rc is not None:
+            self._hse_ip = getattr(rc, "ip", "") or ""
+            self._hse_tool_no = int(getattr(rc, "tool_no", 1) or 1)
+        # Auto-fit camera bao gồm cell meshes mới
+        try:
+            self._plotter.reset_camera()
+            self._set_camera_preset("Iso")
+        except Exception:                                  # noqa: BLE001
+            pass
+        # Restore visibility state nếu có trong metadata (B8 persistence)
+        vis = getattr(cfg.metadata, "visibility_state", None) if cfg else None
+        if vis:
+            self._component_visibility = dict(vis)
+            # Apply saved Hide states sau khi mesh đã load
+            self._reapply_visibility_state()
+        if self._model is not None:
+            self._plotter.render()
+        self._set_status(f"Cell loaded: {path.name}", level="ok")
+
+    def _save_cell_to_yaml(self, path: str | Path) -> None:
+        """Dump CellConfig hiện tại sang YAML file. Cũng save visibility
+        state (Show/Hide từ cell tree) vào metadata cho persistence."""
+        if self._cell_config is None:
+            self._set_status("Chưa có cell config để save", level="warn")
+            return
+        # Snapshot visibility state vào metadata trước khi dump
+        vis = getattr(self, "_component_visibility", {})
+        if vis:
+            self._cell_config.metadata.visibility_state = dict(vis)
+        try:
+            self._cell_config.to_yaml(Path(path))
+            self._set_status(f"Cell saved: {Path(path).name}", level="ok")
+        except Exception as e:                                   # noqa: BLE001
+            self._set_status(f"Lỗi save cell: {e}", level="err")
+
+    def _set_robot_dependent_enabled(self, enabled: bool) -> None:
+        """Bật/tắt mọi widget phụ thuộc model. Khi enabled=False, jog dock
+        + actions kinematics đều disabled (tooltip hint user phải load robot
+        trước)."""
+        # Jog dock: chỉ disable NỘI DUNG (scroll area + controls bên trong),
+        # KHÔNG disable cả dock — vì disable dock sẽ xám luôn thanh tiêu đề +
+        # nút ✕ ⇒ không đóng panel được. Title bar phải luôn enabled.
+        if hasattr(self, "_jog_dock") and self._jog_dock.widget() is not None:
+            self._jog_dock.widget().setEnabled(enabled)
+        # Status console vẫn enabled để hiện hint
+        # Robot-dependent menu actions (config dialog, params, IK)
+        for attr in ("_act_configurations", "_act_robot_params",
+                     "_act_find_alts", "_act_move_home", "_act_surface_pick"):
+            act = getattr(self, attr, None)
+            if act is not None:
+                act.setEnabled(enabled)
+
+    def _rebuild_jog_sliders_if_needed(self) -> None:
+        """Sau khi load robot, joint sliders cần range từ joint limits của
+        model. Nếu jog_dock được build với model=None thì sliders đã có range
+        mặc định ±180° — không sao, slider value vẫn đúng physical. Method
+        này placeholder cho future refinement (nếu cần)."""
+        # Placeholder: hiện tại _build_jog_dock đã đọc self._model trong loop
+        # tạo slider. Khi load robot late, sliders sẽ giữ range cũ. Để giữ
+        # commit nhỏ gọn ta KHÔNG rebuild jog dock — chỉ cần update value khi
+        # _apply_joints_main chạy.
+        return
+
+    def _refresh_tool_ref_combos_if_present(self) -> None:
+        """Update tool/ref combo nếu các attribute combo tồn tại sau load
+        cell. _build_jog_dock thường tạo các combo này — nếu có thì refresh."""
+        for attr, items_attr in (("_tool_combo", "_tool_frames"),
+                                   ("_ref_combo", "_ref_frames")):
+            combo = getattr(self, attr, None)
+            if combo is None:
+                continue
+            items = getattr(self, items_attr, [])
+            try:
+                combo.blockSignals(True)
+                combo.clear()
+                for name, _T in items:
+                    combo.addItem(name)
+                combo.blockSignals(False)
+            except Exception:                                   # noqa: BLE001
+                pass
+
+    # ── Menu action handlers ──────────────────────────────────────────
+
+    def _on_action_load_robot_gp7(self) -> None:
+        self._load_robot_gp7()
+
+    def _on_action_load_cell(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Load Cell from YAML",
+            str(self._project_root / "config"),
+            "YAML files (*.yaml *.yml);;All files (*.*)")
+        if path:
+            self._load_cell_from_yaml(path)
+
+    def _on_action_save_cell(self) -> None:
+        # Tự động lấy CellConfig hiện tại từ tree (bao gồm cả thành phần
+        # user add interactively); _cell_config được _refresh_cell_tree giữ
+        # đồng bộ.
+        if self._cell_config is None:
+            self._ensure_cell_config()
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Save Cell to YAML",
+            str(self._project_root / "config" / "cell_layout.yaml"),
+            "YAML files (*.yaml *.yml)")
+        if path:
+            self._save_cell_to_yaml(path)
+
+    # ══════════════════════════════════════════════════════════════════
+    # Cell Editor — interactive cell design (RoboDK Station Tree style)
+    # ══════════════════════════════════════════════════════════════════
+    # Tree dock hiển thị structure cell hiện tại. User add/edit/delete qua
+    # context menu (right-click). Mọi mutation update self._cell_config
+    # ⇒ Save Cell tự dump đầy đủ thiết kế gồm các thành phần mới thêm.
+
+    def _build_cell_tree_dock(self) -> None:
+        """Cell Tree dock (left, tab cùng Jog). Hẹp ~180px (≈½ chiều rộng cũ)
+        — dock chính chiếm ít không gian, viewport rộng hơn."""
+        dock = QDockWidget("Cell", self)
+        dock.setAllowedAreas(Qt.DockWidgetArea.LeftDockWidgetArea
+                             | Qt.DockWidgetArea.RightDockWidgetArea)
+        dock.setFeatures(QDockWidget.DockWidgetFeature.DockWidgetClosable
+                         | QDockWidget.DockWidgetFeature.DockWidgetMovable)
+        self._cell_tree = QTreeWidget()
+        self._cell_tree.setHeaderLabel("Cell components")
+        self._cell_tree.setContextMenuPolicy(
+            Qt.ContextMenuPolicy.CustomContextMenu)
+        self._cell_tree.customContextMenuRequested.connect(
+            self._on_cell_tree_context_menu)
+        self._cell_tree.itemDoubleClicked.connect(
+            self._on_cell_tree_double_click)
+        dock.setWidget(self._cell_tree)
+        # Width policy: prefer 180px, min 140px, không cho stretch
+        dock.setMinimumWidth(140)
+        self._cell_tree.setMinimumWidth(140)
+        dock.resize(_CELL_DOCK_W, dock.height())
+        self._cell_tree_dock = dock
+        # Tab cùng Jog (cùng panel trái); Cell tree visible by default
+        # (Jog dock initial=False trong _build_jog_dock).
+        self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, dock)
+        if hasattr(self, "_jog_dock"):
+            self.tabifyDockWidget(self._jog_dock, dock)
+            dock.raise_()
+        # Force width sau khi dock đã add vào main window (Qt cần
+        # resizeDocks để actual width có hiệu lực, KHÔNG đủ dock.resize).
+        QTimer.singleShot(0, lambda: self.resizeDocks(
+            [dock], [_CELL_DOCK_W], Qt.Orientation.Horizontal))
+        # Sync menu tick khi user đóng dock bằng nút X title bar
+        dock.visibilityChanged.connect(self._sync_cell_dock_check)
+        self._refresh_cell_tree()
+
+    def _ensure_cell_config(self) -> None:
+        """Tạo CellConfig tối thiểu (chỉ robot) nếu None. Worktable/camera/
+        gripper/floor/pedestal/camera_mount đều None — user add qua UI."""
+        if self._cell_config is not None:
+            return
+        from ...cell.cell_models import MetadataConfig, RobotConfig
+        self._cell_config = CellConfig(
+            metadata=MetadataConfig(version="0.0.0",
+                                    notes="Created from Cell Editor"),
+            robot=RobotConfig(
+                name="Yaskawa GP7", source="library",
+                library_name="Yaskawa-GP7.robot",
+                pose=PoseConfig(xyz_mm=(0.0, 0.0, 330.0),
+                                rpy_deg=(0.0, 0.0, 0.0)),
+                home_joints_deg=[0.0] * 6),
+        )
+
+    def _refresh_cell_tree(self) -> None:
+        """Re-build tree từ self._cell_config. RoboDK-style: chỉ hiển thị item
+        ĐÃ TỒN TẠI (không có placeholder "(none) — Add"). Add components qua
+        context menu trên root node hoặc menu Edit (top-level)."""
+        if not hasattr(self, "_cell_tree"):
+            return
+        self._cell_tree.clear()
+        cfg = self._cell_config
+
+        def _add(parent, label, kind, ref=None):
+            it = QTreeWidgetItem(parent, [label])
+            it.setData(0, Qt.ItemDataRole.UserRole, (kind, ref))
+            return it
+
+        # Đếm items để hiện ở root như RoboDK ("Cell (12)")
+        def _count(c):
+            if c is None: return 0
+            n = sum(1 for v in (getattr(c, k, None) for k in
+                    ("worktable", "robot_pedestal", "floor", "camera",
+                     "camera_mount")) if v is not None)
+            n += len(c.frames or []) + len(c.objects or [])
+            n += 1 if (c.robot is not None and self._model is not None) else 0
+            # Count gripper chỉ khi có mesh (default empty không count)
+            g = getattr(c, "gripper", None) if c else None
+            if g is not None and getattr(g, "mesh", None):
+                n += 1
+            return n
+
+        n = _count(cfg)
+        root = QTreeWidgetItem(self._cell_tree, [f"Cell ({n})"])
+        root.setData(0, Qt.ItemDataRole.UserRole, ("root", None))
+
+        if cfg is None or n == 0:
+            root.setExpanded(True)
+            return
+
+        # ── Robot (root level) — Gripper nested dưới robot ──
+        if cfg.robot is not None and self._model is not None:
+            rob_node = _add(root, cfg.robot.name, "robot", cfg.robot)
+            g = getattr(cfg, "gripper", None)
+            if g is not None and getattr(g, "mesh", None):
+                _add(rob_node, f"{g.name} (TCP)", "gripper", g)
+            rob_node.setExpanded(True)
+
+        # (World/Base/Tool triads toggle qua right-click Robot → Triads submenu)
+
+        # ── Cell items group (Worktable/Pedestal/Floor/Camera/Camera Mount) ──
+        cell_items = []
+        for kind, label in (("worktable", "Worktable"),
+                              ("robot_pedestal", "Pedestal"),
+                              ("floor", "Floor"),
+                              ("camera", "Camera"),
+                              ("camera_mount", "Camera Mount")):
+            ref = getattr(cfg, kind, None)
+            if ref is not None:
+                cell_items.append((kind, label, ref))
+        if cell_items:
+            ci_group = QTreeWidgetItem(self._cell_tree,
+                                        [f"Cell items ({len(cell_items)})"])
+            ci_group.setData(0, Qt.ItemDataRole.UserRole,
+                             ("cell_items_group", None))
+            for kind, label, ref in cell_items:
+                _add(ci_group, label, kind, ref)
+            ci_group.setExpanded(True)
+
+        # ── Frames group ──
+        frames = cfg.frames or []
+        if frames:
+            fr_group = QTreeWidgetItem(self._cell_tree,
+                                        [f"Frames ({len(frames)})"])
+            fr_group.setData(0, Qt.ItemDataRole.UserRole,
+                             ("frames_group", None))
+            for fr in frames:
+                _add(fr_group, fr.name, "frame", fr)
+            fr_group.setExpanded(True)
+
+        # ── Objects group ──
+        objs = cfg.objects or []
+        if objs:
+            obj_group = QTreeWidgetItem(self._cell_tree,
+                                         [f"Objects ({len(objs)})"])
+            obj_group.setData(0, Qt.ItemDataRole.UserRole,
+                              ("objects_group", None))
+            for o in objs:
+                _add(obj_group, o.name, "object", o)
+            obj_group.setExpanded(True)
+
+        root.setExpanded(True)
+
+    # ── Context menu ──────────────────────────────────────────────────
+
+    def _on_cell_tree_context_menu(self, pos: QPoint) -> None:
+        item = self._cell_tree.itemAt(pos)
+        kind, ref = (item.data(0, Qt.ItemDataRole.UserRole)
+                     if item is not None else (None, None))
+        menu = QMenu(self)
+        # Nếu move widget đang active ⇒ hiện Commit/Cancel ở đầu menu
+        if getattr(self, "_move_widget", None) is not None:
+            menu.addAction("Commit move",
+                           lambda: self._stop_move_widget(commit=True))
+            menu.addAction("Cancel move",
+                           lambda: self._stop_move_widget(commit=False))
+            menu.addSeparator()
+        # Show/Hide ở đầu cho mọi leaf (component thực) — checkable toggle.
+        if kind in ("robot", "gripper", "worktable", "robot_pedestal",
+                     "floor", "camera", "camera_mount", "frame", "object"):
+            vis = self._is_component_visible(kind, ref)
+            act_vis = menu.addAction("Hide" if vis else "Show")
+            act_vis.triggered.connect(
+                lambda _checked=False, k=kind, r=ref: self._toggle_component_visibility(k, r))
+            menu.addSeparator()
+        # (world_axes branch đã bỏ — toggle qua robot → Triads submenu)
+        # Leaf nodes — Edit/Delete/Move
+        if kind == "frame":
+            menu.addAction("Edit…", lambda: self._show_edit_frame_dlg(ref))
+            menu.addAction("Delete", lambda: self._delete_frame(ref))
+        elif kind == "object":
+            menu.addAction("Edit…", lambda: self._show_edit_object_dlg(ref))
+            menu.addAction("Move (drag in viewport)",
+                           lambda: self._start_move_widget("object", ref))
+            menu.addAction("Delete", lambda: self._delete_object(ref))
+        elif kind in ("worktable", "robot_pedestal", "floor",
+                      "camera_mount", "camera"):
+            menu.addAction("Edit…",
+                           lambda k=kind, r=ref: self._show_edit_single_dlg(k, r))
+            if kind != "camera":  # camera không có actor riêng để drag
+                menu.addAction("Move (drag in viewport)",
+                               lambda k=kind, r=ref: self._start_move_widget(k, r))
+            if kind in ("robot_pedestal", "floor", "camera_mount", "worktable"):
+                menu.addAction("Delete",
+                               lambda k=kind: self._delete_single(k))
+        elif kind == "robot":
+            menu.addAction("Edit base pose…",
+                           lambda: self._show_edit_robot_dlg(ref))
+            # Sub-actions: add/edit gripper trực tiếp từ robot item
+            g = (self._cell_config.gripper
+                 if self._cell_config is not None else None)
+            if g is None or not getattr(g, "mesh", None):
+                menu.addAction("Add Gripper…", self._show_add_gripper_dlg)
+            # Triads submenu — World/Base/Tool toggle ngay trên robot item
+            self._add_triads_submenu(menu)
+        elif kind == "gripper":
+            menu.addAction("Edit…", lambda: self._show_edit_gripper_dlg(ref))
+            menu.addAction("Delete", self._delete_gripper)
+        elif kind == "frames_group":
+            menu.addAction("Add Frame…", self._show_add_frame_dlg)
+        elif kind == "objects_group":
+            menu.addAction("Add Object…", self._show_add_object_dlg)
+        elif kind == "cell_items_group":
+            cfg = self._cell_config
+            if cfg is None or cfg.worktable is None:
+                menu.addAction("Add Worktable…",
+                    lambda: self._show_add_single_dlg("worktable"))
+            if cfg is None or cfg.robot_pedestal is None:
+                menu.addAction("Add Pedestal…",
+                    lambda: self._show_add_single_dlg("robot_pedestal"))
+            if cfg is None or cfg.floor is None:
+                menu.addAction("Add Floor…",
+                    lambda: self._show_add_single_dlg("floor"))
+            if cfg is None or cfg.camera_mount is None:
+                menu.addAction("Add Camera Mount…",
+                    lambda: self._show_add_single_dlg("camera_mount"))
+            if cfg is None or cfg.camera is None:
+                menu.addAction("Add Camera…", self._show_add_camera_dlg)
+        elif kind == "world_axes":
+            pass            # Show/Hide actions đã add ở block trên
+        else:
+            # Root, background, hoặc unknown → menu "Add ..." như RoboDK.
+            cfg = self._cell_config
+            self._add_cell_menu_actions(menu, cfg)
+        if menu.actions():
+            menu.exec(self._cell_tree.viewport().mapToGlobal(pos))
+
+    def _add_cell_menu_actions(self, menu: QMenu, cfg) -> None:
+        """Populate menu với các Add action phù hợp. Items đã tồn tại không
+        liệt kê lại — giữ menu sạch như RoboDK."""
+        if self._model is None:
+            menu.addAction("Add Robot…", self._show_add_robot_dlg)
+            menu.addSeparator()
+        menu.addAction("Add Object…", self._show_add_object_dlg)
+        menu.addAction("Add Frame…", self._show_add_frame_dlg)
+        menu.addSeparator()
+        if cfg is None or cfg.worktable is None:
+            menu.addAction("Add Worktable…",
+                           lambda: self._show_add_single_dlg("worktable"))
+        if cfg is None or cfg.robot_pedestal is None:
+            menu.addAction("Add Pedestal…",
+                           lambda: self._show_add_single_dlg("robot_pedestal"))
+        if cfg is None or cfg.floor is None:
+            menu.addAction("Add Floor…",
+                           lambda: self._show_add_single_dlg("floor"))
+        if cfg is None or cfg.camera_mount is None:
+            menu.addAction("Add Camera Mount…",
+                           lambda: self._show_add_single_dlg("camera_mount"))
+        if cfg is None or cfg.camera is None:
+            menu.addAction("Add Camera…", self._show_add_camera_dlg)
+        # Gripper: chỉ show khi robot đã load (vì gripper attach vào flange)
+        # và chưa có gripper.
+        if (self._model is not None and (cfg is None
+                or cfg.gripper is None
+                or not getattr(cfg.gripper, "mesh", None))):
+            menu.addAction("Add Gripper…", self._show_add_gripper_dlg)
+
+    def _on_cell_tree_double_click(self, item: QTreeWidgetItem,
+                                     col: int) -> None:
+        kind, ref = item.data(0, Qt.ItemDataRole.UserRole) or (None, None)
+        if kind == "frame":
+            self._show_edit_frame_dlg(ref)
+        elif kind == "object":
+            self._show_edit_object_dlg(ref)
+        elif kind == "robot":
+            self._show_edit_robot_dlg(ref)
+        elif kind in ("worktable", "robot_pedestal", "floor",
+                      "camera_mount", "camera"):
+            self._show_edit_single_dlg(kind, ref)
+        elif kind == "gripper":
+            self._show_edit_gripper_dlg(ref)
+
+    # ── Pose form helper ──────────────────────────────────────────────
+
+    def _make_pose_form(self, xyz=(0.0, 0.0, 0.0),
+                         rpy=(0.0, 0.0, 0.0)) -> tuple[QFormLayout, dict]:
+        """Build form gồm 3 spinbox xyz_mm + 3 spinbox rpy_deg. Trả
+        (layout, widgets_dict) để caller wrap vào QDialog."""
+        form = QFormLayout()
+        widgets = {}
+        def _spin(val, lo, hi, suffix, dec=1):
+            sp = QDoubleSpinBox()
+            sp.setRange(lo, hi); sp.setDecimals(dec); sp.setSingleStep(1.0)
+            sp.setValue(float(val)); sp.setSuffix(suffix); sp.setFixedWidth(110)
+            return sp
+        for axis, v in zip("XYZ", xyz):
+            w = _spin(v, -5000.0, 5000.0, " mm")
+            form.addRow(f"{axis} (mm):", w); widgets[f"x{axis.lower()}"] = w
+        for axis, v in zip(("R", "P", "Y"), rpy):
+            w = _spin(v, -360.0, 360.0, " °")
+            form.addRow(f"{axis} (deg):", w); widgets[f"r{axis.lower()}"] = w
+        return form, widgets
+
+    @staticmethod
+    def _read_pose(widgets: dict) -> tuple[tuple, tuple]:
+        xyz = (widgets["xx"].value(), widgets["xy"].value(),
+               widgets["xz"].value())
+        rpy = (widgets["rr"].value(), widgets["rp"].value(),
+               widgets["ry"].value())
+        return xyz, rpy
+
+    # ── Add Object / Frame dialogs ────────────────────────────────────
+
+    def _show_add_robot_dlg(self) -> None:
+        """Add Robot — pop-up dialog với variant combo, base pose, home joints.
+        Hiện tại chỉ support GP7 (single variant); design vẫn extensible."""
+        if self._model is not None:
+            QMessageBox.information(self, "Add Robot",
+                "Robot đã load rồi. Để đổi pose/home, dùng Edit "
+                "trên item robot trong cell tree.")
+            return
+        dlg = QDialog(self); dlg.setWindowTitle("Add Robot")
+        dlg.setMinimumWidth(560)
+        v = QVBoxLayout(dlg)
+        # Variant combo (full-width, trên cùng)
+        form = QFormLayout()
+        variant_combo = QComboBox()
+        variant_combo.addItem("Yaskawa GP7 (6-DOF)", "gp7")
+        form.addRow("Robot variant:", variant_combo)
+        v.addLayout(form)
+        # Middle row: [base pose fields | robot preview]. Preview lấp đúng vùng
+        # trống bên phải ô pose (trước đây bỏ trống). Z=330mm: stand GP7 chạm
+        # sàn (no pedestal); thêm pedestal 300mm thì sửa Z lên 630.
+        mid = QHBoxLayout()
+        pose_col = QVBoxLayout()
+        pose_col.addWidget(QLabel("<b>Base pose (world frame):</b>"))
+        pose_form, pw = self._make_pose_form(xyz=(0.0, 0.0, 330.0))
+        pose_col.addLayout(pose_form)
+        pose_col.addStretch()
+        mid.addLayout(pose_col, 0)
+        preview = self._make_preview_label((300, 300))
+        mid.addWidget(preview, 1)
+        v.addLayout(mid)
+        # Home joints (6 spinboxes, full-width dưới)
+        v.addWidget(QLabel("<b>Home joints (S, L, U, R, B, T) °:</b>"))
+        home_grid = QHBoxLayout()
+        home_spins: list[QDoubleSpinBox] = []
+        for i, name in enumerate(("S", "L", "U", "R", "B", "T")):
+            col = QVBoxLayout()
+            col.addWidget(QLabel(name))
+            sp = QDoubleSpinBox()
+            sp.setRange(-360.0, 360.0); sp.setDecimals(2); sp.setSingleStep(5.0)
+            sp.setSuffix(" °"); sp.setFixedWidth(80)
+            sp.setValue(0.0)
+            col.addWidget(sp); home_spins.append(sp); home_grid.addLayout(col)
+        v.addLayout(home_grid)
+        # Buttons
+        btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok
+                                 | QDialogButtonBox.StandardButton.Cancel)
+        def _ok():
+            xyz, rpy = self._read_pose(pw)
+            if rpy != (0.0, 0.0, 0.0):
+                QMessageBox.warning(dlg, "Add Robot",
+                    "Robot base hiện chỉ hỗ trợ xyz (rpy=0). RPY field bỏ qua.")
+            home = [sp.value() for sp in home_spins]
+            # variant lookup — tương lai có thể switch _load_robot_*()
+            variant = variant_combo.currentData()
+            if variant != "gp7":
+                QMessageBox.warning(dlg, "Add Robot",
+                    f"Variant '{variant}' chưa support.")
+                return
+            self._load_robot_gp7(base_xyz_mm=xyz, home_joints_deg=home)
+            dlg.accept()
+        btns.accepted.connect(_ok); btns.rejected.connect(dlg.reject)
+        v.addWidget(btns)
+
+        def _refresh_preview():
+            self._set_preview(preview, lambda sz: self._render_robot_thumbnail(
+                [sp.value() for sp in home_spins], size=sz))
+        for sp in home_spins:
+            sp.editingFinished.connect(_refresh_preview)
+        _refresh_preview()
+        dlg.exec()
+
+    def _show_add_gripper_dlg(self) -> None:
+        """Add Gripper — gắn vào flange (link_tool0) của robot. Khác với
+        Add Object: gripper có TCP offset (không phải base offset), và mesh
+        actor tự follow flange qua _render_scene_frame."""
+        self._ensure_cell_config()
+        dlg = QDialog(self); dlg.setWindowTitle("Add Gripper")
+        dlg.setMinimumWidth(440)
+        v = QVBoxLayout()
+        form = QFormLayout()
+        name_edit = QLineEdit("Gripper")
+        form.addRow("Name:", name_edit)
+        mesh_edit = QLineEdit()
+        mesh_edit.setPlaceholderText("models/gripper.stl")
+        mesh_row = QHBoxLayout()
+        mesh_row.addWidget(mesh_edit, 1)
+        btn_pick = QPushButton("Browse…")
+        def _pick():
+            p, _ = QFileDialog.getOpenFileName(
+                dlg, "Pick gripper mesh",
+                str(self._project_root / "models"),
+                "Mesh files (*.stl *.obj);;All (*.*)")
+            if p:
+                try:
+                    p = str(Path(p).resolve().relative_to(
+                        self._project_root.resolve()))
+                except ValueError: pass
+                mesh_edit.setText(p)
+        btn_pick.clicked.connect(_pick)
+        mesh_row.addWidget(btn_pick)
+        form.addRow("Mesh:", mesh_row)
+        v.addLayout(form)
+        v.addWidget(QLabel("<b>TCP offset (từ flange link_tool0):</b>"))
+        pose_form, pw = self._make_pose_form(xyz=(0.0, 0.0, 100.0))
+        v.addLayout(pose_form)
+        btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok
+                                 | QDialogButtonBox.StandardButton.Cancel)
+        def _ok():
+            name = name_edit.text().strip()
+            if not name:
+                QMessageBox.warning(dlg, "Add Gripper",
+                                     "Name không được trống"); return
+            mesh = mesh_edit.text().strip()
+            if not mesh:
+                QMessageBox.warning(dlg, "Add Gripper",
+                                     "Mesh path bắt buộc"); return
+            xyz, rpy = self._read_pose(pw)
+            try:
+                from ...cell.cell_models import GripperConfig
+                self._cell_config.gripper = GripperConfig(
+                    name=name, mesh=mesh,
+                    tcp_offset_xyz_mm=xyz, tcp_offset_rpy_deg=rpy)
+            except Exception as e:                          # noqa: BLE001
+                QMessageBox.warning(dlg, "Add Gripper", f"Invalid: {e}")
+                return
+            # Reload gripper actor + tool frames để jog/IK dùng đúng TCP
+            self._reload_gripper_actor()
+            self._tool_frames = _build_tool_frames(self._cell_config)
+            self._tool_idx = len(self._tool_frames) - 1
+            self._refresh_tool_ref_combos_if_present()
+            self._refresh_cell_tree()
+            self._set_status(f"Added gripper '{name}'", level="ok")
+            dlg.accept()
+        btns.accepted.connect(_ok); btns.rejected.connect(dlg.reject)
+        v.addWidget(btns)
+        preview = self._attach_preview(dlg, v)
+
+        def _refresh_preview():
+            self._set_preview(preview, lambda sz: self._render_mesh_thumbnail(
+                mesh_edit.text().strip(), [0.78, 0.78, 0.80], size=sz, zoom=0.82))
+        mesh_edit.editingFinished.connect(_refresh_preview)
+        btn_pick.clicked.connect(_refresh_preview)          # update sau Browse
+        _refresh_preview()
+        dlg.exec()
+
+    def _show_edit_gripper_dlg(self, g) -> None:
+        if g is None: return
+        dlg = QDialog(self); dlg.setWindowTitle(f"Edit Gripper: {g.name}")
+        dlg.setMinimumWidth(440)
+        v = QVBoxLayout(dlg)
+        form = QFormLayout()
+        form.addRow("Name:", QLabel(f"<b>{g.name}</b>"))
+        mesh_edit = QLineEdit(g.mesh or "")
+        mesh_row = QHBoxLayout()
+        mesh_row.addWidget(mesh_edit, 1)
+        btn_pick = QPushButton("Browse…")
+        def _pick():
+            p, _ = QFileDialog.getOpenFileName(
+                dlg, "Pick gripper mesh",
+                str(self._project_root / "models"),
+                "Mesh files (*.stl *.obj);;All (*.*)")
+            if p:
+                try:
+                    p = str(Path(p).resolve().relative_to(
+                        self._project_root.resolve()))
+                except ValueError: pass
+                mesh_edit.setText(p)
+        btn_pick.clicked.connect(_pick)
+        mesh_row.addWidget(btn_pick)
+        form.addRow("Mesh:", mesh_row)
+        v.addLayout(form)
+        v.addWidget(QLabel("<b>TCP offset (từ flange link_tool0):</b>"))
+        pose_form, pw = self._make_pose_form(
+            xyz=g.tcp_offset_xyz_mm, rpy=g.tcp_offset_rpy_deg)
+        v.addLayout(pose_form)
+        btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok
+                                 | QDialogButtonBox.StandardButton.Cancel)
+        def _ok():
+            xyz, rpy = self._read_pose(pw)
+            g.mesh = mesh_edit.text().strip() or None
+            g.tcp_offset_xyz_mm = xyz
+            g.tcp_offset_rpy_deg = rpy
+            self._reload_gripper_actor()
+            self._tool_frames = _build_tool_frames(self._cell_config)
+            self._refresh_tool_ref_combos_if_present()
+            self._refresh_cell_tree()
+            self._set_status(f"Updated gripper '{g.name}'", level="ok")
+            dlg.accept()
+        btns.accepted.connect(_ok); btns.rejected.connect(dlg.reject)
+        v.addWidget(btns)
+        dlg.exec()
+
+    def _delete_gripper(self) -> None:
+        if self._cell_config is None or self._cell_config.gripper is None:
+            return
+        g = self._cell_config.gripper
+        ret = QMessageBox.question(
+            self, "Delete Gripper",
+            f"Delete gripper '{g.name}'?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+        if ret != QMessageBox.StandardButton.Yes: return
+        # Schema giờ Optional → set None gọn gàng
+        self._cell_config.gripper = None
+        # Xoá actor mesh + revert tool frames về Flange
+        try:
+            self._plotter.remove_actor("gripper")
+        except Exception: pass                              # noqa: BLE001
+        self._link_actors.pop("gripper", None)
+        self._tool_frames = _build_tool_frames(self._cell_config)
+        self._tool_idx = 0
+        self._refresh_tool_ref_combos_if_present()
+        self._refresh_cell_tree()
+        self._plotter.render()
+        self._set_status(f"Deleted gripper '{g.name}'", level="ok")
+
+    # ══════════════════════════════════════════════════════════════════
+    # Move widget — interactive drag-to-move (vtkBoxWidget)
+    # ══════════════════════════════════════════════════════════════════
+
+    # ── Triads submenu (right-click robot → toggle World/Base/Tool) ──
+
+    def _add_triads_submenu(self, parent_menu: QMenu) -> None:
+        """Submenu Triads để toggle World/Base/Tool triads + labels từ
+        robot's context menu. Checkable items sync với jog dock checkboxes."""
+        parent_menu.addSeparator()
+        sub = parent_menu.addMenu("Triads")
+        # World axes
+        a_world = sub.addAction("World axes")
+        a_world.setCheckable(True)
+        a_world.setChecked(self._is_world_axes_visible())
+        a_world.triggered.connect(self._toggle_world_axes)
+        # World labels
+        a_lbls = sub.addAction("World axis labels")
+        a_lbls.setCheckable(True)
+        a_lbls.setChecked(self._is_world_axes_labels_visible())
+        a_lbls.triggered.connect(self._toggle_world_axes_labels)
+        sub.addSeparator()
+        # Base triad
+        a_base = sub.addAction("Base triad")
+        a_base.setCheckable(True)
+        a_base.setChecked("base" in self._frame_actors)
+        a_base.triggered.connect(
+            lambda _checked=False: self._toggle_frame_triad_from_menu("base"))
+        # Tool triad
+        a_tool = sub.addAction("Tool triad")
+        a_tool.setCheckable(True)
+        a_tool.setChecked("tool" in self._frame_actors)
+        a_tool.triggered.connect(
+            lambda _checked=False: self._toggle_frame_triad_from_menu("tool"))
+        # Flange (optional, ít dùng)
+        a_fl = sub.addAction("Flange triad")
+        a_fl.setCheckable(True)
+        a_fl.setChecked("flange" in self._frame_actors)
+        a_fl.triggered.connect(
+            lambda _checked=False: self._toggle_frame_triad_from_menu("flange"))
+
+    def _toggle_frame_triad_from_menu(self, key: str) -> None:
+        """Toggle frame triad (base/tool/flange/ref/joint_N). Sync với
+        checkbox tương ứng trong jog dock 'Show Frames' group."""
+        currently_on = key in self._frame_actors
+        new_state = not currently_on
+        # Sync checkbox UI (sẽ tự fire _on_toggle_frame)
+        cb = self._frame_checks.get(key) if hasattr(self, "_frame_checks") else None
+        if cb is not None:
+            cb.setChecked(new_state)
+        else:
+            # Không có checkbox (vd jog dock chưa build) → toggle trực tiếp
+            self._on_toggle_frame(key, new_state)
+        self._set_status(
+            f"{'Showed' if new_state else 'Hid'} {key} triad", level="ok")
+
+    # ── World axes visibility (axes + labels riêng biệt) ──────────────
+
+    def _is_world_axes_visible(self) -> bool:
+        actor = getattr(self, "_world_axes_actor", None)
+        if actor is None: return False
+        try: return bool(actor.GetVisibility())
+        except Exception: return True                      # noqa: BLE001
+
+    def _is_world_axes_labels_visible(self) -> bool:
+        actor = getattr(self, "_world_axes_actor", None)
+        if actor is None: return False
+        try:
+            # Label "visible" = có text (text rỗng ⇒ không render)
+            return bool(actor.GetXAxisLabelText())
+        except Exception:                                  # noqa: BLE001
+            return False
+
+    def _toggle_world_axes(self) -> None:
+        actor = getattr(self, "_world_axes_actor", None)
+        if actor is None: return
+        new = not bool(actor.GetVisibility())
+        actor.SetVisibility(new)
+        # Sync View menu tick nếu có
+        if hasattr(self, "_act_axes"):
+            self._set_toggle(self._act_axes, new)
+        self._plotter.render()
+        self._set_status(
+            f"{'Showed' if new else 'Hid'} world axes", level="ok")
+
+    def _toggle_world_axes_labels(self) -> None:
+        actor = getattr(self, "_world_axes_actor", None)
+        if actor is None: return
+        visible = self._is_world_axes_labels_visible()
+        if visible:
+            # Hide: clear text → no render
+            actor.SetXAxisLabelText("")
+            actor.SetYAxisLabelText("")
+            actor.SetZAxisLabelText("")
+        else:
+            # Show: restore "X","Y","Z" + force size nhỏ via caption width
+            actor.SetXAxisLabelText("X")
+            actor.SetYAxisLabelText("Y")
+            actor.SetZAxisLabelText("Z")
+            for cap in (actor.GetXAxisCaptionActor2D(),
+                          actor.GetYAxisCaptionActor2D(),
+                          actor.GetZAxisCaptionActor2D()):
+                cap.SetWidth(0.020); cap.SetHeight(0.018)
+                tp = cap.GetCaptionTextProperty()
+                tp.SetBold(False); tp.SetShadow(False); tp.SetItalic(False)
+        self._plotter.render()
+        self._set_status(
+            f"{'Showed' if not visible else 'Hid'} world axes labels",
+            level="ok")
+
+    # ── Component visibility (Show/Hide từ tree context menu) ─────────
+
+    def _component_visibility_key(self, kind: str, ref) -> str:
+        """Unique key per visible component để track state."""
+        if kind == "frame":
+            return f"frame::{getattr(ref, 'name', '')}"
+        if kind == "object":
+            return f"object::{getattr(ref, 'name', '')}"
+        if kind == "gripper":
+            return "gripper"
+        return kind                                          # robot/worktable/etc.
+
+    def _component_actor_names(self, kind: str, ref) -> list[str]:
+        """Tên các actor cần toggle visibility cho 1 component."""
+        if kind == "robot":
+            # Tất cả 7 link actors GP7
+            return [k for k, _f, _o in _GP7_MESH_MAP]
+        if kind == "gripper":
+            return ["gripper"]
+        if kind in ("worktable", "robot_pedestal", "floor",
+                     "camera", "camera_mount"):
+            return [kind]
+        if kind == "object":
+            return [getattr(ref, "name", "")]
+        return []
+
+    def _is_component_visible(self, kind: str, ref) -> bool:
+        """Đọc visibility từ tracking dict (mặc định visible nếu chưa set)."""
+        if not hasattr(self, "_component_visibility"):
+            self._component_visibility: dict[str, bool] = {}
+        if kind == "frame":
+            # Frame triad: trạng thái từ _frame_checks (jog dock)
+            name = getattr(ref, "name", "")
+            # frames trong cell config không có checkbox riêng — track riêng
+            key = self._component_visibility_key(kind, ref)
+            return self._component_visibility.get(key, False)
+        key = self._component_visibility_key(kind, ref)
+        return self._component_visibility.get(key, True)
+
+    def _set_component_visibility(self, kind: str, ref, visible: bool) -> None:
+        """Toggle mesh actors. Frame thì add/remove triad qua _frame_actors."""
+        if not hasattr(self, "_component_visibility"):
+            self._component_visibility: dict[str, bool] = {}
+        key = self._component_visibility_key(kind, ref)
+        self._component_visibility[key] = visible
+        if kind == "frame":
+            # Frame triad: dùng add/remove triad qua _frame_world_matrix
+            name = getattr(ref, "name", "")
+            triad_key = f"frame::{name}"
+            if visible:
+                # Compute world matrix từ frame pose (mm → m)
+                xyz = ref.pose.xyz_mm; rpy = ref.pose.rpy_deg
+                T = _xyz_rpy_to_matrix(xyz[0], xyz[1], xyz[2],
+                                         rpy[0], rpy[1], rpy[2])
+                T[:3, 3] /= 1000.0
+                self._add_frame_triad(triad_key, T)
+            else:
+                self._remove_frame_triad(triad_key)
+            return
+        # Mesh actors: SetVisibility
+        for actor_name in self._component_actor_names(kind, ref):
+            actor = self._find_actor(actor_name)
+            if actor is not None:
+                actor.SetVisibility(bool(visible))
+        self._plotter.render()
+
+    def _reapply_visibility_state(self) -> None:
+        """Sau khi load cell, áp visibility từ _component_visibility dict
+        (đã restore từ metadata.visibility_state). Iterate config items,
+        set hide cho keys = False."""
+        if not hasattr(self, "_component_visibility"):
+            return
+        cfg = self._cell_config
+        if cfg is None: return
+        # Iterate kinds + refs
+        items_to_check: list[tuple] = []
+        if cfg.robot is not None:
+            items_to_check.append(("robot", cfg.robot))
+        g = getattr(cfg, "gripper", None)
+        if g is not None and getattr(g, "mesh", None):
+            items_to_check.append(("gripper", g))
+        for kind_name in ("worktable", "robot_pedestal", "floor",
+                           "camera", "camera_mount"):
+            r = getattr(cfg, kind_name, None)
+            if r is not None:
+                items_to_check.append((kind_name, r))
+        for fr in (cfg.frames or []):
+            items_to_check.append(("frame", fr))
+        for o in (cfg.objects or []):
+            items_to_check.append(("object", o))
+        # Apply state (only if explicitly False — True is default)
+        for kind, ref in items_to_check:
+            key = self._component_visibility_key(kind, ref)
+            saved = self._component_visibility.get(key)
+            if saved is False:
+                self._set_component_visibility(kind, ref, False)
+
+    def _toggle_component_visibility(self, kind: str, ref) -> None:
+        cur = self._is_component_visible(kind, ref)
+        self._set_component_visibility(kind, ref, not cur)
+        # Hiển thị status feedback + cập nhật tree (icon eye nếu có)
+        label = (getattr(ref, "name", kind) if ref is not None else kind)
+        self._set_status(
+            f"{'Hidden' if cur else 'Shown'}: {label}", level="ok")
+
+    def _find_actor(self, name: str):
+        """Tìm actor theo name trong viewport (renderer actors hoặc
+        _link_actors)."""
+        actor = self._link_actors.get(name)
+        if actor is not None:
+            return actor
+        try:
+            return self._plotter.renderer.actors.get(name)
+        except Exception:                                   # noqa: BLE001
+            return None
+
+    def _start_move_widget(self, kind: str, ref) -> None:
+        """Bật drag gizmo (vtkBoxWidget) bao quanh actor.
+
+        Tránh dùng SetProp3D vì nó override UserMatrix làm actor nhảy về
+        identity. Thay vào đó, place widget tại world bounds của actor + cache
+        T_initial; mỗi InteractionEvent ta đọc widget transform LOCAL rồi
+        compose vào T_initial → SetUserMatrix actor.
+        """
+        if getattr(self, "_move_widget", None) is not None:
+            self._stop_move_widget(commit=False)
+
+        actor_name = kind if kind != "object" else getattr(ref, "name", "")
+        actor = self._find_actor(actor_name)
+        if actor is None:
+            self._set_status(
+                f"Không tìm thấy mesh actor cho '{kind}' — chưa load?",
+                level="warn")
+            return
+
+        widget = vtk.vtkBoxWidget()
+        rwin = self._plotter.render_window
+        widget.SetInteractor(rwin.GetInteractor())
+        widget.SetRotationEnabled(True)
+        widget.SetTranslationEnabled(True)
+        widget.SetScalingEnabled(False)
+        widget.SetHandleSize(0.015)                      # handles to hơn để grab dễ
+        widget.SetPlaceFactor(1.2)
+        # Place box tại world bounds của actor. Với object nhỏ (vd bolt 50mm)
+        # bounds tiny ⇒ handles bị che/khó grab. Mở rộng ra min 200mm/axis
+        # để có vùng tương tác đủ rộng.
+        b = list(actor.GetBounds())                       # [xmin,xmax,ymin,ymax,zmin,zmax]
+        min_size = 0.20                                   # 200mm
+        for i in (0, 2, 4):
+            if b[i+1] - b[i] < min_size:
+                center = (b[i] + b[i+1]) / 2.0
+                b[i] = center - min_size / 2.0
+                b[i+1] = center + min_size / 2.0
+        widget.PlaceWidget(b)
+        self._move_widget = widget
+        self._move_target = (kind, ref, actor_name)
+        self._move_initial_xform = self._get_actor_world_matrix(actor)
+        # Wire callbacks AFTER PlaceWidget để không fire ngay
+        widget.AddObserver(
+            "InteractionEvent",
+            lambda obj, evt: self._on_move_interact(actor))
+        widget.AddObserver(
+            "EndInteractionEvent",
+            lambda obj, evt: None)
+        widget.On()
+        self._plotter.render()
+        self._set_status(
+            "Drag handles → move/rotate. Right-click cell tree để Commit "
+            "move (lưu vào cell) hoặc Cancel move (revert).",
+            level="info")
+
+    def _on_move_interact(self, actor) -> None:
+        """Mỗi tick interaction: đọc widget transform → compose với T_initial
+        → SetUserMatrix actor (preview real-time)."""
+        w = getattr(self, "_move_widget", None)
+        if w is None or actor is None: return
+        t = vtk.vtkTransform()
+        w.GetTransform(t)
+        m = vtk.vtkMatrix4x4(); t.GetMatrix(m)
+        T_widget = np.array([[m.GetElement(i, j) for j in range(4)]
+                              for i in range(4)])
+        T_new = T_widget @ self._move_initial_xform
+        actor.SetUserMatrix(_numpy_to_vtk_matrix(T_new))
+        # Render đã được Qt event loop trigger qua interactor
+
+    def _stop_move_widget(self, commit: bool = True) -> None:
+        """Tắt widget. commit=True ⇒ ghi pose vào _cell_config; False ⇒
+        revert actor về transform ban đầu. Cleanup observers tránh memory
+        leak (B4 fix)."""
+        w = getattr(self, "_move_widget", None)
+        if w is None:
+            return
+        if commit:
+            self._commit_move_pose()
+        else:
+            # Revert: re-apply initial transform
+            t = getattr(self, "_move_initial_xform", None)
+            if t is not None:
+                kind, ref, name = self._move_target
+                actor = self._find_actor(name)
+                if actor is not None:
+                    actor.SetUserMatrix(_numpy_to_vtk_matrix(t))
+        w.Off()
+        # Cleanup: remove all observers (lambda closures capture self ⇒
+        # circular ref nếu không cleanup; rapid toggle accumulates).
+        try: w.RemoveAllObservers()
+        except Exception: pass                              # noqa: BLE001
+        self._move_widget = None
+        self._move_target = None
+        self._move_initial_xform = None
+        self._plotter.render()
+
+    @staticmethod
+    def _get_actor_world_matrix(actor) -> np.ndarray:
+        """Lấy 4x4 numpy từ actor's UserMatrix (mặc định identity nếu chưa
+        SetUserMatrix). Đơn vị: meters (toàn viewport scale)."""
+        m = actor.GetUserMatrix()
+        if m is None:
+            return np.eye(4)
+        return np.array([[m.GetElement(i, j) for j in range(4)]
+                          for i in range(4)])
+
+    def _on_move_end_event(self, obj, event) -> None:
+        """EndInteractionEvent từ vtkBoxWidget — chỉ update _cell_config khi
+        user gọi commit. Đây chỉ là hook nếu cần auto-commit on each release.
+        Hiện chúng ta defer commit tới _stop_move_widget(commit=True)."""
+        # No-op: giữ widget mở để user xem trước, commit/cancel thủ công.
+        pass
+
+    def _commit_move_pose(self) -> None:
+        """Đọc transform hiện tại từ actor → convert sang pose mm/deg →
+        ghi vào _cell_config. Object có parent_frame: convert world→relative."""
+        if self._move_target is None: return
+        kind, ref, name = self._move_target
+        actor = self._find_actor(name)
+        if actor is None: return
+        T_world_m = self._get_actor_world_matrix(actor)   # meters
+        # Convert sang mm (config dùng mm)
+        T_world_mm = T_world_m.copy()
+        T_world_mm[:3, 3] *= 1000.0
+
+        # Object với parent_frame ⇒ chuyển world → parent-relative
+        if kind == "object" and getattr(ref, "parent_frame", None):
+            parent_name = ref.parent_frame
+            parent_T = None
+            for f in (self._cell_config.frames or []):
+                if f.name == parent_name:
+                    parent_T = _xyz_rpy_to_matrix(
+                        f.pose.xyz_mm[0], f.pose.xyz_mm[1], f.pose.xyz_mm[2],
+                        f.pose.rpy_deg[0], f.pose.rpy_deg[1], f.pose.rpy_deg[2])
+                    break
+            if parent_T is not None:
+                T_rel = np.linalg.inv(parent_T) @ T_world_mm
+                xyz, rpy = _matrix_to_xyz_rpy_deg(T_rel)[:3], \
+                           _matrix_to_xyz_rpy_deg(T_rel)[3:]
+            else:
+                xyz, rpy = T_world_mm[:3, 3], _matrix_to_xyz_rpy_deg(T_world_mm)[3:]
+        else:
+            x, y, z, rx, ry, rz = _matrix_to_xyz_rpy_deg(T_world_mm)
+            xyz = (x, y, z); rpy = (rx, ry, rz)
+
+        ref.pose = PoseConfig(xyz_mm=tuple(xyz), rpy_deg=tuple(rpy))
+        # Refresh _objects dict (object có world_T cache cho follow gripper)
+        if kind == "object" and name in self._objects:
+            self._objects[name]["world_T"] = T_world_m.copy()
+        self._refresh_cell_tree()
+        self._set_status(
+            f"Moved {kind} → xyz=({xyz[0]:.1f}, {xyz[1]:.1f}, "
+            f"{xyz[2]:.1f}) mm", level="ok")
+
+    def _reload_gripper_actor(self) -> None:
+        """Idempotent reload: xoá actor "gripper" cũ (nếu có) rồi gọi
+        _load_gripper() để add lại theo config mới."""
+        try:
+            self._plotter.remove_actor("gripper")
+        except Exception: pass                              # noqa: BLE001
+        self._link_actors.pop("gripper", None)
+        self._load_gripper()
+        # Apply joints để mesh nhảy về đúng flange ngay
+        if self._model is not None:
+            self._apply_joints_main(self._joints)
+
+    def _show_add_object_dlg(self) -> None:
+        self._ensure_cell_config()
+        # Tính default pose thông minh — tránh đè robot stand (Z=0..330)
+        # và tránh đè object cũ (scatter theo Y cứ mỗi object thêm 100mm).
+        frames = self._cell_config.frames or []
+        wt = self._cell_config.worktable
+        existing = self._cell_config.objects or []
+        n = len(existing)
+        # Scatter Y: object 0..6 đặt ở Y = -300, -200, ..., +300 mm
+        scatter_y = ((n % 7) - 3) * 100.0
+        if frames:
+            default_parent = frames[0].name
+            default_xyz = (0.0, scatter_y, 50.0)
+        elif wt is not None:
+            h = self._mesh_height_mm(wt.mesh) or 500.0
+            default_parent = None
+            default_xyz = (wt.pose.xyz_mm[0],
+                            wt.pose.xyz_mm[1] + scatter_y,
+                            wt.pose.xyz_mm[2] + h + 50.0)
+        else:
+            default_parent = None
+            default_xyz = (500.0, scatter_y, 500.0)
+
+        dlg = QDialog(self); dlg.setWindowTitle("Add Object")
+        dlg.setMinimumWidth(420)
+        v = QVBoxLayout()
+        form = QFormLayout()
+        # Name
+        name_edit = QLineEdit(); name_edit.setPlaceholderText("e.g., my_part")
+        form.addRow("Name:", name_edit)
+        # Mesh picker
+        mesh_row = QHBoxLayout()
+        mesh_edit = QLineEdit(); mesh_edit.setPlaceholderText(
+            "models/objects/xxx.stl")
+        btn_pick = QPushButton("Browse…")
+        def _pick():
+            p, _ = QFileDialog.getOpenFileName(
+                dlg, "Pick mesh (.stl/.obj)",
+                str(self._project_root / "models"),
+                "Mesh files (*.stl *.obj *.ply);;All (*.*)")
+            if p:
+                try:
+                    p = str(Path(p).resolve().relative_to(
+                        self._project_root.resolve()))
+                except ValueError:
+                    pass
+                mesh_edit.setText(p)
+        btn_pick.clicked.connect(_pick)
+        mesh_row.addWidget(mesh_edit, 1); mesh_row.addWidget(btn_pick)
+        form.addRow("Mesh:", mesh_row)
+        # Parent frame combo (pre-select default theo context)
+        frame_combo = QComboBox()
+        frame_combo.addItem("(base / none)", None)
+        default_idx = 0
+        for i, f in enumerate(frames):
+            frame_combo.addItem(f.name, f.name)
+            if f.name == default_parent:
+                default_idx = i + 1
+        frame_combo.setCurrentIndex(default_idx)
+        form.addRow("Parent frame:", frame_combo)
+        v.addLayout(form)
+        # Pose form
+        v.addWidget(QLabel("<b>Offset from parent frame:</b>"))
+        pose_form, pw = self._make_pose_form(xyz=default_xyz)
+        v.addLayout(pose_form)
+        # Buttons
+        btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok
+                                 | QDialogButtonBox.StandardButton.Cancel)
+        def _ok():
+            name = name_edit.text().strip()
+            if not name:
+                QMessageBox.warning(dlg, "Add Object", "Name không được trống")
+                return
+            existing = {o.name for o in (self._cell_config.objects or [])}
+            if name in existing:
+                QMessageBox.warning(dlg, "Add Object",
+                                     f"Name '{name}' đã tồn tại")
+                return
+            mesh = mesh_edit.text().strip()
+            if not mesh:
+                QMessageBox.warning(dlg, "Add Object", "Mesh path bắt buộc")
+                return
+            # Heuristic: nếu user add object tên/path "gripper", suggest
+            # đúng workflow (Add Gripper) thay vì Add Object — gripper khác
+            # về schema (TCP offset, follow flange).
+            if "gripper" in name.lower() or "gripper" in mesh.lower():
+                ret = QMessageBox.question(dlg, "Có phải gripper?",
+                    "Tên/đường dẫn chứa 'gripper'. Gripper có workflow riêng "
+                    "(Edit → Add Gripper) để gắn vào flange robot và "
+                    "set TCP offset đúng.\n\nTiếp tục Add Object thường?",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+                if ret != QMessageBox.StandardButton.Yes:
+                    return
+            xyz, rpy = self._read_pose(pw)
+            try:
+                new_obj = ObjectConfig(
+                    name=name, mesh=mesh,
+                    parent_frame=frame_combo.currentData(),
+                    pose=PoseConfig(xyz_mm=xyz, rpy_deg=rpy))
+            except Exception as e:                          # noqa: BLE001
+                QMessageBox.warning(dlg, "Add Object", f"Invalid: {e}")
+                return
+            if self._cell_config.objects is None:
+                self._cell_config.objects = []
+            self._cell_config.objects.append(new_obj)
+            self._refresh_cell_tree()
+            self._load_cell_assets()
+            # Tính world coord cho status (giúp user định vị trong viewport)
+            parent_xyz = (0.0, 0.0, 0.0)
+            if new_obj.parent_frame:
+                for fr in (self._cell_config.frames or []):
+                    if fr.name == new_obj.parent_frame:
+                        parent_xyz = fr.pose.xyz_mm; break
+            wx = parent_xyz[0] + xyz[0]
+            wy = parent_xyz[1] + xyz[1]
+            wz = parent_xyz[2] + xyz[2]
+            self._set_status(
+                f"Added object '{name}' ở world=({wx:.0f}, {wy:.0f}, "
+                f"{wz:.0f}) mm", level="ok")
+            dlg.accept()
+        btns.accepted.connect(_ok); btns.rejected.connect(dlg.reject)
+        v.addWidget(btns)
+        preview = self._attach_preview(dlg, v)
+
+        def _refresh_preview():
+            self._set_preview(preview, lambda sz: self._render_mesh_thumbnail(
+                mesh_edit.text().strip(), [0.74, 0.76, 0.78], size=sz, zoom=0.82))
+        mesh_edit.editingFinished.connect(_refresh_preview)
+        btn_pick.clicked.connect(_refresh_preview)          # update sau Browse
+        _refresh_preview()
+        dlg.exec()
+
+    def _show_add_frame_dlg(self) -> None:
+        self._ensure_cell_config()
+        # Default pose: trên đỉnh worktable nếu có (vị trí teach phổ biến)
+        # else (500, 0, 500) world coords (phía trước robot)
+        wt = self._cell_config.worktable
+        if wt is not None:
+            h = self._mesh_height_mm(wt.mesh) or 500.0
+            default_xyz = (wt.pose.xyz_mm[0], wt.pose.xyz_mm[1],
+                            wt.pose.xyz_mm[2] + h)
+        else:
+            default_xyz = (500.0, 0.0, 500.0)
+
+        dlg = QDialog(self); dlg.setWindowTitle("Add Frame")
+        dlg.setMinimumWidth(360)
+        v = QVBoxLayout(dlg)
+        form = QFormLayout()
+        name_edit = QLineEdit(); name_edit.setPlaceholderText("e.g., PickZone")
+        form.addRow("Name:", name_edit)
+        parent_combo = QComboBox()
+        parent_combo.addItem("(none = base)", None)
+        for f in self._cell_config.frames or []:
+            parent_combo.addItem(f.name, f.name)
+        form.addRow("Parent:", parent_combo)
+        v.addLayout(form)
+        v.addWidget(QLabel("<b>Pose relative to parent:</b>"))
+        pose_form, pw = self._make_pose_form(xyz=default_xyz)
+        v.addLayout(pose_form)
+        btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok
+                                 | QDialogButtonBox.StandardButton.Cancel)
+        def _ok():
+            name = name_edit.text().strip()
+            if not name:
+                QMessageBox.warning(dlg, "Add Frame", "Name không được trống")
+                return
+            existing = {f.name for f in (self._cell_config.frames or [])}
+            if name in existing:
+                QMessageBox.warning(dlg, "Add Frame",
+                                     f"Name '{name}' đã tồn tại")
+                return
+            xyz, rpy = self._read_pose(pw)
+            new_fr = FrameConfig(
+                name=name, parent=parent_combo.currentData(),
+                pose=PoseConfig(xyz_mm=xyz, rpy_deg=rpy))
+            if self._cell_config.frames is None:
+                self._cell_config.frames = []
+            self._cell_config.frames.append(new_fr)
+            # Update jog/IK tool/ref frames (ref_frames đọc từ cell.frames)
+            self._ref_frames = _build_ref_frames(self._cell_config)
+            self._refresh_tool_ref_combos_if_present()
+            self._refresh_cell_tree()
+            self._set_status(f"Added frame '{name}'", level="ok")
+            dlg.accept()
+        btns.accepted.connect(_ok); btns.rejected.connect(dlg.reject)
+        v.addWidget(btns)
+        dlg.exec()
+
+    # ── Edit dialogs ──────────────────────────────────────────────────
+
+    def _show_edit_frame_dlg(self, fr: FrameConfig) -> None:
+        if fr is None: return
+        dlg = QDialog(self); dlg.setWindowTitle(f"Edit Frame: {fr.name}")
+        v = QVBoxLayout(dlg)
+        form = QFormLayout()
+        form.addRow("Name:", QLabel(f"<b>{fr.name}</b>  (rename: delete & re-add)"))
+        v.addLayout(form)
+        v.addWidget(QLabel("<b>Pose:</b>"))
+        pose_form, pw = self._make_pose_form(fr.pose.xyz_mm, fr.pose.rpy_deg)
+        v.addLayout(pose_form)
+        btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok
+                                 | QDialogButtonBox.StandardButton.Cancel)
+        def _ok():
+            xyz, rpy = self._read_pose(pw)
+            fr.pose = PoseConfig(xyz_mm=xyz, rpy_deg=rpy)
+            self._ref_frames = _build_ref_frames(self._cell_config)
+            self._refresh_tool_ref_combos_if_present()
+            self._refresh_cell_tree()
+            self._set_status(f"Updated frame '{fr.name}'", level="ok")
+            dlg.accept()
+        btns.accepted.connect(_ok); btns.rejected.connect(dlg.reject)
+        v.addWidget(btns)
+        dlg.exec()
+
+    def _show_edit_object_dlg(self, obj: ObjectConfig) -> None:
+        if obj is None: return
+        dlg = QDialog(self); dlg.setWindowTitle(f"Edit Object: {obj.name}")
+        dlg.setMinimumWidth(420)
+        v = QVBoxLayout(dlg)
+        form = QFormLayout()
+        form.addRow("Name:", QLabel(f"<b>{obj.name}</b>"))
+        form.addRow("Mesh:", QLabel(obj.mesh))
+        frame_combo = QComboBox()
+        frame_combo.addItem("(base / none)", None)
+        for f in self._cell_config.frames or []:
+            frame_combo.addItem(f.name, f.name)
+        # Pre-select
+        if obj.parent_frame is not None:
+            for i in range(frame_combo.count()):
+                if frame_combo.itemData(i) == obj.parent_frame:
+                    frame_combo.setCurrentIndex(i); break
+        form.addRow("Parent frame:", frame_combo)
+        v.addLayout(form)
+        v.addWidget(QLabel("<b>Offset from parent frame:</b>"))
+        init_xyz = obj.pose.xyz_mm if obj.pose else (0.0, 0.0, 0.0)
+        init_rpy = obj.pose.rpy_deg if obj.pose else (0.0, 0.0, 0.0)
+        pose_form, pw = self._make_pose_form(init_xyz, init_rpy)
+        v.addLayout(pose_form)
+        btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok
+                                 | QDialogButtonBox.StandardButton.Cancel)
+        def _ok():
+            xyz, rpy = self._read_pose(pw)
+            obj.parent_frame = frame_combo.currentData()
+            obj.pose = PoseConfig(xyz_mm=xyz, rpy_deg=rpy)
+            self._refresh_cell_tree()
+            self._load_cell_assets()
+            self._set_status(f"Updated object '{obj.name}'", level="ok")
+            dlg.accept()
+        btns.accepted.connect(_ok); btns.rejected.connect(dlg.reject)
+        v.addWidget(btns)
+        dlg.exec()
+
+    def _show_edit_robot_dlg(self, rob) -> None:
+        if rob is None: return
+        dlg = QDialog(self); dlg.setWindowTitle("Edit Robot Base Pose")
+        v = QVBoxLayout(dlg)
+        form = QFormLayout()
+        form.addRow("Robot:", QLabel(f"<b>{rob.name}</b>"))
+        v.addLayout(form)
+        v.addWidget(QLabel("<b>Base pose (world frame):</b>"))
+        pose_form, pw = self._make_pose_form(rob.pose.xyz_mm, rob.pose.rpy_deg)
+        v.addLayout(pose_form)
+        btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok
+                                 | QDialogButtonBox.StandardButton.Cancel)
+        def _ok():
+            xyz, rpy = self._read_pose(pw)
+            rob.pose = PoseConfig(xyz_mm=xyz, rpy_deg=rpy)
+            self._base_xyz = tuple(xyz)
+            # Rebuild URDF model với base mới
+            if self._model is not None:
+                self._model = gp7_urdf(base_xyz_mm=self._base_xyz)
+                self._apply_joints_main(self._joints)
+            self._refresh_cell_tree()
+            self._set_status("Updated robot base pose", level="ok")
+            dlg.accept()
+        btns.accepted.connect(_ok); btns.rejected.connect(dlg.reject)
+        v.addWidget(btns)
+        dlg.exec()
+
+    def _show_edit_single_dlg(self, kind: str, ref) -> None:
+        """Edit single-instance cell items (Worktable, Pedestal, Floor,
+        Camera, Camera Mount). Form: mesh + pose [+ color]."""
+        if ref is None: return
+        labels = {"worktable": "Worktable", "robot_pedestal": "Pedestal",
+                  "floor": "Floor", "camera": "Camera",
+                  "camera_mount": "Camera Mount"}
+        dlg = QDialog(self); dlg.setWindowTitle(f"Edit {labels.get(kind, kind)}")
+        dlg.setMinimumWidth(420)
+        v = QVBoxLayout(dlg)
+        form = QFormLayout()
+        # Mesh (camera không có mesh)
+        mesh_edit = None
+        if kind != "camera":
+            mesh_edit = QLineEdit(getattr(ref, "mesh", "") or "")
+            mesh_row = QHBoxLayout()
+            mesh_row.addWidget(mesh_edit, 1)
+            btn_pick = QPushButton("Browse…")
+            def _pick():
+                p, _ = QFileDialog.getOpenFileName(
+                    dlg, "Pick mesh", str(self._project_root / "models"),
+                    "Mesh files (*.stl *.obj);;All (*.*)")
+                if p:
+                    try:
+                        p = str(Path(p).resolve().relative_to(
+                            self._project_root.resolve()))
+                    except ValueError: pass
+                    mesh_edit.setText(p)
+            btn_pick.clicked.connect(_pick)
+            mesh_row.addWidget(btn_pick)
+            form.addRow("Mesh:", mesh_row)
+        # Camera: type/model/mount + intrinsics (fov + size). Camera không mesh.
+        cam_w: dict = {}
+        if kind == "camera":
+            cam_w["type"] = QComboBox(); cam_w["type"].addItems(["virtual", "real"])
+            cam_w["type"].setCurrentText(getattr(ref, "type", "virtual"))
+            cam_w["model"] = QLineEdit(getattr(ref, "model", "") or "")
+            cam_w["mount"] = QComboBox()
+            cam_w["mount"].addItems(["eye_to_hand", "eye_in_hand"])
+            cam_w["mount"].setCurrentText(getattr(ref, "mount", "eye_to_hand"))
+            form.addRow("Type:", cam_w["type"])
+            form.addRow("Model:", cam_w["model"])
+            form.addRow("Mount:", cam_w["mount"])
+            intr = getattr(ref, "intrinsics", None)
+            cam_w["fov"] = QDoubleSpinBox(); cam_w["fov"].setRange(1.0, 179.0)
+            cam_w["fov"].setSuffix(" °")
+            cam_w["fov"].setValue(float(getattr(intr, "fov_deg", None) or 87.0))
+            sz = getattr(intr, "size_px", (1280, 720)) if intr else (1280, 720)
+            cam_w["w"] = QSpinBox(); cam_w["w"].setRange(100, 8192)
+            cam_w["h"] = QSpinBox(); cam_w["h"].setRange(100, 8192)
+            cam_w["w"].setValue(int(sz[0])); cam_w["h"].setValue(int(sz[1]))
+            form.addRow("FOV ngang:", cam_w["fov"])
+            form.addRow("Width (px):", cam_w["w"])
+            form.addRow("Height (px):", cam_w["h"])
+        v.addLayout(form)
+        v.addWidget(QLabel("<b>Pose (world frame):</b>"))
+        pose_form, pw = self._make_pose_form(ref.pose.xyz_mm, ref.pose.rpy_deg)
+        v.addLayout(pose_form)
+        btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok
+                                 | QDialogButtonBox.StandardButton.Cancel)
+        def _ok():
+            xyz, rpy = self._read_pose(pw)
+            ref.pose = PoseConfig(xyz_mm=xyz, rpy_deg=rpy)
+            if mesh_edit is not None:
+                ref.mesh = mesh_edit.text().strip()
+            if kind == "camera":
+                ref.type = cam_w["type"].currentText()
+                ref.model = cam_w["model"].text().strip() or None
+                ref.mount = cam_w["mount"].currentText()
+                old = getattr(ref, "intrinsics", None)
+                # Giữ intrinsics pixel thật (fx/fy/cx/cy) nếu có — chỉ cập nhật
+                # fov + size từ form (real intrinsics ưu tiên khi vẽ frustum).
+                ref.intrinsics = CameraIntrinsics(
+                    fov_deg=cam_w["fov"].value(),
+                    size_px=(cam_w["w"].value(), cam_w["h"].value()),
+                    fx=getattr(old, "fx", None), fy=getattr(old, "fy", None),
+                    cx=getattr(old, "cx", None), cy=getattr(old, "cy", None),
+                    focal_length_mm=getattr(old, "focal_length_mm", None))
+            self._refresh_cell_tree()
+            self._load_cell_assets()
+            self._set_status(f"Updated {labels.get(kind, kind)}", level="ok")
+            dlg.accept()
+        btns.accepted.connect(_ok); btns.rejected.connect(dlg.reject)
+        v.addWidget(btns)
+        dlg.exec()
+
+    def _show_add_camera_dlg(self) -> None:
+        """Add Camera (CameraConfig) — node camera thống nhất kiểu RoboDK:
+        type/model/mount + pose (extrinsics) + intrinsics (FOV + size). Vẽ
+        frustum trong scene. Intrinsics pixel thật điền sau qua dock D455 →
+        'Đồng bộ Camera → Cell'."""
+        self._ensure_cell_config()
+        if self._cell_config.camera is not None:
+            QMessageBox.information(
+                self, "Add Camera",
+                "Cell đã có Camera. Double-click node Camera để Edit.")
+            return
+        dlg = QDialog(self); dlg.setWindowTitle("Add Camera")
+        dlg.setMinimumWidth(420)
+        v = QVBoxLayout(dlg)
+        form = QFormLayout()
+        cb_type = QComboBox(); cb_type.addItems(["virtual", "real"])
+        ed_model = QLineEdit("Intel RealSense D455")
+        cb_mount = QComboBox(); cb_mount.addItems(["eye_to_hand", "eye_in_hand"])
+        sp_fov = QDoubleSpinBox(); sp_fov.setRange(1.0, 179.0)
+        sp_fov.setSuffix(" °"); sp_fov.setValue(87.0)
+        sp_w = QSpinBox(); sp_w.setRange(100, 8192); sp_w.setValue(1280)
+        sp_h = QSpinBox(); sp_h.setRange(100, 8192); sp_h.setValue(720)
+        form.addRow("Type:", cb_type)
+        form.addRow("Model:", ed_model)
+        form.addRow("Mount:", cb_mount)
+        form.addRow("FOV ngang:", sp_fov)
+        form.addRow("Width (px):", sp_w)
+        form.addRow("Height (px):", sp_h)
+        v.addLayout(form)
+        v.addWidget(QLabel("<b>Pose (world frame):</b>"))
+        # Default: 700mm trên bàn nhìn xuống (sweet spot D455, khớp YAML mẫu).
+        pose_form, pw = self._make_pose_form(
+            xyz=(700.0, 0.0, 1200.0), rpy=(180.0, 0.0, 0.0))
+        v.addLayout(pose_form)
+        btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok
+                                 | QDialogButtonBox.StandardButton.Cancel)
+
+        def _ok():
+            xyz, rpy = self._read_pose(pw)
+            try:
+                cam = CameraConfig(
+                    type=cb_type.currentText(),
+                    model=ed_model.text().strip() or None,
+                    mount=cb_mount.currentText(),
+                    pose=PoseConfig(xyz_mm=xyz, rpy_deg=rpy),
+                    intrinsics=CameraIntrinsics(
+                        fov_deg=sp_fov.value(),
+                        size_px=(sp_w.value(), sp_h.value())))
+            except Exception as e:                          # noqa: BLE001
+                QMessageBox.warning(dlg, "Add Camera", f"Invalid: {e}")
+                return
+            self._cell_config.camera = cam
+            self._refresh_cell_tree()
+            self._load_cell_assets()
+            self._set_status("Added Camera", level="ok")
+            dlg.accept()
+        btns.accepted.connect(_ok); btns.rejected.connect(dlg.reject)
+        v.addWidget(btns)
+        dlg.exec()
+
+    def _show_add_single_dlg(self, kind: str) -> None:
+        """Add single-instance item (worktable/pedestal/floor/camera_mount)."""
+        self._ensure_cell_config()
+        # Defaults theo loại — tránh đặt mọi thứ ở (0,0,0) (đè robot)
+        # Worktable: 700mm trước robot, xoay 90° (long side dọc Y)
+        # Pedestal: dưới robot (Z=0)
+        # Floor: dưới cả cell (Z=0)
+        # Camera mount: trên bàn (Z=500mm)
+        defaults = {
+            "worktable":     ((700.0, 0.0,   0.0), (0.0, 0.0, 90.0),
+                              "models/worktable.stl"),
+            "robot_pedestal":((0.0,   0.0,   0.0), (0.0, 0.0,  0.0),
+                              "models/pedestal.stl"),
+            "floor":         ((300.0, 0.0,   0.0), (0.0, 0.0,  0.0),
+                              "models/floor.stl"),
+            "camera_mount":  ((700.0, 0.0, 500.0), (0.0, 0.0,  0.0),
+                              "models/camera_mount.stl"),
+        }
+        def_xyz, def_rpy, def_mesh = defaults.get(
+            kind, ((0.0, 0.0, 0.0), (0.0, 0.0, 0.0), f"models/{kind}.stl"))
+        type_map = {"worktable": (WorktableConfig, "Worktable"),
+                    "robot_pedestal": (PedestalConfig, "Pedestal"),
+                    "floor": (FloorConfig, "Floor"),
+                    "camera_mount": (CameraMountConfig, "Camera Mount")}
+        if kind not in type_map:
+            return
+        Cls, label = type_map[kind]
+        prev_color = {"worktable": [0.66, 0.67, 0.66],
+                      "robot_pedestal": [0.28, 0.29, 0.31],
+                      "floor": [0.50, 0.52, 0.55],
+                      "camera_mount": [0.68, 0.69, 0.71]}.get(kind, [0.7, 0.7, 0.7])
+        dlg = QDialog(self); dlg.setWindowTitle(f"Add {label}")
+        dlg.setMinimumWidth(420)
+        v = QVBoxLayout()
+        form = QFormLayout()
+        mesh_edit = QLineEdit(def_mesh)
+        mesh_edit.setPlaceholderText(f"models/{kind}.stl")
+        mesh_row = QHBoxLayout()
+        mesh_row.addWidget(mesh_edit, 1)
+        btn_pick = QPushButton("Browse…")
+        def _pick():
+            p, _ = QFileDialog.getOpenFileName(
+                dlg, "Pick mesh", str(self._project_root / "models"),
+                "Mesh files (*.stl *.obj);;All (*.*)")
+            if p:
+                try:
+                    p = str(Path(p).resolve().relative_to(
+                        self._project_root.resolve()))
+                except ValueError: pass
+                mesh_edit.setText(p)
+        btn_pick.clicked.connect(_pick)
+        mesh_row.addWidget(btn_pick)
+        form.addRow("Mesh:", mesh_row)
+        v.addLayout(form)
+        v.addWidget(QLabel("<b>Pose:</b>"))
+        pose_form, pw = self._make_pose_form(xyz=def_xyz, rpy=def_rpy)
+        v.addLayout(pose_form)
+        btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok
+                                 | QDialogButtonBox.StandardButton.Cancel)
+        def _ok():
+            mesh = mesh_edit.text().strip()
+            if not mesh:
+                QMessageBox.warning(dlg, f"Add {label}",
+                                     "Mesh path bắt buộc")
+                return
+            xyz, rpy = self._read_pose(pw)
+            try:
+                obj = Cls(mesh=mesh,
+                          pose=PoseConfig(xyz_mm=xyz, rpy_deg=rpy))
+            except Exception as e:                          # noqa: BLE001
+                QMessageBox.warning(dlg, f"Add {label}", f"Invalid: {e}")
+                return
+            setattr(self._cell_config, kind, obj)
+            self._refresh_cell_tree()
+            self._load_cell_assets()
+            self._set_status(f"Added {label}", level="ok")
+            # Auto-detect: thêm Pedestal mà robot đã load ⇒ offer lift robot
+            # lên top pedestal cho stand chạm đỉnh (sit-on relationship).
+            if kind == "robot_pedestal" and self._model is not None:
+                self._offer_lift_robot_onto_pedestal(obj)
+            dlg.accept()
+        btns.accepted.connect(_ok); btns.rejected.connect(dlg.reject)
+        v.addWidget(btns)
+        preview = self._attach_preview(dlg, v)
+
+        def _refresh_preview():
+            self._set_preview(preview, lambda sz: self._render_mesh_thumbnail(
+                mesh_edit.text().strip(), prev_color, size=sz, zoom=0.82))
+        mesh_edit.editingFinished.connect(_refresh_preview)
+        btn_pick.clicked.connect(_refresh_preview)          # update sau Browse
+        _refresh_preview()
+        dlg.exec()
+
+    # ── Delete handlers ───────────────────────────────────────────────
+
+    def _delete_frame(self, fr: FrameConfig) -> None:
+        if fr is None: return
+        # Orphan check: object nào tham chiếu frame này?
+        orphans = [o.name for o in (self._cell_config.objects or [])
+                   if o.parent_frame == fr.name]
+        msg = f"Delete frame '{fr.name}'?"
+        if orphans:
+            msg += (f"\n\n{len(orphans)} object(s) tham chiếu frame này: "
+                    f"{', '.join(orphans)}. "
+                    "Sau khi delete, các object đó sẽ trỏ về base.")
+        ret = QMessageBox.question(self, "Delete Frame", msg,
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+        if ret != QMessageBox.StandardButton.Yes: return
+        self._cell_config.frames = [f for f in self._cell_config.frames
+                                     if f.name != fr.name]
+        # Reset parent_frame của orphan objects → None
+        for o in (self._cell_config.objects or []):
+            if o.parent_frame == fr.name:
+                o.parent_frame = None
+        self._ref_frames = _build_ref_frames(self._cell_config)
+        self._refresh_tool_ref_combos_if_present()
+        self._refresh_cell_tree()
+        self._set_status(f"Deleted frame '{fr.name}'", level="ok")
+
+    def _delete_object(self, obj: ObjectConfig) -> None:
+        if obj is None: return
+        ret = QMessageBox.question(self, "Delete Object",
+            f"Delete object '{obj.name}'?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+        if ret != QMessageBox.StandardButton.Yes: return
+        self._cell_config.objects = [o for o in self._cell_config.objects
+                                      if o.name != obj.name]
+        self._refresh_cell_tree()
+        self._load_cell_assets()
+        self._set_status(f"Deleted object '{obj.name}'", level="ok")
+
+    def _delete_single(self, kind: str) -> None:
+        labels = {"worktable": "Worktable", "robot_pedestal": "Pedestal",
+                  "floor": "Floor", "camera_mount": "Camera Mount"}
+        label = labels.get(kind, kind)
+        ret = QMessageBox.question(self, f"Delete {label}",
+            f"Delete {label}?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+        if ret != QMessageBox.StandardButton.Yes: return
+        prev_ref = getattr(self._cell_config, kind, None)
+        setattr(self._cell_config, kind, None)
+        # Remove actor khỏi viewport
+        try: self._plotter.remove_actor(kind)
+        except Exception: pass                              # noqa: BLE001
+        self._refresh_cell_tree()
+        self._plotter.render()
+        self._set_status(f"Deleted {label}", level="ok")
+        # Symmetric auto-detect: delete Pedestal mà robot vẫn cao Z>~330
+        # ⇒ offer lower về Z=330 (stand chạm sàn) hoặc tự tính từ delta.
+        if (kind == "robot_pedestal" and self._model is not None
+                and prev_ref is not None):
+            self._offer_lower_robot_off_pedestal(prev_ref)
+
+    # ── Component preview thumbnails (Add dialogs) ────────────────────
+    _PREVIEW_BG = [0.12, 0.12, 0.15]
+
+    def _np_to_pixmap(self, img) -> QPixmap:
+        """numpy RGB (H,W,3) uint8 → QPixmap (copy buffer để an toàn lifetime)."""
+        img = np.ascontiguousarray(img[:, :, :3])
+        h, w = img.shape[:2]
+        qimg = QImage(img.data, w, h, 3 * w, QImage.Format.Format_RGB888)
+        return QPixmap.fromImage(qimg.copy())
+
+    def _make_preview_label(self, size=(300, 300)) -> QLabel:
+        """QLabel khung preview (style chung) — đặt ở bất kỳ layout nào."""
+        lbl = QLabel("Đang tạo preview…")
+        lbl.setMinimumSize(size[0], size[1])
+        lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        lbl.setStyleSheet("background:#16161c; border:1px solid #2a2a33; "
+                          "border-radius:6px; color:#888;")
+        return lbl
+
+    def _attach_preview(self, dlg, content_layout, size=(300, 300)):
+        """Bọc content (trái) + QLabel preview (phải) vào dlg. Trả QLabel."""
+        outer = QHBoxLayout(dlg)
+        left = QWidget(); left.setLayout(content_layout)
+        outer.addWidget(left, 0)
+        lbl = self._make_preview_label(size)
+        outer.addWidget(lbl, 1)
+        return lbl
+
+    def _set_preview(self, lbl, render_fn) -> None:
+        """Hoãn render qua QTimer để dialog paint trước, rồi fill thumbnail.
+
+        render_fn nhận (w, h) = kích thước THẬT của label tại thời điểm render
+        → render off-screen đúng tỷ lệ khung, tránh letterbox (dải đen trống)."""
+        lbl.setText("Đang tạo preview…")
+
+        def _do():
+            size = (max(120, lbl.width()), max(120, lbl.height()))
+            try:
+                pm = render_fn(size)
+            except Exception as e:                          # noqa: BLE001
+                logger.debug("preview render lỗi: %s", e); pm = None
+            if pm is not None:
+                lbl.setPixmap(pm.scaled(
+                    lbl.size(), Qt.AspectRatioMode.KeepAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation))
+            else:
+                lbl.setText("Chưa có preview\n(chọn mesh hợp lệ)")
+        QTimer.singleShot(0, _do)
+
+    def _render_mesh_thumbnail(self, mesh_rel, color, size=(300, 300), zoom=1.05):
+        """Render 1 STL off-screen → QPixmap. None nếu thiếu/lỗi file.
+
+        zoom<1 thêm đệm quanh mesh (cho component to/phẳng như floor, tray)."""
+        if not mesh_rel:
+            return None
+        path = Path(mesh_rel)
+        if not path.is_absolute():
+            path = self._project_root / path
+        if not path.exists():
+            return None
+        p = pv.Plotter(off_screen=True, window_size=[size[0], size[1]])
+        try:
+            p.set_background(self._PREVIEW_BG)
+            p.add_mesh(pv.read(str(path)), color=color, smooth_shading=True)
+            p.view_isometric()
+            # zoom nhẹ thôi: view_isometric đã auto-fit, zoom cao sẽ cắt mất mesh.
+            p.camera.zoom(zoom)
+            img = p.screenshot(return_img=True)
+        finally:
+            p.close()
+        return self._np_to_pixmap(img)
+
+    def _render_robot_thumbnail(self, home_joints, size=(300, 300)):
+        """Ghép 7 link GP7 tại home pose (base ở gốc) off-screen → QPixmap."""
+        mesh_dir = self._project_root / "models" / "gp7_links"
+        if not mesh_dir.exists():
+            return None
+        model = gp7_urdf(base_xyz_mm=(0.0, 0.0, 0.0))
+        frames = dict(link_frames_urdf(
+            model, [math.radians(q) for q in home_joints]))
+        p = pv.Plotter(off_screen=True, window_size=[size[0], size[1]])
+        try:
+            p.set_background(self._PREVIEW_BG)
+            added = 0
+            for key, fname, off in _GP7_MESH_MAP:
+                fp = mesh_dir / fname
+                if not fp.exists():
+                    continue
+                mesh = pv.read(str(fp))
+                if any(off):
+                    mesh.translate([off[0], off[1], off[2]], inplace=True)
+                T = frames.get(key)
+                if T is not None:
+                    Tm = T.copy(); Tm[:3, 3] = T[:3, 3] / 1000.0
+                    mesh.transform(Tm, inplace=True)
+                p.add_mesh(mesh, color=list(_YASKAWA_BLUE), smooth_shading=True)
+                added += 1
+            if added == 0:
+                return None
+            p.view_isometric()
+            # KHÔNG zoom thêm: view_isometric đã auto-fit toàn robot vào khung.
+            # zoom>1 sẽ cắt mất cánh tay phía trên (robot cao ở home pose).
+            p.camera.zoom(1.05)
+            img = p.screenshot(return_img=True)
+        finally:
+            p.close()
+        return self._np_to_pixmap(img)
+
+    # ── Auto pedestal-robot z-sync ────────────────────────────────────
+
+    # GP7 stand built-in: 330mm (xem _GP7_MESH_MAP[base_link] offset -0.330m).
+    _GP7_STAND_MM = 330.0
+
+    def _mesh_height_mm(self, mesh_rel: str) -> float | None:
+        """Đọc mesh STL → tính height (Z range) trong mm. Return None nếu
+        không đọc được. Cache nhẹ qua dict instance để tránh re-parse."""
+        if not hasattr(self, "_mesh_height_cache"):
+            self._mesh_height_cache: dict[str, float] = {}
+        if mesh_rel in self._mesh_height_cache:
+            return self._mesh_height_cache[mesh_rel]
+        try:
+            path = Path(mesh_rel)
+            if not path.is_absolute():
+                path = self._project_root / path
+            if not path.exists():
+                return None
+            m = pv.read(str(path))
+            # bounds = [xmin, xmax, ymin, ymax, zmin, zmax] đơn vị mesh native.
+            # Mesh STL conventionally mm; sau pv.read points vẫn mm.
+            h = float(m.bounds[5] - m.bounds[4])
+            self._mesh_height_cache[mesh_rel] = h
+            return h
+        except Exception:                                  # noqa: BLE001
+            return None
+
+    def _offer_lift_robot_onto_pedestal(self, pedestal_cfg) -> None:
+        """Add Pedestal sau robot ⇒ HỎI user có muốn nâng robot lên đỉnh
+        pedestal (Yes/No). User muốn được xác nhận thay vì tự đổi base pose.
+        """
+        ped_top = pedestal_cfg.pose.xyz_mm[2]
+        h = self._mesh_height_mm(pedestal_cfg.mesh)
+        if h is not None:
+            ped_top += h
+        target_z = ped_top + self._GP7_STAND_MM
+        current_z = self._cell_config.robot.pose.xyz_mm[2]
+        if abs(target_z - current_z) < 1.0:                # đã đúng vị trí
+            return
+        r = QMessageBox.question(
+            self, "Nâng robot lên pedestal",
+            f"Pedestal vừa thêm cao tới Z={ped_top:.0f} mm.\n\n"
+            f"Nâng robot lên đỉnh pedestal (base Z: {current_z:.0f} → "
+            f"{target_z:.0f} mm) để chân đế robot chạm đỉnh pedestal?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes)
+        if r != QMessageBox.StandardButton.Yes:
+            return
+        self._set_robot_base_z(target_z)
+        self._set_status(
+            f"Đã nâng robot Z={current_z:.0f}→{target_z:.0f} mm "
+            f"(stand chạm đỉnh pedestal)", level="ok")
+
+    def _offer_lower_robot_off_pedestal(self, prev_pedestal_cfg) -> None:
+        """Delete Pedestal ⇒ AUTO-LOWER robot về Z=330 (stand chạm sàn).
+        Same UX rationale như _offer_lift_robot_onto_pedestal."""
+        target_z = self._GP7_STAND_MM
+        current_z = self._cell_config.robot.pose.xyz_mm[2]
+        if abs(target_z - current_z) < 1.0:
+            return
+        self._set_robot_base_z(target_z)
+        self._set_status(
+            f"Auto-lowered robot Z={current_z:.0f}→{target_z:.0f} mm "
+            f"(stand chạm sàn)", level="ok")
+
+    def _set_robot_base_z(self, z_mm: float) -> None:
+        """Update robot base Z + rebuild URDF model + refresh viewport."""
+        cur = self._cell_config.robot.pose
+        self._cell_config.robot.pose = PoseConfig(
+            xyz_mm=(cur.xyz_mm[0], cur.xyz_mm[1], z_mm),
+            rpy_deg=cur.rpy_deg)
+        self._base_xyz = (cur.xyz_mm[0], cur.xyz_mm[1], z_mm)
+        self._model = gp7_urdf(base_xyz_mm=self._base_xyz)
+        self._apply_joints_main(self._joints)
+        self._refresh_cell_tree()
+
+    def _load_robot_assets(self) -> None:
+        """STL meshes của robot (không phụ thuộc cell). Idempotent — chỉ load
+        nếu chưa load."""
+        if any(k in self._link_actors for k in ("base_link", "link_s")):
+            return
         self._load_robot_links()
         self._load_gripper()
+
+    def _load_cell_assets(self) -> None:
+        """Meshes của cell (worktable, pedestal, objects) — phụ thuộc
+        cell_config. Idempotent — clear cell actors cũ trước khi add.
+        Fix B5: cũng pop stale entries khỏi _link_actors (nếu có) để
+        tránh _render_scene_frame access dangling actor refs."""
+        if self._cell_config is None:
+            return
+        # Datasets cũ bị remove/replace → invalidate normal cache (key theo
+        # id(dataset) có thể bị tái dùng cho mesh khác → stale normal).
+        self._normal_cache.clear()
+        cell_names = ("worktable", "robot_pedestal", "camera_mount", "floor")
+        for name in cell_names:
+            try:
+                self._plotter.remove_actor(name)
+            except Exception:                                   # noqa: BLE001
+                pass
+            self._link_actors.pop(name, None)
+        for name in list(self._objects.keys()):
+            try:
+                self._plotter.remove_actor(name)
+            except Exception:                                   # noqa: BLE001
+                pass
+            self._objects.pop(name, None)
+            self._link_actors.pop(name, None)
+        for name in self._CAM_VIZ_ACTORS:                   # frustum camera cũ
+            try:
+                self._plotter.remove_actor(name)
+            except Exception:                               # noqa: BLE001
+                pass
         self._add_cell_meshes()
-        self._setup_lighting()
+        self._add_camera_frustum()
+        # Tôn trọng toggle View → Visibility → Camera frustum (nếu đã tắt).
+        if hasattr(self, "_act_cam_frustum") and not self._act_cam_frustum.isChecked():
+            self._toggle_camera_frustum(False)
+        # add_mesh() trong _add_cell_meshes dùng render=False (tránh render lại
+        # sau MỖI mesh → hiện dần từng cái). Render 1 lần ở đây ⇒ toàn bộ cell
+        # mesh xuất hiện cùng lúc. Reset clipping range trước: mesh lớn (floor/
+        # bàn) mở rộng bounds → tránh bị cắt thành "hình chữ nhật" tới khi di chuột.
+        self._plotter.reset_camera_clipping_range()
+        self._plotter.render()
+        # Cell mới có thể có object_classes khác → cập nhật combo Class dock.
+        if hasattr(self, "_refresh_class_combo"):
+            self._refresh_class_combo()
 
     def _add_floor(self) -> None:
+        """Reference floor procedural (toggle qua View → Visibility → Floor).
+        Plane phẳng 6×6m, single solid color (no grid edges) — industrial
+        finish look. Cho mặt phẳng tham chiếu khi chưa có FloorConfig.mesh
+        (đó là sàn STL thật, load qua Edit → Add Floor).
+        """
         try:
-            # 4×3m plane lát gạch — pyvista Plane primitive + procedural texture
-            plane = pv.Plane(center=(0.8, 0.0, 0.0), direction=(0, 0, 1),
-                              i_size=4.0, j_size=3.0, i_resolution=10, j_resolution=8)
+            plane = pv.Plane(center=(0.0, 0.0, 0.0), direction=(0, 0, 1),
+                              i_size=6.0, j_size=6.0,
+                              i_resolution=1, j_resolution=1)
             self._floor_actor = self._plotter.add_mesh(
-                plane, color=[0.92, 0.92, 0.95], show_edges=True,
-                edge_color=[0.55, 0.55, 0.60], line_width=2,
-                name="__floor", lighting=True)
+                plane,
+                color=[0.42, 0.44, 0.48],         # neutral mid-gray
+                show_edges=False,                  # NO grid (clean finish)
+                name="__floor",
+                lighting=True,
+                ambient=0.3,                       # ít specular reflection
+                diffuse=0.7,
+                specular=0.1,
+                render=False)                      # toggle/loader render 1 lần
         except Exception as e:                              # noqa: BLE001
             logger.debug("Floor lỗi: %s", e)
 
     def _add_world_axes_triad(self) -> None:
-        """Triad nhỏ 300mm ở gốc world. pyvista có add_axes() ở góc viewport,
-        nhưng đây là triad ngay trong scene để align với robot base.
+        """Triad ngay trong scene để align với robot base. RoboDK-style:
+        arrows RGB với cylinder shaft + cone tip. Labels XYZ MẶC ĐỊNH TẮT.
+
+        FIX: SetVisibility(False) trên CaptionActor2D không ngăn vtkAxesActor
+        render label trong nhiều phiên bản VTK. Cách chắc chắn: xoá text bằng
+        SetXAxisLabelText(""). Không có text ⇒ không có render. User bật lại
+        qua right-click → Show labels (chữ trở lại "X","Y","Z").
         """
         try:
-            triad = pv.Axes(show_actor=True, actor_scale=0.3, line_width=4)
-            self._plotter.add_actor(triad.actor, name="__world_axes")
+            actor = vtk.vtkAxesActor()
+            # World ở floor như RoboDK: nhỏ (120mm) không lấn át robot.
+            # Length đã giảm ~tip portion (cone 20% mặc định) so với version
+            # trước; cylinder + cone bigger ratio cho stocky look.
+            actor.SetTotalLength(0.12, 0.12, 0.12)
+            actor.SetShaftType(0)                          # cylinder
+            actor.SetCylinderRadius(0.035)
+            actor.SetConeRadius(0.55)
+            actor.SetConeResolution(24)
+            # Force labels OFF bằng cách clear text
+            actor.SetXAxisLabelText("")
+            actor.SetYAxisLabelText("")
+            actor.SetZAxisLabelText("")
+            self._plotter.add_actor(actor, name="__world_axes")
+            self._world_axes_actor = actor
         except Exception as e:                              # noqa: BLE001
             logger.debug("World axes lỗi: %s", e)
 
@@ -1404,7 +3602,7 @@ class GP7AppQt(QMainWindow):
                     mesh.translate([off[0], off[1], off[2]], inplace=True)
                 actor = self._plotter.add_mesh(
                     mesh, color=list(_YASKAWA_BLUE), name=key,
-                    smooth_shading=True, pbr=False)
+                    smooth_shading=True, pbr=False, render=False)
                 self._link_actors[key] = actor
                 loaded += 1
             except Exception as e:                          # noqa: BLE001
@@ -1413,6 +3611,12 @@ class GP7AppQt(QMainWindow):
         return loaded > 0
 
     def _load_gripper(self) -> None:
+        """Load gripper mesh từ cell_config.gripper, attach vào link_tool0.
+
+        Mesh local frame = flange (link_tool0). tcp_offset_xyz_mm dịch mesh
+        sao cho TCP (đầu tool) align với offset đó từ flange. Khi animate,
+        _render_scene_frame map actor name "gripper" → frame "link_tool0".
+        """
         cfg = getattr(self._cell_config, "gripper", None)
         if cfg is None or not getattr(cfg, "mesh", None):
             return
@@ -1420,23 +3624,36 @@ class GP7AppQt(QMainWindow):
         if not path.is_absolute():
             path = self._project_root / path
         if not path.exists():
+            logger.warning("Gripper mesh không tồn tại: %s", path)
             return
         try:
             mesh = pv.read(str(path))
             mesh.points *= 0.001                            # mm → m
-            mesh.translate([0.0, 0.0, 0.1], inplace=True)   # offset palm
+            # Dịch mesh theo tcp_offset (mm → m). User chỉnh offset qua Edit
+            # Gripper → tcp_offset_xyz_mm cập nhật → reload thấy ngay.
+            off = cfg.tcp_offset_xyz_mm
+            mesh.translate([off[0] / 1000.0, off[1] / 1000.0,
+                             off[2] / 1000.0], inplace=True)
             actor = self._plotter.add_mesh(
                 mesh, color=[0.78, 0.78, 0.80], name="gripper",
-                smooth_shading=True)
+                smooth_shading=True, render=False)
             self._link_actors["gripper"] = actor
         except Exception as e:                              # noqa: BLE001
             logger.debug("Gripper lỗi: %s", e)
 
     def _add_cell_meshes(self) -> None:
         cfg = self._cell_config
-        for attr, drgb in (("worktable", [0.52, 0.55, 0.58]),
-                            ("robot_pedestal", [0.40, 0.40, 0.40]),
-                            ("camera_mount", [0.50, 0.50, 0.50])):
+        # Thêm floor vào loop — trước đây bị bỏ sót, Add Floor không load
+        # được mesh STL vào viewport.
+        # Bảng màu chuẩn công nghiệp (RAL/vật liệu thực):
+        #   worktable     RAL 7035 light grey (vỏ máy/bàn thao tác phổ biến)
+        #   robot_pedestal RAL 7016 anthracite (chân đế/khung máy)
+        #   camera_mount  anodized aluminium (nhôm định hình 80/20)
+        #   floor         bê tông/epoxy xám trung tính (không trắng)
+        for attr, drgb in (("worktable", [0.66, 0.67, 0.66]),
+                            ("robot_pedestal", [0.28, 0.29, 0.31]),
+                            ("camera_mount", [0.68, 0.69, 0.71]),
+                            ("floor", [0.50, 0.52, 0.55])):
             item = getattr(cfg, attr, None)
             if item is None or not getattr(item, "mesh", None):
                 continue
@@ -1451,10 +3668,92 @@ class GP7AppQt(QMainWindow):
                 if getattr(obj, "parent_frame", None) in frames else [0, 0, 0]
             off = list(obj.pose.xyz_mm) if getattr(obj, "pose", None) else [0, 0, 0]
             world_xyz_mm = [pxyz[k] + off[k] for k in range(3)]
+            # Vật gắp (bolt/part) = thép/kẽm đánh bóng (metallic xám sáng),
+            # thay màu vàng hổ phách "đèn" cũ → chuẩn chi tiết gia công.
             self._register_object(obj.name, obj.mesh, world_xyz_mm,
-                                   rgb=[0.80, 0.75, 0.20])
+                                   rgb=[0.74, 0.76, 0.78])
+
+    # ── Camera frustum (RoboDK-style camera item viz) ──────────────────
+    _CAM_VIZ_ACTORS = ("__camera_frustum", "__camera_plane", "__camera_axes")
+
+    def _add_camera_frustum(self) -> None:
+        """Vẽ nón nhìn (frustum) + trục cho cell `camera` tại pose của nó.
+
+        Một camera-item kiểu RoboDK: extrinsics = camera.pose (world/base),
+        kích thước nón theo FOV (từ intrinsics). Optical axis = +Z local."""
+        cfg = self._cell_config
+        cam = getattr(cfg, "camera", None) if cfg is not None else None
+        if cam is None:
+            return
+        try:
+            intr = getattr(cam, "intrinsics", None)
+            hfov, vfov = intr.hfov_vfov_deg() if intr is not None else (87.0, 56.0)
+            # Pose: xyz_mm+rpy_deg → 4×4, translation mm→m, áp qua UserMatrix.
+            T = _xyz_rpy_to_matrix(
+                cam.pose.xyz_mm[0], cam.pose.xyz_mm[1], cam.pose.xyz_mm[2],
+                cam.pose.rpy_deg[0], cam.pose.rpy_deg[1], cam.pose.rpy_deg[2])
+            T[:3, 3] /= 1000.0
+            # Chiều sâu nón = quãng đường theo trục quang (+Z local) tới khi
+            # chạm SÀN (Z=0 world) → nón kéo "tận đất", đúng vùng quan sát thực.
+            # Camera không hướng xuống ⇒ dùng far mặc định. Clamp tầm D455.
+            optical = T[:3, :3] @ np.array([0.0, 0.0, 1.0])
+            pz = float(T[2, 3])
+            if optical[2] < -1e-3 and pz > 0.0:
+                d = -pz / float(optical[2])                 # giao trục quang với sàn
+            else:
+                d = _CAM_FRUSTUM_FAR_M
+            d = float(np.clip(d, _CAM_FRUSTUM_MIN_M, _CAM_FRUSTUM_MAX_M))
+            hw = d * math.tan(math.radians(hfov) / 2.0)
+            hh = d * math.tan(math.radians(vfov) / 2.0)
+            corners = np.array([[-hw, -hh, d], [hw, -hh, d],
+                                [hw, hh, d], [-hw, hh, d]], dtype=float)
+            pts = np.vstack([[0.0, 0.0, 0.0], corners])     # apex + 4 góc
+            frustum = pv.PolyData(pts)
+            frustum.lines = np.array([
+                2, 0, 1, 2, 0, 2, 2, 0, 3, 2, 0, 4,         # apex→4 góc
+                2, 1, 2, 2, 2, 3, 2, 3, 4, 2, 4, 1,         # khung chữ nhật
+            ])
+            vtk_T = _numpy_to_vtk_matrix(T)
+            actor = self._plotter.add_mesh(
+                frustum, color=[0.40, 0.75, 1.0], style="wireframe",
+                line_width=2, opacity=0.9, lighting=False,
+                name="__camera_frustum", render=False)
+            actor.SetUserMatrix(vtk_T)
+            # Mặt phẳng ảnh (mờ) ở đáy nón — gợi cảm giác sensor plane.
+            plane = pv.PolyData(corners, np.array([4, 0, 1, 2, 3]))
+            pactor = self._plotter.add_mesh(
+                plane, color=[0.30, 0.55, 0.85], opacity=0.16,
+                lighting=False, name="__camera_plane", render=False)
+            pactor.SetUserMatrix(vtk_T)
+            # Trục camera (RGB triad) tại pose — tái dùng vtkAxesActor.
+            ax = vtk.vtkAxesActor()
+            ax.SetTotalLength(0.08, 0.08, 0.08)
+            ax.SetShaftType(0); ax.SetCylinderRadius(0.04)
+            ax.SetConeRadius(0.5); ax.SetConeResolution(20)
+            ax.SetXAxisLabelText(""); ax.SetYAxisLabelText("")
+            ax.SetZAxisLabelText("")
+            tf = vtk.vtkTransform(); tf.SetMatrix(vtk_T)
+            ax.SetUserTransform(tf)
+            self._plotter.add_actor(ax, name="__camera_axes")
+        except Exception as e:                              # noqa: BLE001
+            logger.debug("Camera frustum lỗi: %s", e)
+
+    def _toggle_camera_frustum(self, visible: bool) -> None:
+        """Ẩn/hiện cả frustum + mặt phẳng ảnh + trục camera."""
+        for n in self._CAM_VIZ_ACTORS:
+            actor = self._plotter.renderer.actors.get(n)
+            if actor is not None:
+                actor.SetVisibility(bool(visible))
+        self._plotter.render()
 
     def _add_static_mesh(self, name, mesh_rel, xyz_mm, rpy_deg, rgb) -> None:
+        """Add 1 mesh tĩnh (worktable/pedestal/floor/camera_mount/etc.).
+
+        Mesh geometry giữ TẠI GỐC (identity); pose áp qua SetUserMatrix.
+        Cách này cho phép vtkBoxWidget drag-to-move hoạt động — widget
+        modify UserMatrix mà không đụng vào mesh geometry. Trước đây bake
+        transform vào mesh.points làm widget "double-transform".
+        """
         try:
             path = Path(mesh_rel)
             if not path.is_absolute():
@@ -1462,14 +3761,14 @@ class GP7AppQt(QMainWindow):
             if not path.exists():
                 return
             mesh = pv.read(str(path))
-            mesh.points *= 0.001
-            # Apply rpy rotation + xyz translation
-            T = _xyz_rpy_to_matrix(0, 0, 0, *rpy_deg)
-            mesh.transform(T, inplace=True)
-            mesh.translate([xyz_mm[0] / 1000.0, xyz_mm[1] / 1000.0,
-                             xyz_mm[2] / 1000.0], inplace=True)
-            self._plotter.add_mesh(mesh, color=rgb, name=name,
-                                     smooth_shading=True)
+            mesh.points *= 0.001                              # mm → m
+            actor = self._plotter.add_mesh(mesh, color=rgb, name=name,
+                                              smooth_shading=True, render=False)
+            # Pose qua UserMatrix (translation: mm → m)
+            T = _xyz_rpy_to_matrix(xyz_mm[0], xyz_mm[1], xyz_mm[2],
+                                     rpy_deg[0], rpy_deg[1], rpy_deg[2])
+            T[:3, 3] /= 1000.0
+            actor.SetUserMatrix(_numpy_to_vtk_matrix(T))
         except Exception as e:                              # noqa: BLE001
             logger.debug("Static mesh '%s' lỗi: %s", mesh_rel, e)
 
@@ -1483,7 +3782,7 @@ class GP7AppQt(QMainWindow):
             mesh = pv.read(str(path))
             mesh.points *= 0.001
             actor = self._plotter.add_mesh(mesh, color=rgb, name=name,
-                                              smooth_shading=True)
+                                              smooth_shading=True, render=False)
             world_T = np.eye(4)
             world_T[:3, 3] = [v / 1000.0 for v in world_xyz_mm]
             actor.SetUserMatrix(_numpy_to_vtk_matrix(world_T))
@@ -1496,10 +3795,22 @@ class GP7AppQt(QMainWindow):
             logger.debug("Object '%s' lỗi: %s", name, e)
 
     def _set_camera_preset(self, name: str) -> None:
+        """Switch camera tới preset + auto adjust projection theo CAD convention:
+          • **Iso** → Perspective (cảm giác 3D natural cho navigation/demo)
+          • **Top/Front/Back/Right/Left** → Orthographic (engineering view —
+            đo lường chính xác, không bị perspective distortion)
+        """
         eye, ctr, up = self._CAM_PRESETS.get(name, self._CAM_PRESETS["Iso"])
         try:
             self._plotter.camera_position = [eye, ctr, up]
+            # CAD convention: orthographic cho orthogonal views, perspective cho Iso
+            is_perspective = (name == "Iso")
+            self._plotter.camera.SetParallelProjection(not is_perspective)
             self._plotter.render()
+            # Sync Perspective view menu toggle (KHÔNG fire toggled signal để
+            # tránh infinite recursion qua _on_toggle_perspective).
+            if hasattr(self, "_act_perspective"):
+                self._set_toggle(self._act_perspective, is_perspective)
         except Exception as e:                              # noqa: BLE001
             logger.debug("camera preset lỗi: %s", e)
         # Sync menu visual: exclusive — chỉ `name` checked, others unchecked.
@@ -1516,6 +3827,25 @@ class GP7AppQt(QMainWindow):
             self._plotter.render()
         except Exception as e:                              # noqa: BLE001
             logger.debug("Toggle %s lỗi: %s", name, e)
+
+    def _toggle_floor(self, visible: bool) -> None:
+        """Floor lazy-loaded: lần đầu bật thì _add_floor() build mesh, lần sau
+        chỉ SetVisibility."""
+        try:
+            actor = self._plotter.renderer.actors.get("__floor")
+            if actor is None:
+                if not visible:
+                    return
+                self._add_floor()                          # tạo mesh lần đầu
+            else:
+                actor.SetVisibility(bool(visible))
+            # Floor 6×6m mở rộng bounds scene → camera clipping range cũ cắt
+            # mất mesh ⇒ trông như "hình chữ nhật" tới khi di chuột (mouse mới
+            # trigger ResetCameraClippingRange). Reset ngay để floor hiện đủ.
+            self._plotter.reset_camera_clipping_range()
+            self._plotter.render()
+        except Exception as e:                              # noqa: BLE001
+            logger.debug("Toggle floor lỗi: %s", e)
 
     def _toggle_background(self, gradient_on: bool) -> None:
         """Toggle background giữa gradient navy/purple ↔ solid dark gray."""
@@ -1570,15 +3900,114 @@ class GP7AppQt(QMainWindow):
     # Menu checkbox sync — đồng bộ khi user thay đổi qua route khác
     # (vd. close dock bằng X title bar, hoặc thoát fullscreen bằng Esc)
     # ══════════════════════════════════════════════════════════════════
+    # ── Cụm tab trái: giữ thứ tự tab Cell | Control | Program | Camera ──
+    # Khi bật 1 panel, sắp lại tab các panel ĐANG MỞ theo thứ tự chuẩn này
+    # ⇒ panel mở sau nằm tab bên PHẢI. CHỈ dùng tabifyDockWidget (không
+    # splitDockWidget/resizeDocks nên KHÔNG vỡ layout/viewport).
+    def _group_docks_ordered(self) -> list:
+        """Các dock cụm trái theo thứ tự tab chuẩn (trái→phải), bỏ None."""
+        return [d for d in (getattr(self, "_cell_tree_dock", None),
+                            getattr(self, "_jog_dock", None),
+                            getattr(self, "_program_dock", None),
+                            getattr(self, "_camera_dock", None))
+                if d is not None]
+
+    def _open_dock_tab(self, dock, show: bool) -> None:
+        """Bật/tắt 1 panel cụm trái. Khi BẬT: sắp tab các panel đang mở theo
+        thứ tự chuẩn (Cell|Control|Program|Camera) rồi raise panel vừa bật ⇒
+        tab của nó nằm bên phải các panel mở trước. Khi TẮT: ẩn panel."""
+        if not show:
+            dock.setVisible(False)
+            return
+        dock.setVisible(True)
+        # Sắp lại tab: tabify lần lượt theo thứ tự chuẩn các panel đang mở
+        # (không floating). tabifyDockWidget(a, b) đặt b ngay phải a.
+        ordered = [d for d in self._group_docks_ordered()
+                   if d.isVisible() and not d.isFloating()]
+        for prev, cur in zip(ordered, ordered[1:]):
+            self.tabifyDockWidget(prev, cur)
+        dock.raise_()
+
+    def _connect_group_dock_redock(self) -> None:
+        """Nối topLevelChanged cho mọi panel cụm trái: khi panel THÔI NỔI
+        (kéo cửa sổ nổi thả về dock area), tự gộp lại vào tab group cũ —
+        Qt mặc định dock nó ra khu riêng, không quay về group."""
+        for d in self._group_docks_ordered():
+            d.topLevelChanged.connect(
+                lambda floating, dock=d: self._on_group_dock_floated(
+                    dock, floating))
+
+    def _on_group_dock_floated(self, dock, floating: bool) -> None:
+        """floating=False ⇒ panel vừa được thả về dock area → tabify lại vào
+        group. Defer qua singleShot để Qt hoàn tất drop trước khi mình sắp tab
+        (re-tabify ngay trong handler dễ gây trạng thái layout lỗi)."""
+        if floating:
+            return
+        QTimer.singleShot(0, lambda: (
+            self._open_dock_tab(dock, True)
+            if dock.isVisible() and not dock.isFloating() else None))
+
+    def _apply_active_dock_min(self, active_dock, pref_w: int) -> None:
+        """Min-width ĐỘNG cho nhóm tab trái (jog/cell/program/camera): dock đang
+        active có min = pref_w (không kéo nhỏ hơn, chỉ kéo to ra); các dock còn
+        lại về floor _CELL_DOCK_W để KHÔNG ép vùng rộng khi chúng không active."""
+        for d in (getattr(self, "_jog_dock", None),
+                  getattr(self, "_cell_tree_dock", None),
+                  getattr(self, "_program_dock", None),
+                  getattr(self, "_camera_dock", None)):
+            if d is not None:
+                d.setMinimumWidth(pref_w if d is active_dock else _CELL_DOCK_W)
+
     def _sync_jog_dock_check(self, visible: bool) -> None:
-        """Khi controls panel ẩn/hiện qua bất kỳ route nào → sync menu tick."""
+        """Khi controls panel ẩn/hiện hoặc được raise lên (tab switch) → sync
+        menu tick + min động _JOG_DOCK_W (active không kéo nhỏ) + resize vùng."""
         if hasattr(self, "_act_jog_dock"):
             self._set_toggle(self._act_jog_dock, bool(visible))
+        if visible and hasattr(self, "_jog_dock"):
+            self._apply_active_dock_min(self._jog_dock, _JOG_DOCK_W)
+            QTimer.singleShot(0, lambda: self.resizeDocks(
+                [self._jog_dock], [_JOG_DOCK_W], Qt.Orientation.Horizontal))
 
     def _sync_prog_dock_check(self, visible: bool) -> None:
-        """Tương tự cho program panel."""
+        """Tương tự cho program panel — sync menu tick + min động _PROG_DOCK_W
+        + resize vùng khi program thành active tab (tabified với jog/cell)."""
         if hasattr(self, "_act_prog_dock"):
             self._set_toggle(self._act_prog_dock, bool(visible))
+        if visible and hasattr(self, "_program_dock"):
+            self._apply_active_dock_min(self._program_dock, _PROG_DOCK_W)
+            QTimer.singleShot(0, lambda: self.resizeDocks(
+                [self._program_dock], [_PROG_DOCK_W], Qt.Orientation.Horizontal))
+
+    def _on_prog_tab_changed(self, index: int) -> None:
+        """Co tab area (Add Instruction) theo content của tab đang chọn.
+
+        QTabWidget mặc định cao = tab CAO NHẤT (QStackedWidget lấy max sizeHint
+        mọi page) → tab ngắn (vd Motion) thừa khoảng trống dưới. Ép maximumHeight
+        của QTabWidget = sizeHint của page hiện tại + tab bar → vùng co/giãn
+        khớp đúng tab đang xem, space thừa dồn cho program list (stretch=3).
+        """
+        tabs = getattr(self, "_prog_tabs", None)
+        if tabs is None:
+            return
+        cur = tabs.widget(index)
+        if cur is None:
+            return
+        # page content + tab bar + frame padding (+12 đệm tránh cắt row cuối)
+        h = (cur.sizeHint().height()
+             + tabs.tabBar().sizeHint().height() + 12)
+        tabs.setMaximumHeight(h)
+        tabs.updateGeometry()
+
+    def _sync_cell_dock_check(self, visible: bool) -> None:
+        """Tương tự cho Cell components. Cũng force lại width 180px
+        khi dock được show lại — Qt mặc định stretch dock back to fill area
+        sau khi setVisible(True), không restore size cũ."""
+        if hasattr(self, "_act_cell_dock"):
+            self._set_toggle(self._act_cell_dock, bool(visible))
+        if visible and hasattr(self, "_cell_tree_dock"):
+            self._apply_active_dock_min(self._cell_tree_dock, _CELL_DOCK_W)
+            QTimer.singleShot(0, lambda: self.resizeDocks(
+                [self._cell_tree_dock], [_CELL_DOCK_W], Qt.Orientation.Horizontal))
 
     def changeEvent(self, event) -> None:
         """Bắt window state change (Esc thoát fullscreen, maximize, v.v.) →
@@ -1591,49 +4020,53 @@ class GP7AppQt(QMainWindow):
                 self._set_toggle(self._act_fullscreen, is_fs)
                 self._fullscreen = is_fs
 
-    def _on_close_side_panels(self) -> None:
-        """Đóng cả controls + program panel — xem full viewport (Alt+C)."""
-        for dock, act in (
-            (self._jog_dock, self._act_jog_dock),
-            (self._program_dock, self._act_prog_dock),
-        ):
-            dock.setVisible(False)
-            self._set_toggle(act, False)
-        self._set_status("Side panels closed", level="ok")
-
-    def _resize_triads(self, factor: float) -> None:
-        """Scale tất cả visible frame triads lên/xuống theo `factor` (1.25 / 0.8).
-        VTK vtkAxesActor có `SetTotalLength` nên chỉ cần update size + re-set
-        trên mọi actor đang hiện."""
-        self._frame_triad_size = max(0.02, min(1.0, self._frame_triad_size * factor))
-        s = self._frame_triad_size
-        for actor in self._frame_actors.values():
-            try:
-                actor.SetTotalLength(s, s, s)
-            except Exception:                              # noqa: BLE001
-                pass
-        try:
-            self._plotter.render()
-        except Exception:                                   # noqa: BLE001
-            pass
-        self._set_status(f"Frame triads size: {s*1000:.0f} mm", level="ok")
+    # (Removed: _resize_triads — menu entries gone, niche feature)
 
     # ══════════════════════════════════════════════════════════════════
     # Animation (joint → actor transform)
     # ══════════════════════════════════════════════════════════════════
 
     def _apply_joints_main(self, joints_deg: list[float]) -> None:
-        """Main-thread slot: cập nhật joint state + actor transforms + readouts."""
+        """Main-thread slot: cập nhật joint state + actor transforms + readouts.
+        Robot phải đã load — nếu None thì skip im lặng (no-op)."""
+        if self._model is None:
+            return
         self._joints = list(joints_deg)
         self._render_scene_frame(joints_deg)
         self._refresh_joint_sliders()
         self._refresh_pose_readout()
 
     def _render_scene_frame(self, joints_deg: list[float]) -> None:
-        """Compute FK qua link_frames_urdf → SetUserMatrix mỗi link actor."""
-        frames = dict(link_frames_urdf(
-            self._model, [math.radians(q) for q in joints_deg]))
+        """Compute FK qua link_frames_urdf → SetUserMatrix mỗi link actor.
+
+        Perf: cache FK result vào self._cached_frames để _update_dynamic_frames
+        reuse (tránh 2-3 lần link_frames_urdf/frame). Cache invalidate qua
+        tuple key joints (immutable hash).
+        Bug fix B2: nếu move_widget đang active trên actor nào, skip update
+        actor đó (widget cần own UserMatrix).
+        """
+        if self._model is None:
+            return
+        # FK cache key BAO GỒM id(model) — nếu model rebuild (vd auto-lift
+        # robot khi add pedestal, _set_robot_base_z rebuild gp7_urdf), key
+        # khác ⇒ cache miss ⇒ recompute với base mới. KHÔNG có id(model)
+        # thì cache trả frames cũ ⇒ mesh render ở vị trí lệch.
+        jk = (id(self._model), tuple(round(q, 4) for q in joints_deg))
+        cached = getattr(self, "_cached_fk", None)
+        if cached is not None and cached[0] == jk:
+            frames = cached[1]
+        else:
+            frames = dict(link_frames_urdf(
+                self._model, [math.radians(q) for q in joints_deg]))
+            self._cached_fk = (jk, frames)
+        self._cached_frames = frames
+        # Actor đang được move widget control — skip FK override
+        move_target_name = (self._move_target[2]
+                            if getattr(self, "_move_target", None)
+                            else None)
         for link_key, actor in self._link_actors.items():
+            if link_key == move_target_name:
+                continue
             # gripper bám link_tool0
             frame_key = "link_tool0" if link_key == "gripper" else link_key
             T = frames.get(frame_key)
@@ -1643,12 +4076,14 @@ class GP7AppQt(QMainWindow):
             Tm[:3, 3] = T[:3, 3] / 1000.0                  # mm → m
             try:
                 actor.SetUserMatrix(_numpy_to_vtk_matrix(Tm))
-            except Exception:                               # noqa: BLE001
-                pass
+            except Exception as e:                          # noqa: BLE001
+                logger.debug("SetUserMatrix lỗi (%s): %s", link_key, e)
         # Object follow gripper
         T_tool0_mm = frames.get("link_tool0")
         if T_tool0_mm is not None:
             for name, obj in self._objects.items():
+                if name == move_target_name:
+                    continue
                 if (self._grasped_name == name
                         and self._grasp_offset_m is not None):
                     T_tool_m = T_tool0_mm.copy()
@@ -1657,8 +4092,8 @@ class GP7AppQt(QMainWindow):
                 try:
                     obj["actor"].SetUserMatrix(
                         _numpy_to_vtk_matrix(obj["world_T"]))
-                except Exception:                           # noqa: BLE001
-                    pass
+                except Exception as e:                      # noqa: BLE001
+                    logger.debug("Object SetUserMatrix lỗi (%s): %s", name, e)
         # Update visible frame triads (joint_N, tool, flange — these depend on joints)
         self._update_dynamic_frames()
         self._plotter.render()
@@ -1704,11 +4139,17 @@ class GP7AppQt(QMainWindow):
     # ══════════════════════════════════════════════════════════════════
 
     def _refresh_joint_sliders(self) -> None:
+        # Perf P7: skip nếu value không đổi (tránh blockSignals + setValue
+        # round-trip cho mỗi tick animation, mỗi joint).
         for i, slider in enumerate(self._joint_sliders):
-            slider.blockSignals(True)
-            slider.setValue(int(self._joints[i] * 100))
-            slider.blockSignals(False)
-            self._joint_value_lbls[i].setText(f"{self._joints[i]:+7.2f}°")
+            new_val = int(self._joints[i] * 100)
+            if slider.value() != new_val:
+                slider.blockSignals(True)
+                slider.setValue(new_val)
+                slider.blockSignals(False)
+            new_text = f"{self._joints[i]:+7.2f}°"
+            if self._joint_value_lbls[i].text() != new_text:
+                self._joint_value_lbls[i].setText(new_text)
 
     def _fill_pose_row(self, labels: list[QLabel], T: np.ndarray) -> None:
         """Cập nhật 6 colored labels (X/Y/Z/Rx/Ry/Rz) từ matrix 4x4.
@@ -1733,74 +4174,341 @@ class GP7AppQt(QMainWindow):
             self._fill_pose_row(self._tcp_pose_lbls, T_ref_tool)
 
     # ── Other configurations (IK branches) ────────────────────────────
-    def _on_find_alternates(self) -> None:
-        """Tìm alternative IK solutions cho TCP pose hiện tại — RoboDK 'Other
-        configurations' equivalent. Dùng inverse_kinematics_seeded với
-        nhiều random seeds, gom unique solutions (cách nhau >5° per joint).
+    def _compute_configurations(self) -> list[dict]:
+        """8 robot configs (Pieper analytical, gắn nhãn posture flags) cho TCP
+        pose hiện tại. Trả về list dict. Empty nếu unreachable.
+
+        Perf P8: cache result theo TCP pose tuple — nếu pose chưa đổi, reuse
+        cache thay vì gọi lại Pieper IK (~20-50ms). Invalidate khi tool_idx
+        đổi hoặc joints đổi (T derived).
         """
         T = self._current_tool_world()
         if T is None:
-            return
+            return []
         T_flange_tool = self._tool_frames[self._tool_idx][1]
         T_target_tool0 = T @ np.linalg.inv(T_flange_tool)
-        rng = np.random.RandomState(0)
-        q_min = np.array([j.joint_min for j in self._model.joints])
-        q_max = np.array([j.joint_max for j in self._model.joints])
-        current_deg = list(self._joints)
-        seen: list[list[float]] = [current_deg]
-        unique: list[list[float]] = []
+        # Cache key: round T_target_tool0 elements + tool_idx
+        # (rounded để hash stable, tránh float-equality flakiness)
+        key = (tuple(round(v, 4) for v in T_target_tool0.ravel()),
+               self._tool_idx)
+        cached = getattr(self, "_pieper_cache", None)
+        if cached is not None and cached[0] == key:
+            return cached[1]
+        try:
+            result = inverse_kinematics_pieper_gp7_tagged(
+                self._model, T_target_tool0)
+            self._pieper_cache = (key, result)
+            return result
+        except Exception as e:                              # noqa: BLE001
+            logger.warning("Pieper tagged IK failed: %s", e)
+            return []
 
-        def _is_new(sol_deg):
-            for u in seen:
-                if max(abs(a - b) for a, b in zip(sol_deg, u)) <= 5.0:
-                    return False
-            return True
+    @staticmethod
+    def _config_flag_text(cfg: dict) -> tuple[str, str, str]:
+        """(F/R, U/D, F/N) text cho 1 config."""
+        return (
+            "Front" if cfg["front"] else "Rear",
+            "Up" if cfg["elbow_up"] else "Down",
+            "NoFlip" if cfg["no_flip"] else "Flip",
+        )
 
-        for _ in range(40):
-            q_seed = rng.uniform(q_min, q_max)
-            sol = inverse_kinematics_seeded(
-                self._model, T_target_tool0, q_seed.tolist(),
-                tol_mm=0.5, tol_rad=1e-3, max_iter=60, n_random_seeds=0)
-            if sol is None:
-                continue
-            sol_deg = [math.degrees(q) for q in sol]
-            if _is_new(sol_deg):
-                seen.append(sol_deg)
-                unique.append(sol_deg)
-                if len(unique) >= 8:
-                    break
-
-        self._alt_solutions = unique
+    def _on_find_alternates(self) -> None:
+        """List 8 robot configurations cho TCP pose hiện tại (Pieper analytical).
+        Mỗi entry gắn nhãn posture flags (Front/Rear · Up/Down · Flip/Non-Flip).
+        """
+        cfgs = self._compute_configurations()
+        self._alt_solutions = [c["joints_deg"] for c in cfgs]
         self._alt_combo.blockSignals(True)
         self._alt_combo.clear()
-        if not unique:
-            self._alt_combo.addItem("(no alternative IK branches)")
-            self._set_status("No alternate IK branches found", level="warn")
+        if not cfgs:
+            self._alt_combo.addItem("(unreachable — no IK configs)")
+            self._set_status("No robot configurations (pose unreachable)",
+                             level="warn")
         else:
-            for sol in unique:
-                label = "( * )-[ " + ",  ".join(f"{q:+7.2f}°" for q in sol) + " ]"
-                self._alt_combo.addItem(label)
-            self._set_status(f"Found {len(unique)} alternative IK branch(es)", "ok")
+            for c in cfgs:
+                fr, ud, fn = self._config_flag_text(c)
+                self._alt_combo.addItem(
+                    f"id {c['id']} · {fr}/{ud}/{fn}")
+            self._set_status(f"Found {len(cfgs)} robot configuration(s)", "ok")
         self._alt_combo.blockSignals(False)
 
     def _on_alternate_selected(self, idx: int) -> None:
         i = int(idx)
         if 0 <= i < len(self._alt_solutions):
             self._apply_joints_main(self._alt_solutions[i])
-            self._set_status(f"Switched to IK branch #{i+1}", level="ok")
+            self._set_status(f"Switched to configuration #{i+1}", level="ok")
+
+    def _show_configurations_dlg(self) -> None:
+        """Dialog 'Robot Configurations' giống RoboDK — bảng config + bộ lọc
+        Front/Rear · Elbow Up/Down · Flip/Non-Flip + Show all / Recommended /
+        Config.id. Cờ hiển thị bằng chấm xanh(primary)/xám(other) như RoboDK.
+        Double-click / Ok → áp dụng config.
+        """
+        cfgs = self._compute_configurations()
+        if not cfgs:
+            self._set_status("No robot configurations (pose unreachable)",
+                             level="warn")
+            QMessageBox.information(
+                self, "Robot Configurations",
+                "TCP pose hiện tại không có nghiệm IK (ngoài tầm với / "
+                "vượt giới hạn khớp).")
+            return
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Yaskawa Motoman GP7: Robot Configurations")
+        dlg.setMinimumWidth(620)
+        v = QVBoxLayout(dlg)
+
+        # ── Top: 3 filter groups (trái) + Show all/Recommended/Config.id (phải) ──
+        top = QHBoxLayout()
+        groups = {
+            "fr": ("Front/Rear",
+                   [("Front", True), ("Rear", False), ("Both", None)]),
+            "ud": ("Elbow up/down",
+                   [("Elbow Up", True), ("Elbow Down", False), ("Both", None)]),
+            "fn": ("Flip/non-Flip",
+                   [("Non-Flip", True), ("Flip", False), ("Both", None)]),
+        }
+        self._cfg_filter = {"fr": None, "ud": None, "fn": None, "id": None}
+        self._cfg_radio_groups: dict[str, QButtonGroup] = {}
+
+        def _on_posture_change(key: str, val):
+            self._cfg_filter[key] = val
+            # Đổi radio → reset id filter về joined (đại diện cho "tất cả id
+            # khớp posture"). Nếu giữ id cũ, user click "Both" sẽ tưởng mở rộng
+            # nhưng table vẫn dính id cũ → confusing.
+            self._cfg_filter["id"] = None
+            _rebuild_id_combo()
+            _refill()
+
+        for key, (title, opts) in groups.items():
+            gb = QGroupBox(title); gv = QVBoxLayout(gb); gv.setSpacing(1)
+            bgrp = QButtonGroup(dlg)
+            for i, (lab, val) in enumerate(opts):
+                rb = QRadioButton(lab); rb.setStyleSheet("font-size: 9pt;")
+                if val is None: rb.setChecked(True)
+                bgrp.addButton(rb, i)
+                gv.addWidget(rb)
+            bgrp.idClicked.connect(
+                lambda i, k=key, o=opts: _on_posture_change(k, o[i][1]))
+            self._cfg_radio_groups[key] = bgrp
+            top.addWidget(gb)
+
+        # Right control column
+        rcol = QVBoxLayout(); rcol.setSpacing(4)
+        btn_all = QPushButton("Show all")
+        btn_rec = QPushButton("Recommended")
+        rcol.addWidget(btn_all); rcol.addWidget(btn_rec)
+        idrow = QHBoxLayout()
+        idrow.addWidget(QLabel("Config. id"))
+        # Read-only combo (dẫn xuất từ posture giống RoboDK). userData là
+        # frozenset[int] các id thoả posture; user chỉ có thể chọn 1 id trong
+        # tập đó để thu hẹp thêm — KHÔNG gõ tay. Nội dung sẽ được
+        # `_rebuild_id_combo()` cập nhật mỗi khi F/R · U/D · F/N đổi.
+        id_combo = QComboBox(); id_combo.setEditable(False)
+        idrow.addWidget(id_combo, 1)
+        rcol.addLayout(idrow)
+        rcol.addStretch()
+        top.addLayout(rcol)
+        v.addLayout(top)
+
+        info = QLabel(""); info.setStyleSheet("color: #cccccc; font-weight: 600;")
+        info.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        v.addWidget(info)
+
+        # ── Table ──
+        cols = ["id", "F/R", "U/D", "F/N", "J1", "J2", "J3", "J4", "J5", "J6"]
+        table = QTableWidget(0, len(cols))
+        table.setHorizontalHeaderLabels(cols)
+        table.verticalHeader().setVisible(False)
+        table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        hh = table.horizontalHeader()
+        hh.setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        for c in (0, 1, 2, 3):                               # id + dots: narrow
+            hh.setSectionResizeMode(c, QHeaderView.ResizeMode.ResizeToContents)
+        v.addWidget(table)
+
+        # Font lớn cho chấm trạng thái — dễ phân biệt xanh/xám hơn ký tự ●
+        # mặc định (gần với UX của bảng config trong RoboDK).
+        _dot_font = QFont(); _dot_font.setPointSize(18); _dot_font.setBold(True)
+
+        def _dot(on: bool) -> QTableWidgetItem:
+            # Xanh = trạng thái primary (Front/Up/NoFlip), xám = ngược lại.
+            it = QTableWidgetItem("●")
+            it.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            it.setForeground(QColor("#2da44e") if on else QColor("#5a5a5a"))
+            it.setFont(_dot_font)
+            return it
+
+        def _refill():
+            f = self._cfg_filter
+            shown = [c for c in cfgs
+                     if (f["fr"] is None or c["front"] == f["fr"])
+                     and (f["ud"] is None or c["elbow_up"] == f["ud"])
+                     and (f["fn"] is None or c["no_flip"] == f["fn"])
+                     and (f["id"] is None or c["id"] in f["id"])]
+            table.setRowCount(len(shown))
+            table._shown = shown
+            for r, c in enumerate(shown):
+                id_it = QTableWidgetItem(str(c["id"]))
+                id_it.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                table.setItem(r, 0, id_it)
+                table.setItem(r, 1, _dot(c["front"]))
+                table.setItem(r, 2, _dot(c["elbow_up"]))
+                table.setItem(r, 3, _dot(c["no_flip"]))
+                for jc, a in enumerate(c["joints_deg"]):
+                    it = QTableWidgetItem(f"{a:.1f}")
+                    it.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                    table.setItem(r, 4 + jc, it)
+            info.setText(f"Showing: {len(shown)} / {len(cfgs)} configurations")
+            if shown:
+                table.selectRow(0)
+        _refill()
+
+        # ── Show all: reset HẾT (3 radios về Both + id về joined) ──
+        def _show_all():
+            for k in ("fr", "ud", "fn"):
+                self._cfg_filter[k] = None
+                self._cfg_radio_groups[k].button(2).setChecked(True)  # "Both"
+            self._cfg_filter["id"] = None
+            _rebuild_id_combo()
+            _refill()
+        btn_all.clicked.connect(_show_all)
+
+        # ── Recommended: chọn config có thời gian di chuyển ngắn nhất ──
+        # (giống RoboDK): các trục chạy song song nên T_move = max_i(|Δθᵢ|/v_maxᵢ).
+        # v_max theo Yaskawa GP7 datasheet (deg/s) — trục lớn chậm hơn nên có
+        # "weight" cao hơn (1/v_max lớn hơn).
+        _v_max_dps = (220.0, 200.0, 220.0, 410.0, 410.0, 610.0)  # J1..J6
+
+        def _recommend():
+            # Pick từ TOÀN BỘ cfgs (không phụ thuộc filter hiện tại) — kể cả
+            # khi radios đang lọc ra table rỗng, Recommended vẫn tìm được
+            # config tốt nhất và auto-snap UI về config đó.
+            if not cfgs:
+                return
+            cur = self._joints
+            best_cfg = min(
+                cfgs,
+                key=lambda c: max(abs(a - b) / v for a, b, v in
+                                  zip(c["joints_deg"], cur, _v_max_dps)))
+            # Sync combo+radios sang id của best (tương đương user pick id):
+            # setCurrentIndex fire _on_id_index ⇒ auto-link radios + refilter.
+            id_combo.setCurrentIndex(1 + best_cfg["id"])
+            # Sau refilter, tìm lại đúng dòng (J6 turn variant) và select.
+            new_shown = getattr(table, "_shown", [])
+            for r, c in enumerate(new_shown):
+                if c["joints_deg"] == best_cfg["joints_deg"]:
+                    table.selectRow(r)
+                    break
+        btn_rec.clicked.connect(_recommend)
+
+        # Combo gồm 9 items:
+        #   • item 0 = "joined" — danh sách id implied bởi posture (text varies
+        #     theo radios, vd Rear+Both+Both ⇒ "4,5,6,7"). Đây là Config.id
+        #     "tương ứng" với trạng thái radio hiện tại.
+        #   • item 1..8 = 0..7 cố định — user luôn có thể pick 1 id bất kỳ;
+        #     auto-link sẽ snap radios theo bit của id.
+        # Bidirectional binding: radio đổi → joined text + selection refresh;
+        # combo pick → radios snap.
+        def _rebuild_id_combo():
+            f = self._cfg_filter
+            fr_bits = (0, 1) if f["fr"] is None else (0 if f["fr"] else 1,)
+            ud_bits = (0, 1) if f["ud"] is None else (0 if f["ud"] else 1,)
+            fn_bits = (0, 1) if f["fn"] is None else (0 if f["fn"] else 1,)
+            implied = sorted(b_fr * 4 + b_ud * 2 + b_fn
+                             for b_fr in fr_bits
+                             for b_ud in ud_bits
+                             for b_fn in fn_bits)
+            prev = self._cfg_filter["id"]
+            keep_single = (prev is not None and len(prev) == 1
+                           and 0 <= next(iter(prev)) <= 7)
+            id_combo.blockSignals(True)
+            id_combo.clear()
+            id_combo.addItem(",".join(map(str, implied)), frozenset(implied))
+            for cid in range(8):
+                id_combo.addItem(str(cid), frozenset({cid}))
+            if keep_single:
+                id_combo.setCurrentIndex(1 + next(iter(prev)))
+            else:
+                id_combo.setCurrentIndex(0)
+            id_combo.blockSignals(False)
+            self._cfg_filter["id"] = id_combo.currentData()
+
+        # User chỉ chọn từ dropdown — userData là frozenset[int]. Khi pick 1
+        # id cụ thể (frozenset có 1 phần tử) thì **auto-link** posture radios
+        # theo bit của id (giống RoboDK): id=7 (bits 111) ⇒ Rear/Down/Flip.
+        # Picking item "joined set" (vd "0,1,2,3,4,5,6,7") thì không đụng radios.
+        def _set_radio(key: str, target_val):
+            bg = self._cfg_radio_groups[key]
+            btn_idx = 0 if target_val is True else (1 if target_val is False else 2)
+            bg.blockSignals(True)
+            bg.button(btn_idx).setChecked(True)
+            bg.blockSignals(False)
+
+        def _on_id_index(_i: int):
+            data = id_combo.currentData()
+            auto_linked = False
+            if data is not None and len(data) == 1:
+                cid = next(iter(data))
+                new_fr = (cid & 4) == 0   # bit 2: 0=Front (True), 1=Rear (False)
+                new_ud = (cid & 2) == 0   # bit 1: 0=Up,           1=Down
+                new_fn = (cid & 1) == 0   # bit 0: 0=NoFlip,       1=Flip
+                self._cfg_filter["fr"] = new_fr
+                self._cfg_filter["ud"] = new_ud
+                self._cfg_filter["fn"] = new_fn
+                _set_radio("fr", new_fr)
+                _set_radio("ud", new_ud)
+                _set_radio("fn", new_fn)
+                auto_linked = True
+            self._cfg_filter["id"] = data
+            # Sau auto-link, combo cần rebuild theo posture mới (vd Rear/Down/Flip
+            # ⇒ chỉ còn id=7). _rebuild_id_combo block tín hiệu nên không recurse.
+            if auto_linked:
+                _rebuild_id_combo()
+            _refill()
+        id_combo.currentIndexChanged.connect(_on_id_index)
+
+        # Lần đầu mở dialog: dựng combo từ tập đầy đủ (chưa có posture filter).
+        _rebuild_id_combo()
+
+        def _apply_selected():
+            shown = getattr(table, "_shown", [])
+            r = table.currentRow()
+            if 0 <= r < len(shown):
+                self._apply_joints_main(shown[r]["joints_deg"])
+                fr, ud, fn = self._config_flag_text(shown[r])
+                self._set_status(
+                    f"Config id {shown[r]['id']}: {fr}/{ud}/{fn}", level="ok")
+
+        table.itemDoubleClicked.connect(
+            lambda *_: (_apply_selected(), dlg.accept()))
+        btns = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok
+            | QDialogButtonBox.StandardButton.Cancel)
+        btns.accepted.connect(lambda: (_apply_selected(), dlg.accept()))
+        btns.rejected.connect(dlg.reject)
+        v.addWidget(btns)
+        dlg.exec()
 
     # ══════════════════════════════════════════════════════════════════
     # Parameters dialog
     # ══════════════════════════════════════════════════════════════════
     def _show_parameters_dlg(self) -> None:
         from PyQt6.QtWidgets import QDialog, QTextEdit
+        if self._model is None:
+            self._set_status("Chưa load robot — File → Load Robot GP7", "warn")
+            return
         dlg = QDialog(self)
         dlg.setWindowTitle("Robot parameters (read-only)")
         dlg.resize(700, 560)
         lay = QVBoxLayout(dlg)
         text = QTextEdit(); text.setReadOnly(True)
+        robot_name = (getattr(self._cell_config.robot, "name", "GP7")
+                      if self._cell_config is not None else "GP7")
         lines = [
-            f"<h3>{self._cell_config.robot.name}</h3>",
+            f"<h3>{robot_name}</h3>",
             f"<b>Base:</b> xyz = {list(self._base_xyz)} mm<br><br>",
             f"<b>URDF joints ({len(self._model.joints)}):</b>",
             "<table border='1' cellpadding='6' cellspacing='0'>",
@@ -1832,37 +4540,203 @@ class GP7AppQt(QMainWindow):
     # ══════════════════════════════════════════════════════════════════
     # WorkSpace sphere
     # ══════════════════════════════════════════════════════════════════
+    def _compute_reach_envelope_mesh(self, mode: str):
+        """Compute reach envelope:
+          • Outer = convex hull của wrist 2D positions, revolve quanh J1
+                    Z axis qua J1 range [-170°, +170°] (slit phía sau).
+          • Inner = simple sphere tại elbow position khi J2 = +145° URDF
+                    (Yaskawa "deep negative"), centered on J1 axis at
+                    elbow Z height.
+        """
+        cache = getattr(self, "_reach_envelope_cache", {})
+        ckey = (id(self._model), mode, tuple(self._base_xyz))
+        if ckey in cache:
+            return cache[ckey]
+
+        base = self._base_xyz
+        L1 = 40.0
+        L2 = 445.0
+        L3 = 442.0
+        if mode == "wrist":
+            tip_offset = 0.0
+        elif mode == "flange":
+            tip_offset = 80.0
+        else:
+            tip_offset = 80.0 + 100.0
+
+        j2_min, j2_max = math.radians(-65), math.radians(145)
+        j3_min, j3_max = math.radians(-116), math.radians(255)
+
+        def _sample_2d(j2_lo, j2_hi):
+            pts = []
+            for j2 in np.linspace(j2_lo, j2_hi, 36):
+                e_x = L1 + L2 * math.sin(j2)
+                e_z = L2 * math.cos(j2)
+                for j3 in np.linspace(j3_min, j3_max, 48):
+                    angle_total = j2 + j3
+                    wx = e_x + L3 * math.sin(angle_total)
+                    wz = e_z + L3 * math.cos(angle_total)
+                    if tip_offset > 0:
+                        wx += tip_offset * math.sin(angle_total)
+                        wz += tip_offset * math.cos(angle_total)
+                    pts.append((wx, wz))
+            return pts
+
+        def _convex_hull_2d(pts):
+            from scipy.spatial import ConvexHull
+            arr = np.array(pts)
+            hull = ConvexHull(arr)
+            return arr[hull.vertices]
+
+        def _build_quad_sphere(radius, center, n_az=24, n_el=14):
+            cx_s, cy_s, cz_s = center
+            pts = []
+            for i_el in range(n_el):
+                theta = math.pi * i_el / (n_el - 1)
+                z = math.cos(theta) * radius
+                r_xy = math.sin(theta) * radius
+                for i_az in range(n_az):
+                    phi = 2.0 * math.pi * i_az / n_az
+                    pts.append([cx_s + r_xy * math.cos(phi),
+                                 cy_s + r_xy * math.sin(phi),
+                                 cz_s + z])
+            faces = []
+            for i_el in range(n_el - 1):
+                for i_az in range(n_az):
+                    i_az_n = (i_az + 1) % n_az
+                    p0 = i_el * n_az + i_az
+                    p1 = i_el * n_az + i_az_n
+                    p2 = (i_el + 1) * n_az + i_az_n
+                    p3 = (i_el + 1) * n_az + i_az
+                    faces.extend([4, p0, p1, p2, p3])
+            return pv.PolyData(np.array(pts), faces)
+
+        def _revolve_2d_to_3d(boundary_2d, center_z, n_az=36):
+            j1_min = math.radians(-170.0)
+            j1_max = math.radians(+170.0)
+            n_b = len(boundary_2d)
+            pts = []
+            for i_az in range(n_az):
+                t = i_az / (n_az - 1) if n_az > 1 else 0.0
+                az = j1_min + (j1_max - j1_min) * t
+                ca, sa = math.cos(az), math.sin(az)
+                for r, z in boundary_2d:
+                    pts.append([r * ca, r * sa, z + center_z])
+            faces = []
+            for i_az in range(n_az - 1):
+                i_az_n = i_az + 1
+                for j in range(n_b):
+                    j_n = (j + 1) % n_b
+                    p0 = i_az * n_b + j
+                    p1 = i_az_n * n_b + j
+                    p2 = i_az_n * n_b + j_n
+                    p3 = i_az * n_b + j_n
+                    faces.extend([4, p0, p1, p2, p3])
+            return pv.PolyData(np.array(pts), faces)
+
+        try:
+            outer_boundary = _convex_hull_2d(_sample_2d(j2_min, j2_max))
+        except Exception as e:                              # noqa: BLE001
+            logger.warning("Outer envelope hull failed: %s", e)
+            return None
+
+        # ── INNER: REACHABLE zone cho specific IK configuration.
+        # Forum: "inner sphere = dead zone for robot in specific config"
+        # ⇒ Implement: boundary của REGION reachable với 1 config (vd id=0:
+        # Front+Up+NoFlip). Region nhỏ → inner sphere nhỏ → match SDK.png.
+        try:
+            from ..kinematics.pieper_gp7 import (
+                inverse_kinematics_pieper_gp7_tagged,
+            )
+        except Exception:                                   # noqa: BLE001
+            logger.warning("Pieper tagged not available")
+            return None
+
+        target_config_id = 0       # Front+Up+NoFlip
+        reachable_pts = []
+        for j2 in np.linspace(j2_min, j2_max, 24):
+            e_x = L1 + L2 * math.sin(j2)
+            e_z = L2 * math.cos(j2)
+            for j3 in np.linspace(j3_min, j3_max, 30):
+                angle_total = j2 + j3
+                wx = e_x + L3 * math.sin(angle_total)
+                wz = e_z + L3 * math.cos(angle_total)
+                if tip_offset > 0:
+                    wx += tip_offset * math.sin(angle_total)
+                    wz += tip_offset * math.cos(angle_total)
+                T = np.eye(4)
+                T[:3, 3] = (wx, 0.0, wz)
+                try:
+                    cfgs = inverse_kinematics_pieper_gp7_tagged(
+                        self._model, T, include_turns=False)
+                except Exception:                          # noqa: BLE001
+                    continue
+                ids = {c["id"] for c in cfgs}
+                if target_config_id in ids:
+                    reachable_pts.append((wx, wz))
+
+        if len(reachable_pts) < 4:
+            inner_boundary = None
+        else:
+            try:
+                inner_boundary = _convex_hull_2d(reachable_pts)
+            except Exception:                              # noqa: BLE001
+                inner_boundary = None
+
+        outer_boundary_m = outer_boundary / 1000.0
+        cz = base[2] / 1000.0
+
+        outer_mesh = _revolve_2d_to_3d(outer_boundary_m, cz, n_az=36)
+        outer_mesh.translate([base[0]/1000.0, base[1]/1000.0, 0],
+                                inplace=True)
+        if inner_boundary is not None:
+            inner_boundary_m = inner_boundary / 1000.0
+            inner_mesh = _revolve_2d_to_3d(inner_boundary_m, cz, n_az=36)
+            inner_mesh.translate([base[0]/1000.0, base[1]/1000.0, 0],
+                                    inplace=True)
+        else:
+            inner_mesh = None
+
+        result = (outer_mesh, inner_mesh)
+        if not hasattr(self, "_reach_envelope_cache"):
+            self._reach_envelope_cache = {}
+        self._reach_envelope_cache[ckey] = result
+        return result
+
     def _on_workspace_changed(self, mode: str) -> None:
         # Clear existing
-        if self._workspace_actor is not None:
+        for name in ("__workspace_outer", "__workspace_inner", "__workspace"):
             try:
-                self._plotter.remove_actor("__workspace")
+                self._plotter.remove_actor(name)
             except Exception:                              # noqa: BLE001
                 pass
-            self._workspace_actor = None
+        self._workspace_actor = None
         if mode == "none":
             self._plotter.render()
             return
-        radius = {
-            "wrist":  self._REACH_WRIST,
-            "flange": self._REACH_FLANGE,
-            "tool":   self._REACH_FLANGE + self._REACH_TOOL_EXTRA,
-        }.get(mode)
-        if radius is None:
+        if self._model is None:
             return
-        center = (self._base_xyz[0] / 1000.0,
-                  self._base_xyz[1] / 1000.0,
-                  self._base_xyz[2] / 1000.0)
         try:
-            sphere = pv.Sphere(radius=radius, center=center,
-                                theta_resolution=48, phi_resolution=24)
-            self._workspace_actor = self._plotter.add_mesh(
-                sphere, color=[0.4, 0.85, 1.0], opacity=0.12,
-                name="__workspace", show_edges=False, lighting=False,
-                style="surface")
+            meshes = self._compute_reach_envelope_mesh(mode)
+            if meshes is None: return
+            outer_mesh, inner_mesh = meshes
+            self._plotter.add_mesh(
+                outer_mesh,
+                color=[0.70, 0.85, 1.0],
+                style="wireframe", line_width=2, opacity=0.75,
+                lighting=False, name="__workspace_outer")
+            if inner_mesh is not None:
+                self._workspace_actor = self._plotter.add_mesh(
+                    inner_mesh,
+                    color=[1.0, 0.70, 0.10],
+                    style="wireframe", line_width=2, opacity=0.9,
+                    lighting=False, name="__workspace_inner")
+            else:
+                self._workspace_actor = None
             self._plotter.render()
             self._set_status(
-                f"Workspace ({mode}): radius {radius*1000:.0f} mm", level="ok")
+                f"Workspace ({mode}): outer + inner envelopes",
+                level="ok")
         except Exception as e:                             # noqa: BLE001
             self._set_status(f"Workspace error: {e}", level="err")
 
@@ -1893,7 +4767,11 @@ class GP7AppQt(QMainWindow):
         self._add_frame_triad(key, T)
 
     def _frame_world_matrix(self, key: str) -> np.ndarray | None:
-        """Tính world transform (meters) cho frame key. Returns None nếu N/A."""
+        """Tính world transform (meters) cho frame key. Returns None nếu N/A.
+
+        Perf P2: reuse self._cached_frames nếu joints state khớp (đã compute
+        trong _render_scene_frame cùng tick) — tránh recompute FK chain.
+        """
         # Base = robot base position (no rotation)
         T_world_base = np.eye(4); T_world_base[:3, 3] = self._base_xyz
         T_world_base_m = T_world_base.copy()
@@ -1905,11 +4783,16 @@ class GP7AppQt(QMainWindow):
             T = T_world_ref.copy(); T[:3, 3] /= 1000.0
             return T
         # Dynamic frames depending on current joints
-        try:
-            q_rad = [math.radians(q) for q in self._joints]
-            frames = dict(link_frames_urdf(self._model, q_rad))
-        except Exception:                                  # noqa: BLE001
+        if self._model is None:
             return None
+        # Try cache first (set by _render_scene_frame same tick)
+        frames = getattr(self, "_cached_frames", None)
+        if frames is None:
+            try:
+                q_rad = [math.radians(q) for q in self._joints]
+                frames = dict(link_frames_urdf(self._model, q_rad))
+            except Exception:                              # noqa: BLE001
+                return None
         if key == "flange":
             T = frames.get("link_flange")
         elif key == "tool":
@@ -1936,10 +4819,15 @@ class GP7AppQt(QMainWindow):
         s = self._frame_triad_size                          # resizable instance attr
         actor.SetTotalLength(s, s, s)
         actor.SetShaftType(0)                              # cylinder
-        # Bỏ XYZ text labels cho gọn (axes có sẵn 3 màu R/G/B)
-        actor.GetXAxisCaptionActor2D().SetVisibility(False)
-        actor.GetYAxisCaptionActor2D().SetVisibility(False)
-        actor.GetZAxisCaptionActor2D().SetVisibility(False)
+        # Cùng proportions với world axes — base + tool đồng nhất, dày RGB.
+        actor.SetCylinderRadius(0.035)
+        actor.SetConeRadius(0.55)
+        actor.SetConeResolution(24)
+        # Force OFF labels — SetVisibility(False) trên caption không có hiệu
+        # lực trong VTK 9.x. Clear text là cách chắc chắn.
+        actor.SetXAxisLabelText("")
+        actor.SetYAxisLabelText("")
+        actor.SetZAxisLabelText("")
         transform = vtk.vtkTransform()
         transform.SetMatrix(_numpy_to_vtk_matrix(T_world_m))
         actor.SetUserTransform(transform)
@@ -2023,12 +4911,27 @@ class GP7AppQt(QMainWindow):
                 self._on_rotate(bid - 3, sign)
 
     def _set_status(self, msg: str, level: str = "info") -> None:
-        color = {"info": "#d8d8d8", "ok": "#5cf08c",
-                 "warn": "#ffc870", "err": "#ff7373"}.get(level, "#d8d8d8")
+        # Dot color theo level (Fluent-inspired status indicator).
+        dot_color = {
+            "info": "#38b6e7",  # cyan
+            "ok":   "#2da44e",  # green
+            "warn": "#fb8500",  # orange
+            "err":  "#cf222e",  # red
+        }.get(level, "#969696")
+        text_color = {
+            "info": "#cccccc",
+            "ok":   "#cccccc",
+            "warn": "#ffc870",
+            "err":  "#ff7373",
+        }.get(level, "#cccccc")
+        self._status_dot.setStyleSheet(
+            f"color: {dot_color}; font-size: 16px;")
         self._status_lbl.setText(msg)
-        self._status_lbl.setStyleSheet(f"color: {color};")
+        self._status_lbl.setStyleSheet(f"color: {text_color};")
 
     def _current_tool_world(self) -> np.ndarray | None:
+        if self._model is None:
+            return None
         try:
             q_rad = [math.radians(q) for q in self._joints]
             T_world_tool0 = dict(link_frames_urdf(self._model, q_rad)).get(
@@ -2051,15 +4954,101 @@ class GP7AppQt(QMainWindow):
             return T_world_ref[:3, :3] @ unit
         return unit
 
-    def _apply_cartesian_target(self, T_world_tool_target, source: str) -> None:
+    def _solve_cartesian(self, T_world_tool_target,
+                          seeded: bool = True) -> list[float] | None:
+        """IK cho 1 TCP target (Tool frame, world) → joints rad hoặc None.
+
+        seeded=True: thử nhiều seed (bền, dùng cho target mới). seeded=False:
+        1 lần DLS từ joints hiện tại (nhanh, dùng trong bisection jog liên tục).
+        """
         T_flange_tool = self._tool_frames[self._tool_idx][1]
-        T_world_tool0_target = T_world_tool_target @ np.linalg.inv(T_flange_tool)
+        T_world_tool0 = T_world_tool_target @ np.linalg.inv(T_flange_tool)
         q_init = [math.radians(q) for q in self._joints]
-        sol = inverse_kinematics_seeded(
-            self._model, T_world_tool0_target, q_init,
+        if seeded:
+            return inverse_kinematics_seeded(
+                self._model, T_world_tool0, q_init,
+                tol_mm=0.5, tol_rad=1e-3, max_iter=100)
+        return inverse_kinematics(
+            self._model, T_world_tool0, q_init,
             tol_mm=0.5, tol_rad=1e-3, max_iter=100)
+
+    def _limit_blocker(self, sol_rad, tol_deg: float = 1.5) -> str | None:
+        """Mô tả khớp đang chạm giới hạn trong nghiệm (None nếu không có)."""
+        for i, qr in enumerate(sol_rad):
+            d = math.degrees(qr)
+            lo = math.degrees(self._model.joints[i].joint_min)
+            hi = math.degrees(self._model.joints[i].joint_max)
+            if d >= hi - tol_deg:
+                return f"θ{i+1} chạm giới hạn +{hi:.0f}°"
+            if d <= lo + tol_deg:
+                return f"θ{i+1} chạm giới hạn {lo:.0f}°"
+        return None
+
+    # Ngưỡng manipulability cảnh báo singularity (hiệu chỉnh cho GP7:
+    # khỏe ~0.07-0.08, gần singularity < 0.01). Xem kinematics.manipulability().
+    _W_SINGULAR = 0.01
+
+    def _jog_cartesian(self, target_at, full_amount: float, unit: str,
+                        label: str) -> None:
+        """Jog Cartesian theo chuẩn industrial:
+
+          1. **Giữ cấu hình** — dùng local IK (seed = joints hiện tại), KHÔNG
+             reseed random → không nhảy branch / lật cổ tay đột ngột.
+          2. **Dừng ở giới hạn khớp** — full step fail thì bisection tìm phần
+             lớn nhất đạt được (jog tới sát limit như teach pendant thật) +
+             báo khớp nào chặn.
+          3. **Cảnh báo singularity** — manipulability w < ngưỡng (wrist θ5≈0,
+             tay duỗi hết tầm…) → cảnh báo dù jog thành công (controller thật
+             giảm tốc / báo gần singularity).
+        """
+        q_now = [math.radians(q) for q in self._joints]
+        w_now = manipulability(self._model, q_now)
+
+        # 1+3. Full step bằng local IK (config-continuous).
+        sol = self._solve_cartesian(target_at(1.0), seeded=False)
+        if sol is not None:
+            self._apply_joints_main([math.degrees(q) for q in sol])
+            w_new = manipulability(self._model, sol)
+            if min(w_now, w_new) < self._W_SINGULAR:
+                self._set_status(
+                    f"{label} {full_amount:.1f}{unit} — ⚠ gần singularity "
+                    f"(w={w_new:.3f}); chuyển động Cartesian kém ổn định",
+                    level="warn")
+            else:
+                self._set_status(f"{label} {full_amount:.1f}{unit}", level="ok")
+            return
+
+        # 2. Bisection: max reachable fraction, vẫn local IK (giữ branch).
+        lo_f, hi_f, best = 0.0, 1.0, None
+        for _ in range(14):
+            mid = 0.5 * (lo_f + hi_f)
+            s = self._solve_cartesian(target_at(mid), seeded=False)
+            if s is not None:
+                best, lo_f = s, mid
+            else:
+                hi_f = mid
+        if best is None or lo_f < 0.02:
+            # Không jog được kể cả bước nhỏ → phân loại nguyên nhân.
+            cause = ("gần singularity — đổi hướng hoặc jog khớp ra khỏi "
+                     "singularity trước" if w_now < self._W_SINGULAR
+                     else "ngoài tầm với / vượt giới hạn khớp")
+            self._set_status(
+                f"IK fail: {label} {full_amount:.1f}{unit} — {cause}",
+                level="err")
+            return
+        self._apply_joints_main([math.degrees(q) for q in best])
+        blk = self._limit_blocker(best) or "biên vùng làm việc / singularity"
+        self._set_status(
+            f"{label} {lo_f*full_amount:.1f}/{full_amount:.1f}{unit} — "
+            f"dừng do {blk}", level="warn")
+
+    def _apply_cartesian_target(self, T_world_tool_target, source: str) -> None:
+        """1-shot Cartesian target (paste / teach) — không interpolate."""
+        sol = self._solve_cartesian(T_world_tool_target)
         if sol is None:
-            self._set_status(f"IK fail: {source}", level="err")
+            self._set_status(
+                f"IK fail: {source} — ngoài tầm với / vượt giới hạn khớp",
+                level="err")
             return
         self._apply_joints_main([math.degrees(q) for q in sol])
         self._set_status(source, level="ok")
@@ -2074,11 +5063,15 @@ class GP7AppQt(QMainWindow):
         self._set_status(f"J{idx+1} = {value_deg:+.2f} deg")
 
     def _on_home(self) -> None:
+        if self._model is None:
+            self._set_status("Chưa load robot", level="warn"); return
         threading.Thread(target=self._animate_to,
                           args=(list(self._home_joints),), daemon=True).start()
         self._set_status("Move: Home", level="ok")
 
     def _on_zero(self) -> None:
+        if self._model is None:
+            self._set_status("Chưa load robot", level="warn"); return
         threading.Thread(target=self._animate_to,
                           args=([0.0] * 6,), daemon=True).start()
         self._set_status("Move: Zero", level="ok")
@@ -2107,23 +5100,34 @@ class GP7AppQt(QMainWindow):
         T_tool = self._current_tool_world()
         if T_tool is None: return
         axis_world = self._jog_axis_world(axis_idx, T_tool)
-        T_target = T_tool.copy()
-        T_target[:3, 3] = T_tool[:3, 3] + axis_world * (sign * self._jog_step_mm)
-        self._apply_cartesian_target(T_target,
-            f"T{'+' if sign>0 else '-'}{self.AXIS_NAMES[axis_idx]} "
-            f"{self._jog_step_mm:.1f}mm")
+        full = sign * self._jog_step_mm
+        p0 = T_tool[:3, 3].copy()
+
+        def target_at(frac: float):
+            T = T_tool.copy()
+            T[:3, 3] = p0 + axis_world * (full * frac)
+            return T
+
+        self._jog_cartesian(
+            target_at, self._jog_step_mm, "mm",
+            f"T{'+' if sign>0 else '-'}{self.AXIS_NAMES[axis_idx]}")
 
     def _on_rotate(self, axis_idx: int, sign: int) -> None:
         T_tool = self._current_tool_world()
         if T_tool is None: return
         axis_world = self._jog_axis_world(axis_idx, T_tool)
-        R_step = _rotation_about_axis_3x3(axis_world,
-            sign * math.radians(self._jog_step_deg))
-        T_target = T_tool.copy()
-        T_target[:3, :3] = R_step @ T_tool[:3, :3]
-        self._apply_cartesian_target(T_target,
-            f"R{'+' if sign>0 else '-'}{self.AXIS_NAMES[axis_idx]} "
-            f"{self._jog_step_deg:.1f} deg")
+        R0 = T_tool[:3, :3].copy()
+
+        def target_at(frac: float):
+            R_step = _rotation_about_axis_3x3(
+                axis_world, sign * math.radians(self._jog_step_deg * frac))
+            T = T_tool.copy()
+            T[:3, :3] = R_step @ R0
+            return T
+
+        self._jog_cartesian(
+            target_at, self._jog_step_deg, "°",
+            f"R{'+' if sign>0 else '-'}{self.AXIS_NAMES[axis_idx]}")
 
     def _toggle_gripper(self, close: bool) -> None:
         if close:
@@ -2161,44 +5165,16 @@ class GP7AppQt(QMainWindow):
         self._grasp_offset_m = None
 
     def _tool0_world(self) -> np.ndarray | None:
+        if self._model is None:
+            return None
         try:
             q_rad = [math.radians(q) for q in self._joints]
             return dict(link_frames_urdf(self._model, q_rad)).get("link_tool0")
         except Exception:                                   # noqa: BLE001
             return None
 
-    # ── Demo motion (worker thread) ───────────────────────────────────
-    def _on_demo_toggle(self) -> None:
-        if self._demo_thread is not None and self._demo_thread.is_alive():
-            self._demo_stop.set()
-            self._set_status("Demo: stopping...", level="warn"); return
-        self._demo_stop.clear()
-        self._set_status("Demo: running", level="ok")
-        self._demo_thread = threading.Thread(
-            target=self._demo_loop, daemon=True)
-        self._demo_thread.start()
-
-    def _demo_loop(self) -> None:
-        poses = [
-            list(self._home_joints),
-            [30, -30, 30, 0, 30, 0],
-            [-30, 20, -40, 90, -30, 45],
-            [0, 50, -80, 0, 60, 0],
-        ]
-        i = 0
-        try:
-            while not self._demo_stop.is_set():
-                self._animate_to(poses[i % len(poses)], steps=40, dt=0.025,
-                                  stop_event=self._demo_stop)
-                i += 1
-                for _ in range(20):
-                    if self._demo_stop.is_set(): break
-                    time.sleep(0.05)
-        finally:
-            self._signals.demo_done.emit()
-
-    def _on_demo_done(self) -> None:
-        self._set_status("Demo: idle")
+    # (Removed: Demo motion methods — replaced by Program → Play with
+    # user-defined instruction sequence. Hard-coded 4-pose loop was dev-only.)
 
     # ══════════════════════════════════════════════════════════════════
     # Program panel actions
@@ -2219,8 +5195,23 @@ class GP7AppQt(QMainWindow):
         self._prog_list.clear()
         if not self._program:
             self._prog_list.addItem("(empty)"); return
+        # Track modal state (speed/PL/tool/uframe) theo thứ tự lệnh → move
+        # hiển thị tag INFORM inline đúng giá trị áp dụng tại điểm đó (giống
+        # cách export fold modal vào từng MOV line).
+        modal = {"vj": self._pp_default_vj, "v": self._pp_default_v_mms,
+                 "pl": None, "tl": None, "uf": None}
         for i, ins in enumerate(self._program):
-            self._prog_list.addItem(f"{i+1:>2}. {ins.describe()}")
+            t = ins.type
+            if t == "SetSpeed":
+                modal["vj"] = ins.speed_joint_pct
+                modal["v"] = ins.speed_linear_mm_s
+            elif t == "SetRounding":
+                modal["pl"] = ins.rounding_pl
+            elif t == "SetTool":
+                modal["tl"] = ins.tool_no
+            elif t == "SetRefFrame":
+                modal["uf"] = ins.ref_frame_no
+            self._prog_list.addItem(f"{i+1:>2}. {ins.describe(modal)}")
 
     def _on_prog_add_movej(self) -> None:
         self._program.append(Instruction(type="MoveJ", joints=list(self._joints)))
@@ -2235,12 +5226,17 @@ class GP7AppQt(QMainWindow):
         self._refresh_program_list()
         self._set_status(f"Program +MoveL (n={len(self._program)})", level="ok")
 
-    def _on_prog_add_gripper(self, close: bool) -> None:
-        self._program.append(Instruction(type="SetGripper", gripper_close=close))
+    def _on_prog_add_setdo(self) -> None:
+        """Generic digital output (DOUT) — thay cho gripper-specific. Phần mềm
+        lập trình tổng quát: control bất kỳ output bit nào (gripper, valve, ...)."""
+        ins = Instruction(
+            type="SetDO",
+            do_index=int(self._prog_do_idx.value()),
+            do_state=(self._prog_do_state.currentText() == "ON"),
+        )
+        self._program.append(ins)
         self._refresh_program_list()
-        self._set_status(
-            f"Program +Gripper {'CLOSE' if close else 'OPEN'} "
-            f"(n={len(self._program)})", level="ok")
+        self._set_status(f"Program +{ins.describe()}", level="ok")
 
     def _on_prog_add_wait(self) -> None:
         secs = float(self._prog_wait_spin.value())
@@ -2370,6 +5366,16 @@ class GP7AppQt(QMainWindow):
         # ── Logic / Modal ─────────────────────────────────────────────
         elif t == "SetGripper":
             ins.gripper_close = not ins.gripper_close
+        elif t == "SetDO":
+            idx_v, ok = QInputDialog.getInt(
+                self, "Modify DOUT", "Output bit OT# (1..1024):",
+                ins.do_index, 1, 1024)
+            if not ok: return
+            state_v, ok = QInputDialog.getItem(
+                self, "Modify DOUT", "State:", ["ON", "OFF"],
+                0 if ins.do_state else 1, False)
+            if not ok: return
+            ins.do_index = int(idx_v); ins.do_state = (state_v == "ON")
         elif t == "Wait":
             v, ok = QInputDialog.getDouble(
                 self, "Modify Wait", "Seconds:",
@@ -2486,216 +5492,7 @@ class GP7AppQt(QMainWindow):
             f"VJ₀={self._pp_default_vj:.0f}%, V₀={self._pp_default_v_mms:.0f}mm/s",
             level="ok")
 
-    # ══════════════════════════════════════════════════════════════════
-    # Robot connection (HSE) — Run on Robot pipeline
-    # ══════════════════════════════════════════════════════════════════
-    def _on_show_connection_settings(self) -> None:
-        """Dialog edit HSE connection — IP, tool_no, FTP creds."""
-        dlg = QDialog(self); dlg.setWindowTitle("Robot connection (HSE)")
-        form = QFormLayout(dlg)
-        ed_ip = QLineEdit(self._hse_ip)
-        ed_ip.setPlaceholderText("e.g. 192.168.1.100")
-        sp_tool = QSpinBox(); sp_tool.setRange(0, 63); sp_tool.setValue(self._hse_tool_no)
-        ed_user = QLineEdit(self._hse_ftp_user)
-        ed_user.setPlaceholderText("empty = anonymous")
-        ed_pass = QLineEdit(self._hse_ftp_pass)
-        ed_pass.setEchoMode(QLineEdit.EchoMode.Password)
-        ed_dir = QLineEdit(self._hse_ftp_dir)
-        form.addRow("HSE IP", ed_ip)
-        form.addRow("Tool # (TL=)", sp_tool)
-        form.addRow("FTP user", ed_user)
-        form.addRow("FTP pass", ed_pass)
-        form.addRow("FTP job dir", ed_dir)
-        info = QLabel(
-            "<small><i>⚠ Robot phải ở REMOTE mode + HSE Server function enabled."
-            "<br>Speed slider trên TP nên ≤ 10% lần đầu.</i></small>")
-        info.setWordWrap(True); form.addRow(info)
-        bb = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
-        bb.accepted.connect(dlg.accept); bb.rejected.connect(dlg.reject)
-        form.addRow(bb)
-        if dlg.exec() != QDialog.DialogCode.Accepted: return
-        self._hse_ip = ed_ip.text().strip()
-        self._hse_tool_no = int(sp_tool.value())
-        self._hse_ftp_user = ed_user.text()
-        self._hse_ftp_pass = ed_pass.text()
-        self._hse_ftp_dir = ed_dir.text().strip() or "/MPRAM1/JBI"
-        self._set_status(
-            f"Connection: {self._hse_ip} TL#{self._hse_tool_no}", level="ok")
-
-    def _on_test_connection(self) -> None:
-        """Ping HSE — gửi READ_STATUS để verify socket + controller alive."""
-        if not self._hse_ip:
-            self._set_status(
-                "Chưa cấu hình HSE IP — Robot → Connection settings", level="warn")
-            return
-        self._set_status(f"Pinging {self._hse_ip}…", level="info")
-        QApplication.processEvents()
-        backend = MotomanHSEBackend(
-            ip=self._hse_ip, timeout_s=2.0,
-            ftp_user=self._hse_ftp_user, ftp_pass=self._hse_ftp_pass,
-            ftp_job_dir=self._hse_ftp_dir, tool_no=self._hse_tool_no)
-        try:
-            backend.connect()
-            ok = backend.Valid()
-            if ok:
-                # Đọc joints + alarm để verify deeper
-                try:
-                    joints = backend.Joints()
-                    alarm_code, _ = backend.read_alarm()
-                    alarm_str = ("✓ no alarm" if alarm_code == 0
-                                 else f"⚠ alarm 0x{alarm_code:04X}")
-                    msg = (f"Connected. Joints: ["
-                           + ", ".join(f"{j:+.1f}°" for j in joints) +
-                           f"]  {alarm_str}")
-                    self._set_status(msg, level="ok")
-                    QMessageBox.information(self, "Connection OK", msg)
-                except Exception as e:                      # noqa: BLE001
-                    self._set_status(
-                        f"Connected but deep probe fail: {e}", level="warn")
-            else:
-                self._set_status(
-                    f"Connection FAIL — kiểm tra HSE Server enable",
-                    level="err")
-                QMessageBox.warning(
-                    self, "Connection failed",
-                    f"YRC1000 {self._hse_ip} không phản hồi READ_STATUS.\n"
-                    "Verify:\n"
-                    " • Ping {ip} OK?\n"
-                    " • HSE Server function enabled trong Maintenance mode?\n"
-                    " • PC cùng subnet với YRC1000?".format(ip=self._hse_ip))
-        except Exception as e:                              # noqa: BLE001
-            self._set_status(f"Connection error: {e}", level="err")
-            QMessageBox.critical(self, "Connection error", str(e))
-        finally:
-            backend.disconnect()
-
-    def _on_run_on_robot(self) -> None:
-        """Render current job → upload .JBI → JOB_SELECT + START → wait_idle.
-
-        Chạy trong worker thread để UI không block. Stop button → servo OFF.
-        """
-        if not self._hse_ip:
-            r = QMessageBox.question(
-                self, "Run on Robot",
-                "Chưa cấu hình HSE IP. Mở Connection settings bây giờ?",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
-            if r == QMessageBox.StandardButton.Yes:
-                self._on_show_connection_settings()
-            return
-        if not self._program:
-            self._set_status("Current job empty", level="warn"); return
-        if self._hse_thread is not None and self._hse_thread.is_alive():
-            self._set_status("Robot đang chạy job — wait done hoặc Stop",
-                              level="warn"); return
-        # Safety confirm
-        n_steps = len(self._program)
-        r = QMessageBox.warning(
-            self, "Run on Robot — Safety check",
-            f"<b>⚠ ROBOT SẼ CHUYỂN ĐỘNG THẬT</b><br><br>"
-            f"Job: <code>{self._active_job}</code> ({n_steps} instructions)<br>"
-            f"HSE IP: <code>{self._hse_ip}</code><br>"
-            f"Max VJ: {self._pp_max_speed_pct:.0f}%<br><br>"
-            f"Trước khi tiếp tục, verify:<br>"
-            f"&nbsp;✓ YRC1000 ở REMOTE mode<br>"
-            f"&nbsp;✓ Speed slider TP ≤ 10%<br>"
-            f"&nbsp;✓ Workspace clear, tay sẵn sàng E-stop<br>"
-            f"&nbsp;✓ Không có alarm active<br><br>"
-            f"Tiếp tục?",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
-            QMessageBox.StandardButton.Cancel)
-        if r != QMessageBox.StandardButton.Yes: return
-        # Render JBI trong main thread (cần access self._targets atomically),
-        # rồi pass text + name vào worker.
-        try:
-            stem = self._safe_job_name(self._active_job) or "PROG"
-            jbi_path = Path.cwd() / f"{stem}.JBI"
-            self._export_job_to_path(self._program, stem, jbi_path)
-            jbi_text = jbi_path.read_text(encoding="utf-8")
-            jbi_path.unlink(missing_ok=True)                # tmp file
-        except Exception as e:                              # noqa: BLE001
-            self._set_status(f"JBI render fail: {e}", level="err")
-            return
-        # Worker thread chạy upload + JOB_SELECT + START + wait_idle
-        self._hse_stop.clear()
-        self._hse_thread = threading.Thread(
-            target=self._run_on_robot_worker,
-            args=(jbi_text, stem),
-            daemon=True)
-        self._hse_thread.start()
-        self._set_status(f"Robot: uploading job '{stem}'…", level="info")
-
-    def _run_on_robot_worker(self, jbi_text: str, job_name: str) -> None:
-        backend = MotomanHSEBackend(
-            ip=self._hse_ip, timeout_s=3.0,
-            ftp_user=self._hse_ftp_user, ftp_pass=self._hse_ftp_pass,
-            ftp_job_dir=self._hse_ftp_dir, tool_no=self._hse_tool_no,
-            max_speed_pct=self._pp_max_speed_pct,
-            wait_completion_timeout_s=120.0)
-        try:
-            backend.connect()
-            if not backend.Valid():
-                self._signals.status.emit(
-                    "Robot: HSE not responding — abort", "err"); return
-            # Alarm pre-check
-            code, sub = backend.read_alarm()
-            if code != 0:
-                self._signals.status.emit(
-                    f"Robot: ALARM 0x{code:04X} (sub 0x{sub:04X}) — reset TP trước",
-                    "err"); return
-            if self._hse_stop.is_set():
-                self._signals.status.emit("Robot: aborted before upload", "warn"); return
-            self._signals.status.emit(f"Robot: FTP uploading '{job_name}.JBI'…", "info")
-            backend.upload_job(jbi_text, job_name)
-            if self._hse_stop.is_set():
-                self._signals.status.emit("Robot: aborted before start", "warn"); return
-            self._signals.status.emit(f"Robot: JOB_SELECT + START '{job_name}'…", "info")
-            backend.job_select(job_name)
-            backend.job_start()
-            # Poll status until idle hoặc stop
-            import time as _time
-            t_start = _time.monotonic()
-            poll_dt = 0.3
-            timeout = backend.wait_completion_timeout_s
-            while True:
-                if self._hse_stop.is_set():
-                    backend.Stop()                          # servo off
-                    self._signals.status.emit(
-                        "Robot: STOP triggered — servo OFF", "warn"); return
-                try:
-                    running = backend.read_status_running()
-                except Exception as e:                      # noqa: BLE001
-                    self._signals.status.emit(
-                        f"Robot: status poll error: {e}", "warn"); break
-                if not running: break
-                if _time.monotonic() - t_start > timeout:
-                    self._signals.status.emit(
-                        f"Robot: timeout {timeout:.0f}s — check TP", "err"); return
-                _time.sleep(poll_dt)
-            # Done — alarm post-check
-            code, sub = backend.read_alarm()
-            if code != 0:
-                self._signals.status.emit(
-                    f"Robot: completed WITH ALARM 0x{code:04X}", "warn")
-            else:
-                self._signals.status.emit(
-                    f"Robot: job '{job_name}' completed OK", "ok")
-        except Exception as e:                              # noqa: BLE001
-            self._signals.status.emit(f"Robot error: {e}", "err")
-        finally:
-            try:
-                backend.disconnect()
-            except Exception:                               # noqa: BLE001
-                pass
-
-    def _on_stop_all(self) -> None:
-        """Dual-purpose stop: sim playback + robot job (servo OFF nếu đang HSE)."""
-        # Sim stop
-        self._on_prog_stop()
-        # Robot stop
-        if self._hse_thread is not None and self._hse_thread.is_alive():
-            self._hse_stop.set()
-            self._set_status("Robot: STOP signaled (will servo-off)", level="warn")
+    # Robot connection (HSE) — Run on Robot pipeline → ConnectionMixin
 
     def _on_show_script_editor(self) -> None:
         """Mở Python script editor — user nhập code dùng `p.add_*()` API
@@ -2819,192 +5616,78 @@ class GP7AppQt(QMainWindow):
         self._prog_ev_edit.clear()
         self._set_status(f"Program +SimEvent '{name[:32]}'", level="ok")
 
-    # ══════════════════════════════════════════════════════════════════
-    # Multi-job project — job selector
-    # ══════════════════════════════════════════════════════════════════
-    @staticmethod
-    def _safe_job_name(name: str) -> str:
-        """Sanitize → uppercase alphanumeric/_  (INFORM job name rules)."""
-        s = "".join(c for c in name.strip() if c.isalnum() or c == "_")
-        return s.upper()[:32]
-
-    def _refresh_job_combo(self) -> None:
-        self._job_combo.blockSignals(True)
-        self._job_combo.clear()
-        for name in self._jobs.keys():
-            self._job_combo.addItem(name)
-        idx = self._job_combo.findText(self._active_job)
-        if idx >= 0: self._job_combo.setCurrentIndex(idx)
-        self._job_combo.blockSignals(False)
-
-    def _on_job_changed(self, name: str) -> None:
-        if not name or name not in self._jobs: return
-        self._active_job = name
-        self._refresh_program_list()
-        self._set_status(
-            f"Active job: {name}  ({len(self._program)} steps)", level="info")
-
-    def _on_job_add(self) -> None:
-        v, ok = QInputDialog.getText(
-            self, "Add job", "New job name:", QLineEdit.EchoMode.Normal, "SUB1")
-        if not ok: return
-        name = self._safe_job_name(v)
-        if not name:
-            self._set_status("Job name không hợp lệ", level="warn"); return
-        if name in self._jobs:
-            self._set_status(f"Job '{name}' đã tồn tại", level="warn"); return
-        self._jobs[name] = []
-        self._active_job = name
-        self._refresh_job_combo()
-        self._refresh_program_list()
-        self._set_status(f"Added job '{name}'", level="ok")
-
-    def _on_job_rename(self) -> None:
-        old = self._active_job
-        v, ok = QInputDialog.getText(
-            self, "Rename job", f"New name for '{old}':",
-            QLineEdit.EchoMode.Normal, old)
-        if not ok: return
-        new = self._safe_job_name(v)
-        if not new or new == old: return
-        if new in self._jobs:
-            self._set_status(f"Job '{new}' đã tồn tại", level="warn"); return
-        # Preserve dict order
-        new_jobs: dict[str, list[Instruction]] = {}
-        for k, v_list in self._jobs.items():
-            new_jobs[new if k == old else k] = v_list
-        self._jobs = new_jobs
-        self._active_job = new
-        # Update CallJob refs nếu có (trong tất cả jobs)
-        for job_prog in self._jobs.values():
-            for ins in job_prog:
-                if ins.type == "CallJob" and ins.job_name == old:
-                    ins.job_name = new
-        self._refresh_job_combo()
-        self._refresh_program_list()
-        self._set_status(f"Renamed '{old}' → '{new}'", level="ok")
-
-    def _on_job_delete(self) -> None:
-        if len(self._jobs) <= 1:
-            self._set_status("Phải có ít nhất 1 job", level="warn"); return
-        old = self._active_job
-        # Check CallJob refs trong các job khác
-        refs = sum(
-            1
-            for k, prog in self._jobs.items() if k != old
-            for ins in prog if ins.type == "CallJob" and ins.job_name == old)
-        msg = f"Delete job '{old}' ({len(self._program)} steps)?"
-        if refs > 0:
-            msg += f"\n\nCảnh báo: {refs} CallJob instruction(s) ở job khác đang reference."
-        r = QMessageBox.question(
-            self, "Delete job", msg,
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
-        if r != QMessageBox.StandardButton.Yes: return
-        del self._jobs[old]
-        self._active_job = next(iter(self._jobs.keys()))
-        self._refresh_job_combo()
-        self._refresh_program_list()
-        self._set_status(f"Deleted '{old}', switched to '{self._active_job}'",
-                          level="ok")
-
-    # ══════════════════════════════════════════════════════════════════
-    # Target library (RoboDK-style Teach Target)
-    # ══════════════════════════════════════════════════════════════════
-    @staticmethod
-    def _safe_target_name(name: str) -> str:
-        """Sanitize → uppercase, alphanumeric + _ (INFORM C-var safe)."""
-        s = "".join(c if (c.isalnum() or c == "_") else "_" for c in name.strip())
-        return s.upper()[:24]
-
-    def _refresh_target_list(self) -> None:
-        self._tgt_list.clear()
-        if not self._targets:
-            self._tgt_list.addItem("(no targets)"); return
-        for name, pose in self._targets.items():
-            j = pose["joints"]
-            self._tgt_list.addItem(
-                f"{name}  [{', '.join(f'{q:+5.0f}' for q in j)}]")
-
-    def _capture_current_pose(self) -> dict | None:
-        """Snapshot current joints + tcp_pose từ robot state."""
-        T = self._current_tool_world()
-        if T is None: return None
-        x, y, z, rx, ry, rz = _matrix_to_xyz_rpy_deg(T)
-        return {
-            "joints": list(self._joints),
-            "tcp_pose": [x, y, z, rx, ry, rz],
-        }
-
-    def _on_tgt_teach(self) -> None:
-        name_raw = self._tgt_name_edit.text().strip()
-        if not name_raw:
-            self._set_status("Target name empty", level="warn"); return
-        name = self._safe_target_name(name_raw)
-        if not name:
-            self._set_status("Target name không hợp lệ", level="warn"); return
-        if name in self._targets:
-            self._set_status(
-                f"Target '{name}' đã tồn tại — dùng Modify (F3) để cập nhật",
-                level="warn"); return
-        pose = self._capture_current_pose()
-        if pose is None: return
-        self._targets[name] = pose
-        self._refresh_target_list()
-        self._tgt_name_edit.clear()
-        self._set_status(f"Target '{name}' taught (n={len(self._targets)})",
-                          level="ok")
-
-    def _on_tgt_modify(self) -> None:
-        """F3 — replace selected target's pose với current pose."""
-        idx = self._tgt_list.currentRow()
-        if idx < 0 or not self._targets:
-            self._set_status("Chọn target để Modify", level="warn"); return
-        name = list(self._targets.keys())[idx]
-        pose = self._capture_current_pose()
-        if pose is None: return
-        self._targets[name] = pose
-        self._refresh_target_list()
-        self._tgt_list.setCurrentRow(idx)
-        self._set_status(f"Target '{name}' modified", level="ok")
-
-    def _on_tgt_delete(self) -> None:
-        idx = self._tgt_list.currentRow()
-        if idx < 0 or not self._targets: return
-        name = list(self._targets.keys())[idx]
-        refs = sum(
-            1 for ins in self._program
-            if ins.type in ("MoveJ", "MoveL") and ins.target_name == name)
-        if refs > 0:
-            r = QMessageBox.question(
-                self, "Delete target",
-                f"Target '{name}' đang được {refs} instruction(s) tham chiếu.\n"
-                "Xoá sẽ làm các move đó không resolve được khi play/export.\n\n"
-                "Tiếp tục?",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
-            if r != QMessageBox.StandardButton.Yes: return
-        del self._targets[name]
-        self._refresh_target_list()
-        self._set_status(f"Target '{name}' deleted", level="ok")
-
-    def _on_prog_add_move_to_target(self, kind: str) -> None:
-        """kind ∈ {'MoveJ','MoveL'}. Thêm instruction tham chiếu target đang
-        select trong list."""
-        idx = self._tgt_list.currentRow()
-        if idx < 0 or not self._targets:
-            self._set_status(
-                "Chọn target trong list trước (hoặc Teach mới)", level="warn"); return
-        name = list(self._targets.keys())[idx]
-        self._program.append(Instruction(type=kind, target_name=name))
-        self._refresh_program_list()
-        self._set_status(f"Program +{kind} → {name}", level="ok")
+    # Multi-job project + Target library → JobTargetMixin
 
     # ══════════════════════════════════════════════════════════════════
     # Teach on Surface (Ctrl+Shift+T) — click 3D scene → create target
     # ══════════════════════════════════════════════════════════════════
+    def _teach_target_from_matrix(
+        self, T, default_name: str, prompt_label: str | None = None,
+        prompt: bool = True,
+    ) -> str | None:
+        """IK cho TCP target T (4×4 world, mm) → (prompt name) → lưu vào library.
+
+        Dùng chung bởi Teach-on-surface (pick chuột) và camera grasp-teach
+        (pose từ detection). Trả về tên target đã lưu, hoặc None nếu IK fail /
+        user huỷ / tên trùng-không-hợp-lệ. KHÔNG emit "taught" status (caller
+        tự báo, vì văn cảnh khác nhau).
+
+        prompt=False: bỏ qua dialog hỏi tên, dùng `default_name` (tự thêm hậu
+        tố _2, _3… nếu trùng) — dùng cho target phụ sinh tự động (vd approach)."""
+        if self._model is None:
+            self._set_status(
+                "Chưa load robot — IK cần robot model", level="warn")
+            return None
+        sol = self._solve_cartesian(T, seeded=True)
+        if sol is None:
+            p = T[:3, 3]
+            self._set_status(
+                f"IK fail tại ({p[0]:.0f},{p[1]:.0f},{p[2]:.0f})mm — "
+                "ngoài tầm với", level="err")
+            return None
+        if prompt:
+            if prompt_label is None:
+                p = T[:3, 3]
+                prompt_label = (f"Target name (XYZ = "
+                                f"{p[0]:.0f}, {p[1]:.0f}, {p[2]:.0f} mm):")
+            v, ok = QInputDialog.getText(
+                self, "Teach target", prompt_label,
+                QLineEdit.EchoMode.Normal, default_name)
+            if not ok or not v.strip():
+                return None
+            name = self._safe_target_name(v)
+            if not name:
+                self._set_status("Name không hợp lệ", level="warn"); return None
+            if name in self._targets:
+                self._set_status(
+                    f"Target '{name}' đã tồn tại — Modify (F3) để update",
+                    level="warn"); return None
+        else:
+            base = self._safe_target_name(default_name) or "TGT"
+            name = base; i = 2
+            while name in self._targets:
+                name = self._safe_target_name(f"{base}_{i}"); i += 1
+        self._targets[name] = {
+            "joints": [math.degrees(q) for q in sol],
+            "tcp_pose": list(_matrix_to_xyz_rpy_deg(T)),
+        }
+        self._refresh_target_list()
+        return name
+
     def _on_toggle_surface_pick(self, enabled: bool) -> None:
+        if enabled and self._model is None:
+            self._set_status(
+                "Chưa load robot — load robot trước khi Teach on surface",
+                level="warn")
+            self._surface_pick_mode = False
+            self._set_toggle(self._act_surface_pick, False)
+            return
         self._surface_pick_mode = bool(enabled)
         if enabled:
             try:
+                # Loại mesh robot khỏi pick → chỉ teach trên cell/floor/object,
+                # không click nhầm thân robot (target trên chính mình = vô nghĩa).
+                self._set_robot_pickable(False)
                 self._plotter.enable_surface_point_picking(
                     callback=self._on_surface_pick,
                     show_message=False,
@@ -3019,23 +5702,46 @@ class GP7AppQt(QMainWindow):
             except Exception as e:                          # noqa: BLE001
                 self._set_status(f"Surface pick fail: {e}", level="err")
                 self._surface_pick_mode = False
+                self._set_robot_pickable(True)
                 self._set_toggle(self._act_surface_pick, False)
         else:
             try:
                 self._plotter.disable_picking()
             except Exception:                               # noqa: BLE001
                 pass
+            self._set_robot_pickable(True)                  # khôi phục pick robot
             self._set_status("Teach on surface OFF", level="ok")
+
+    def _set_robot_pickable(self, flag: bool) -> None:
+        """Bật/tắt pickable cho mọi actor robot (link + gripper). Dùng để loại
+        robot khỏi surface-pick (chỉ teach trên cell/floor/object)."""
+        for actor in self._link_actors.values():
+            try:
+                actor.SetPickable(bool(flag))
+            except Exception:                               # noqa: BLE001
+                pass
 
     def _on_surface_pick(self, picked_point) -> None:
         """Callback từ pyvista picker. picked_point in METERS (pyvista internal)."""
         if picked_point is None: return
+        if self._model is None:
+            self._set_status(
+                "Chưa load robot — không thể teach target (IK cần robot model)",
+                level="warn")
+            return
         pt_m = np.asarray(picked_point, dtype=float)
         pt_mm = pt_m * 1000.0
         # Lấy surface normal tại pick point từ picked actor (nếu có).
         normal = self._surface_normal_at(pt_m)
         if normal is None:
             normal = np.array([0.0, 0.0, 1.0])              # fallback: assume +Z (floor)
+        # Orient normal về nửa không gian chứa robot base. Mặt phẳng hở (floor/
+        # worktable 1 mặt) có normal nhập nhằng — auto_orient có thể lật → tool
+        # tiếp cận sai phía (vd từ dưới sàn). Robot luôn với từ phía base nên
+        # ép normal hướng về base là căn cứ vật lý đúng cho mọi hướng bề mặt.
+        to_base = np.asarray(self._base_xyz, dtype=float) - pt_mm
+        if float(np.dot(normal, to_base)) < 0.0:
+            normal = -normal
         # Build TCP target: Z_tcp = -normal (tool point INTO surface),
         # X_tcp = world X projected lên plane vuông góc Z_tcp.
         z_tcp = -normal / max(1e-9, np.linalg.norm(normal))
@@ -3048,38 +5754,16 @@ class GP7AppQt(QMainWindow):
         T = np.eye(4)
         T[:3, 0] = x_tcp; T[:3, 1] = y_tcp; T[:3, 2] = z_tcp
         T[:3, 3] = pt_mm
-        # Solve IK
-        T_flange_tool = self._tool_frames[self._tool_idx][1]
-        T_target_tool0 = T @ np.linalg.inv(T_flange_tool)
-        q_init = [math.radians(q) for q in self._joints]
-        sol = inverse_kinematics_seeded(
-            self._model, T_target_tool0, q_init,
-            tol_mm=0.5, tol_rad=1e-3, max_iter=100)
-        if sol is None:
-            self._set_status(
-                f"IK fail tại ({pt_mm[0]:.0f},{pt_mm[1]:.0f},{pt_mm[2]:.0f})mm — "
-                "ngoài tầm với", level="err")
-            return
-        # Prompt name + save
-        default_name = f"SURF_{len(self._targets)+1:02d}"
-        v, ok = QInputDialog.getText(
-            self, "Teach on surface",
-            f"Target name (pick @ XYZ = "
-            f"{pt_mm[0]:.0f}, {pt_mm[1]:.0f}, {pt_mm[2]:.0f} mm):",
-            QLineEdit.EchoMode.Normal, default_name)
-        if not ok or not v.strip(): return
-        name = self._safe_target_name(v)
-        if not name:
-            self._set_status("Name không hợp lệ", level="warn"); return
-        if name in self._targets:
-            self._set_status(
-                f"Target '{name}' đã tồn tại — Modify (F3) để update",
-                level="warn"); return
-        joints_deg = [math.degrees(q) for q in sol]
-        tcp_pose = list(_matrix_to_xyz_rpy_deg(T))
-        self._targets[name] = {"joints": joints_deg, "tcp_pose": tcp_pose}
-        self._refresh_target_list()
-        self._set_status(f"Taught '{name}' on surface", level="ok")
+        # Teach target từ TCP matrix (IK + prompt + save) — helper dùng chung
+        # với camera grasp-teach.
+        name = self._teach_target_from_matrix(
+            T,
+            default_name=f"SURF_{len(self._targets)+1:02d}",
+            prompt_label=(
+                f"Target name (pick @ XYZ = "
+                f"{pt_mm[0]:.0f}, {pt_mm[1]:.0f}, {pt_mm[2]:.0f} mm):"))
+        if name:
+            self._set_status(f"Taught '{name}' on surface", level="ok")
 
     def _surface_normal_at(self, point_m: np.ndarray) -> np.ndarray | None:
         """Trả về world-frame surface normal tại 3D point.
@@ -3147,41 +5831,39 @@ class GP7AppQt(QMainWindow):
         max_solutions: int = 8, n_seeds: int = 30,
         dedupe_deg: float = 5.0,
     ) -> list[list[float]]:
-        """Tìm IK solutions qua **BATCHED** IK — 1 numpy pipeline cho N=30 seeds
-        thay vì N Python loops.
+        """Tìm tất cả IK solutions qua **Pieper analytical** — trả 3-8 native
+        solutions không cần stochastic seeding.
 
-        Threading thử trước → chậm hơn 16% (GIL contention). Batched numpy
-        operations là true vectorization: 1 outer iter loop chạy cho cả batch,
-        mỗi step là single np.linalg.solve trên (N, 6, 6) stacked — BLAS handle
-        toàn bộ trong C code.
+        Pieper trả các configurations (front/back × elbow up/down × wrist normal/flip)
+        deterministic, exact (float precision ~1e-12mm). Fallback batched IK
+        nếu Pieper empty (rare — chỉ khi pose ngoài tầm hoàn toàn).
 
-        Benchmark: N=30 sequential ~290ms → batched ~5-15ms (~20-50× speedup).
+        Performance: ~150µs (Pieper) vs ~12ms (batched DLS) — 80× faster.
         """
-        link_attr = getattr(self._model, "joints", None) or getattr(
-            self._model, "links", None)
-        q_min = np.array([j.joint_min for j in link_attr])
-        q_max = np.array([j.joint_max for j in link_attr])
-        rng = np.random.RandomState(42)
-        # Pre-generate (N, 6) seed batch
-        q_init_batch = np.array([rng.uniform(q_min, q_max) for _ in range(n_seeds)])
-
-        # Single batched call — all N IK problems song song
-        results = inverse_kinematics_batch(
-            self._model, T_target_tool0, q_init_batch,
-            max_iter=100, tol_mm=0.5, tol_rad=1e-3)
-
-        # Dedupe theo joint distance (5° threshold)
+        sols_rad = inverse_kinematics_pieper_gp7(self._model, T_target_tool0)
+        if not sols_rad:
+            # Fallback: batched DLS với random seeds (legacy path)
+            link_attr = getattr(self._model, "joints", None) or getattr(
+                self._model, "links", None)
+            q_min = np.array([j.joint_min for j in link_attr])
+            q_max = np.array([j.joint_max for j in link_attr])
+            rng = np.random.RandomState(42)
+            q_init_batch = np.array([rng.uniform(q_min, q_max) for _ in range(n_seeds)])
+            results = inverse_kinematics_batch(
+                self._model, T_target_tool0, q_init_batch,
+                max_iter=100, tol_mm=0.5, tol_rad=1e-3)
+            sols_rad = [s for s in results if s is not None]
+        # Dedupe (Pieper return uniquely-different configs nhưng vẫn dedupe an toàn)
         thresh = np.deg2rad(dedupe_deg)
-        solutions_rad: list[np.ndarray] = []
-        for sol in results:
-            if sol is None: continue
-            sol_arr = np.asarray(sol)
-            if any(np.max(np.abs(sol_arr - ex)) < thresh for ex in solutions_rad):
+        unique: list[np.ndarray] = []
+        for s in sols_rad:
+            arr = np.asarray(s)
+            if any(np.max(np.abs(arr - ex)) < thresh for ex in unique):
                 continue
-            solutions_rad.append(sol_arr)
-            if len(solutions_rad) >= max_solutions:
+            unique.append(arr)
+            if len(unique) >= max_solutions:
                 break
-        return [[math.degrees(q) for q in s.tolist()] for s in solutions_rad]
+        return [[math.degrees(q) for q in s.tolist()] for s in unique]
 
     def _on_tgt_change_config(self) -> None:
         """F4 — enumerate IK solutions for selected target's TCP pose, let user
@@ -3254,507 +5936,57 @@ class GP7AppQt(QMainWindow):
             self._signals.status.emit(f"Reached '{name}'", "ok")
         threading.Thread(target=_worker, daemon=True).start()
 
-    # ══════════════════════════════════════════════════════════════════
-    # Pause / Resume
-    # ══════════════════════════════════════════════════════════════════
-    def _on_prog_toggle_pause(self) -> None:
-        if self._btn_pause.isChecked():
-            self._prog_pause.set()
-            self._btn_pause.setText("Resume")
-            self._set_status("Program: paused", level="warn")
-        else:
-            self._prog_pause.clear()
-            self._btn_pause.setText("Pause")
-            self._set_status("Program: resumed", level="ok")
+    # Pause / Resume + program list ops + play loop → ProgramPlaybackMixin
 
-    def _on_prog_delete(self) -> None:
-        idx = self._prog_list.currentRow()
-        if 0 <= idx < len(self._program):
-            del self._program[idx]
-            self._refresh_program_list()
-
-    def _on_prog_move_up(self) -> None:
-        idx = self._prog_list.currentRow()
-        if 0 < idx < len(self._program):
-            self._program[idx-1], self._program[idx] = \
-                self._program[idx], self._program[idx-1]
-            self._refresh_program_list()
-            self._prog_list.setCurrentRow(idx - 1)
-
-    def _on_prog_move_down(self) -> None:
-        idx = self._prog_list.currentRow()
-        if 0 <= idx < len(self._program) - 1:
-            self._program[idx+1], self._program[idx] = \
-                self._program[idx], self._program[idx+1]
-            self._refresh_program_list()
-            self._prog_list.setCurrentRow(idx + 1)
-
-    def _on_prog_clear(self) -> None:
-        total_steps = sum(len(p) for p in self._jobs.values())
-        if total_steps == 0 and not self._targets:
-            return
-        r = QMessageBox.question(
-            self, "Clear all",
-            f"Xoá toàn bộ {len(self._jobs)} job(s), {total_steps} instructions, "
-            f"và {len(self._targets)} target(s)?\n\n"
-            "Reset project về MAIN job rỗng.",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
-        if r != QMessageBox.StandardButton.Yes: return
-        self._jobs = {"MAIN": []}
-        self._active_job = "MAIN"
-        self._targets.clear()
-        self._refresh_job_combo()
-        self._refresh_program_list()
-        self._refresh_target_list()
-        self._set_status("Project cleared (reset to MAIN/empty)", level="ok")
-
-    def _on_prog_play(self) -> None:
-        if self._prog_thread is not None and self._prog_thread.is_alive():
-            self._set_status("Program already running", level="warn"); return
-        if not self._program:
-            self._set_status("Program empty", level="warn"); return
-        self._prog_stop.clear()
-        self._set_status(f"Program: running ({len(self._program)} steps)", "ok")
-        self._prog_thread = threading.Thread(
-            target=self._play_program_loop, daemon=True)
-        self._prog_thread.start()
-
-    def _on_prog_stop(self) -> None:
-        if self._prog_thread is not None and self._prog_thread.is_alive():
-            self._prog_stop.set()
-            self._prog_pause.clear()                # unstuck nếu đang pause
-            self._set_status("Program: stopping...", level="warn")
-
-    def _on_program_done(self) -> None:
-        # Reset pause UI (program kết thúc → không thể pause nữa).
-        if hasattr(self, "_btn_pause"):
-            self._btn_pause.setChecked(False)
-            self._btn_pause.setText("Pause")
-        self._prog_pause.clear()
-
-    def _wait_while_paused(self) -> None:
-        """Block player loop khi pause is set, exit nhanh khi stop is set."""
-        while self._prog_pause.is_set() and not self._prog_stop.is_set():
-            time.sleep(0.05)
-
-    def _resolve_move_target(
-        self, ins: Instruction, want: str,
-    ) -> list[float] | None:
-        """Resolve joints (want='joints') hoặc tcp_pose (want='tcp_pose') cho
-        MoveJ/MoveL — từ target library nếu ins.target_name set, không thì
-        inline fields. Return None + emit err nếu missing."""
-        if ins.target_name:
-            tgt = self._targets.get(ins.target_name)
-            if tgt is None:
-                self._signals.status.emit(
-                    f"Target '{ins.target_name}' không tồn tại", "err")
-                return None
-            return list(tgt[want])
-        return list(ins.joints if want == "joints" else ins.tcp_pose)
-
-    def _play_program_loop(self) -> None:
-        n = len(self._program)
-        # Modal sim state (scale animation speed; modifiers chỉ là metadata).
-        sim_vj_pct: float = 10.0
-        try:
-            for i, ins in enumerate(self._program):
-                if self._prog_stop.is_set():
-                    self._signals.status.emit("Program: stopped", "warn"); return
-                self._wait_while_paused()
-                if self._prog_stop.is_set():
-                    self._signals.status.emit("Program: stopped", "warn"); return
-                self._signals.status.emit(
-                    f"Step {i+1}/{n}: {ins.describe()}", "info")
-                t = ins.type
-                # Animation step count: VJ% nhỏ + sim_speed_mult thấp → chậm.
-                base_steps = int(40 * 30.0 / max(5.0, sim_vj_pct))
-                steps = max(8, int(base_steps / max(0.1, self._sim_speed_mult)))
-                if t == "MoveJ":
-                    joints = self._resolve_move_target(ins, "joints")
-                    if joints is None: return
-                    self._animate_to(joints, steps=steps, dt=0.025,
-                                      stop_event=self._prog_stop,
-                                      pause_event=self._prog_pause)
-                elif t == "MoveL":
-                    if ins.target_name:
-                        # Target stored joints — bypass IK, animate trực tiếp.
-                        joints = self._resolve_move_target(ins, "joints")
-                        if joints is None: return
-                        self._animate_to(joints, steps=steps, dt=0.025,
-                                          stop_event=self._prog_stop,
-                                          pause_event=self._prog_pause)
-                    else:
-                        sol = self._solve_movel(ins.tcp_pose)
-                        if sol is None:
-                            self._signals.status.emit(
-                                f"Step {i+1}: IK fail, abort", "err"); return
-                        self._animate_to(sol, steps=steps, dt=0.025,
-                                          stop_event=self._prog_stop,
-                                          pause_event=self._prog_pause)
-                elif t == "MoveC":
-                    # Sim đơn giản: chạy MoveL tới mid rồi end (không nội suy
-                    # circular thực — đủ để verify trình tự, .JBI vẫn MOVC).
-                    for pose in (ins.tcp_pose_mid, ins.tcp_pose):
-                        sol = self._solve_movel(pose)
-                        if sol is None:
-                            self._signals.status.emit(
-                                f"Step {i+1}: IK fail (MoveC), abort", "err"); return
-                        self._animate_to(sol, steps=steps, dt=0.025,
-                                          stop_event=self._prog_stop,
-                                          pause_event=self._prog_pause)
-                elif t == "SetGripper":
-                    self._signals.gripper.emit(bool(ins.gripper_close))
-                    time.sleep(0.25 / max(0.1, self._sim_speed_mult))
-                elif t == "Wait":
-                    deadline = time.monotonic() + max(0.0, ins.wait_seconds) \
-                        / max(0.1, self._sim_speed_mult)
-                    while time.monotonic() < deadline:
-                        if self._prog_stop.is_set(): return
-                        self._wait_while_paused()
-                        if self._prog_stop.is_set(): return
-                        time.sleep(0.05)
-                elif t == "WaitIO":
-                    # Sim không có IO thật → chỉ log + short delay.
-                    self._signals.status.emit(
-                        f"Step {i+1}: (sim) WaitIO IN#{ins.io_index}="
-                        f"{'ON' if ins.io_state else 'OFF'} → assumed satisfied",
-                        "warn")
-                    time.sleep(0.3 / max(0.1, self._sim_speed_mult))
-                elif t == "SetSpeed":
-                    sim_vj_pct = float(ins.speed_joint_pct)
-                elif t == "ShowMessage":
-                    self._signals.status.emit(
-                        f"Step {i+1}: MSG \"{ins.message[:32]}\"", "info")
-                    time.sleep(0.4 / max(0.1, self._sim_speed_mult))
-                elif t == "CallJob":
-                    # Sim không thực thi sub-job — chỉ log để xác nhận order.
-                    self._signals.status.emit(
-                        f"Step {i+1}: (sim) CALL JOB:{ins.job_name} → skipped",
-                        "warn")
-                    time.sleep(0.2 / max(0.1, self._sim_speed_mult))
-                elif t == "SimEvent":
-                    # Sim hook — emit signal + log. Không có side effect mặc định
-                    # (downstream code có thể subscribe nếu cần custom action).
-                    pl = f" — {ins.event_payload}" if ins.event_payload else ""
-                    self._signals.status.emit(
-                        f"⚑ Step {i+1}: SimEvent '{ins.event_name}'{pl}", "info")
-                    time.sleep(0.15 / max(0.1, self._sim_speed_mult))
-                # SetRounding / SetTool / SetRefFrame: pure metadata cho .JBI,
-                # sim không cần làm gì — đã hiện trong status.
-            self._signals.status.emit(f"Program: done ({n} steps)", "ok")
-        except Exception as e:                              # noqa: BLE001
-            self._signals.status.emit(f"Program error: {e}", "err")
-        finally:
-            self._signals.program_done.emit()
-
-    def _solve_movel(self, tcp_pose_6: list[float]) -> list[float] | None:
-        """Solve IK + verify post-FK pose error. Return None nếu:
-          - IK không converge
-          - Convergent solution có pose error > tol (do joint limit clipping
-            kéo solution ra biên — silent failure mode trước đây)."""
-        TOL_POS_MM = 0.5
-        TOL_ROT_RAD = 1e-3
-        T_target = _xyz_rpy_to_matrix(*tcp_pose_6)
-        T_flange_tool = self._tool_frames[self._tool_idx][1]
-        T_target_tool0 = T_target @ np.linalg.inv(T_flange_tool)
-        q_init = [math.radians(q) for q in self._joints]
-        sol = inverse_kinematics_seeded(
-            self._model, T_target_tool0, q_init,
-            tol_mm=TOL_POS_MM, tol_rad=TOL_ROT_RAD, max_iter=100)
-        if sol is None:
-            return None
-        # Post-FK verify: nếu IK clip joint limit, may converge tới biên với
-        # error > tol. Recompute FK + check.
-        T_actual = forward_kinematics_urdf(self._model, sol)
-        pos_err = float(np.linalg.norm(
-            T_actual[:3, 3] - T_target_tool0[:3, 3]))
-        # Rotation error via axis-angle log map
-        R_err = T_target_tool0[:3, :3] @ T_actual[:3, :3].T
-        cos_theta = float(np.clip((np.trace(R_err) - 1.0) * 0.5, -1.0, 1.0))
-        rot_err_rad = float(np.arccos(cos_theta))
-        if pos_err > TOL_POS_MM or rot_err_rad > TOL_ROT_RAD:
-            logger.warning(
-                "IK convergent but pose error > tol: pos=%.3fmm rot=%.4frad "
-                "(target có thể ngoài tầm hoặc joint limit clip)",
-                pos_err, rot_err_rad)
-            return None
-        return [math.degrees(q) for q in sol]
-
-    # ── Save / Load JSON + Export .JBI ────────────────────────────────
-    def _on_prog_save_dlg(self) -> None:
-        path, _ = QFileDialog.getSaveFileName(
-            self, "Save project", "", "Program JSON (*.json)")
-        if not path: return
-        try:
-            # v3 format: project với nhiều jobs + global targets.
-            doc = {
-                "version": 3,
-                "active_job": self._active_job,
-                "targets": self._targets,
-                "jobs": {
-                    name: [ins.to_dict() for ins in prog]
-                    for name, prog in self._jobs.items()
-                },
-            }
-            Path(path).write_text(json.dumps(doc, indent=2), encoding="utf-8")
-            total_steps = sum(len(p) for p in self._jobs.values())
-            self._set_status(
-                f"Saved {len(self._jobs)} job(s), {total_steps} steps total, "
-                f"{len(self._targets)} targets", level="ok")
-        except Exception as e:                              # noqa: BLE001
-            self._set_status(f"Save failed: {e}", level="err")
-
-    def _on_prog_load_dlg(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(
-            self, "Load project", "", "Program JSON (*.json)")
-        if not path: return
-        try:
-            data = json.loads(Path(path).read_text(encoding="utf-8"))
-            # Backward compat across 3 formats:
-            #   v1: bare list of instructions → single MAIN job
-            #   v2: {"targets":..., "program":[...]} → single MAIN job
-            #   v3: {"jobs":{name:[...]}, "active_job":..., "targets":...}
-            if isinstance(data, list):
-                self._jobs = {"MAIN": [Instruction.from_dict(d) for d in data]}
-                self._active_job = "MAIN"
-                self._targets = {}
-            elif isinstance(data, dict):
-                ver = int(data.get("version", 1))
-                tgt_raw = data.get("targets", {}) or {}
-                self._targets = {
-                    str(k): {
-                        "joints": list(v["joints"]),
-                        "tcp_pose": list(v["tcp_pose"]),
-                    } for k, v in tgt_raw.items()
-                }
-                if "jobs" in data:                              # v3
-                    self._jobs = {
-                        str(name): [Instruction.from_dict(d) for d in prog]
-                        for name, prog in data["jobs"].items()
-                    }
-                    self._active_job = str(data.get("active_job",
-                                                       next(iter(self._jobs.keys()))))
-                    if self._active_job not in self._jobs:
-                        self._active_job = next(iter(self._jobs.keys()))
-                else:                                          # v2
-                    prog_list = data.get("program", [])
-                    self._jobs = {"MAIN": [Instruction.from_dict(d) for d in prog_list]}
-                    self._active_job = "MAIN"
-            else:
-                raise ValueError("Unknown JSON shape")
-            if not self._jobs:
-                self._jobs = {"MAIN": []}; self._active_job = "MAIN"
-            self._refresh_job_combo()
-            self._refresh_program_list()
-            self._refresh_target_list()
-            total_steps = sum(len(p) for p in self._jobs.values())
-            self._set_status(
-                f"Loaded {len(self._jobs)} job(s), {total_steps} steps, "
-                f"{len(self._targets)} targets", level="ok")
-        except Exception as e:                              # noqa: BLE001
-            self._set_status(f"Load failed: {e}", level="err")
-
-    def _on_prog_export_dlg(self) -> None:
-        # Multi-job: nếu project có > 1 job, hỏi user mode export.
-        non_empty_jobs = [n for n, p in self._jobs.items() if p]
-        if not non_empty_jobs:
-            self._set_status("All jobs empty", level="warn"); return
-        export_all = False
-        if len(non_empty_jobs) > 1:
-            r = QMessageBox.question(
-                self, "Export INFORM .JBI",
-                f"Project có {len(non_empty_jobs)} non-empty jobs.\n\n"
-                f"  Yes → Export ALL jobs (separate .JBI files vào 1 thư mục)\n"
-                f"  No  → Export only current ({self._active_job})",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
-                | QMessageBox.StandardButton.Cancel)
-            if r == QMessageBox.StandardButton.Cancel: return
-            export_all = (r == QMessageBox.StandardButton.Yes)
-
-        if export_all:
-            return self._export_all_jobs(non_empty_jobs)
-
-        if not self._program:
-            self._set_status("Current job empty", level="warn"); return
-        path, _ = QFileDialog.getSaveFileName(
-            self, "Export Yaskawa INFORM .JBI",
-            f"{self._active_job}.JBI", "INFORM (*.JBI)")
-        if not path: return
-        try:
-            stem = Path(path).stem[:32].replace(" ", "_") or "PROG"
-            self._export_job_to_path(self._program, stem, Path(path))
-            self._set_status(
-                f"Exported '{self._active_job}' → {Path(path).name}", level="ok")
-        except Exception as e:                              # noqa: BLE001
-            self._set_status(f"Export failed: {e}", level="err")
-
-    def _export_all_jobs(self, job_names: list[str]) -> None:
-        out_dir = QFileDialog.getExistingDirectory(
-            self, "Export ALL jobs — chọn thư mục output")
-        if not out_dir: return
-        # Sequential — IK solving (~1.4ms hot, ~10ms cold) per MoveL có GIL
-        # contention nếu parallel; benchmark confirms threading SLOWER for sub-ms
-        # numpy ops. Đa phần jobs ≤ 50 instructions → tổng <200ms acceptable.
-        n_ok = 0; errors: list[str] = []
-        for name in job_names:
-            try:
-                stem = self._safe_job_name(name)
-                path = Path(out_dir) / f"{stem}.JBI"
-                self._export_job_to_path(self._jobs[name], stem, path)
-                n_ok += 1
-            except Exception as e:                          # noqa: BLE001
-                errors.append(f"{name}: {e}")
-        if errors:
-            self._set_status(
-                f"Exported {n_ok}/{len(job_names)} OK, {len(errors)} fail: "
-                + "; ".join(errors[:3]), level="warn")
-        else:
-            self._set_status(
-                f"Exported {n_ok} .JBI files → {out_dir}", level="ok")
-
-    def _export_job_to_path(
-        self, program: list[Instruction], job_name: str, path: Path,
-    ) -> None:
-        """Helper: export 1 job's instruction list ra .JBI file tại path.
-
-        Raises trên IK failure / invalid CallJob name. Caller catch để show
-        status. KHÔNG đụng self._program — chỉ dùng `program` param.
-        """
-        builder = InformJobBuilder(
-            name=job_name, max_speed_pct=self._pp_max_speed_pct)
-        # Pre-pass: collect referenced targets, add as named C-vars upfront
-        # (RoboDK convention — multiple references share single C-var).
-        target_cvars: dict[str, str] = {}
-        for ins in program:
-            if ins.type in ("MoveJ", "MoveL") and ins.target_name:
-                if ins.target_name not in target_cvars:
-                    if ins.target_name not in self._targets:
-                        raise KeyError(
-                            f"Target '{ins.target_name}' không tồn tại")
-                    cvar_name = f"T_{ins.target_name}"[:32]
-                    builder.add_position(
-                        cvar_name, self._targets[ins.target_name]["joints"])
-                    target_cvars[ins.target_name] = cvar_name
-        # Modal state — áp lên MOVJ/MOVL/MOVC kế tiếp. Initial từ pp settings.
-        cur_vj_pct: float = self._pp_default_vj
-        cur_v_mm_s: float = self._pp_default_v_mms
-        cur_pl: int | None = None
-        cur_tl: int | None = None
-        cur_uf: int | None = None
-        pos_idx = 0
-        for i, ins in enumerate(program):
-            t = ins.type
-            if t == "MoveJ":
-                if ins.target_name:
-                    pname = target_cvars[ins.target_name]
-                else:
-                    pname = f"P{pos_idx:03d}"
-                    builder.add_position(pname, list(ins.joints))
-                    pos_idx += 1
-                builder.movj(pname, speed_pct=cur_vj_pct,
-                             tool_no=cur_tl, pl=cur_pl, user_frame=cur_uf)
-            elif t == "MoveL":
-                if ins.target_name:
-                    pname = target_cvars[ins.target_name]
-                else:
-                    sol = self._solve_movel(ins.tcp_pose)
-                    if sol is None:
-                        raise RuntimeError(
-                            f"IK fail at step {i+1} ({job_name})")
-                    pname = f"P{pos_idx:03d}"
-                    builder.add_position(pname, sol)
-                    pos_idx += 1
-                builder.movl(pname, speed_mm_s=cur_v_mm_s,
-                             tool_no=cur_tl, pl=cur_pl, user_frame=cur_uf)
-            elif t == "MoveC":
-                sol_m = self._solve_movel(ins.tcp_pose_mid)
-                sol_e = self._solve_movel(ins.tcp_pose)
-                if sol_m is None or sol_e is None:
-                    raise RuntimeError(
-                        f"IK fail at step {i+1} MoveC ({job_name})")
-                pname_m = f"P{pos_idx:03d}"; pos_idx += 1
-                pname_e = f"P{pos_idx:03d}"; pos_idx += 1
-                builder.add_position(pname_m, sol_m)
-                builder.add_position(pname_e, sol_e)
-                builder.movc(pname_m, speed_mm_s=cur_v_mm_s,
-                             tool_no=cur_tl, pl=cur_pl, user_frame=cur_uf)
-                builder.movc(pname_e, speed_mm_s=cur_v_mm_s,
-                             tool_no=cur_tl, pl=cur_pl, user_frame=cur_uf)
-            elif t == "SetGripper":
-                builder.dout(1, on=ins.gripper_close)
-            elif t == "Wait":
-                builder.timer(max(0.0, ins.wait_seconds))
-            elif t == "WaitIO":
-                builder.wait_in(int(ins.io_index), on=bool(ins.io_state),
-                                timeout_s=max(0.0, float(ins.io_timeout_s)))
-            elif t == "SetSpeed":
-                cur_vj_pct = float(ins.speed_joint_pct)
-                cur_v_mm_s = float(ins.speed_linear_mm_s)
-                builder.comment(
-                    f"SetSpeed VJ={cur_vj_pct:.1f}% V={cur_v_mm_s:.0f}mm/s")
-            elif t == "SetRounding":
-                cur_pl = int(ins.rounding_pl)
-                builder.comment(f"SetRounding PL={cur_pl}")
-            elif t == "SetTool":
-                cur_tl = int(ins.tool_no)
-                builder.comment(f"SetTool TL#{cur_tl}")
-            elif t == "SetRefFrame":
-                cur_uf = int(ins.ref_frame_no)
-                builder.comment(f"SetRefFrame UF#{cur_uf}")
-            elif t == "ShowMessage":
-                builder.msg(ins.message)
-            elif t == "CallJob":
-                builder.call_job(ins.job_name)
-            elif t == "SimEvent":
-                # Không export ra INFORM (sim-only). Emit comment để traceable.
-                pl = f" — {ins.event_payload}" if ins.event_payload else ""
-                builder.comment(f"SimEvent: {ins.event_name}{pl}")
-        path.write_bytes(builder.render().encode("utf-8"))
-
-    # ══════════════════════════════════════════════════════════════════
-    # Dialogs
-    # ══════════════════════════════════════════════════════════════════
-
-    def _show_cell_info(self) -> None:
-        lines = [
-            f"<b>Robot</b><br>",
-            f"&nbsp;&nbsp;Name: {self._cell_config.robot.name}<br>",
-            f"&nbsp;&nbsp;Base xyz: {list(self._base_xyz)} mm<br>",
-            f"&nbsp;&nbsp;Home joints: "
-            + ", ".join(f"{q:+.2f}" for q in self._home_joints) + " deg<br>",
-            f"<br><b>Reference frames ({len(self._ref_frames)})</b><br>",
-        ]
-        for name, T in self._ref_frames:
-            x, y, z, rx, ry, rz = _matrix_to_xyz_rpy_deg(T)
-            lines.append(
-                f"&nbsp;&nbsp;{name}: xyz=({x:.0f},{y:.0f},{z:.0f}) "
-                f"rpy=({rx:.0f},{ry:.0f},{rz:.0f})<br>")
-        objs = list(getattr(self._cell_config, "objects", []) or [])
-        lines.append(f"<br><b>Objects ({len(objs)})</b><br>")
-        for o in objs:
-            xyz = list(o.pose.xyz_mm) if getattr(o, "pose", None) else [0, 0, 0]
-            lines.append(
-                f"&nbsp;&nbsp;{o.name} ({getattr(o, 'parent_frame', '-')}) "
-                f"xyz={xyz}<br>")
-        QMessageBox.information(self, "Cell info", "".join(lines))
-
-    def _show_about(self) -> None:
-        QMessageBox.about(
-            self, "About",
-            "<b>GP7 Digital Twin</b><br><br>"
-            "Yaskawa GP7 + PyQt6 + pyvistaqt (VTK).<br>"
-            "Industrial-standard 3D stack.<br><br>"
-            "Kinematics (FK/IK) verified against RoboDK to 0.00 mm.<br>"
-            "INFORM .JBI export ready for YRC1000 controller.")
+    # Cell info + About dialogs → AboutMixin
 
     # ══════════════════════════════════════════════════════════════════
     # Lifecycle
     # ══════════════════════════════════════════════════════════════════
 
+    def _project_signature(self) -> str:
+        """Snapshot deterministic của DỮ LIỆU project (jobs + targets) → JSON.
+
+        Dùng cho dirty-check: so với `self._saved_signature` (cập nhật mỗi lần
+        Save/Load). KHÔNG gồm active_job — đổi job đang xem chỉ là thao tác
+        'view', không tính là sửa dữ liệu → tránh hỏi Save vô cớ."""
+        doc = {
+            "targets": self._targets,
+            "jobs": {
+                name: [ins.to_dict() for ins in prog]
+                for name, prog in self._jobs.items()
+            },
+        }
+        return json.dumps(doc, sort_keys=True)
+
+    def _has_unsaved_changes(self) -> bool:
+        return self._project_signature() != self._saved_signature
+
     def closeEvent(self, event: QCloseEvent) -> None:
-        # Stop worker threads
-        self._demo_stop.set()
+        if self._has_unsaved_changes():
+            r = QMessageBox.question(
+                self, "Thay đổi chưa lưu",
+                "Project có thay đổi chưa được lưu.\n\n"
+                "  • Save — lưu project (.json) rồi thoát\n"
+                "  • Discard — thoát luôn, bỏ mọi thay đổi\n"
+                "  • Cancel — quay lại, không thoát",
+                QMessageBox.StandardButton.Save
+                | QMessageBox.StandardButton.Discard
+                | QMessageBox.StandardButton.Cancel,
+                QMessageBox.StandardButton.Save)
+            if r == QMessageBox.StandardButton.Cancel:
+                event.ignore(); return
+            if r == QMessageBox.StandardButton.Save:
+                self._on_prog_save_dlg()
+                # User huỷ dialog chọn file → vẫn dirty → abort close (tránh
+                # mất dữ liệu ngoài ý muốn).
+                if self._has_unsaved_changes():
+                    event.ignore(); return
+        # Stop worker threads. Set _cam_closing TRƯỚC khi join camera để slot
+        # camera_result (worker emit 'stopped' lúc join) không chạm widget đã hủy.
+        self._cam_closing = True
         self._prog_stop.set()
+        self._stop_camera()
         try:
             self._plotter.close()
         except Exception:                                   # noqa: BLE001

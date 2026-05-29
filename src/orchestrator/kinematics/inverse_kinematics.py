@@ -154,6 +154,37 @@ def _pose_error(T_current: np.ndarray, T_target: np.ndarray) -> np.ndarray:
     return np.concatenate([pos_err, rot_err])
 
 
+def manipulability(model, q_rad, char_length_mm: float = 1000.0) -> float:
+    """Chỉ số manipulability Yoshikawa: w = sqrt(det(Jₙ·Jₙᵀ)).
+
+    Đo độ "khỏe" của cấu hình — khả năng robot tạo vận tốc TCP theo mọi hướng.
+    w → 0 tại **singularity** (Jacobian mất hạng): wrist (θ5≈0, trục 4∥6),
+    boundary (tay duỗi hết tầm), hoặc shoulder. Industrial controller dùng w
+    để giảm tốc / cảnh báo khi jog Cartesian gần singularity.
+
+    Phần tịnh tiến của J (mm/rad) được chuẩn hoá / `char_length_mm` để cùng
+    thang đo với phần xoay (rad/rad) — nếu không, đơn vị mm lấn át làm w vô
+    nghĩa. char_length ~ tầm với robot (GP7 ≈ 927mm → dùng 1000mm).
+
+    Args:
+        model: URDFRobot hoặc RobotDHModel.
+        q_rad: joints (radian), 6 phần tử.
+        char_length_mm: độ dài đặc trưng để chuẩn hoá phần tịnh tiến.
+
+    Returns:
+        w ≥ 0. GP7: ~0.07-0.08 khi khỏe, < 0.01 khi gần singularity, = 0 tại
+        singularity chính xác.
+    """
+    q = np.asarray(q_rad, dtype=float).flatten()
+    if isinstance(model, URDFRobot):
+        _, J = _jacobian_analytical_urdf(model, q)
+    else:
+        J = _jacobian_numerical(model, q)
+    Jn = J.copy()
+    Jn[:3, :] /= char_length_mm                  # chuẩn hoá lin về cùng thang ang
+    return float(np.sqrt(max(np.linalg.det(Jn @ Jn.T), 0.0)))
+
+
 def inverse_kinematics(
     model,
     target_pose_world: np.ndarray,
@@ -293,6 +324,285 @@ def inverse_kinematics_seeded(
         sol = inverse_kinematics(model, target_pose_world, s.tolist(), **ik_kwargs)
         if sol is not None:
             return sol
+    return None
+
+
+# ───────────────────────────────────────────────────────────────────────
+# Alternative IK algorithms cho thesis comparison
+# ───────────────────────────────────────────────────────────────────────
+
+
+def inverse_kinematics_lm(
+    model,
+    target_pose_world: np.ndarray,
+    q_init_rad: list[float] | tuple[float, ...] | np.ndarray,
+    max_iter: int = 100,
+    tol_mm: float = 0.5,
+    tol_rad: float = 1e-3,
+    lambda_init: float = 1e-3,
+    lambda_up: float = 10.0,
+    lambda_down: float = 0.5,
+    max_step_deg: float = 20.0,
+) -> list[float] | None:
+    """**Levenberg-Marquardt** IK với **adaptive damping**.
+
+    Khác DLS (damping cố định): LM tăng/giảm λ dynamic mỗi iter dựa trên cải
+    thiện error → fast Newton-like khi xa solution + stable Gauss-Newton khi
+    gần. Convergence superlinear vs DLS linear.
+
+    Algorithm:
+        loop:
+            compute J, err
+            dq = solve((J^T J + λ I) dq = J^T err)
+            if ||err_new|| < ||err_old||: accept, λ *= lambda_down
+            else: reject, λ *= lambda_up, retry
+
+    Args:
+        lambda_init: Initial damping (Marquardt suggested 1e-3).
+        lambda_up/down: Damping adaptation factors (Levenberg: 10x up, 0.5x down).
+
+    Reference:
+        Levenberg 1944 / Marquardt 1963 nonlinear least squares.
+    """
+    q = np.asarray(q_init_rad, dtype=float).flatten()
+    if len(q) != model.num_joints():
+        raise ValueError(f"q_init phải có {model.num_joints()} phần tử")
+    target = np.asarray(target_pose_world, dtype=float)
+    if target.shape != (4, 4):
+        raise ValueError(f"target_pose phải 4x4, got {target.shape}")
+
+    link_attr = getattr(model, "joints", None) or getattr(model, "links", None)
+    q_min = np.array([j.joint_min for j in link_attr])
+    q_max = np.array([j.joint_max for j in link_attr])
+    n = len(q)
+    max_step_rad = np.deg2rad(max_step_deg)
+    use_analytical = isinstance(model, URDFRobot)
+
+    lam = float(lambda_init)
+    if use_analytical:
+        T_cur, J = _jacobian_analytical_urdf(model, q)
+    else:
+        T_cur = _fk(model, q); J = _jacobian_numerical(model, q, T0=T_cur)
+    err = _pose_error(T_cur, target)
+    err_norm = float(np.linalg.norm(err))
+
+    for _ in range(max_iter):
+        pos_err_norm = float(np.linalg.norm(err[:3]))
+        rot_err_norm = float(np.linalg.norm(err[3:]))
+        if pos_err_norm < tol_mm and rot_err_norm < tol_rad:
+            return q.tolist()
+
+        # LM step: (J^T J + λ I) dq = J^T err
+        JTJ = J.T @ J
+        JTe = J.T @ err
+        try:
+            dq = np.linalg.solve(JTJ + lam * np.eye(n), JTe)
+        except np.linalg.LinAlgError:
+            return None
+
+        # Step size cap
+        step_norm = float(np.linalg.norm(dq))
+        if step_norm > max_step_rad:
+            dq = dq * (max_step_rad / step_norm)
+
+        q_new = np.clip(q + dq, q_min, q_max)
+        if use_analytical:
+            T_new, J_new = _jacobian_analytical_urdf(model, q_new)
+        else:
+            T_new = _fk(model, q_new); J_new = _jacobian_numerical(model, q_new, T0=T_new)
+        err_new = _pose_error(T_new, target)
+        err_new_norm = float(np.linalg.norm(err_new))
+
+        if err_new_norm < err_norm:
+            # Accept step + reduce damping
+            q = q_new; J = J_new; err = err_new; err_norm = err_new_norm
+            lam = max(lam * lambda_down, 1e-9)
+        else:
+            # Reject step + increase damping
+            lam = min(lam * lambda_up, 1e9)
+
+    return None
+
+
+def inverse_kinematics_sdls(
+    model,
+    target_pose_world: np.ndarray,
+    q_init_rad: list[float] | tuple[float, ...] | np.ndarray,
+    max_iter: int = 100,
+    tol_mm: float = 0.5,
+    tol_rad: float = 1e-3,
+    gamma_max_deg: float = 45.0,
+    sigma_min: float = 0.01,
+) -> list[float] | None:
+    """**Selectively Damped Least Squares** IK (Buss & Kim 2005).
+
+    Khác DLS (damping `λ²I` cố định cho mọi direction): SDLS dùng **SVD** để
+    damp **chỉ** directions gần singular value nhỏ. Direction với σ lớn (well-
+    conditioned) đi với 1/σ (no damping → fast Gauss-Newton). Direction với σ
+    nhỏ (near singularity) đi với damped pseudoinverse → stable.
+
+    Algorithm:
+        J = U Σ V^T
+        Cho mỗi component i:
+            λ_i² = max(0, σ_min² · (σ_min/σ_i)²)  hoặc damping selective
+            δ_i = σ_i / (σ_i² + λ_i²) · (U_i^T · err)
+        dq = V · diag(δ) — pre clamp each row by gamma_max
+        Step-size: clamp |dq_j| ≤ gamma_max per joint
+
+    Reference:
+        Buss & Kim (2005). "Selectively Damped Least Squares for Inverse Kinematics."
+        Journal of Graphics Tools, 10(3): 37-49.
+    """
+    q = np.asarray(q_init_rad, dtype=float).flatten()
+    target = np.asarray(target_pose_world, dtype=float)
+    if target.shape != (4, 4):
+        raise ValueError(f"target_pose phải 4x4, got {target.shape}")
+    link_attr = getattr(model, "joints", None) or getattr(model, "links", None)
+    q_min = np.array([j.joint_min for j in link_attr])
+    q_max = np.array([j.joint_max for j in link_attr])
+    gamma_max = np.deg2rad(gamma_max_deg)
+    use_analytical = isinstance(model, URDFRobot)
+
+    for _ in range(max_iter):
+        if use_analytical:
+            T_cur, J = _jacobian_analytical_urdf(model, q)
+        else:
+            T_cur = _fk(model, q); J = _jacobian_numerical(model, q, T0=T_cur)
+        err = _pose_error(T_cur, target)
+        if (np.linalg.norm(err[:3]) < tol_mm
+                and np.linalg.norm(err[3:]) < tol_rad):
+            return q.tolist()
+
+        # SVD: J = U Σ V^T
+        try:
+            U, sigma, Vt = np.linalg.svd(J, full_matrices=False)
+        except np.linalg.LinAlgError:
+            return None
+
+        # Selective damping: each singular value gets its own λ
+        # Buss-Kim simplified: damp inversely to σ. σ small → λ large.
+        dq = np.zeros(len(q))
+        for i, s in enumerate(sigma):
+            if s < sigma_min * 1e-3:
+                continue                            # cực nhỏ → skip (no contribution)
+            # Smooth selective damping: λ_i large khi σ_i ≪ σ_min
+            if s < sigma_min:
+                lam_sq = (sigma_min * sigma_min) * (1.0 - (s / sigma_min)) ** 2
+            else:
+                lam_sq = 0.0
+            inv_s = s / (s * s + lam_sq)
+            # Contribution: (U_i^T · err) · V_i · inv_s
+            ut_e = float(U[:, i] @ err)
+            contrib = inv_s * ut_e * Vt[i, :]
+            # Component-wise clamp per Buss-Kim N_max bound
+            max_abs = float(np.max(np.abs(contrib)))
+            if max_abs > gamma_max:
+                contrib = contrib * (gamma_max / max_abs)
+            dq = dq + contrib
+
+        # Final step-size limit toàn vector
+        step_norm = float(np.linalg.norm(dq))
+        if step_norm > gamma_max:
+            dq = dq * (gamma_max / step_norm)
+
+        q = np.clip(q + dq, q_min, q_max)
+
+    return None
+
+
+def inverse_kinematics_bfgs(
+    model,
+    target_pose_world: np.ndarray,
+    q_init_rad: list[float] | tuple[float, ...] | np.ndarray,
+    max_iter: int = 200,
+    tol_mm: float = 0.5,
+    tol_rad: float = 1e-3,
+    w_pos: float = 1.0,
+    w_rot: float = 1000.0,
+) -> list[float] | None:
+    """**Newton-Raphson + BFGS** IK qua quasi-Newton optimization.
+
+    Frame IK như nonlinear least squares:
+        minimize F(q) = ½ ||W · err(q)||²    với err = pose_error(FK(q), target)
+
+    **Quan trọng**: pose_error = [pos_mm (3), rot_rad (3)] mix đơn vị → cost
+    unweighted ½||err||² bị dominated bởi position term. **Weighted cost**
+    với W = diag(w_pos, w_pos, w_pos, w_rot, w_rot, w_rot) cân bằng gradient
+    để L-BFGS-B step properly. Default w_rot = 1000 (≈ tol_mm / tol_rad).
+
+    Dùng **L-BFGS-B** (limited memory BFGS với box constraints) — quasi-Newton
+    method giữ approximate inverse Hessian qua rank-2 updates, không cần tính
+    Hessian thật. **Joint limits** xử lý naturally qua box constraints.
+
+    Gradient analytical: ∇F = J^T · W^T W · err (Gauss-Newton drop second-order).
+
+    Khác LM (which uses J^T J + λI Gauss-Newton step trực tiếp): BFGS dùng
+    curvature information accumulated qua history → second-order convergence
+    near solution. Worse khi xa nghiệm vì initial H ≈ I.
+
+    Reference:
+        Nocedal & Wright (2006). "Numerical Optimization", Ch. 6 (BFGS).
+    """
+    from scipy.optimize import minimize
+
+    q_init = np.asarray(q_init_rad, dtype=float).flatten()
+    target = np.asarray(target_pose_world, dtype=float)
+    if target.shape != (4, 4):
+        raise ValueError(f"target_pose phải 4x4, got {target.shape}")
+    link_attr = getattr(model, "joints", None) or getattr(model, "links", None)
+    bounds = [(j.joint_min, j.joint_max) for j in link_attr]
+    use_analytical = isinstance(model, URDFRobot)
+    # Weight diagonal W² (cho cost) và W (cho residual scaling)
+    w_sq = np.array([w_pos] * 3 + [w_rot] * 3) ** 2
+
+    # Last accepted solution thoả industrial tolerance — set bởi callback để
+    # **early-exit fair** ngay khi đạt tol (không optimize past). Nếu None ở
+    # cuối → fallback to scipy's converged result + verify tol.
+    early_exit_q: list[np.ndarray] = []
+
+    def _cost_and_grad(q):
+        if use_analytical:
+            T, J = _jacobian_analytical_urdf(model, q)
+        else:
+            T = _fk(model, q); J = _jacobian_numerical(model, q, T0=T)
+        err = _pose_error(T, target)
+        # err = target - current → F = ½ err^T W² err
+        # ∂err/∂q = -J → ∇F = -J^T (W² err)
+        w_err = w_sq * err
+        f = 0.5 * float(err @ w_err)
+        g = -(J.T @ w_err)
+        return f, g
+
+    class _StopAtTol(Exception):
+        pass
+
+    def _callback(xk):
+        # Sau mỗi accepted step, check unweighted pose error vs industrial tol.
+        # Nếu đạt → raise để break scipy loop (fair với DLS/LM/SDLS stop-at-tol).
+        T = _fk(model, xk)
+        err = _pose_error(T, target)
+        if (np.linalg.norm(err[:3]) < tol_mm
+                and np.linalg.norm(err[3:]) < tol_rad):
+            early_exit_q.append(np.asarray(xk).copy())
+            raise _StopAtTol()
+
+    try:
+        result = minimize(
+            _cost_and_grad, q_init, jac=True, method="L-BFGS-B",
+            bounds=bounds, callback=_callback,
+            options={"maxiter": max_iter, "ftol": 1e-14, "gtol": 1e-10})
+        x_final = result.x
+    except _StopAtTol:
+        x_final = early_exit_q[-1]
+    except Exception:
+        return None
+
+    # Verify final accuracy vs industrial tol
+    T_final = _fk(model, x_final)
+    err_final = _pose_error(T_final, target)
+    if (np.linalg.norm(err_final[:3]) < tol_mm
+            and np.linalg.norm(err_final[3:]) < tol_rad):
+        return [float(v) for v in x_final]
     return None
 
 

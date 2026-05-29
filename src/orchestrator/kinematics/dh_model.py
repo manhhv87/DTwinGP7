@@ -100,6 +100,10 @@ def gp7_default(
     # GP7 dimensions (mm)
     d1, a1, a2, d4, d6 = 330.0, 40.0, 445.0, 440.0, 80.0
 
+    # Joint limits đồng bộ với URDF chain (gp7_urdf trong urdf_chain.py) —
+    # đã verify khớp 1:1 RoboDK Yaskawa-GP7.robot. Trước đây DH dùng giá trị
+    # cũ (J2 ±[-90,155], J3 [-175,240], J4 ±180) → IK fail ở home pose vì
+    # J4=-181.93° rơi ngoài limit. Source-of-truth = URDF.
     links = (
         # S (J1): base rotation about world Z
         DHLink(a=0.0,    alpha=0.0,        d=d1,
@@ -108,15 +112,15 @@ def gp7_default(
         # L (J2): shoulder — rotate about Y after Rx(-90°) twist
         DHLink(a=a1,     alpha=deg(-90),   d=0.0,
                theta_offset=deg(-90),
-               joint_min=deg(-90),  joint_max=deg(155)),
+               joint_min=deg(-65),  joint_max=deg(145)),
         # U (J3): elbow — same axis as L (no twist)
         DHLink(a=a2,     alpha=0.0,        d=0.0,
                theta_offset=0.0,
-               joint_min=deg(-175), joint_max=deg(240)),
+               joint_min=deg(-116), joint_max=deg(255)),
         # R (J4): wrist roll — twist axis to forearm
         DHLink(a=0.0,    alpha=deg(-90),   d=d4,
                theta_offset=0.0,
-               joint_min=deg(-180), joint_max=deg(180)),
+               joint_min=deg(-190), joint_max=deg(190)),
         # B (J5): wrist pitch
         DHLink(a=0.0,    alpha=deg(90),    d=0.0,
                theta_offset=0.0,

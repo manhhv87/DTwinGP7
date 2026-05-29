@@ -3,8 +3,9 @@
 > File này tập trung vào **workflow + commands theo kịch bản sử dụng**.
 > Đọc xong → chạy được mọi tính năng.
 >
-> **Phạm vi**: 5 kịch bản workflow + CLI flags + hiểu output + debug khi chạy.
+> **Phạm vi**: 6 kịch bản workflow + CLI flags + hiểu output + debug khi chạy.
 > **KHÔNG bao gồm**:
+> - Giới thiệu tổng quan + chức năng các phần → [`GIOI_THIEU_PHAN_MEM.md`](GIOI_THIEU_PHAN_MEM.md)
 > - Cài đặt phần mềm/phần cứng → [`HUONG_DAN_CAI_DAT.md`](HUONG_DAN_CAI_DAT.md)
 > - Kiến trúc + sơ đồ + thiết kế hệ thống → [`phat_bieu_bai_toan_v3_2_HD.md`](phat_bieu_bai_toan_v3_2_HD.md)
 
@@ -28,8 +29,9 @@
 | 3 | Demo trực quan Open3D GUI | Open3D (pip, không license) | ~5 phút |
 | 4 | Phân tích + sinh figure | KHÔNG | ~10 giây |
 | 5 | Chạy trên GP7 thật | YRC1000 + GP7 + D455 + YOLO weights | Cần setup hardware |
+| 6 | **Lập trình robot qua GUI Program editor** | KHÔNG để design, YRC1000 để chạy thật | ~2 phút khởi động |
 
-> **Quan trọng**: 4/5 use case **KHÔNG cần phần cứng** → chạy được ngay trên PC.
+> **Quan trọng**: 4/6 use case **KHÔNG cần phần cứng** → chạy được ngay trên PC.
 
 ---
 
@@ -37,10 +39,10 @@
 
 ```powershell
 .venv\Scripts\Activate.ps1                      # activate venv (đã cài theo HUONG_DAN_CAI_DAT)
-pytest tests/ -q                                # → 293 passed
+pytest tests/ -q                                # → 300 passed
 ```
 
-Nếu **293 passed** → sẵn sàng dùng mọi use case không cần phần cứng.
+Nếu **300 passed** → sẵn sàng dùng mọi use case không cần phần cứng.
 
 > **Chưa cài đặt?** → [`HUONG_DAN_CAI_DAT.md`](HUONG_DAN_CAI_DAT.md) (cài đặt từ A-Z).
 
@@ -56,7 +58,7 @@ Nếu **293 passed** → sẵn sàng dùng mọi use case không cần phần c�
 **3.2. Các thư mục code (logic, không chạy trực tiếp)**
 - **`src/`** — logic Python
 - **`models/`** — STL meshes + YOLO weights
-- **`tests/`** — 293 unit/integration tests
+- **`tests/`** — 300 unit/integration tests
 
 Module tree đầy đủ: [`phat_bieu_bai_toan_v3_2_HD.md` mục 3](phat_bieu_bai_toan_v3_2_HD.md#3-cấu-trúc-thư-mục-code).
 
@@ -74,7 +76,7 @@ flowchart TB
     B --> D[Kịch bản D<br/>04 analyze results<br/>06 simulate trial]
     C --> D
     E --> F[05 analyze telemetry<br/>07 replay telemetry<br/>Sinh figure + MP4]
-    A_TEST([Verify code OK]) --> A[Kịch bản A<br/>pytest tests<br/>293 passed]
+    A_TEST([Verify code OK]) --> A[Kịch bản A<br/>pytest tests<br/>300 passed]
 
     style A fill:#558B2F,stroke:#fff,color:#fff
     style B fill:#1565C0,stroke:#fff,color:#fff
@@ -92,7 +94,7 @@ flowchart TB
 pytest tests/ -q
 ```
 
-→ Kỳ vọng `293 passed`. Nếu fail → có issue, xem section 6 Debug.
+→ Kỳ vọng `300 passed`. Nếu fail → có issue, xem section 6 Debug.
 
 ---
 
@@ -170,7 +172,7 @@ graph LR
 **Yêu cầu phần cứng + setup 1 lần**: xem [`HUONG_DAN_CAI_DAT.md` §2.9](HUONG_DAN_CAI_DAT.md) (HSE Server function, network, REMOTE mode, CIO ladder). Pre-flight checklist:
 - ✅ `ping <IP_YRC1000>` reply OK
 - ✅ YRC1000 ở **REMOTE mode** (teach pendant)
-- ✅ **TOOL01** đã setup trên TP với TCP offset gripper — xem [`SETUP_YRC_TOOL.md`](SETUP_YRC_TOOL.md)
+- ✅ **TOOL01** đã setup trên TP với TCP offset gripper — xem [`HUONG_DAN_CAI_DAT.md` §2.10](HUONG_DAN_CAI_DAT.md)
 - ✅ `config/cell_layout_real.yaml`: `robot_connection.ip` đã sửa đúng IP
 - ✅ `models/yolov8s-seg_best.pt` đã copy về (cho `--mode real`)
 
@@ -228,6 +230,94 @@ python scripts/05_analyze_telemetry.py latest --no-show
 # Replay thành MP4 cho demo / presentation
 python scripts/07_replay_telemetry.py latest --mp4 figures/replay.mp4
 ```
+
+---
+
+### 🎯 Kịch bản F — Lập trình robot qua GUI (Program Editor)
+
+**Bạn muốn**: Lập trình GP7 trực quan như RoboDK — teach pose, build MoveJ/L/C sequence, save .JBI, chạy trên robot thật.
+
+> 📘 **Thao tác GUI chi tiết** (menu/phím tắt/panel, click-by-click): xem sổ tay
+> [`HUONG_DAN_GUI.md`](HUONG_DAN_GUI.md).
+> Học lập trình bằng code (INFORM + Python script trong app + Python SDK + API) với
+> ví dụ chạy được: xem [`HUONG_DAN_LAP_TRINH.md`](HUONG_DAN_LAP_TRINH.md).
+
+```powershell
+python scripts/16_app_qt.py                       # mở app, dùng cell_layout.yaml
+python scripts/16_app_qt.py --config config/cell_layout_real.yaml   # cell thật
+```
+
+**Stack**: PyQt6 + pyvistaqt (VTK 9.6) — cùng stack ROS RViz/MoveIt, industrial-standard. Cùng FK/IK đã verify khớp RoboDK 0.00mm.
+
+**Workflow trong app** (top-down):
+
+```
+1. Robot menu → Connection settings…   (IP YRC1000, tool#, FTP creds)
+2. Robot menu → Test connection         (heartbeat + read joints + alarm check)
+3. Jog dock (left):
+   - Cartesian Jog: ±X/Y/Z translate + Rx/Ry/Rz rotate (Tool/Ref frame combo)
+   - Joint Axis Jog: 6 sliders θ1..θ6 với QDial rotary encoder
+   - Workspace radio + Show Frames toggle
+4. Program dock (right):
+   ── 1. Program list (instructions, drag to reorder)
+   ── 2. Edit toolbar [↑][↓][Edit (F2)][✕]
+   ── 3. Targets (named pose library):
+        - Name + [+ Teach (Ctrl+T)]    ← capture current pose
+        - [Modify (F3)] [Delete] [Go to]   [+ MoveJ→tgt] [+ MoveL→tgt]
+        - [Config (F4)] — chọn IK config khác (multi-solution picker)
+   ── 4. Add instruction tabs:
+        - [Motion]: + MoveJ, + MoveL, + MoveC (2-step set MID then END)
+        - [Logic]:  + Grip OPEN/CLOSE, + Wait timer, + WaitIO IN#=ON/OFF,
+                    + MSG "...", + Call JOB:..., + SimEvent
+        - [Modal]:  VJ%, V mm/s, PL rounding, TL# tool, UF# frame
+   ── 5. Playback bar: [▶ Sim] [⚙ Run on Robot] [⏸ Pause] [⏹ Stop] Speed[1.0×]
+   ── 6. File bar: [Save] [Load] [Export .JBI] [Clear all]
+5. Menu → File → Save → .json (project: jobs + targets, v3 format)
+6. Menu → Program → Export .JBI → .JBI file cho YRC1000
+7. ⚙ Run on Robot → safety confirm dialog → FTP upload + JOB_SELECT + START
+```
+
+**Tính năng đặc biệt**:
+- **Teach on Surface** (Robot menu → Ctrl+Shift+T): toggle mode → click vào mesh trong scene 3D → app raycast pick + extract surface normal → IK solve → tạo target với TCP Z aligned vào surface
+- **Multi-job project**: 1 file .json chứa nhiều JOBs (`MAIN`, `WELD_A`, ...) với CallJob cross-references. Export ALL jobs ra thư mục cùng lúc.
+- **Python Script generator** (menu Program → Generate from Python script…): viết Python với API `p.add_movej_to('HOME')`, `p.add_wait(0.5)`,... → script generate hàng loạt instructions (vd: 8 điểm vòng tròn).
+- **Post-processor settings** (menu Program): cap `max_speed_pct` (safety), initial VJ%, V mm/s cho INFORM codegen.
+
+**Kinematics**: dùng [Pieper analytical IK](../src/orchestrator/kinematics/pieper_gp7.py) — ~170µs/call (0.17ms), 1e-13mm accuracy (= RoboDK SolveIK), trả 3-8 native solutions cho Change Configuration. Fallback DLS nếu Pieper miss.
+
+#### Camera D455 & thị giác trong app (dock "Camera (D455)")
+
+Mở: **View → Window → Camera (D455)** (dock cùng cụm tab với Controls/Cell/Program).
+
+```
+1. Nguồn: Auto (D455→Mock) / D455 / Mock  → Start
+   - Chưa cắm D455 → tự fallback Mock (vẫn test được pipeline).
+   - Độ phân giải: combo preset (chỉ D455 thật; đổi xong Stop→Start để áp).
+2. Toggle hiển thị: [Depth colormap] [Detector] [Overlay]
+   - Depth/Overlay đổi tức thì; Detector đổi xong cần Stop→Start (nạp model 1 lần).
+3. Dataset — chụp ảnh:
+   - Class (Quản lý… để định nghĩa danh sách lớp của bài toán → lưu vào Cell),
+     Lighting / Overlap / Background, [Lưu depth (.npy)], [📷 Capture]
+   - File ra: data/raw/{class}_{lighting}_0_{overlap}_{bg}_{ts}_{NNNN}_rgb.png (+ _depth.npy)
+4. Control — vision-guided (vòng kín):
+   - [Detect → Teach grasp]: vật phát hiện → grasp pose (camera_to_base + make_grasp_pose)
+     → IK → lưu target
+   - [Pick → Program]: chèn chuỗi open→approach→grasp→close→retreat vào job hiện tại
+   - [▶ Run on Robot]: chạy thật qua HSE (dialog an toàn)
+   - [Đồng bộ Camera → Cell]: ghi pose (từ T_base_camera.npy) + intrinsics thật vào
+     node camera → vẽ frustum (nón nhìn) trong viewport
+   - Approach Z: độ cao tiếp cận cho Pick (mm)
+```
+
+**Lưu ý:**
+- Detection thật cần file `models/*.pt|onnx`; chưa có → MockDetector (1 vật giả) để demo.
+- Teach grasp cần **đã load robot** (IK) và **đã có** `config/calibration/T_base_camera.npy`
+  (sinh bằng `calibration_from_layout.py` cho sim, hoặc `02_run_calibration.py` cho thật).
+- Node **Camera** (CameraConfig: pose + intrinsics + frustum) khác **Camera Mount**
+  (CameraMountConfig: chỉ mesh giá đỡ). Frustum tự kéo tới mặt sàn theo độ cao camera.
+
+**Thu dataset bằng CLI (thay cho dock):** `python scripts/01_collect_dataset.py` — live view
+OpenCV, phím tắt chọn metadata + SPACE chụp (xem docstring script).
 
 ---
 
@@ -297,8 +387,8 @@ Mỗi row = 1 tick (~100ms):
 ### Q: Khác nhau giữa `--backend sim` và `--backend hse` là gì?
 **A**:
 - **sim** = SimRobot (pure Python, không gửi command thật). Default cho `--mode sim`
-  hoặc `--headless`. Khi non-headless sẽ wrap trong DigitalTwinMirror + RoboDK
-  viewport để demo trực quan.
+  hoặc `--headless`. Khi non-headless, SimRobot chạy trong `O3DGuiSimRobot` để
+  render **viewport Open3D** Filament (demo trực quan) — KHÔNG dùng RoboDK.
 - **hse** = nói chuyện thẳng với YRC1000 qua UDP HSE protocol (cần robot thật).
   Default và lựa chọn duy nhất cho `--mode real`.
 
@@ -362,12 +452,14 @@ Mỗi row = 1 tick (~100ms):
 |---|---|---|
 | ★★★ Hàng ngày | `03_run_experiment.py` | Chạy trial |
 | ★★★ Hàng ngày | `04_analyze_results.py` | Phân tích success rate |
+| ★★★ Lập trình | **`16_app_qt.py`** | **GP7 Program editor GUI** (PyQt6+VTK, teach + build + .JBI + run-on-robot) |
 | ★★ Real mode | `05_analyze_telemetry.py` | Visualize HSE joint state |
 | ★ Setup | `calibration_from_layout.py` | Sinh T_BC sim |
 | ★ Setup | `gen_primitive_meshes.py` | Sinh STL primitive |
 | ★ Figure | `06_simulate_trial.py` | Predictive figure |
 | ★ Real bring-up | `13_verify_vs_robodk.py` | Verify FK + DLS IK match RoboDK trên fixed configs (bảng) + `--samples N --histogram` cho figure |
 | ★ Real bring-up | `11_test_yrc_cartesian.py` | 3-phase YRC Cartesian motion test |
+| ★ Verification | **`17_compare_fk_ik.py`** | **So sánh 6 IK methods** (Pieper / DLS / LM / SDLS / BFGS / RoboDK) — CSV + 6-panel PNG histogram. `--fair` cho thesis apples-to-apples; `--methods Pieper,DLS,LM` chọn subset |
 | ★ Defense | `07_replay_telemetry.py` | Replay MP4 |
 
 ### 8.3. CLI flags — bảng đầy đủ (PRIMARY reference)
@@ -380,14 +472,17 @@ Mỗi row = 1 tick (~100ms):
 | `--backend {sim, hse}` | auto | Override motion backend. Auto-pick: mode=sim→sim, mode=real→hse. |
 | `--headless` | off | SimRobot mock, không viewport, scale 500+ trial. Sim non-headless tự dùng O3DGuiSimRobot; real mode tự mở Open3D mirror (xem `--no-viewport-mirror`). |
 | `--trials N` | 50 | Số trial chạy |
+| `--config PATH` | config/experiment.yaml | Override experiment config (tốc độ, approach height, `model_path`, gripper delay…) |
 | `--cell-config PATH` | auto | Override cell YAML (auto: cell_layout.yaml cho sim, cell_layout_real.yaml cho real) |
 | `--minimal-build` | off | Open3D viewport tối giản (bỏ items phụ) |
 | `--grasp-fail-rate N` | 0.0 | (Headless only) Inject failure xác suất N |
 | `--detection-miss-rate N` | 0.0 | (Headless only) Inject detection miss xác suất N |
 | `--seed N` | 42 | (Headless only) Seed RNG |
+| `--lighting LABEL` | "" | Nhãn điều kiện ánh sáng ghi vào CSV trial (phân tích sau) |
+| `--overlap LABEL` | "" | Nhãn mức chồng lấn ghi vào CSV trial |
 | **IK source** | | |
 | `--ik-source {yrc, client}` | auto | Cách compute IK. Auto: `yrc` cho real, `client` cho sim. URDF DLS verified match RoboDK 0.00mm. |
-| `--tool-no N` | 1 | TOOL coordinate trên YRC (TOOL01 default). Cần setup trên TP — xem `docs/SETUP_YRC_TOOL.md` |
+| `--tool-no N` | 1 | TOOL coordinate trên YRC (TOOL01 default). Cần setup trên TP — xem `docs/HUONG_DAN_CAI_DAT.md` §2.10 |
 | **HSE backend specific** | | |
 | `--hse-ip IP` | (từ cell YAML) | Override IP YRC1000 |
 | `--mirror-hz N` | 2.0 | Tần số gọi viewport_callback render Open3D mirror (Hz). Real mode mirror render @ tần số này; telemetry CSV vẫn ghi @ telemetry-hz. |
@@ -434,7 +529,7 @@ flowchart TB
     START([Bắt đầu]) --> Q1{Có robot<br/>GP7 thật?}
 
     %% ─── Path KHÔNG (sim only) ───
-    Q1 -->|KHÔNG| TEST[TEST CODE<br/>pytest tests<br/>293 passed]
+    Q1 -->|KHÔNG| TEST[TEST CODE<br/>pytest tests<br/>300 passed]
     TEST --> STATS[THỐNG KÊ 500 TRIAL<br/>mode sim<br/>headless flag<br/>trials 500]
     STATS --> DEMO[DEMO TRỰC QUAN<br/>mode sim<br/>trials 20<br/>Open3D GUI tự mở]
     DEMO --> ANALYZE[PHÂN TÍCH KẾT QUẢ<br/>04 analyze results<br/>06 simulate trial<br/>+ figures]
@@ -464,6 +559,8 @@ flowchart TB
 
 ## 10. Cần giúp đỡ?
 
+- **Giới thiệu phần mềm + chức năng các phần**: `docs/GIOI_THIEU_PHAN_MEM.md`
+- **Học lập trình (GUI + INFORM + Python + SDK)**: `docs/HUONG_DAN_LAP_TRINH.md`
 - **Cài đặt setup chi tiết**: `docs/HUONG_DAN_CAI_DAT.md`
 - **Thiết kế hệ thống chi tiết**: `docs/phat_bieu_bai_toan_v3_2_HD.md`
 - **Architecture tổng quan**: `README.md`

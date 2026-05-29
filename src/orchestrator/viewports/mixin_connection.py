@@ -1,0 +1,270 @@
+"""
+mixin_connection.py
+───────────────────
+ConnectionMixin: HSE connection settings + test-connection + Run on Robot
+worker pipeline + emergency stop.
+
+Mixin pattern — không khởi tạo độc lập. Host class (GP7AppQt) phải cung cấp:
+  attributes: _hse_ip, _hse_tool_no, _hse_ftp_user, _hse_ftp_pass, _hse_ftp_dir,
+              _hse_thread, _hse_stop, _pp_max_speed_pct, _program, _active_job,
+              _signals
+  methods:    _set_status, _safe_job_name, _export_job_to_path, _on_prog_stop
+"""
+from __future__ import annotations
+
+import threading
+from pathlib import Path
+
+from PyQt6.QtWidgets import (
+    QApplication, QDialog, QDialogButtonBox, QFormLayout, QLabel, QLineEdit,
+    QMessageBox, QSpinBox,
+)
+
+from ..backends.motoman_hse import MotomanHSEBackend
+
+
+class ConnectionMixin:
+    """HSE connection + Run on Robot lifecycle (settings, test, upload, stop)."""
+
+    def _on_show_connection_settings(self) -> None:
+        """Dialog edit HSE connection — IP, tool_no, FTP creds.
+
+        Có nút **Test** ngay trong dialog (replace menu entry "Test connection"
+        riêng cũ — không cần Apply rồi quay lại menu để Test, click trong
+        dialog ping luôn với values đang edit).
+        """
+        dlg = QDialog(self); dlg.setWindowTitle("Robot connection (HSE)")
+        form = QFormLayout(dlg)
+        ed_ip = QLineEdit(self._hse_ip)
+        ed_ip.setPlaceholderText("e.g. 192.168.1.100")
+        sp_tool = QSpinBox(); sp_tool.setRange(0, 63); sp_tool.setValue(self._hse_tool_no)
+        ed_user = QLineEdit(self._hse_ftp_user)
+        ed_user.setPlaceholderText("empty = anonymous")
+        ed_pass = QLineEdit(self._hse_ftp_pass)
+        ed_pass.setEchoMode(QLineEdit.EchoMode.Password)
+        ed_dir = QLineEdit(self._hse_ftp_dir)
+        form.addRow("HSE IP", ed_ip)
+        form.addRow("Tool # (TL=)", sp_tool)
+        form.addRow("FTP user", ed_user)
+        form.addRow("FTP pass", ed_pass)
+        form.addRow("FTP job dir", ed_dir)
+        info = QLabel(
+            "<small><i>⚠ Robot phải ở REMOTE mode + HSE Server function enabled."
+            "<br>Speed slider trên TP nên ≤ 10% lần đầu.</i></small>")
+        info.setWordWrap(True); form.addRow(info)
+        # Buttonbox: thêm "Test" cùng OK/Cancel. Click Test → ping với values
+        # đang edit trong form (chứ không phải self._hse_* đã save trước đó).
+        bb = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        btn_test = bb.addButton("Test", QDialogButtonBox.ButtonRole.ActionRole)
+        btn_test.setToolTip("Ping HSE với values trong form (không save)")
+        btn_test.clicked.connect(lambda: self._test_hse_connection(
+            ip=ed_ip.text().strip(),
+            tool_no=int(sp_tool.value()),
+            ftp_user=ed_user.text(),
+            ftp_pass=ed_pass.text(),
+            ftp_dir=ed_dir.text().strip() or "/MPRAM1/JBI",
+        ))
+        bb.accepted.connect(dlg.accept); bb.rejected.connect(dlg.reject)
+        form.addRow(bb)
+        if dlg.exec() != QDialog.DialogCode.Accepted: return
+        self._hse_ip = ed_ip.text().strip()
+        self._hse_tool_no = int(sp_tool.value())
+        self._hse_ftp_user = ed_user.text()
+        self._hse_ftp_pass = ed_pass.text()
+        self._hse_ftp_dir = ed_dir.text().strip() or "/MPRAM1/JBI"
+        self._set_status(
+            f"Connection: {self._hse_ip} TL#{self._hse_tool_no}", level="ok")
+
+    def _test_hse_connection(
+        self, ip: str, tool_no: int,
+        ftp_user: str = "", ftp_pass: str = "", ftp_dir: str = "/MPRAM1/JBI",
+    ) -> None:
+        """Ping HSE với connection params truyền vào (không đụng self._hse_*).
+
+        Dùng từ:
+          • Dialog Connection settings → Test button (values đang edit)
+          • `_on_test_connection` (legacy wrapper với self._hse_* đã save)
+        """
+        if not ip:
+            self._set_status(
+                "Chưa cấu hình HSE IP — Robot → Connection settings", level="warn")
+            return
+        self._set_status(f"Pinging {ip}…", level="info")
+        QApplication.processEvents()
+        backend = MotomanHSEBackend(
+            ip=ip, timeout_s=2.0,
+            ftp_user=ftp_user, ftp_pass=ftp_pass,
+            ftp_job_dir=ftp_dir, tool_no=tool_no)
+        try:
+            backend.connect()
+            ok = backend.Valid()
+            if ok:
+                # Đọc joints + alarm để verify deeper
+                try:
+                    joints = backend.Joints()
+                    alarm_code, _ = backend.read_alarm()
+                    alarm_str = ("✓ no alarm" if alarm_code == 0
+                                 else f"⚠ alarm 0x{alarm_code:04X}")
+                    msg = (f"Connected. Joints: ["
+                           + ", ".join(f"{j:+.1f}°" for j in joints) +
+                           f"]  {alarm_str}")
+                    self._set_status(msg, level="ok")
+                    QMessageBox.information(self, "Connection OK", msg)
+                except Exception as e:                      # noqa: BLE001
+                    self._set_status(
+                        f"Connected but deep probe fail: {e}", level="warn")
+            else:
+                self._set_status(
+                    f"Connection FAIL — kiểm tra HSE Server enable",
+                    level="err")
+                QMessageBox.warning(
+                    self, "Connection failed",
+                    f"YRC1000 {ip} không phản hồi READ_STATUS.\n"
+                    "Verify:\n"
+                    " • Ping {ip} OK?\n"
+                    " • HSE Server function enabled trong Maintenance mode?\n"
+                    " • PC cùng subnet với YRC1000?".format(ip=ip))
+        except Exception as e:                              # noqa: BLE001
+            self._set_status(f"Connection error: {e}", level="err")
+            QMessageBox.critical(self, "Connection error", str(e))
+        finally:
+            backend.disconnect()
+
+    def _on_test_connection(self) -> None:
+        """Legacy wrapper — ping HSE với self._hse_* đã save.
+
+        Menu entry "Test connection" riêng đã bỏ (merge vào dialog), giữ method
+        này cho compatibility nếu có ai bind shortcut/script call.
+        """
+        self._test_hse_connection(
+            ip=self._hse_ip, tool_no=self._hse_tool_no,
+            ftp_user=self._hse_ftp_user, ftp_pass=self._hse_ftp_pass,
+            ftp_dir=self._hse_ftp_dir)
+
+    def _on_run_on_robot(self) -> None:
+        """Render current job → upload .JBI → JOB_SELECT + START → wait_idle.
+
+        Chạy trong worker thread để UI không block. Stop button → servo OFF.
+        """
+        if not self._hse_ip:
+            r = QMessageBox.question(
+                self, "Run on Robot",
+                "Chưa cấu hình HSE IP. Mở Connection settings bây giờ?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+            if r == QMessageBox.StandardButton.Yes:
+                self._on_show_connection_settings()
+            return
+        if not self._program:
+            self._set_status("Current job empty", level="warn"); return
+        if self._hse_thread is not None and self._hse_thread.is_alive():
+            self._set_status("Robot đang chạy job — wait done hoặc Stop",
+                              level="warn"); return
+        # Safety confirm
+        n_steps = len(self._program)
+        r = QMessageBox.warning(
+            self, "Run on Robot — Safety check",
+            f"<b>⚠ ROBOT SẼ CHUYỂN ĐỘNG THẬT</b><br><br>"
+            f"Job: <code>{self._active_job}</code> ({n_steps} instructions)<br>"
+            f"HSE IP: <code>{self._hse_ip}</code><br>"
+            f"Max VJ: {self._pp_max_speed_pct:.0f}%<br><br>"
+            f"Trước khi tiếp tục, verify:<br>"
+            f"&nbsp;✓ YRC1000 ở REMOTE mode<br>"
+            f"&nbsp;✓ Speed slider TP ≤ 10%<br>"
+            f"&nbsp;✓ Workspace clear, tay sẵn sàng E-stop<br>"
+            f"&nbsp;✓ Không có alarm active<br><br>"
+            f"Tiếp tục?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Cancel)
+        if r != QMessageBox.StandardButton.Yes: return
+        # Render JBI trong main thread (cần access self._targets atomically),
+        # rồi pass text + name vào worker.
+        try:
+            stem = self._safe_job_name(self._active_job) or "PROG"
+            jbi_path = Path.cwd() / f"{stem}.JBI"
+            self._export_job_to_path(self._program, stem, jbi_path)
+            jbi_text = jbi_path.read_text(encoding="utf-8")
+            jbi_path.unlink(missing_ok=True)                # tmp file
+        except Exception as e:                              # noqa: BLE001
+            self._set_status(f"JBI render fail: {e}", level="err")
+            return
+        # Worker thread chạy upload + JOB_SELECT + START + wait_idle
+        self._hse_stop.clear()
+        self._hse_thread = threading.Thread(
+            target=self._run_on_robot_worker,
+            args=(jbi_text, stem),
+            daemon=True)
+        self._hse_thread.start()
+        self._set_status(f"Robot: uploading job '{stem}'…", level="info")
+
+    def _run_on_robot_worker(self, jbi_text: str, job_name: str) -> None:
+        backend = MotomanHSEBackend(
+            ip=self._hse_ip, timeout_s=3.0,
+            ftp_user=self._hse_ftp_user, ftp_pass=self._hse_ftp_pass,
+            ftp_job_dir=self._hse_ftp_dir, tool_no=self._hse_tool_no,
+            max_speed_pct=self._pp_max_speed_pct,
+            wait_completion_timeout_s=120.0)
+        try:
+            backend.connect()
+            if not backend.Valid():
+                self._signals.status.emit(
+                    "Robot: HSE not responding — abort", "err"); return
+            # Alarm pre-check
+            code, sub = backend.read_alarm()
+            if code != 0:
+                self._signals.status.emit(
+                    f"Robot: ALARM 0x{code:04X} (sub 0x{sub:04X}) — reset TP trước",
+                    "err"); return
+            if self._hse_stop.is_set():
+                self._signals.status.emit("Robot: aborted before upload", "warn"); return
+            self._signals.status.emit(f"Robot: FTP uploading '{job_name}.JBI'…", "info")
+            backend.upload_job(jbi_text, job_name)
+            if self._hse_stop.is_set():
+                self._signals.status.emit("Robot: aborted before start", "warn"); return
+            self._signals.status.emit(f"Robot: JOB_SELECT + START '{job_name}'…", "info")
+            backend.job_select(job_name)
+            backend.job_start()
+            # Poll status until idle hoặc stop
+            import time as _time
+            t_start = _time.monotonic()
+            poll_dt = 0.3
+            timeout = backend.wait_completion_timeout_s
+            while True:
+                if self._hse_stop.is_set():
+                    backend.Stop()                          # servo off
+                    self._signals.status.emit(
+                        "Robot: STOP triggered — servo OFF", "warn"); return
+                try:
+                    running = backend.read_status_running()
+                except Exception as e:                      # noqa: BLE001
+                    self._signals.status.emit(
+                        f"Robot: status poll error: {e}", "warn"); break
+                if not running: break
+                if _time.monotonic() - t_start > timeout:
+                    self._signals.status.emit(
+                        f"Robot: timeout {timeout:.0f}s — check TP", "err"); return
+                _time.sleep(poll_dt)
+            # Done — alarm post-check
+            code, sub = backend.read_alarm()
+            if code != 0:
+                self._signals.status.emit(
+                    f"Robot: completed WITH ALARM 0x{code:04X}", "warn")
+            else:
+                self._signals.status.emit(
+                    f"Robot: job '{job_name}' completed OK", "ok")
+        except Exception as e:                              # noqa: BLE001
+            self._signals.status.emit(f"Robot error: {e}", "err")
+        finally:
+            try:
+                backend.disconnect()
+            except Exception:                               # noqa: BLE001
+                pass
+
+    def _on_stop_all(self) -> None:
+        """Dual-purpose stop: sim playback + robot job (servo OFF nếu đang HSE)."""
+        # Sim stop
+        self._on_prog_stop()
+        # Robot stop
+        if self._hse_thread is not None and self._hse_thread.is_alive():
+            self._hse_stop.set()
+            self._set_status("Robot: STOP signaled (will servo-off)", level="warn")
