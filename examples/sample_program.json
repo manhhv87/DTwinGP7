@@ -1,0 +1,528 @@
+{
+  "version": 3,
+  "description": "GP7 pick-place LAP 10 LAN (giong scripts/03_run_experiment.py, return_home_after_success): moi vong HOME -> gap tray (700,-120) -> dat PlaceZone (700,120) -> HOME. SimEvent reset_objects dua tray ve cho cu giua cac vong. SetGripper mang tray theo. CHAY: python scripts/16_app_qt.py --program examples/sample_program.json",
+  "active_job": "DEMO",
+  "targets": {
+    "HOME": {
+      "joints": [
+        1.97,
+        2.26,
+        -4.99,
+        -181.93,
+        41.7,
+        -90.35
+      ],
+      "tcp_pose": [
+        551.23,
+        20.75,
+        998.51,
+        138.96,
+        -2.14,
+        91.46
+      ]
+    },
+    "APPROACH": {
+      "joints": [
+        -9.727,
+        33.46,
+        12.337,
+        -180.0,
+        68.875,
+        -80.273
+      ],
+      "tcp_pose": [
+        700.0,
+        -120.0,
+        800.0,
+        180.0,
+        -0.0,
+        90.0
+      ]
+    },
+    "PICK": {
+      "joints": [
+        -9.728,
+        45.184,
+        3.353,
+        -180.0,
+        48.167,
+        -80.272
+      ],
+      "tcp_pose": [
+        700.0,
+        -120.0,
+        600.0,
+        180.0,
+        -0.0,
+        90.0
+      ]
+    },
+    "PLACE_APP": {
+      "joints": [
+        9.726,
+        33.457,
+        12.331,
+        -180.0,
+        68.871,
+        -99.727
+      ],
+      "tcp_pose": [
+        700.0,
+        120.0,
+        800.0,
+        180.0,
+        -0.0,
+        90.0
+      ]
+    },
+    "PLACE": {
+      "joints": [
+        9.728,
+        45.184,
+        3.353,
+        -180.0,
+        48.167,
+        -99.728
+      ],
+      "tcp_pose": [
+        700.0,
+        120.0,
+        600.0,
+        180.0,
+        -0.0,
+        90.0
+      ]
+    }
+  },
+  "jobs": {
+    "DEMO": [
+      {
+        "type": "ShowMessage",
+        "message": "GP7 PICK-PLACE x10"
+      },
+      {
+        "type": "SetSpeed",
+        "speed_joint_pct": 12.0,
+        "speed_linear_mm_s": 60.0
+      },
+      {
+        "type": "MoveJ",
+        "target_name": "HOME"
+      },
+      {
+        "type": "SimEvent",
+        "event_name": "reset_objects",
+        "event_payload": "tray ve cho cu"
+      },
+      {
+        "type": "MoveJ",
+        "target_name": "APPROACH"
+      },
+      {
+        "type": "MoveJ",
+        "target_name": "PICK"
+      },
+      {
+        "type": "SetGripper",
+        "close": true
+      },
+      {
+        "type": "Wait",
+        "seconds": 0.2
+      },
+      {
+        "type": "MoveJ",
+        "target_name": "PLACE_APP"
+      },
+      {
+        "type": "MoveJ",
+        "target_name": "PLACE"
+      },
+      {
+        "type": "SetGripper",
+        "close": false
+      },
+      {
+        "type": "Wait",
+        "seconds": 0.2
+      },
+      {
+        "type": "MoveJ",
+        "target_name": "HOME"
+      },
+      {
+        "type": "SimEvent",
+        "event_name": "reset_objects",
+        "event_payload": "tray ve cho cu"
+      },
+      {
+        "type": "MoveJ",
+        "target_name": "APPROACH"
+      },
+      {
+        "type": "MoveJ",
+        "target_name": "PICK"
+      },
+      {
+        "type": "SetGripper",
+        "close": true
+      },
+      {
+        "type": "Wait",
+        "seconds": 0.2
+      },
+      {
+        "type": "MoveJ",
+        "target_name": "PLACE_APP"
+      },
+      {
+        "type": "MoveJ",
+        "target_name": "PLACE"
+      },
+      {
+        "type": "SetGripper",
+        "close": false
+      },
+      {
+        "type": "Wait",
+        "seconds": 0.2
+      },
+      {
+        "type": "MoveJ",
+        "target_name": "HOME"
+      },
+      {
+        "type": "SimEvent",
+        "event_name": "reset_objects",
+        "event_payload": "tray ve cho cu"
+      },
+      {
+        "type": "MoveJ",
+        "target_name": "APPROACH"
+      },
+      {
+        "type": "MoveJ",
+        "target_name": "PICK"
+      },
+      {
+        "type": "SetGripper",
+        "close": true
+      },
+      {
+        "type": "Wait",
+        "seconds": 0.2
+      },
+      {
+        "type": "MoveJ",
+        "target_name": "PLACE_APP"
+      },
+      {
+        "type": "MoveJ",
+        "target_name": "PLACE"
+      },
+      {
+        "type": "SetGripper",
+        "close": false
+      },
+      {
+        "type": "Wait",
+        "seconds": 0.2
+      },
+      {
+        "type": "MoveJ",
+        "target_name": "HOME"
+      },
+      {
+        "type": "SimEvent",
+        "event_name": "reset_objects",
+        "event_payload": "tray ve cho cu"
+      },
+      {
+        "type": "MoveJ",
+        "target_name": "APPROACH"
+      },
+      {
+        "type": "MoveJ",
+        "target_name": "PICK"
+      },
+      {
+        "type": "SetGripper",
+        "close": true
+      },
+      {
+        "type": "Wait",
+        "seconds": 0.2
+      },
+      {
+        "type": "MoveJ",
+        "target_name": "PLACE_APP"
+      },
+      {
+        "type": "MoveJ",
+        "target_name": "PLACE"
+      },
+      {
+        "type": "SetGripper",
+        "close": false
+      },
+      {
+        "type": "Wait",
+        "seconds": 0.2
+      },
+      {
+        "type": "MoveJ",
+        "target_name": "HOME"
+      },
+      {
+        "type": "SimEvent",
+        "event_name": "reset_objects",
+        "event_payload": "tray ve cho cu"
+      },
+      {
+        "type": "MoveJ",
+        "target_name": "APPROACH"
+      },
+      {
+        "type": "MoveJ",
+        "target_name": "PICK"
+      },
+      {
+        "type": "SetGripper",
+        "close": true
+      },
+      {
+        "type": "Wait",
+        "seconds": 0.2
+      },
+      {
+        "type": "MoveJ",
+        "target_name": "PLACE_APP"
+      },
+      {
+        "type": "MoveJ",
+        "target_name": "PLACE"
+      },
+      {
+        "type": "SetGripper",
+        "close": false
+      },
+      {
+        "type": "Wait",
+        "seconds": 0.2
+      },
+      {
+        "type": "MoveJ",
+        "target_name": "HOME"
+      },
+      {
+        "type": "SimEvent",
+        "event_name": "reset_objects",
+        "event_payload": "tray ve cho cu"
+      },
+      {
+        "type": "MoveJ",
+        "target_name": "APPROACH"
+      },
+      {
+        "type": "MoveJ",
+        "target_name": "PICK"
+      },
+      {
+        "type": "SetGripper",
+        "close": true
+      },
+      {
+        "type": "Wait",
+        "seconds": 0.2
+      },
+      {
+        "type": "MoveJ",
+        "target_name": "PLACE_APP"
+      },
+      {
+        "type": "MoveJ",
+        "target_name": "PLACE"
+      },
+      {
+        "type": "SetGripper",
+        "close": false
+      },
+      {
+        "type": "Wait",
+        "seconds": 0.2
+      },
+      {
+        "type": "MoveJ",
+        "target_name": "HOME"
+      },
+      {
+        "type": "SimEvent",
+        "event_name": "reset_objects",
+        "event_payload": "tray ve cho cu"
+      },
+      {
+        "type": "MoveJ",
+        "target_name": "APPROACH"
+      },
+      {
+        "type": "MoveJ",
+        "target_name": "PICK"
+      },
+      {
+        "type": "SetGripper",
+        "close": true
+      },
+      {
+        "type": "Wait",
+        "seconds": 0.2
+      },
+      {
+        "type": "MoveJ",
+        "target_name": "PLACE_APP"
+      },
+      {
+        "type": "MoveJ",
+        "target_name": "PLACE"
+      },
+      {
+        "type": "SetGripper",
+        "close": false
+      },
+      {
+        "type": "Wait",
+        "seconds": 0.2
+      },
+      {
+        "type": "MoveJ",
+        "target_name": "HOME"
+      },
+      {
+        "type": "SimEvent",
+        "event_name": "reset_objects",
+        "event_payload": "tray ve cho cu"
+      },
+      {
+        "type": "MoveJ",
+        "target_name": "APPROACH"
+      },
+      {
+        "type": "MoveJ",
+        "target_name": "PICK"
+      },
+      {
+        "type": "SetGripper",
+        "close": true
+      },
+      {
+        "type": "Wait",
+        "seconds": 0.2
+      },
+      {
+        "type": "MoveJ",
+        "target_name": "PLACE_APP"
+      },
+      {
+        "type": "MoveJ",
+        "target_name": "PLACE"
+      },
+      {
+        "type": "SetGripper",
+        "close": false
+      },
+      {
+        "type": "Wait",
+        "seconds": 0.2
+      },
+      {
+        "type": "MoveJ",
+        "target_name": "HOME"
+      },
+      {
+        "type": "SimEvent",
+        "event_name": "reset_objects",
+        "event_payload": "tray ve cho cu"
+      },
+      {
+        "type": "MoveJ",
+        "target_name": "APPROACH"
+      },
+      {
+        "type": "MoveJ",
+        "target_name": "PICK"
+      },
+      {
+        "type": "SetGripper",
+        "close": true
+      },
+      {
+        "type": "Wait",
+        "seconds": 0.2
+      },
+      {
+        "type": "MoveJ",
+        "target_name": "PLACE_APP"
+      },
+      {
+        "type": "MoveJ",
+        "target_name": "PLACE"
+      },
+      {
+        "type": "SetGripper",
+        "close": false
+      },
+      {
+        "type": "Wait",
+        "seconds": 0.2
+      },
+      {
+        "type": "MoveJ",
+        "target_name": "HOME"
+      },
+      {
+        "type": "SimEvent",
+        "event_name": "reset_objects",
+        "event_payload": "tray ve cho cu"
+      },
+      {
+        "type": "MoveJ",
+        "target_name": "APPROACH"
+      },
+      {
+        "type": "MoveJ",
+        "target_name": "PICK"
+      },
+      {
+        "type": "SetGripper",
+        "close": true
+      },
+      {
+        "type": "Wait",
+        "seconds": 0.2
+      },
+      {
+        "type": "MoveJ",
+        "target_name": "PLACE_APP"
+      },
+      {
+        "type": "MoveJ",
+        "target_name": "PLACE"
+      },
+      {
+        "type": "SetGripper",
+        "close": false
+      },
+      {
+        "type": "Wait",
+        "seconds": 0.2
+      },
+      {
+        "type": "MoveJ",
+        "target_name": "HOME"
+      },
+      {
+        "type": "ShowMessage",
+        "message": "DONE x10"
+      }
+    ]
+  }
+}

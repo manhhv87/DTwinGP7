@@ -13,7 +13,7 @@ client-side cho FK/IK.
 - Sim non-headless + real cùng pattern: motion backend wrap trong DigitalTwinMirror
   facade, Open3D viewport (`O3DGuiSimRobot`) nhận setJoints @2Hz qua mirror
   thread để mirror state thật.
-- 293 test case cover L1–L3 (HSE protocol + backend, INFORM codegen,
+- 300 test case cover L1–L3 (HSE protocol + backend, INFORM codegen,
   ultra-fast P-var, digital twin mirror, kinematics FK + IK, frame conversion, ...).
 
 ---
@@ -49,11 +49,15 @@ graph LR
 **Stack** dùng 1 motion path cho robot thật:
 - Python → UDP HSE → YRC1000 → GP7. HSE Server là function built-in của
   YRC1000, không phụ thuộc vendor driver license.
-- Open3D Filament GUI (`O3DGuiSimRobot`) là viewport 3D mirror robot thật @2Hz.
-  Không tham gia motion path.
+- **Hai frontend 3D** (không tham gia motion path): (a) **Open3D Filament GUI**
+  (`O3DGuiSimRobot`) — viewport cho experiment runner `03_run_experiment.py`
+  (sim non-headless + mirror robot thật @2Hz); (b) **app Qt PyQt6+VTK**
+  (`GP7AppQt`, `scripts/16_app_qt.py`) — Program Editor tương tác để teach pose +
+  build chương trình + chạy trên robot (chi tiết §7.5.4). RoboDK KHÔNG còn trong
+  runtime — chỉ là reference để verify (§7.5.1, §7.5.5).
 - FK/IK client-side dùng URDF chain pure numpy (`urdf_chain.py` +
-  `inverse_kinematics.py`). Verified match RoboDK SolveFK 0.00mm qua
-  `scripts/13_verify_vs_robodk.py`.
+  `inverse_kinematics.py` + `pieper_gp7.py`). Verified match RoboDK SolveFK
+  0.00mm qua `scripts/13_verify_vs_robodk.py`.
 
 ## 2. Sơ đồ kết nối hệ thống — Level-4 Bidirectional Digital Twin
 
@@ -175,10 +179,12 @@ DTwinGP7/                               # BỘ CODE + TÀI LIỆU (repo DTwinGP7
 ├── pyproject.toml
 ├── clean.bat                           # tiện ích xóa __pycache__
 ├── docs/                               # TÀI LIỆU
+│   ├── GIOI_THIEU_PHAN_MEM.md          # giới thiệu phần mềm + chức năng các phần
+│   ├── HUONG_DAN_GUI.md                # thao tác GUI click-by-click (không cần code)
+│   ├── HUONG_DAN_LAP_TRINH.md          # học lập trình: INFORM + Python + SDK + tham chiếu API
 │   ├── phat_bieu_bai_toan_v3_2_HD.md
-│   ├── HUONG_DAN_CAI_DAT.md
-│   ├── HUONG_DAN_SU_DUNG.md            # workflow + CLI flags theo kịch bản
-│   └── SETUP_YRC_TOOL.md               # setup TOOL01 trên teach pendant (real mode)
+│   ├── HUONG_DAN_CAI_DAT.md            # cài đặt + setup phần cứng (kèm §2.10 TOOL01)
+│   └── HUONG_DAN_SU_DUNG.md            # workflow + CLI flags theo kịch bản
 ├── config/
 │   ├── cell_layout.yaml                # cell mô phỏng
 │   ├── cell_layout_real.yaml           # cell cho robot thật
@@ -219,15 +225,27 @@ DTwinGP7/                               # BỘ CODE + TÀI LIỆU (repo DTwinGP7
 │   │   ├── digital_twin.py             # L4 façade: mirror, telemetry, drift, alarm
 │   │   ├── telemetry.py                # CSV logger thread-safe (joint + alarm)
 │   │   ├── frame_convert.py            # world → robot BASE + Yaskawa XYZ-fixed RPY (HSE Cartesian)
-│   │   ├── viewports/                  # Open3D Filament GUI viewport
-│   │   │   ├── open3d_gui_sim_robot.py # O3DGuiSimRobot: sim viewport + real mirror @2Hz
+│   │   ├── viewports/                  # 2 frontend: app Qt (VTK) + viewport Open3D
+│   │   │   ├── gp7_app_qt.py           # GP7AppQt — app CHÍNH: PyQt6 + pyvistaqt/VTK (Program Editor)
+│   │   │   ├── mixin_connection.py     # (mixin GP7AppQt) kết nối HSE + Run on Robot
+│   │   │   ├── mixin_job_target.py     # (mixin) thư viện target (pose đặt tên, kiểu RoboDK)
+│   │   │   ├── mixin_program_io.py     # (mixin) Save/Load project JSON v3 + Export .JBI
+│   │   │   ├── mixin_program_playback.py # (mixin) Play/Pause/Stop (sim hoặc robot thật)
+│   │   │   ├── mixin_camera.py         # (mixin) dock Camera D455: live view + vision-guided + frustum
+│   │   │   ├── mixin_about.py          # (mixin) giới thiệu / cell info
+│   │   │   ├── program_model.py        # Instruction (model 1 dòng lệnh INFORM)
+│   │   │   ├── script_api.py           # ScriptProgramAPI (sandbox sinh lệnh bằng Python)
+│   │   │   ├── control_panel.py        # pose↔matrix helper (_xyz_rpy_to_matrix, ...)
+│   │   │   ├── qt_theme.py · qt_widgets.py · qt_helpers.py   # theme + widget tiện ích Qt
+│   │   │   ├── gp7_app.py              # app Open3D (legacy — scripts/15_app.py)
+│   │   │   ├── open3d_gui_sim_robot.py # O3DGuiSimRobot: viewport sim + mirror real @2Hz
 │   │   │   └── urdf_gen.py             # URDF spec → tessellated mesh cho Open3D
 │   │   ├── kinematics/                 # Pure-Python FK + IK + trajectory (UC1/UC2/UC4)
-│   │   │   ├── urdf_chain.py           # GP7 URDF chain — source-of-truth, match RoboDK 0.00mm (qua 
-|   |   |   |                           # scripts/13_verify_vs_robodk.py)
+│   │   │   ├── urdf_chain.py           # GP7 URDF chain — source-of-truth, match RoboDK 0.00mm
+│   │   │   ├── pieper_gp7.py           # Pieper analytical IK (default app, 3-8 nghiệm, ~170µs)
 │   │   │   ├── dh_model.py             # GP7 Modified DH params (legacy, backward compat)
 │   │   │   ├── forward_kinematics.py   # joints → pose 4x4 (pure numpy)
-│   │   │   ├── inverse_kinematics.py   # Damped Least Squares IK (URDF/DH polymorphic)
+│   │   │   ├── inverse_kinematics.py   # IK số: DLS / LM / SDLS / BFGS + seeded + batch
 │   │   │   └── trajectory.py           # interpolate + joint limit + collision check
 │   │   └── backends/                   # Pluggable motion backends
 │   │       ├── base.py                 # RobotBackend Protocol
@@ -256,11 +274,15 @@ DTwinGP7/                               # BỘ CODE + TÀI LIỆU (repo DTwinGP7
 │   ├── 06_simulate_trial.py            # UC1: predictive simulation offline → 3D figure
 │   ├── 07_replay_telemetry.py          # UC4: replay CSV → 3D animation/MP4
 │   ├── 11_test_yrc_cartesian.py        # 3-phase test YRC Cartesian motion trên robot thật
-│   ├── 13_verify_vs_robodk.py          # FK fidelity + DLS IK round-trip vs RoboDK; --samples N --histogram cho figure
+│   ├── 13_verify_vs_robodk.py          # FK fidelity + DLS IK round-trip vs RoboDK; --samples N --histogram
+│   ├── 14_jog_panel.py                 # panel jog Open3D (legacy)
+│   ├── 15_app.py                       # app Open3D (legacy)
+│   ├── 16_app_qt.py                    # APP CHÍNH: GP7 Program Editor (PyQt6 + pyvistaqt/VTK)
+│   ├── 17_compare_fk_ik.py             # so sánh 6 IK (Pieper/DLS/LM/SDLS/BFGS/RoboDK) → CSV + 6-panel PNG
 │   ├── calibration_from_layout.py      # sinh T_BC từ camera.pose cho headless
 │   ├── convert_glb_to_stl.py           # GLB → STL utility
 │   └── gen_primitive_meshes.py         # sinh STL primitive (gripper, ...)
-├── tests/                              # 293 test cases (pytest, 100% pass)
+├── tests/                              # 300 test cases (pytest, 100% pass)
 │   ├── test_coord_conv.py
 │   ├── test_postprocess.py
 │   ├── test_state_machine.py
@@ -746,14 +768,25 @@ Core modules:
 - `urdf_chain.py` — Yaskawa GP7 URDF chain (từ ros-industrial/motoman noetic-devel
   `gp7_macro.xacro`). Origin xyz + axis cho mỗi joint, flange offset (80mm X),
   tool0 rotation rpy(180°,-90°,0). **Verified match RoboDK SolveFK 0.00mm/0.00°**
-  qua `scripts/13_verify_vs_robodk.py`.
+  qua `scripts/13_verify_vs_robodk.py`. Cung cấp cả batched FK
+  (`fk_with_joint_frames_batch_urdf`) cho vectorized IK enumeration.
 - `dh_model.py` — Modified DH parameters (Craig 1986). Giữ cho backward compat.
   URDF chain là source-of-truth.
 - `forward_kinematics.py` — joints → TCP pose, ~60µs/call. Polymorphic giữa URDF
   và DH model. Hỗ trợ `joint_positions_batch(model, joints_NJ)` vectorized cho
   N trajectory samples.
-- `inverse_kinematics.py` — Damped Least Squares IK, ~3ms/call. Dùng URDF chain
-  → IK joints match RoboDK chính xác → không cần vendor SDK ở runtime.
+- `inverse_kinematics.py` — **4 thuật toán numerical IK** với analytical Jacobian
+  (URDF) + batched variant:
+  - `inverse_kinematics` — Damped Least Squares (DLS), λ² cố định
+  - `inverse_kinematics_lm` — Levenberg-Marquardt, λ adaptive (Levenberg 1944)
+  - `inverse_kinematics_sdls` — Selectively Damped LS qua SVD (Buss & Kim 2005)
+  - `inverse_kinematics_bfgs` — Quasi-Newton qua scipy L-BFGS-B với weighted cost
+  - `inverse_kinematics_batch` — batched DLS song song (5.18× faster cho enumeration)
+  - `inverse_kinematics_seeded` — DLS với retry từ multiple seeds (production
+    robustness)
+- **`pieper_gp7.py` — Pieper analytical closed-form IK cho GP7** (default từ
+  scripts/16). ~170µs/call, accuracy ~1e-13mm (float precision = RoboDK SolveIK),
+  trả 3-8 native solutions cho Change Configuration. Chi tiết §7.5.3.
 - `trajectory.py` — linear joint interpolation + joint limit check + sphere
   self-collision (vectorized batch FK, ~30× nhanh hơn naive per-sample loop).
 
@@ -882,8 +915,187 @@ violations IDENTICAL (order + indices + float distances), IK convergence rate
 
 Tác động real mode: predictive safety overhead **~25ms → ~2ms/trial** → vô
 hại so với HSE FTP + MoveJ ~200ms/trial → C2 safety auto-bật cho mọi trial
-real mode mà không impact throughput. Test suite **293/293 pass** confirm
+real mode mà không impact throughput. Test suite **300/300 pass** confirm
 không regression hành vi.
+
+### 7.5.3. Pieper analytical IK — closed-form cho GP7
+
+DLS hội tụ tới `tol_mm=0.5` qua lặp (~100 iter × 1.4ms = ~1.4ms/call sau analytical
+Jacobian), nhưng:
+- Có **tolerance gap** ~30-450µm (random init); DLS converge "trong tol", không
+  exact pose.
+- Trả **1 nghiệm** gần `q_init` nhất — Change Configuration cần stochastic
+  re-seeding để tìm config khác.
+- Không guarantee converge khi gần singularity hoặc xa init.
+
+GP7 có **spherical wrist** — 3 wrist axes (J4, J5, J6) đều giao tại 1 điểm
+(WCP = J4 origin trong URDF chain). Thỏa **Pieper criteria** → có công thức
+closed-form giải IK exactly trong 1 shot.
+
+**Pieper decoupling** tách IK 6-DOF thành 2 sub-problems 3-DOF độc lập:
+
+1. **Position**: giải q1, q2, q3 từ WCP (3D point trong robot S frame)
+   - WCP = TCP_pos − 80mm × Z_tool0_world  (derived từ flange offset + tool0 RPY)
+   - q1 = atan2(WCP_y, WCP_x) (front) hoặc +π (back)
+   - Project WCP vào J1-rotated plane → solve q2, q3 geometric với law-of-cosines:
+     ```
+     ζ = (x'² + z'² − L2² − L3²) / (2·L2)   # L2=445, L3=√(440²+40²)
+     q3 = asin(ζ/L3) − ψ   (elbow up)   hoặc   π − asin(ζ/L3) − ψ (elbow down)
+     q2 = atan2(η·x' − ξ·z', ξ·x' + η·z')
+     ```
+2. **Orientation**: giải q4, q5, q6 từ `M = R_world_J3⁻¹ · R_world_J6`
+   - M = Rx(−q4)·Ry(−q5)·Rx(−q6) — **XYX Euler decomposition**
+   - 2 branches (β = ±acos(M[0,0]) → wrist normal/flip)
+
+**Up-to-8 solutions native** (front/back × elbow up/down × wrist flip).
+
+**Joint-limit aware unwrapping** (`_wrap_to_limits`): GP7 có asymmetric limits
+(J3 = −116°…+255°, J6 = ±360°) → wrap mặc định to (−π, π] có thể đẩy nghiệm
+hợp lệ ra ngoài range. Hàm wrap thử k ∈ {0, ±1, ±2} để tìm equivalent angle
+trong limit, đảm bảo 100% recovery rate trên 1000 random configs (vs 96% bug
+trước fix).
+
+**Hiệu năng + accuracy** (208 poses, 8 fixed + 200 random, fair mode, run từ
+`scripts/17_compare_fk_ik.py --fair`):
+
+| Method | Success | pos median | p95 | max | time median | time p95 |
+|---|---|---|---|---|---|---|
+| **Pieper (ours)** | **208/208** | **1.3e-13 mm** | 5.3e-13 mm | 6.3e-12 mm | **0.17 ms** | 0.24 ms |
+| DLS (single-shot) | 207/208 | 3.3e-2 mm | 3.3e-1 mm | 4.5e-1 mm | 0.80 ms | 1.36 ms |
+| LM (adaptive λ) | 207/208 | 3.8e-2 mm | 3.4e-1 mm | 4.9e-1 mm | 0.71 ms | 1.23 ms |
+| SDLS (SVD selective) | 208/208 | 3.9e-2 mm | 3.2e-1 mm | 4.6e-1 mm | 0.90 ms | 1.65 ms |
+| BFGS (L-BFGS-B early-exit) | 207/208 | 3.5e-1 mm | 4.9e-1 mm | 5.0e-1 mm | 11.3 ms | 19.8 ms |
+| RoboDK SolveIK | 208/208 | 6.8e-13 mm | 3.0e-11 mm | 6.8e-10 mm | 0.37 ms | 0.51 ms |
+
+→ **Pieper as accurate as RoboDK** (float noise floor ~1e-13mm cho cả 2),
+**2× faster than RoboDK**, **5× faster than DLS** với độ chính xác cao hơn
+**11 orders of magnitude** (10¹¹). Chi tiết so sánh 6 thuật toán cho thesis: §7.5.5.
+
+**Multi-IK enumeration** (Change Configuration UX):
+- Batched DLS 30 seeds: 63.6ms (avg 21 converge sau dedupe)
+- **Pieper all configs: 0.18ms** (3-8 unique configs deterministic)
+- **357× speedup** → từ "noticeable lag" thành "instant" UX
+
+**Integration** (`scripts/16_app_qt.py`):
+- `_solve_movel` (MoveL sim + JBI export): Pieper nearest-config + DLS fallback
+- `_enumerate_ik_solutions` (Change Target Config dialog): Pieper native
+  multi-solution, deterministic không cần random seeding
+
+**Limitation**: Pieper module GP7-specific (hardcoded URDF parameters). Robot
+khác cần dẫn lại công thức hoặc dùng `inverse_kinematics_seeded` (generic).
+
+### 7.5.4. GP7 Program Editor (PyQt6+VTK)
+
+`scripts/16_app_qt.py` cung cấp Industrial-standard GUI để **lập trình robot
+trực quan** + execute trên YRC1000 thật. Stack: **PyQt6 + pyvistaqt (VTK 9.6)**
+— cùng stack ROS RViz/MoveIt; cùng FK/IK đã verify khớp RoboDK 0.00mm.
+
+**3-tier feature coverage** (xem [`HUONG_DAN_SU_DUNG.md` §4 Kịch bản F](HUONG_DAN_SU_DUNG.md)):
+
+- **Tier 1 — INFORM keyword coverage**: MoveJ, MoveL, MoveC (2-step set MID + END),
+  SetSpeed (V= / VJ=), SetRounding (PL=0..8), SetTool (TL=), SetRefFrame (UF#=),
+  WaitIO (WAIT IN#(n)=ON/OFF [T=...]), ShowMessage (MSG "..."), SetGripper (DOUT),
+  Wait (TIMER).
+- **Tier 2 — RoboDK-style productivity**: Teach Target (named pose library —
+  WCP reuse across multiple MoveJ/L), CallJob (sub-program CALL JOB:...),
+  Modify Instruction (F2 / double-click per-type dialog), Pause/Resume (soft
+  pause via threading.Event), Fast Sim multiplier (0.25-5×), multi-job project
+  (Save/Load JSON v3 backward compat v1/v2).
+- **Tier 3 — Advanced**: Teach on Surface (Ctrl+Shift+T, raycast pick + VTK
+  cell normal extraction + IK), Change Target Configuration (F4, Pieper
+  multi-IK picker dialog), SimEvent checkpoint, Post-Processor settings
+  (max_speed_pct, default VJ/V), embedded Python script generator với
+  sandboxed `_ScriptProgramAPI` (helpers `p.add_movej_to`, `p.add_wait`, ...).
+- **Tier 4 — Camera & vision-guided** (`mixin_camera`, dock "Camera (D455)"):
+  live view RGB/depth (worker thread + backpressure → không đơ UI), chụp dataset
+  RGB+depth (`object_classes` định nghĩa theo bài toán), điều khiển vòng kín
+  Detect → grasp pose (`camera_to_base` + `make_grasp_pose`) → IK → teach target →
+  Pick→Program → Run on Robot. Camera là **một node thống nhất** (`CameraConfig`:
+  pose extrinsics từ hand-eye + intrinsics thật) hiển thị bằng **frustum** trong
+  scene (kiểu RoboDK). Chi tiết: [`GIOI_THIEU_PHAN_MEM.md` §3.7, §4.4](GIOI_THIEU_PHAN_MEM.md).
+
+**Run-on-Robot pipeline** (Playback bar ⚙ button):
+1. Render current job → INFORM .JBI text
+2. Safety-confirm dialog (REMOTE mode + speed ≤ 10% + E-stop ready)
+3. Worker thread: `MotomanHSEBackend.connect()` → `Valid()` heartbeat →
+   alarm pre-check → `upload_job()` (FTP) → `job_select()` + `job_start()` (HSE) →
+   poll `read_status_running()` cho tới idle → alarm post-check
+4. ⏹ Stop = `backend.Stop()` (servo OFF, emergency)
+
+Stack hierarchy: GP7AppQt (PyQt) → `_solve_movel` → `pieper_gp7` /
+`inverse_kinematics` → `urdf_chain`. Backend layer: `MotomanHSEBackend` →
+`HSEProtocol` (UDP) + `ftplib` (FTP). Tách lớp triệt để: kinematics
+math KHÔNG đụng VTK; backend KHÔNG đụng UI.
+
+### 7.5.5. So sánh 6 thuật toán IK cho thesis
+
+Thesis include comparison đầy đủ 6 IK methods chạy trên cùng GP7 URDF chain
++ analytical Jacobian, để justify chọn Pieper làm default:
+
+**Pure analytical (closed-form, không iterative)**:
+1. **Pieper** (ours, GP7-specific) — Pieper decoupling cho spherical wrist, XYX
+   Euler cho orientation. Up-to-8 solutions native.
+2. **RoboDK SolveIK** — analytical Yaskawa variant (proprietary), single best.
+
+**Numerical iterative (generic 6R)**:
+3. **DLS** — Damped Least Squares: `dq = J^T (J J^T + λ²I)⁻¹ err`, fixed λ=0.05.
+   Đơn giản, predictable, baseline industrial.
+4. **LM** (Levenberg-Marquardt 1944) — DLS với **adaptive damping**:
+   - λ giảm 0.5× khi step cải thiện error (Newton-like, fast)
+   - λ tăng 10× khi step xấu (gradient-descent-like, stable)
+   Superlinear convergence near solution.
+5. **SDLS** (Buss & Kim 2005) — Selectively Damped LS qua SVD:
+   - J = U Σ V^T
+   - Damp **chỉ** directions với σ_i nhỏ (near singular)
+   - Per-component step limit (gamma_max=45°)
+   Tốt hơn near singularity, marginally slower do SVD overhead.
+6. **BFGS** (Nocedal-Wright Quasi-Newton) — frame IK như nonlinear least squares
+   `½||W·err||²` với W=diag(1,1,1,1000,1000,1000) (cân bằng mm vs rad units),
+   gradient analytical `∇F = -J^T W² err`. scipy L-BFGS-B với box constraints
+   cho joint limits. Early-exit callback ở industrial tol (fair comparison).
+
+**Fairness considerations** (script flag `--fair`):
+- **DLS production** dùng `inverse_kinematics_seeded` với retry từ 12 seeds →
+  robust nhưng không apples-to-apples. **Fair mode** dùng single-shot
+  `inverse_kinematics` (same convergence criterion với LM/SDLS).
+- **BFGS** mặc định optimize tới `ftol=1e-14` (scipy internal) → report
+  pos_err ~µm, không reflect industrial tol. **Early-exit callback** stop ở
+  `pos_err < tol_mm AND rot_err < tol_rad` (=DLS/LM/SDLS) → fair speed +
+  accuracy comparison.
+
+**Benchmark result** (208 poses, fair mode):
+
+| Method | Type | Success | pos median | time median | Strengths |
+|---|---|---|---|---|---|
+| Pieper | Closed-form | 208/208 | **1.3e-13 mm** | **0.17 ms** | Exact, fast, multi-solution |
+| RoboDK | Closed-form ref | 208/208 | 6.8e-13 mm | 0.37 ms | Industrial reference |
+| DLS | Damped LS | 207/208 | 3.3e-2 mm | 0.80 ms | Simple, predictable |
+| LM | Adaptive damping | 207/208 | 3.8e-2 mm | **0.71 ms** | Fastest numerical |
+| SDLS | SVD selective | 208/208 | 3.9e-2 mm | 0.90 ms | Best near singularity |
+| BFGS | Quasi-Newton | 207/208 | 3.5e-1 mm | 11.3 ms | Best for extended objectives |
+
+**Conclusions cho thesis**:
+
+1. **Pieper dominates** khi closed-form available (GP7 thỏa Pieper criteria).
+2. **DLS/LM/SDLS gần như tương đương** ở GP7 — random poses ít trigger
+   singularity nên adaptive damping (LM) hoặc selective damping (SDLS) không
+   show advantage rõ. Recommended cho robots **không** có closed-form IK.
+3. **BFGS không recommended** cho pure pose IK — scipy overhead lớn hơn benefit
+   từ second-order convergence. **Useful** cho extended IK objectives (vd
+   constrained IK với additional cost terms như manipulability, joint redundancy).
+4. **Convergence rate** 207-208/208 trên tất cả methods → robust với pose
+   trong reach envelope.
+
+Reproducible cho thesis figure:
+```bash
+python scripts/17_compare_fk_ik.py --samples 500 --fair        # apples-to-apples
+python scripts/17_compare_fk_ik.py --samples 500               # production mode
+python scripts/17_compare_fk_ik.py --ik-perturb-deg 30 --samples 1000  # stress test
+```
+
+CSV + 6-panel PNG histogram → `figures/compare_fk_ik_<ts>.{csv,png}`. CSV
+columns mỗi row: `ik_<method>_pos_mm`, `ik_<method>_rot_arcsec`,
+`ik_<method>_ms`, `ik_<method>_n_sols` cho pandas re-analysis.
 
 ### 7.6. Điểm vào thí nghiệm
 
@@ -917,7 +1129,7 @@ Orchestrator có 2 phương án compute IK, chọn qua CLI `--ik-source`:
 
 Pipeline: orchestrator → `world_to_robot_base(T_world)` → `MotomanHSEBackend.MoveJ(T_base)` → HSE `WRITE_POS_VAR` với data_type=BASE (Cartesian) → INFORM `MOVJ P000 TL=1` → YRC1000 internal IK + motion.
 
-Yêu cầu: TOOL01 trên teach pendant nhập TCP offset gripper (xem `docs/SETUP_YRC_TOOL.md`).
+Yêu cầu: TOOL01 trên teach pendant nhập TCP offset gripper (xem §2.10 trong `docs/HUONG_DAN_CAI_DAT.md`).
 
 #### 7.8.2. Client DLS IK (PC-side numerical)
 
@@ -1231,7 +1443,7 @@ graph LR
 
 Thư viện phần cứng (`pyrealsense2`, `ultralytics`, `pyserial`) đều lazy-import → L1–L2 chạy được trên máy không có phần cứng. Open3D + numpy là core dependencies, không cần GPU.
 
-Hiện có **293 test case** ở `DTwinGP7/tests/` cover L1–L3. Bao quát: HSE protocol + Cartesian encode, HSE backend mock socket, INFORM codegen, ultra-fast P-var, digital twin mirror, kinematics FK, inverse kinematics DLS, frame conversion, và các unit khác. Toàn bộ chạy được trên máy không phần cứng (lazy-import + mock).
+Hiện có **300 test case** ở `DTwinGP7/tests/` cover L1–L3. Bao quát: HSE protocol + Cartesian encode, HSE backend mock socket, INFORM codegen, ultra-fast P-var, digital twin mirror, kinematics FK, inverse kinematics DLS, frame conversion, và các unit khác. Toàn bộ chạy được trên máy không phần cứng (lazy-import + mock).
 
 ## 9. Hiệu chỉnh (Tuning)
 
@@ -1453,7 +1665,7 @@ sequenceDiagram
 
 - [ ] YRC1000 ở **REMOTE mode**, servo ON
 - [ ] `ping <IP_YRC1000>` OK
-- [ ] D455 USB 3.0 connect (`scripts/check_d455.py`)
+- [ ] D455 USB 3.0 connect (`realsense-viewer` của Intel SDK, hoặc dock Camera trong `16_app_qt.py`)
 - [ ] `models/yolov8s-seg_best.pt` đã có
 - [ ] `config/calibration/T_base_camera.npy` ≤ 3 mm sai số
 - [ ] Workspace bàn sạch, đủ ánh sáng đồng đều
@@ -1567,13 +1779,13 @@ gantt
 - [ ] Cài Python 3.10 + venv
 - [ ] `pip install -r requirements.txt` (xem `DTwinGP7/requirements.txt`)
 - [ ] Cài RealSense SDK 2.0
-- [ ] `pytest tests/` → 293 passed
+- [ ] `pytest tests/` → 300 passed
 - [ ] `python scripts/03_run_experiment.py --mode sim --trials 1` → Open3D viewport hiện
 
 **Ngày 3–4** (Camera basics):
 - [ ] Verify D455 với `rs-viewer.exe` Windows
 - [ ] Viết `test_realsense.py` → save 1 RGB + 1 depth PNG
-- [ ] Verify kinematics: `python scripts/08_verify_ik.py` → IK round-trip OK
+- [ ] Verify kinematics: `pytest tests/test_kinematics.py tests/test_inverse_kinematics.py` → FK/IK round-trip OK
 
 **Ngày 5–7** (Cell + verify):
 - [ ] Review `config/cell_layout.yaml` — chỉnh table/camera/object position theo lab thực

@@ -92,7 +92,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--tool-no", type=int, default=1,
         help="TOOL coordinate number trên YRC1000 (TOOL01 default). Phải khớp "
-             "TCP gripper đã setup trên teach pendant. Xem docs/SETUP_YRC_TOOL.md.",
+             "TCP gripper đã setup trên teach pendant. Xem docs/HUONG_DAN_CAI_DAT.md §2.10.",
     )
     parser.add_argument("--lighting", default="", help="Nhãn điều kiện ánh sáng (log)")
     parser.add_argument("--overlap", default="", help="Nhãn mức chồng lấn (log)")

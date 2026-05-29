@@ -88,8 +88,19 @@ class ObjectDetector:
         self.model = YOLO(str(weights))
         self.conf = conf
         self.iou = iou
-        self.class_names = class_names or DEFAULT_CLASS_NAMES
-        logger.info("YOLO loaded: %s (conf=%.2f, iou=%.2f)", model_path, conf, iou)
+        # Ưu tiên tên lớp do CHÍNH model train ra (self.model.names) → tự khớp
+        # mọi bài toán/model khác nhau. Chỉ fallback khi không đọc được.
+        model_names = getattr(self.model, "names", None)
+        if class_names:
+            self.class_names = list(class_names)
+        elif isinstance(model_names, dict) and model_names:
+            self.class_names = [model_names[k] for k in sorted(model_names)]
+        elif model_names:
+            self.class_names = list(model_names)
+        else:
+            self.class_names = DEFAULT_CLASS_NAMES
+        logger.info("YOLO loaded: %s (conf=%.2f, iou=%.2f) classes=%s",
+                    model_path, conf, iou, self.class_names)
 
     def detect(self, rgb: np.ndarray) -> list[Detection]:
         """Chạy inference, trả về danh sách Detection."""
@@ -101,10 +112,12 @@ class ObjectDetector:
 
         for i in range(len(results.boxes)):
             cls_id = int(results.boxes.cls[i])
+            cls_name = (self.class_names[cls_id]
+                        if 0 <= cls_id < len(self.class_names) else str(cls_id))
             detections.append(
                 Detection(
                     class_id=cls_id,
-                    class_name=self.class_names[cls_id],
+                    class_name=cls_name,
                     confidence=float(results.boxes.conf[i]),
                     mask=results.masks.data[i].cpu().numpy().astype(np.uint8),
                     bbox=tuple(results.boxes.xyxy[i].cpu().numpy().tolist()),

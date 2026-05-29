@@ -27,7 +27,6 @@ import logging
 import math
 import threading
 import time
-from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -51,196 +50,9 @@ from .open3d_gui_sim_robot import (
     _install_filament_stderr_filter,
     _rgba,
 )
+from .program_model import Instruction
 
 logger = logging.getLogger(__name__)
-
-
-# ──────────────────────────────────────────────────────────────────────────
-# Program model — RoboDK-style instruction list
-# ──────────────────────────────────────────────────────────────────────────
-
-@dataclass
-class Instruction:
-    """1 dòng program. Type quyết định trường nào dùng.
-
-    Motion:
-      MoveJ        → joints (6 deg) — MOVJ
-      MoveL        → tcp_pose (X,Y,Z mm + Rx,Ry,Rz deg WORLD) — MOVL
-      MoveC        → tcp_pose_mid + tcp_pose (mid + end) — MOVC
-
-    I/O + timing:
-      SetGripper   → gripper_close (True=Close / False=Open) — DOUT
-      Wait         → wait_seconds — TIMER
-      WaitIO       → io_index, io_state (True=ON), io_timeout_s (0=∞) — WAIT IN#
-
-    Modal state (áp vào MOVJ/MOVL/MOVC kế tiếp):
-      SetSpeed     → speed_joint_pct (VJ=) + speed_linear_mm_s (V=)
-      SetRounding  → rounding_pl (0..8, PL=)
-      SetTool      → tool_no (TL=)
-      SetRefFrame  → ref_frame_no (UF#=)
-
-    Operator:
-      ShowMessage  → message (≤ 32 ASCII) — MSG
-    """
-
-    type: str
-    # Motion (inline pose, used khi target_name == "")
-    joints: list[float] = field(default_factory=list)
-    tcp_pose: list[float] = field(default_factory=list)
-    tcp_pose_mid: list[float] = field(default_factory=list)
-    # Target library reference. Khi non-empty + type ∈ {MoveJ,MoveL}, motion
-    # dereferences via app._targets[target_name] → tái sử dụng pose chung
-    # giữa nhiều instructions (RoboDK-style).
-    target_name: str = ""
-    # Gripper / timing
-    gripper_close: bool = False
-    wait_seconds: float = 0.0
-    # WaitIO
-    io_index: int = 1
-    io_state: bool = True
-    io_timeout_s: float = 0.0           # 0 = block forever
-    # Modal state
-    speed_joint_pct: float = 10.0
-    speed_linear_mm_s: float = 100.0
-    rounding_pl: int = 0
-    tool_no: int = 0
-    ref_frame_no: int = 0
-    # Operator
-    message: str = ""
-    # Sub-program call (CALL JOB:job_name)
-    job_name: str = ""
-    # Simulation event — checkpoint/trigger không export ra INFORM (chỉ log).
-    # event_name = identifier ngắn (e.g. "CHECKPOINT_1"), event_payload = info chi tiết.
-    event_name: str = ""
-    event_payload: str = ""
-
-    def describe(self) -> str:
-        t = self.type
-        if t == "MoveJ":
-            if self.target_name:
-                return f"MoveJ → {self.target_name}"
-            return "MoveJ [" + ", ".join(f"{q:+6.1f}" for q in self.joints) + "]"
-        if t == "MoveL":
-            if self.target_name:
-                return f"MoveL → {self.target_name}"
-            p = self.tcp_pose
-            return (f"MoveL  xyz=({p[0]:.0f},{p[1]:.0f},{p[2]:.0f}) "
-                    f"rpy=({p[3]:.0f},{p[4]:.0f},{p[5]:.0f})")
-        if t == "MoveC":
-            m = self.tcp_pose_mid; e = self.tcp_pose
-            return (f"MoveC  mid=({m[0]:.0f},{m[1]:.0f},{m[2]:.0f}) "
-                    f"end=({e[0]:.0f},{e[1]:.0f},{e[2]:.0f})")
-        if t == "SetGripper":
-            return "SetGripper " + ("CLOSE" if self.gripper_close else "OPEN")
-        if t == "Wait":
-            return f"Wait  {self.wait_seconds:.2f} s"
-        if t == "WaitIO":
-            tout = f" T={self.io_timeout_s:.1f}s" if self.io_timeout_s > 0 else ""
-            return (f"WaitIO IN#{self.io_index}="
-                    f"{'ON' if self.io_state else 'OFF'}{tout}")
-        if t == "SetSpeed":
-            return (f"SetSpeed VJ={self.speed_joint_pct:.1f}% "
-                    f"V={self.speed_linear_mm_s:.0f}mm/s")
-        if t == "SetRounding":
-            return f"SetRounding PL={self.rounding_pl}"
-        if t == "SetTool":
-            return f"SetTool TL#{self.tool_no}"
-        if t == "SetRefFrame":
-            return f"SetRefFrame UF#{self.ref_frame_no}"
-        if t == "ShowMessage":
-            return f'ShowMessage "{self.message[:32]}"'
-        if t == "CallJob":
-            return f"Call JOB:{self.job_name}"
-        if t == "SimEvent":
-            pl = f" ({self.event_payload[:24]})" if self.event_payload else ""
-            return f"⚑ SimEvent:{self.event_name}{pl}"
-        return f"?{t}"
-
-    def to_dict(self) -> dict:
-        d: dict[str, Any] = {"type": self.type}
-        t = self.type
-        if t == "MoveJ":
-            if self.target_name:
-                d["target_name"] = self.target_name
-            else:
-                d["joints"] = list(self.joints)
-        elif t == "MoveL":
-            if self.target_name:
-                d["target_name"] = self.target_name
-            else:
-                d["tcp_pose"] = list(self.tcp_pose)
-        elif t == "MoveC":
-            d["tcp_pose_mid"] = list(self.tcp_pose_mid)
-            d["tcp_pose"] = list(self.tcp_pose)
-        elif t == "SetGripper":
-            d["close"] = bool(self.gripper_close)
-        elif t == "Wait":
-            d["seconds"] = float(self.wait_seconds)
-        elif t == "WaitIO":
-            d["io_index"] = int(self.io_index)
-            d["io_state"] = bool(self.io_state)
-            d["io_timeout_s"] = float(self.io_timeout_s)
-        elif t == "SetSpeed":
-            d["speed_joint_pct"] = float(self.speed_joint_pct)
-            d["speed_linear_mm_s"] = float(self.speed_linear_mm_s)
-        elif t == "SetRounding":
-            d["rounding_pl"] = int(self.rounding_pl)
-        elif t == "SetTool":
-            d["tool_no"] = int(self.tool_no)
-        elif t == "SetRefFrame":
-            d["ref_frame_no"] = int(self.ref_frame_no)
-        elif t == "ShowMessage":
-            d["message"] = str(self.message)
-        elif t == "CallJob":
-            d["job_name"] = str(self.job_name)
-        elif t == "SimEvent":
-            d["event_name"] = str(self.event_name)
-            d["event_payload"] = str(self.event_payload)
-        return d
-
-    @classmethod
-    def from_dict(cls, d: dict) -> "Instruction":
-        t = d["type"]
-        if t == "MoveJ":
-            if "target_name" in d:
-                return cls(type=t, target_name=str(d["target_name"]))
-            return cls(type=t, joints=list(d["joints"]))
-        if t == "MoveL":
-            if "target_name" in d:
-                return cls(type=t, target_name=str(d["target_name"]))
-            return cls(type=t, tcp_pose=list(d["tcp_pose"]))
-        if t == "MoveC":
-            return cls(type=t,
-                       tcp_pose_mid=list(d["tcp_pose_mid"]),
-                       tcp_pose=list(d["tcp_pose"]))
-        if t == "SetGripper":
-            return cls(type=t, gripper_close=bool(d["close"]))
-        if t == "Wait":
-            return cls(type=t, wait_seconds=float(d["seconds"]))
-        if t == "WaitIO":
-            return cls(type=t,
-                       io_index=int(d.get("io_index", 1)),
-                       io_state=bool(d.get("io_state", True)),
-                       io_timeout_s=float(d.get("io_timeout_s", 0.0)))
-        if t == "SetSpeed":
-            return cls(type=t,
-                       speed_joint_pct=float(d.get("speed_joint_pct", 10.0)),
-                       speed_linear_mm_s=float(d.get("speed_linear_mm_s", 100.0)))
-        if t == "SetRounding":
-            return cls(type=t, rounding_pl=int(d.get("rounding_pl", 0)))
-        if t == "SetTool":
-            return cls(type=t, tool_no=int(d.get("tool_no", 0)))
-        if t == "SetRefFrame":
-            return cls(type=t, ref_frame_no=int(d.get("ref_frame_no", 0)))
-        if t == "ShowMessage":
-            return cls(type=t, message=str(d.get("message", "")))
-        if t == "CallJob":
-            return cls(type=t, job_name=str(d.get("job_name", "")))
-        if t == "SimEvent":
-            return cls(type=t,
-                       event_name=str(d.get("event_name", "")),
-                       event_payload=str(d.get("event_payload", "")))
-        raise ValueError(f"Unknown instruction type: {t}")
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -795,7 +607,7 @@ class GP7App:
         view_m.add_menu("Camera",     camera_sub)
         view_m.add_menu("Visibility", vis_sub)
         view_m.add_separator()
-        view_m.add_item("Show controls panel", self._MID_VIEW_PANEL)
+        view_m.add_item("Controls panel", self._MID_VIEW_PANEL)
         view_m.set_checked(self._MID_VIEW_PANEL, False)
         self._view_menu = view_m
         self._geom_visible = {
@@ -818,7 +630,7 @@ class GP7App:
 
         # ── Program: RoboDK-style instruction list ──
         prog_m = gui.Menu()
-        prog_m.add_item("Show program panel", self._MID_PROG_SHOW)
+        prog_m.add_item("Program panel", self._MID_PROG_SHOW)
         prog_m.set_checked(self._MID_PROG_SHOW, False)
         prog_m.add_separator()
         prog_m.add_item("Play", self._MID_PROG_PLAY)
@@ -887,7 +699,7 @@ class GP7App:
         self._set_status(f"{geom_name.lstrip('_')}: {'on' if new else 'off'}")
 
     def _on_toggle_panel(self) -> None:
-        """Toggle hiện/ẩn side panel qua menu View > Show controls panel."""
+        """Toggle hiện/ẩn side panel qua menu View > Controls panel."""
         self._panel_visible = not self._panel_visible
         self._left_panel.visible = self._panel_visible
         try:
@@ -903,7 +715,7 @@ class GP7App:
             level="ok")
 
     def _on_toggle_program(self) -> None:
-        """Toggle hiện/ẩn program panel qua menu Program > Show program panel."""
+        """Toggle hiện/ẩn program panel qua menu Program > Program panel."""
         self._program_visible = not self._program_visible
         self._prog_panel.visible = self._program_visible
         try:

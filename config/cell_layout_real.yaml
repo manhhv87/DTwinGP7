@@ -12,10 +12,9 @@
 #   2. PC và controller cùng subnet (vd 192.168.1.x)
 #   3. Đã ping được IP của YRC1000
 #   4. High Speed Ethernet Server function đã enable trên YRC1000
-#   5. RoboDK Free là đủ — RoboDK chỉ làm viewport 3D, KHÔNG là motion driver.
-#      Motion đi qua HSE UDP (MotomanHSEBackend), KHÔNG gọi robot.Connect() nên
-#      KHÔNG cần tier RoboDK có robot driver.
-#   6. TOOL01 đã setup trên teach pendant (cho --ik-source yrc) — xem SETUP_YRC_TOOL.md
+#   5. KHÔNG cần RoboDK lúc chạy: viewport 3D là Open3D, motion đi qua HSE UDP
+#      (MotomanHSEBackend). RoboDK chỉ dùng verify FK/IK (scripts 13 + 17).
+#   6. TOOL01 đã setup trên teach pendant (cho --ik-source yrc) — xem docs/HUONG_DAN_CAI_DAT.md §2.10
 #
 # Khi cell vật lý KHÁC sim (vd không có pedestal, bàn ở vị trí khác), copy file
 # này thành biến thể riêng + đo lại các pose cho đúng cell thật.

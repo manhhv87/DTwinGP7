@@ -17,6 +17,7 @@ CLI:
 """
 from __future__ import annotations
 
+import math
 import sys
 from pathlib import Path
 from typing import List, Literal, Optional, Tuple
@@ -74,6 +75,10 @@ class MetadataConfig(BaseModel):
     last_modified: Optional[str] = None
     author: Optional[str] = None
     notes: Optional[str] = None
+    # Runtime visibility state (Show/Hide từ cell tree). Persist để khi
+    # reload cell, hiển thị nguyên trạng. Key = component_visibility_key
+    # ("robot", "object::name", "frame::name"…), value = bool.
+    visibility_state: Optional[dict] = None
 
 
 class RobotConfig(BaseModel):
@@ -108,7 +113,7 @@ class WorktableConfig(BaseModel):
 
     mesh: str
     pose: PoseConfig
-    color_rgb: Tuple[float, float, float] = (0.6, 0.6, 0.7)
+    color_rgb: Tuple[float, float, float] = (0.66, 0.67, 0.66)  # RAL 7035 light grey
 
     @field_validator("color_rgb")
     @classmethod
@@ -124,7 +129,7 @@ class FloorConfig(BaseModel):
 
     mesh: str
     pose: PoseConfig
-    color_rgb: Tuple[float, float, float] = (0.82, 0.82, 0.86)
+    color_rgb: Tuple[float, float, float] = (0.50, 0.52, 0.55)  # bê tông/epoxy xám
 
     @field_validator("color_rgb")
     @classmethod
@@ -147,7 +152,7 @@ class PedestalConfig(BaseModel):
 
     mesh: str
     pose: PoseConfig
-    color_rgb: Tuple[float, float, float] = (0.4, 0.4, 0.4)
+    color_rgb: Tuple[float, float, float] = (0.28, 0.29, 0.31)  # RAL 7016 anthracite
 
     @field_validator("color_rgb")
     @classmethod
@@ -159,9 +164,23 @@ class PedestalConfig(BaseModel):
 
 
 class CameraIntrinsics(BaseModel):
-    fov_deg: float = Field(..., gt=0, lt=180)
-    focal_length_mm: float = Field(..., gt=0)
-    size_px: Tuple[int, int]
+    """Tham số quang học pinhole (chuẩn OpenCV/RealSense + tiện ích FOV).
+
+    Hai cách khai (đều optional, có thể kết hợp):
+      (a) fx/fy/cx/cy pixel — từ camera THẬT (D455/OpenCV), ưu tiên cho tính FOV.
+      (b) fov_deg/focal_length_mm — camera ẢO/sim kiểu RoboDK.
+    size_px luôn có (mặc định 1280×720).
+    """
+
+    size_px: Tuple[int, int] = (1280, 720)
+    # Pinhole thật (pixel) — từ D455/OpenCV. Optional.
+    fx: Optional[float] = Field(default=None, gt=0)
+    fy: Optional[float] = Field(default=None, gt=0)
+    cx: Optional[float] = Field(default=None, ge=0)
+    cy: Optional[float] = Field(default=None, ge=0)
+    # Mô tả kiểu sim/RoboDK — Optional.
+    fov_deg: Optional[float] = Field(default=None, gt=0, lt=180)
+    focal_length_mm: Optional[float] = Field(default=None, gt=0)
 
     @field_validator("size_px")
     @classmethod
@@ -171,10 +190,29 @@ class CameraIntrinsics(BaseModel):
                 raise ValueError(f"size_px {dim}={val} ngoài range hợp lý [100, 8192]")
         return v
 
+    def hfov_vfov_deg(self) -> Tuple[float, float]:
+        """Trả (hfov, vfov) độ — dùng dựng frustum. Ưu tiên fx/fy; thiếu thì
+        từ fov_deg (suy vfov theo tỉ lệ khung); cuối cùng fallback D455 87°."""
+        w, h = self.size_px
+
+        def _vfov_from_hfov(hfov_deg: float) -> float:
+            return math.degrees(
+                2.0 * math.atan(math.tan(math.radians(hfov_deg) / 2.0) * h / w))
+
+        if self.fx and self.fy:
+            hfov = math.degrees(2.0 * math.atan(w / (2.0 * self.fx)))
+            vfov = math.degrees(2.0 * math.atan(h / (2.0 * self.fy)))
+            return hfov, vfov
+        hfov = float(self.fov_deg) if self.fov_deg else 87.0  # D455 RGB mặc định
+        return hfov, _vfov_from_hfov(hfov)
+
 
 class CameraConfig(BaseModel):
     type: Literal["virtual", "real"] = "virtual"
     model: Optional[str] = None
+    # Kiểu lắp camera (thuật ngữ robot-vision): eye_to_hand = cố định nhìn vào
+    # vùng làm việc; eye_in_hand = gắn trên flange/tool, di chuyển theo robot.
+    mount: Literal["eye_to_hand", "eye_in_hand"] = "eye_to_hand"
     pose: PoseConfig
     intrinsics: Optional[CameraIntrinsics] = None
 
@@ -227,19 +265,40 @@ class RobotConnectionConfig(BaseModel):
 
 
 class CellConfig(BaseModel):
-    """Top-level cell configuration."""
+    """Top-level cell configuration.
+
+    Chỉ `robot` là bắt buộc (cần URDFRobot để FK/IK chạy). Worktable, camera,
+    gripper, floor, pedestal, camera_mount đều OPTIONAL — user add qua Cell
+    Editor UI khi cần, hoặc khai báo trong YAML.
+    """
 
     metadata: MetadataConfig = Field(default_factory=MetadataConfig)
     robot: RobotConfig
-    worktable: WorktableConfig
-    camera: CameraConfig
-    gripper: GripperConfig
+    worktable: Optional[WorktableConfig] = None
+    camera: Optional[CameraConfig] = None
+    gripper: Optional[GripperConfig] = None
     floor: Optional[FloorConfig] = None
     camera_mount: Optional[CameraMountConfig] = None
     robot_pedestal: Optional[PedestalConfig] = None
     frames: List[FrameConfig] = Field(default_factory=list)
     objects: List[ObjectConfig] = Field(default_factory=list)
+    # Danh sách lớp vật thể của BÀI TOÁN (do người dùng định nghĩa) — dùng cho
+    # dán nhãn dataset + hiển thị. Detection thật lấy tên lớp từ chính model YOLO.
+    object_classes: List[str] = Field(
+        default_factory=lambda: ["tray", "bottle", "cup", "bolt"])
     robot_connection: RobotConnectionConfig = Field(default_factory=RobotConnectionConfig)
+
+    @field_validator("object_classes")
+    @classmethod
+    def _validate_classes(cls, v: List[str]) -> List[str]:
+        """Strip + bỏ rỗng + khử trùng (giữ thứ tự). Rỗng → default 4 lớp."""
+        seen: set[str] = set()
+        out: List[str] = []
+        for name in v:
+            s = str(name).strip()
+            if s and s not in seen:
+                seen.add(s); out.append(s)
+        return out or ["tray", "bottle", "cup", "bolt"]
 
     @model_validator(mode="after")
     def _validate_frame_references(self) -> "CellConfig":
@@ -271,6 +330,43 @@ class CellConfig(BaseModel):
             data = yaml.safe_load(f)
 
         return cls.model_validate(data)
+
+    def to_yaml(self, path: str | Path) -> None:
+        """Dump config sang YAML file giữ toàn bộ field (kể cả floor,
+        camera_mount, robot_pedestal nếu có). Pydantic dump tự convert
+        tuple→list. Format đầu ra:
+          • Top-level: block style (mỗi key 1 dòng) — dễ scan.
+          • List ngắn (xyz, rpy, joints, color): flow style `[a, b, c]` —
+            khớp style input YAML user thường viết, gọn 3 dòng → 1 dòng.
+        """
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        data = self.model_dump(exclude_none=True, mode="python")
+
+        # Custom dumper: list/tuple of primitives ngắn (<=8 phần tử) ⇒ flow
+        # style. Pydantic dump giữ tuple cho Field Tuple[...] (xyz_mm, rpy_deg,
+        # color_rgb) nên cần register cho cả list lẫn tuple.
+        class _CompactDumper(yaml.SafeDumper):
+            pass
+
+        def _seq_repr(dumper, value):
+            seq = list(value)
+            if (len(seq) <= 8
+                    and all(isinstance(v, (int, float, bool, str))
+                            and not (isinstance(v, str) and "\n" in v)
+                            for v in seq)):
+                return dumper.represent_sequence(
+                    "tag:yaml.org,2002:seq", seq, flow_style=True)
+            return dumper.represent_sequence(
+                "tag:yaml.org,2002:seq", seq, flow_style=False)
+
+        _CompactDumper.add_representer(list, _seq_repr)
+        _CompactDumper.add_representer(tuple, _seq_repr)
+
+        with path.open("w", encoding="utf-8") as f:
+            yaml.dump(data, f, Dumper=_CompactDumper, sort_keys=False,
+                      indent=2, allow_unicode=True,
+                      default_flow_style=False)
 
 
 # ───── CLI ─────
