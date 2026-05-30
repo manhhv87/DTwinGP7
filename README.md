@@ -17,13 +17,15 @@
 ## ⭐ Stack tổng quan
 
 ```mermaid
+%%{init: {'flowchart': {'nodeSpacing': 60, 'rankSpacing': 85, 'useMaxWidth': false}}}%%
 graph LR
-    A[Open3D viewport<br/>render URDF] -->|sim mode| B[Python<br/>YOLO OpenCV<br/>Orchestrator<br/>Digital Twin L4<br/>+ DLS IK]
+    A[Open3D viewport<br/>render URDF] -->|sim mode| B[Python<br/>YOLO OpenCV<br/>Orchestrator<br/>Digital Twin L4<br/>+ Pieper IK]
     B ==>|HSE<br/>UDP plus FTP| GP7[Yaskawa GP7<br/>YRC1000<br/>HSE Server ON]
 
     style A fill:#1565C0,stroke:#fff,stroke-width:2px,color:#fff
     style B fill:#2E7D32,stroke:#fff,stroke-width:2px,color:#fff
     style GP7 fill:#E65100,stroke:#fff,stroke-width:2px,color:#fff
+    linkStyle default stroke:#FF1744,stroke-width:3px
 ```
 
 **HSE là motion path cho robot thật** — project implement protocol public
@@ -43,6 +45,7 @@ RoboDK FK 0.00mm), real mode dùng HSE backend + telemetry CSV @10Hz (replay off
 | **Học lập trình** (API/code: INFORM + Python script + SDK) | [`docs/HUONG_DAN_LAP_TRINH.md`](docs/HUONG_DAN_LAP_TRINH.md) — tutorial + tham chiếu API + ví dụ chạy được |
 | **Chạy thử trên PC** (không có robot) | [`docs/HUONG_DAN_SU_DUNG.md`](docs/HUONG_DAN_SU_DUNG.md) — workflow + commands theo kịch bản |
 | **Cài đặt từ đầu** | [`docs/HUONG_DAN_CAI_DAT.md`](docs/HUONG_DAN_CAI_DAT.md) — Python + Open3D + D455 + YRC1000 HSE |
+| **Digital Twin trên robot THẬT** (mirror + chạy thí nghiệm tự động) | [`docs/HUONG_DAN_DIGITAL_TWIN.md`](docs/HUONG_DAN_DIGITAL_TWIN.md) — kiến trúc + 2 chế độ + IK + E-stop + workflow 3 bậc |
 | **Hiểu kiến trúc tổng thể** | [`docs/phat_bieu_bai_toan_v3_2_HD.md`](docs/phat_bieu_bai_toan_v3_2_HD.md) — sơ đồ + thiết kế hệ thống |
 | **Setup STL mesh + YOLO weights + gripper IO** | [`models/README.md`](models/README.md) — assets + CIO ladder |
 
@@ -63,6 +66,7 @@ phân tích figure), xem [`HUONG_DAN_SU_DUNG.md`](docs/HUONG_DAN_SU_DUNG.md).
 ## ⭐ Kiến trúc Level-4 Bidirectional Digital Twin
 
 ```mermaid
+%%{init: {'flowchart': {'nodeSpacing': 60, 'rankSpacing': 85, 'useMaxWidth': false}}}%%
 flowchart TB
     CAM[D455 Camera] --> PER[Perception<br/>YOLO postprocess]
     PER --> ORC[Orchestrator<br/>state machine predictive safety]
@@ -78,6 +82,7 @@ flowchart TB
     style BE fill:#1565C0,stroke:#fff,stroke-width:2px,color:#fff
     style GP7 fill:#E65100,stroke:#fff,stroke-width:3px,color:#fff
     style O3D fill:#1565C0,stroke:#fff,stroke-width:2px,color:#fff
+    linkStyle default stroke:#FF1744,stroke-width:3px
 ```
 
 **Bidirectional**: PC → robot (motion command) + robot → PC (joint state @10Hz).
@@ -108,7 +113,7 @@ Workflow + commands chi tiết: [`HUONG_DAN_SU_DUNG.md`](docs/HUONG_DAN_SU_DUNG.
 ```
 DTwinGP7/                        ← root repo (DTwinGP7 trên GitHub)
 ├── README.md                    ← file này (entry point)
-├── docs/                        ← 6 tài liệu: 5 hướng dẫn (GUI/giới thiệu/lập trình/sử dụng/cài đặt) + phat_bieu
+├── docs/                        ← 7 tài liệu: 6 hướng dẫn (GUI/giới thiệu/lập trình/sử dụng/cài đặt/digital-twin) + phat_bieu
 ├── config/                      ← YAML configs (KHÔNG sửa code)
 ├── models/                      ← STL meshes + YOLOv8 weights (xem models/README.md)
 ├── src/                         ← Python source (logic, không chạy trực tiếp)
@@ -136,7 +141,7 @@ Chi tiết module tree: xem [phat_bieu mục 3](docs/phat_bieu_bai_toan_v3_2_HD.
 4. **Multi-method IK architecture** — 6 thuật toán có sẵn cho thesis comparison
    + production:
    - **Tier S — Pieper analytical IK** (default app path, GP7-specific closed-form):
-     ~170µs/call, **0 error** (float precision ~1e-13mm), returns **3-8 native
+     ~0.24ms/call, **0 error** (float precision ~1e-13mm), returns **3-8 native
      multiple solutions** cho Change Configuration UX. Verified **AS accurate as
      RoboDK SolveIK** + **2× faster** trên 208 poses. Chi tiết:
      [pieper_gp7.py](src/orchestrator/kinematics/pieper_gp7.py)
@@ -168,6 +173,13 @@ Chi tiết module tree: xem [phat_bieu mục 3](docs/phat_bieu_bai_toan_v3_2_HD.
      khiển vòng kín (Detect → grasp pose qua hand-eye → IK → teach → Pick→Program
      → Run on Robot), node `camera` thống nhất + vẽ **frustum** trong scene
      (kiểu RoboDK), và `object_classes` định nghĩa theo bài toán
+   - **Digital Twin dock tích hợp** (Digital Twin → Show Digital Twin panel): chạy
+     với robot THẬT qua HSE — **Start live mirror** (đọc joints thật vẽ viewport
+     @~2Hz + telemetry CSV, chỉ đọc) và **Start experiment** (pick-place tự động
+     qua Orchestrator + perception D455+YOLO/Mock, robot di chuyển; IK source YRC
+     hoặc Pieper client). `DigitalTwinMirror` có **E-stop latch** sau Stop/alarm
+   - GUI app dùng **nhãn tiếng Anh** (menu File/Edit/View/Robot/Program/Digital
+     Twin/Help; dock Digital Twin / Camera (D455) / Program / Cell / Yaskawa GP7)
 6. **C2 safety pipeline** — 2 tầng kiểm an toàn pure-Python TRƯỚC khi gửi MoveJ:
    - **Reach envelope** (~µs/pose): sphere 150–927 mm tính từ J1, reject pose
      ngoài envelope tại PLAN state
@@ -189,12 +201,12 @@ Tài liệu chi tiết: [phat_bieu_bai_toan_v3_2_HD.md](docs/phat_bieu_bai_toan_
 
 | Method | Type | Success | Median pos err | p95 pos err | Median time | Solutions |
 |---|---|---|---|---|---|---|
-| **Pieper (ours, analytical)** | Closed-form | 208/208 | **1.3e-13 mm** | 5.3e-13 mm | **0.17 ms** | 3-8 native |
-| RoboDK SolveIK | Analytical reference | 208/208 | 6.8e-13 mm | 3.0e-11 mm | 0.37 ms | 1 |
-| DLS (single-shot) | Numerical iterative | 207/208 | 3.3e-2 mm | 3.3e-1 mm | 0.80 ms | 1 |
-| LM (adaptive damping) | Numerical iterative | 207/208 | 3.8e-2 mm | 3.4e-1 mm | 0.71 ms | 1 |
-| SDLS (SVD selective) | Numerical iterative | 208/208 | 3.9e-2 mm | 3.2e-1 mm | 0.90 ms | 1 |
-| BFGS (early-exit at tol) | Quasi-Newton | 207/208 | 3.5e-1 mm | 4.9e-1 mm | 11.3 ms | 1 |
+| **Pieper (ours, analytical)** | Closed-form | 208/208 | **1.3e-13 mm** | 5.3e-13 mm | **0.24 ms** | 3-8 native |
+| RoboDK SolveIK | Analytical reference | 208/208 | 6.8e-13 mm | 3.0e-11 mm | 0.46 ms | 1 |
+| DLS (single-shot) | Numerical iterative | 207/208 | 3.3e-2 mm | 3.3e-1 mm | 1.22 ms | 1 |
+| LM (adaptive damping) | Numerical iterative | 207/208 | 3.8e-2 mm | 3.4e-1 mm | 1.20 ms | 1 |
+| SDLS (SVD selective) | Numerical iterative | 208/208 | 3.9e-2 mm | 3.2e-1 mm | 1.56 ms | 1 |
+| BFGS (early-exit at tol) | Quasi-Newton | 207/208 | 3.5e-1 mm | 4.9e-1 mm | 15.1 ms | 1 |
 
 Reproducible thesis comparison:
 ```bash

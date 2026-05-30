@@ -35,6 +35,7 @@ client-side cho FK/IK.
 ## 1. Stack
 
 ```mermaid
+%%{init: {'flowchart': {'nodeSpacing': 60, 'rankSpacing': 85, 'useMaxWidth': false}}}%%
 graph LR
     A[Open3D Filament GUI<br/>O3DGuiSimRobot viewport<br/>~50 MB pip] -->|setJoints 2Hz<br/>viewport mirror| B[Code Python<br/>URDF chain FK/IK<br/>pure numpy]
     B --> C[Code Python<br/>YOLO OpenCV<br/>Orchestrator Digital Twin]
@@ -44,6 +45,7 @@ graph LR
     style B fill:#33691E,stroke:#fff,stroke-width:2px,color:#fff
     style C fill:#1565C0,stroke:#fff,stroke-width:2px,color:#fff
     style D fill:#E65100,stroke:#fff,stroke-width:2px,color:#fff
+    linkStyle default stroke:#FF1744,stroke-width:3px
 ```
 
 **Stack** dùng 1 motion path cho robot thật:
@@ -62,6 +64,7 @@ graph LR
 ## 2. Sơ đồ kết nối hệ thống — Level-4 Bidirectional Digital Twin
 
 ```mermaid
+%%{init: {'flowchart': {'nodeSpacing': 60, 'rankSpacing': 85, 'useMaxWidth': false}}}%%
 flowchart TB
     subgraph PC["Windows 10/11 PC"]
         subgraph PY["Python Process"]
@@ -74,7 +77,7 @@ flowchart TB
 
         subgraph DT["DigitalTwinMirror facade L4"]
             DTm[Mirror Thread<br/>10Hz telemetry / 2Hz viewport<br/>drift detection<br/>alarm auto-poll]
-            DTk[Kinematic helper<br/>DLS IK + reach check<br/>pure-Python URDF chain]
+            DTk[Kinematic helper<br/>Pieper IK plus DLS fallback plus reach check<br/>pure-Python URDF chain]
         end
 
         subgraph BE["Motion Backends"]
@@ -112,6 +115,7 @@ flowchart TB
     style VP fill:#33691E,stroke:#fff,stroke-width:2px,color:#fff
     style HW fill:#5D4037,stroke:#fff,stroke-width:2px,color:#fff
     style BE3 fill:#E65100,stroke:#fff,stroke-width:3px,color:#fff
+    linkStyle default stroke:#FF1744,stroke-width:3px
 ```
 
 ### Giải thích kiến trúc
@@ -232,6 +236,7 @@ DTwinGP7/                               # BỘ CODE + TÀI LIỆU (repo DTwinGP7
 │   │   │   ├── mixin_program_io.py     # (mixin) Save/Load project JSON v3 + Export .JBI
 │   │   │   ├── mixin_program_playback.py # (mixin) Play/Pause/Stop (sim hoặc robot thật)
 │   │   │   ├── mixin_camera.py         # (mixin) dock Camera D455: live view + vision-guided + frustum
+│   │   │   ├── mixin_experiment.py     # (mixin) dock Digital Twin: live mirror + run experiment robot THẬT
 │   │   │   ├── mixin_about.py          # (mixin) giới thiệu / cell info
 │   │   │   ├── program_model.py        # Instruction (model 1 dòng lệnh INFORM)
 │   │   │   ├── script_api.py           # ScriptProgramAPI (sandbox sinh lệnh bằng Python)
@@ -242,7 +247,7 @@ DTwinGP7/                               # BỘ CODE + TÀI LIỆU (repo DTwinGP7
 │   │   │   └── urdf_gen.py             # URDF spec → tessellated mesh cho Open3D
 │   │   ├── kinematics/                 # Pure-Python FK + IK + trajectory (UC1/UC2/UC4)
 │   │   │   ├── urdf_chain.py           # GP7 URDF chain — source-of-truth, match RoboDK 0.00mm
-│   │   │   ├── pieper_gp7.py           # Pieper analytical IK (default app, 3-8 nghiệm, ~170µs)
+│   │   │   ├── pieper_gp7.py           # Pieper analytical IK (default app, 3-8 nghiệm, ~0.24ms)
 │   │   │   ├── dh_model.py             # GP7 Modified DH params (legacy, backward compat)
 │   │   │   ├── forward_kinematics.py   # joints → pose 4x4 (pure numpy)
 │   │   │   ├── inverse_kinematics.py   # IK số: DLS / LM / SDLS / BFGS + seeded + batch
@@ -330,6 +335,7 @@ DTwinGP7/                               # BỘ CODE + TÀI LIỆU (repo DTwinGP7
 ### 4.1. Tổng quan workflow
 
 ```mermaid
+%%{init: {'flowchart': {'nodeSpacing': 60, 'rankSpacing': 85, 'useMaxWidth': false}}}%%
 flowchart LR
     A[Chốt 3 loại vật] --> B[Setup cell vật lý:<br/>D455 + đèn + nền]
     B --> C[Capture protocol:<br/>3 điều kiện × 3 góc ×<br/>3 mức chồng lấn]
@@ -344,6 +350,7 @@ flowchart LR
     style D fill:#2E7D32,stroke:#fff,stroke-width:2px,color:#fff
     style E fill:#2E7D32,stroke:#fff,stroke-width:2px,color:#fff
     style I fill:#1565C0,stroke:#fff,stroke-width:2px,color:#fff
+    linkStyle default stroke:#FF1744,stroke-width:3px
 ```
 
 ### 4.2. Chọn 3 loại vật (Object Selection)
@@ -373,6 +380,7 @@ flowchart LR
 ### 4.3. Setup cell vật lý cho data capture
 
 ```mermaid
+%%{init: {'flowchart': {'nodeSpacing': 60, 'rankSpacing': 85, 'useMaxWidth': false}}}%%
 graph TB
     subgraph "Cell setup cho capture"
         direction TB
@@ -529,10 +537,12 @@ Track version dataset thường xuyên:
 ### 5.2. Chọn variant: n / s / m
 
 ```mermaid
+%%{init: {'flowchart': {'nodeSpacing': 60, 'rankSpacing': 85, 'useMaxWidth': false}}}%%
 graph LR
     A[YOLOv8n-seg<br/>3.4M params<br/>~140 FPS<br/>mAP 30.5] --> B[YOLOv8s-seg<br/>11.8M params<br/>~80 FPS<br/>mAP 36.8] --> C[YOLOv8m-seg<br/>27.3M params<br/>~50 FPS<br/>mAP 40.8]
 
     style B fill:#2E7D32,stroke:#fff,stroke-width:2px,color:#fff
+    linkStyle default stroke:#FF1744,stroke-width:3px
 ```
 
 **Chiến lược**:
@@ -594,6 +604,7 @@ Các metric COCO-style được dùng: mAP@0.5 và mAP@0.5:0.95 cho cả boundin
 ### 6.1. Bài toán + setup
 
 ```mermaid
+%%{init: {'flowchart': {'nodeSpacing': 60, 'rankSpacing': 85, 'useMaxWidth': false}}}%%
 graph LR
     A[Camera D455<br/>Frame C] -->|Camera → Base<br/>ẩn số cần tìm| B[Base Robot<br/>Frame B]
     D[ChArUco Board<br/>Frame W] -->|Board → Camera<br/>OpenCV đo được| A
@@ -602,6 +613,7 @@ graph LR
     style A fill:#1565C0,stroke:#fff,stroke-width:2px,color:#fff
     style B fill:#2E7D32,stroke:#fff,stroke-width:2px,color:#fff
     style D fill:#E65100,stroke:#fff,stroke-width:2px,color:#fff
+    linkStyle default stroke:#FF1744,stroke-width:3px
 ```
 
 **Mục tiêu**: Tìm ma trận $T_C^B$ chuyển từ Camera frame sang Base frame robot.
@@ -710,14 +722,16 @@ Triển khai: `DTwinGP7/src/orchestrator/digital_twin.py`. `DigitalTwinMirror` l
 
 | Thành phần | Vai trò |
 |---|---|
-| **Motion backend** (HSE hoặc Sim) | Gửi command tới robot |
-| **Kinematic helper** (pure-Python URDF chain) | DLS IK + sphere reach check client-side |
+| **Motion backend** (HSE hoặc Sim) | Gửi command tới robot (Orchestrator đã giải IK client-side trước khi gọi, hoặc pass-through 4x4 pose cho HSE Cartesian) |
+| **Kinematic helper** (pure-Python URDF chain) | Reach check client-side; IK thực tế do Orchestrator giải (Pieper/DLS) trước khi gọi mirror |
 | **Mirror thread** | Poll joint state thật @10Hz → setJoints Open3D viewport @2Hz (decoupled rates) + log telemetry CSV + drift detection + alarm auto-poll |
 
 **Đặc trưng L4**:
 - **Bidirectional state sync**: command path (PC→robot) song song với state sync path (robot→PC).
 - **Drift detection**: so sánh commanded vs actual mỗi tick, warn ≥ 2°.
-- **Alarm auto-response**: severity MAJOR/SYSTEM → auto-trigger `Stop()` (servo off).
+- **Alarm auto-response**: severity MAJOR/SYSTEM → auto-trigger `Stop()` (servo off), một lần (`_auto_stopped` guard), tự clear khi alarm reset trên TP.
+- **E-stop latch**: `Stop()` set latch `_motion_halted` TRƯỚC khi servo-off → mọi `MoveJ/MoveL` sau đó (kể cả giữa một chu trình Orchestrator) bị từ chối ngay (raise). `start_mirror()` clear latch để cho phép motion trở lại.
+- **Viewport-visual hooks**: `attach_object` / `detach_object` / `reset_scene` forward sang `grasp_callback` / `release_callback` / `reset_callback` (duck-typed, no-op nếu không set) → app gắn/thả/reset vật trong viewport khi Orchestrator gắp/thả/reset trial.
 - **Decoupled rates**: telemetry @10Hz (resolution cao cho analysis), viewport @2Hz (giảm tải GUI render thread).
 
 ### 7.4. Module Backends (pluggable motion drivers)
@@ -756,7 +770,7 @@ Ultra-fast pattern: upload INFORM template với P-variables 1 lần, mỗi tria
 
 ### 7.5. Module Kinematics (pure-Python FK)
 
-Triển khai: `DTwinGP7/src/orchestrator/kinematics/`. Forward kinematics + inverse kinematics (DLS) + trajectory interpolation + safety check **pure numpy**. Foundation cho 3 use case:
+Triển khai: `DTwinGP7/src/orchestrator/kinematics/`. Forward kinematics + inverse kinematics (Pieper analytical làm chính + DLS/LM/SDLS/BFGS numerical) + trajectory interpolation + safety check **pure numpy**. Foundation cho 3 use case:
 
 | UC | Script / API | Mục đích |
 |---|---|---|
@@ -785,7 +799,7 @@ Core modules:
   - `inverse_kinematics_seeded` — DLS với retry từ multiple seeds (production
     robustness)
 - **`pieper_gp7.py` — Pieper analytical closed-form IK cho GP7** (default từ
-  scripts/16). ~170µs/call, accuracy ~1e-13mm (float precision = RoboDK SolveIK),
+  scripts/16). ~0.24ms/call, accuracy ~1e-13mm (float precision = RoboDK SolveIK),
   trả 3-8 native solutions cho Change Configuration. Chi tiết §7.5.3.
 - `trajectory.py` — linear joint interpolation + joint limit check + sphere
   self-collision (vectorized batch FK, ~30× nhanh hơn naive per-sample loop).
@@ -960,12 +974,16 @@ trước fix).
 
 | Method | Success | pos median | p95 | max | time median | time p95 |
 |---|---|---|---|---|---|---|
-| **Pieper (ours)** | **208/208** | **1.3e-13 mm** | 5.3e-13 mm | 6.3e-12 mm | **0.17 ms** | 0.24 ms |
-| DLS (single-shot) | 207/208 | 3.3e-2 mm | 3.3e-1 mm | 4.5e-1 mm | 0.80 ms | 1.36 ms |
-| LM (adaptive λ) | 207/208 | 3.8e-2 mm | 3.4e-1 mm | 4.9e-1 mm | 0.71 ms | 1.23 ms |
-| SDLS (SVD selective) | 208/208 | 3.9e-2 mm | 3.2e-1 mm | 4.6e-1 mm | 0.90 ms | 1.65 ms |
-| BFGS (L-BFGS-B early-exit) | 207/208 | 3.5e-1 mm | 4.9e-1 mm | 5.0e-1 mm | 11.3 ms | 19.8 ms |
-| RoboDK SolveIK | 208/208 | 6.8e-13 mm | 3.0e-11 mm | 6.8e-10 mm | 0.37 ms | 0.51 ms |
+| **Pieper (ours)** | **208/208** | **1.3e-13 mm** | 5.3e-13 mm | 6.3e-12 mm | **0.24 ms** | 0.48 ms |
+| DLS (single-shot) | 207/208 | 3.3e-2 mm | 3.3e-1 mm | 4.5e-1 mm | 1.22 ms | 3.39 ms |
+| LM (adaptive λ) | 207/208 | 3.8e-2 mm | 3.4e-1 mm | 4.9e-1 mm | 1.20 ms | 3.24 ms |
+| SDLS (SVD selective) | 208/208 | 3.9e-2 mm | 3.2e-1 mm | 4.6e-1 mm | 1.56 ms | 3.32 ms |
+| BFGS (L-BFGS-B early-exit) | 207/208 | 3.5e-1 mm | 4.9e-1 mm | 5.0e-1 mm | 15.1 ms | 35.2 ms |
+| RoboDK SolveIK | 208/208 | 6.8e-13 mm | 3.0e-11 mm | 6.8e-10 mm | 0.46 ms | 0.85 ms |
+
+> *Đo trên máy tác giả (n=208, fair mode, seed=42; RoboDK Free). Tái lập:
+> `python scripts/17_compare_fk_ik.py --fair --samples 200`. **Accuracy + success
+> deterministic** (không phụ thuộc máy); **time phụ thuộc CPU/tải**.*
 
 → **Pieper as accurate as RoboDK** (float noise floor ~1e-13mm cho cả 2),
 **2× faster than RoboDK**, **5× faster than DLS** với độ chính xác cao hơn
@@ -1013,6 +1031,17 @@ trực quan** + execute trên YRC1000 thật. Stack: **PyQt6 + pyvistaqt (VTK 9.
   Pick→Program → Run on Robot. Camera là **một node thống nhất** (`CameraConfig`:
   pose extrinsics từ hand-eye + intrinsics thật) hiển thị bằng **frustum** trong
   scene (kiểu RoboDK). Chi tiết: [`GIOI_THIEU_PHAN_MEM.md` §3.7, §4.4](GIOI_THIEU_PHAN_MEM.md).
+- **Tier 5 — Digital Twin (robot THẬT)** (`mixin_experiment`, dock "Digital Twin"):
+  chạy trực tiếp với YRC1000 thật qua HSE, 2 chế độ:
+  - **Live mirror**: poll joints THẬT @telemetry_hz → vẽ viewport @mirror_hz (~2Hz)
+    + ghi telemetry CSV. Robot CHỈ ĐỌC (không nhận lệnh) → an toàn.
+  - **Run experiment**: pick-place TỰ ĐỘNG trên robot thật qua `Orchestrator` +
+    perception (D455+YOLO thật, hoặc Mock dry-run) — tương đương
+    `scripts/03_run_experiment.py --mode real` nhưng chạy trong GUI và vòng trial
+    NGẮT ĐƯỢC (gọi `run_one_cycle` từng trial trong worker thread, thay vì
+    `run_n_trials` blocking). Chọn IK source `yrc` / `client (Pieper)` ngay trong
+    dock. Tái dùng nguyên `MotomanHSEBackend` + `DigitalTwinMirror` +
+    `TelemetryLogger` + `PerceptionNode`.
 
 **Run-on-Robot pipeline** (Playback bar ⚙ button):
 1. Render current job → INFORM .JBI text
@@ -1067,12 +1096,12 @@ Thesis include comparison đầy đủ 6 IK methods chạy trên cùng GP7 URDF 
 
 | Method | Type | Success | pos median | time median | Strengths |
 |---|---|---|---|---|---|
-| Pieper | Closed-form | 208/208 | **1.3e-13 mm** | **0.17 ms** | Exact, fast, multi-solution |
-| RoboDK | Closed-form ref | 208/208 | 6.8e-13 mm | 0.37 ms | Industrial reference |
-| DLS | Damped LS | 207/208 | 3.3e-2 mm | 0.80 ms | Simple, predictable |
-| LM | Adaptive damping | 207/208 | 3.8e-2 mm | **0.71 ms** | Fastest numerical |
-| SDLS | SVD selective | 208/208 | 3.9e-2 mm | 0.90 ms | Best near singularity |
-| BFGS | Quasi-Newton | 207/208 | 3.5e-1 mm | 11.3 ms | Best for extended objectives |
+| Pieper | Closed-form | 208/208 | **1.3e-13 mm** | **0.24 ms** | Exact, fast, multi-solution |
+| RoboDK | Closed-form ref | 208/208 | 6.8e-13 mm | 0.46 ms | Industrial reference |
+| DLS | Damped LS | 207/208 | 3.3e-2 mm | 1.22 ms | Simple, predictable |
+| LM | Adaptive damping | 207/208 | 3.8e-2 mm | **1.20 ms** | Fastest numerical |
+| SDLS | SVD selective | 208/208 | 3.9e-2 mm | 1.56 ms | Best near singularity |
+| BFGS | Quasi-Newton | 207/208 | 3.5e-1 mm | 15.1 ms | Best for extended objectives |
 
 **Conclusions cho thesis**:
 
@@ -1101,6 +1130,11 @@ columns mỗi row: `ik_<method>_pos_mm`, `ik_<method>_rot_arcsec`,
 
 `scripts/03_run_experiment.py` ghép toàn bộ: load cell config YAML → mở Open3D viewport (nếu non-headless), khởi động Perception, chạy N trial qua Orchestrator, ghi kết quả ra `results/`. **4 chế độ** (xem bảng cuối Section 3).
 
+Ngoài CLI, **app GP7AppQt (`scripts/16_app_qt.py`) cũng là entry point cho real
+experiment** qua dock "Digital Twin" (§7.5.4 Tier 5): live mirror robot thật hoặc
+chạy pick-place tự động ngắt-được trong GUI (tương đương `--mode real` nhưng
+tương tác). App Open3D legacy `scripts/15_app.py` chỉ còn để tham khảo.
+
 CLI flags đầy đủ + workflow scenarios: xem [`HUONG_DAN_SU_DUNG.md`](HUONG_DAN_SU_DUNG.md) §4 + §8.3.
 
 ### 7.7. Cell config YAML
@@ -1121,7 +1155,7 @@ Orchestrator có 2 phương án compute IK, chọn qua CLI `--ik-source`:
 | Path | Cách hoạt động | Accuracy | Use case |
 |---|---|---|---|
 | `--ik-source yrc` | PC gửi pose Cartesian thẳng qua HSE → YRC1000 tự IK | YRC controller's own IK (chuẩn nhất) | **Real mode default** — khi đã setup TOOL01 trên TP |
-| `--ik-source client` | DLS numerical IK pure Python với URDF chain | Match RoboDK SolveFK 0.00mm (verified qua `scripts/13_verify_vs_robodk.py`) | **Sim default**, hoặc real backup khi không có TP setup |
+| `--ik-source client` | **Pieper analytical IK** pure Python với URDF chain (DLS fallback) | Exact ~1e-13mm = RoboDK SolveIK (verified qua `scripts/13_verify_vs_robodk.py` + `scripts/17_compare_fk_ik.py`) | **Sim default**, hoặc real backup khi không có TP setup |
 
 **Default**: `yrc` cho `--mode real`, `client` cho `--mode sim`.
 
@@ -1131,14 +1165,28 @@ Pipeline: orchestrator → `world_to_robot_base(T_world)` → `MotomanHSEBackend
 
 Yêu cầu: TOOL01 trên teach pendant nhập TCP offset gripper (xem §2.10 trong `docs/HUONG_DAN_CAI_DAT.md`).
 
-#### 7.8.2. Client DLS IK (PC-side numerical)
+> **Lưu ý batch (M3):** path `yrc` chạy **single-shot**, KHÔNG batch — motion là
+> pose Cartesian (4x4 → P-var BASE) mà HSE backend chưa hỗ trợ Cartesian trong
+> batch/ultra-fast (`_move_pose` raise trong batch). `_robot_batch_ctx` trả
+> `nullcontext()` khi `use_yrc_ik=True`. Batch M3 (~200ms/trial) chỉ bật cho path
+> joint-list (client Pieper/DLS). Verify: `orchestrator.py:_robot_batch_ctx`.
 
-Damped Least Squares iterative, dùng URDF chain forward kinematics (verified
-match RoboDK SolveFK 0.00mm). ~5-15ms/call, accuracy 0.001-0.058mm trên random
-samples (`scripts/13_verify_vs_robodk.py --samples 500 --histogram`).
+#### 7.8.2. Client Pieper analytical IK (PC-side, DLS fallback)
 
-Khi DLS fail (singularity / out-of-reach), orchestrator raise lỗi rõ ràng và
-ghi vào trial log.
+Solver chính của path `client` là **Pieper closed-form** (`pieper_gp7.py`,
+nearest-branch — chọn nhánh gần `_current_joints` để motion liên tục không "chong
+chóng" cổ tay): exact ~1e-13mm = RoboDK SolveIK, ~0.24ms/call, deterministic.
+Tool offset xử lý bằng cách hạ target TCP về flange (lùi `tool_offset_mm` dọc
+trục Z công cụ) TRƯỚC khi giải, rồi nghiệm vẫn đặt TCP đúng target. Seed bằng
+HOME khi chưa có joints (trial đầu). URDF chain verified match RoboDK SolveFK
+0.00mm.
+
+DLS multi-seed (`inverse_kinematics_seeded`) chỉ là **FALLBACK** khi Pieper trả
+rỗng / lỗi (pose ngoài tầm hoàn toàn — hiếm). Chi tiết Pieper: §7.5.3; so sánh 6
+thuật toán IK: §7.5.5. Verify: `orchestrator.py:_solve_ik_client`.
+
+Khi cả Pieper lẫn DLS fail (singularity / out-of-reach), orchestrator log warning
+rõ ràng và ghi vào trial log.
 
 #### 7.8.3. Frame conversion
 
@@ -1155,6 +1203,7 @@ PC chỉ biết HSE protocol, PLC chỉ biết CC-Link, YRC1000 handle conversio
 #### 7.9.1. Layered architecture — 3 devices, 2 protocols
 
 ```mermaid
+%%{init: {'flowchart': {'nodeSpacing': 60, 'rankSpacing': 85, 'useMaxWidth': false}}}%%
 flowchart TB
     subgraph PC["PC Digital Twin"]
         ORC[Orchestrator]
@@ -1193,6 +1242,7 @@ flowchart TB
     style YRC fill:#E65100,stroke:#fff,color:#fff
     style PLC fill:#1565C0,stroke:#fff,color:#fff
     style HW fill:#5D4037,stroke:#fff,color:#fff
+    linkStyle default stroke:#FF1744,stroke-width:3px
 ```
 
 PC chỉ kết nối qua HSE. PLC chỉ kết nối qua CC-Link. YRC1000 đóng vai trò
@@ -1328,6 +1378,7 @@ tránh trigger alarm trên controller (mỗi alarm major mất ~30s recovery + c
 **2 tầng kiểm tra, tăng dần độ chặt**:
 
 ```mermaid
+%%{init: {'flowchart': {'nodeSpacing': 60, 'rankSpacing': 85, 'useMaxWidth': false}}}%%
 flowchart LR
     DETECT[Perception<br/>D455 + YOLO] --> PLAN[PLAN state<br/>tính 4 pose:<br/>lift / grasp / place_lift / place]
     PLAN --> R1{Reach envelope<br/>per pose<br/>~µs}
@@ -1342,6 +1393,7 @@ flowchart LR
     style EXEC fill:#E65100,stroke:#fff,color:#fff
     style FAIL fill:#C62828,stroke:#fff,color:#fff
     style SKIP fill:#9E9E9E,stroke:#fff,color:#fff
+    linkStyle default stroke:#FF1744,stroke-width:3px
 ```
 
 #### 7.10.1. Tầng 1 — Reach envelope (per-pose, ~µs)
@@ -1370,8 +1422,9 @@ def _is_reachable(self, target_T: np.ndarray) -> bool:
 
 `Orchestrator._predict_safety_for_trajectory()` (mới wire vào `_execute_pick_place`):
 
-1. Solve client DLS IK cho 6 waypoint world frame (current → lift → grasp →
-   lift → place_lift → place → place_lift) — pure-Python URDF chain
+1. Solve client IK (Pieper analytical, DLS fallback) cho 6 waypoint world frame
+   (current → lift → grasp → lift → place_lift → place → place_lift) — pure-Python
+   URDF chain
 2. Interpolate trajectory joint-space @ `predict_max_speed_deg_s` (default 30°/s),
    sample mỗi 50ms
 3. Pure-Python FK trên TỪNG sample:
@@ -1424,6 +1477,7 @@ mode để tuning iterate.
 ## 8. Test strategy 5 lớp
 
 ```mermaid
+%%{init: {'flowchart': {'nodeSpacing': 60, 'rankSpacing': 85, 'useMaxWidth': false}}}%%
 graph LR
     A[L1<br/>Unit] --> B[L2<br/>Component] --> C[L3<br/>Integration] --> D[L4<br/>System SIM] --> E[L5<br/>System REAL<br/>HSE]
     style A fill:#2E7D32,stroke:#fff,color:#fff
@@ -1431,6 +1485,7 @@ graph LR
     style C fill:#558B2F,stroke:#fff,color:#fff
     style D fill:#1565C0,stroke:#fff,color:#fff
     style E fill:#D84315,stroke:#fff,color:#fff
+    linkStyle default stroke:#FF1744,stroke-width:3px
 ```
 
 | Lớp | Phạm vi | Phần cứng | Cách chạy |
@@ -1450,6 +1505,7 @@ Hiện có **300 test case** ở `DTwinGP7/tests/` cover L1–L3. Bao quát: HSE
 ### 9.1. Các parameter cần tune
 
 ```mermaid
+%%{init: {'flowchart': {'nodeSpacing': 60, 'rankSpacing': 85, 'useMaxWidth': false}}}%%
 graph TB
     subgraph Vision["Vision Tuning"]
         V1[Confidence threshold<br/>0.3 – 0.7]

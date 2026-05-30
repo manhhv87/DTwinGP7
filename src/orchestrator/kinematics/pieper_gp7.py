@@ -17,8 +17,10 @@ Cho ra **up to 8 solutions** native:
   - 2 cho wrist (normal / flip — XYX Euler có 2 branches qua β = ±)
   → 2 × 2 × 2 = 8 configurations
 
-Tốc độ: ~50µs/call (so với DLS 1.4ms) — **28× faster**.
-Accuracy: float-precision exact (~1e-10 mm), không có DLS tolerance gap.
+Tốc độ: ~0.24 ms/call (~5× faster than DLS) — benchmark
+`scripts/17_compare_fk_ik.py --fair --samples 200` (phụ thuộc máy).
+Accuracy: float-precision exact (~1e-13 mm, float noise floor), không có DLS
+tolerance gap.
 
 Reference:
   Pieper, D. L. (1968). "The Kinematics of Manipulators Under Computer Control."
@@ -246,8 +248,8 @@ def inverse_kinematics_pieper_gp7(
 
     Returns: list of joint vectors (radian, length 6). Empty list nếu unreachable.
 
-    Performance: ~50µs/call regardless of pose.
-    Accuracy: float-precision exact (FK(sol) khớp target trong 1e-10 mm).
+    Performance: ~0.24 ms/call (xem scripts/17_compare_fk_ik.py --fair).
+    Accuracy: float-precision exact (FK(sol) khớp target ~1e-13 mm).
     """
     target = np.asarray(target_pose_world, dtype=float)
     if target.shape != (4, 4):

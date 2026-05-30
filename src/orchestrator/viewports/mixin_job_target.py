@@ -50,9 +50,9 @@ class JobTargetMixin:
         if not ok: return
         name = self._safe_job_name(v)
         if not name:
-            self._set_status("Job name không hợp lệ", level="warn"); return
+            self._set_status("Invalid job name", level="warn"); return
         if name in self._jobs:
-            self._set_status(f"Job '{name}' đã tồn tại", level="warn"); return
+            self._set_status(f"Job '{name}' already exists", level="warn"); return
         self._jobs[name] = []
         self._active_job = name
         self._refresh_job_combo()
@@ -68,7 +68,7 @@ class JobTargetMixin:
         new = self._safe_job_name(v)
         if not new or new == old: return
         if new in self._jobs:
-            self._set_status(f"Job '{new}' đã tồn tại", level="warn"); return
+            self._set_status(f"Job '{new}' already exists", level="warn"); return
         # Preserve dict order
         new_jobs: dict[str, list[Instruction]] = {}
         for k, v_list in self._jobs.items():
@@ -86,7 +86,7 @@ class JobTargetMixin:
 
     def _on_job_delete(self) -> None:
         if len(self._jobs) <= 1:
-            self._set_status("Phải có ít nhất 1 job", level="warn"); return
+            self._set_status("At least one job is required", level="warn"); return
         old = self._active_job
         # Check CallJob refs trong các job khác
         refs = sum(
@@ -95,7 +95,7 @@ class JobTargetMixin:
             for ins in prog if ins.type == "CallJob" and ins.job_name == old)
         msg = f"Delete job '{old}' ({len(self._program)} steps)?"
         if refs > 0:
-            msg += f"\n\nCảnh báo: {refs} CallJob instruction(s) ở job khác đang reference."
+            msg += f"\n\nWarning: {refs} CallJob instruction(s) in other jobs reference it."
         r = QMessageBox.question(
             self, "Delete job", msg,
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
@@ -139,10 +139,10 @@ class JobTargetMixin:
             self._set_status("Target name empty", level="warn"); return
         name = self._safe_target_name(name_raw)
         if not name:
-            self._set_status("Target name không hợp lệ", level="warn"); return
+            self._set_status("Invalid target name", level="warn"); return
         if name in self._targets:
             self._set_status(
-                f"Target '{name}' đã tồn tại — dùng Modify (F3) để cập nhật",
+                f"Target '{name}' already exists — use Modify (F3) to update it",
                 level="warn"); return
         pose = self._capture_current_pose()
         if pose is None: return
@@ -156,7 +156,7 @@ class JobTargetMixin:
         """F3 — replace selected target's pose với current pose."""
         idx = self._tgt_list.currentRow()
         if idx < 0 or not self._targets:
-            self._set_status("Chọn target để Modify", level="warn"); return
+            self._set_status("Select a target to Modify", level="warn"); return
         name = list(self._targets.keys())[idx]
         pose = self._capture_current_pose()
         if pose is None: return
@@ -175,9 +175,9 @@ class JobTargetMixin:
         if refs > 0:
             r = QMessageBox.question(
                 self, "Delete target",
-                f"Target '{name}' đang được {refs} instruction(s) tham chiếu.\n"
-                "Xoá sẽ làm các move đó không resolve được khi play/export.\n\n"
-                "Tiếp tục?",
+                f"Target '{name}' is referenced by {refs} instruction(s).\n"
+                "Deleting it will make those moves fail to resolve on play/export.\n\n"
+                "Continue?",
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
             if r != QMessageBox.StandardButton.Yes: return
         del self._targets[name]
@@ -190,7 +190,7 @@ class JobTargetMixin:
         idx = self._tgt_list.currentRow()
         if idx < 0 or not self._targets:
             self._set_status(
-                "Chọn target trong list trước (hoặc Teach mới)", level="warn"); return
+                "Select a target in the list first (or Teach a new one)", level="warn"); return
         name = list(self._targets.keys())[idx]
         self._program.append(Instruction(type=kind, target_name=name))
         self._refresh_program_list()

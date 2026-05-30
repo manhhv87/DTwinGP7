@@ -21,7 +21,7 @@ class AboutMixin:
         # Chưa load robot/cell → _cell_config còn None, không có gì để show.
         if self._cell_config is None:
             self._set_status(
-                "Chưa load cell — File → Load Robot GP7 / Load Cell from YAML",
+                "No cell loaded — File → Load Robot GP7 / Load Cell from YAML",
                 level="warn")
             return
         lines = [

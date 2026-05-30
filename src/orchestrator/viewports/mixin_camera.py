@@ -54,7 +54,7 @@ _CAM_DOCK_MIN_W = 380
 # 848×480 (native D455) rồi align→color nên không cần đổi theo. Chỉ áp cho D455
 # thật; Mock luôn 1280×720. Đổi preset cần Stop→Start (không hot-swap stream).
 _CAM_RES_PRESETS: dict[str, tuple[tuple[int, int], int]] = {
-    "1280×720 @30 (mặc định)": ((1280, 720), 30),
+    "1280×720 @30 (default)": ((1280, 720), 30),
     "848×480 @30": ((848, 480), 30),
     "640×480 @30": ((640, 480), 30),
     "640×360 @30": ((640, 360), 30),
@@ -84,7 +84,7 @@ class CameraMixin:
         # QLabel KHÔNG lấy kích thước pixmap làm sizeHint: mỗi frame set pixmap
         # mới (scale theo size label) — nếu Expanding sẽ tạo vòng lặp phình to
         # dần đẩy các nút xuống. Ignored + maxHeight chặn đứng việc đó.
-        self._cam_view = QLabel("Camera tắt — bấm Start")
+        self._cam_view = QLabel("Camera off — press Start")
         self._cam_view.setMinimumHeight(180)
         self._cam_view.setMaximumHeight(360)
         self._cam_view.setSizePolicy(
@@ -99,7 +99,7 @@ class CameraMixin:
         src_row = QHBoxLayout()
         self._cam_source_cb = QComboBox()
         self._cam_source_cb.addItems(["Auto (D455→Mock)", "D455", "Mock"])
-        src_row.addWidget(QLabel("Nguồn:"))
+        src_row.addWidget(QLabel("Source:"))
         src_row.addWidget(self._cam_source_cb, 1)
         self._cam_start_btn = QPushButton("Start")
         self._cam_start_btn.clicked.connect(self._start_camera)
@@ -115,9 +115,9 @@ class CameraMixin:
         self._cam_res_cb = QComboBox()
         self._cam_res_cb.addItems(list(_CAM_RES_PRESETS.keys()))
         self._cam_res_cb.setToolTip(
-            "Độ phân giải + FPS cho D455 thật. Đổi khi đang chạy: bấm Stop rồi "
-            "Start lại. (Mock luôn 1280×720.)")
-        res_row.addWidget(QLabel("Độ phân giải:"))
+            "Resolution + FPS for the real D455. To change while running: press "
+            "Stop then Start again. (Mock is always 1280×720.)")
+        res_row.addWidget(QLabel("Resolution:"))
         res_row.addWidget(self._cam_res_cb, 1)
         v.addLayout(res_row)
 
@@ -127,8 +127,8 @@ class CameraMixin:
         self._cam_depth_chk = QCheckBox("Depth colormap")
         self._cam_detector_chk = QCheckBox("Detector")
         self._cam_detector_chk.setToolTip(
-            "Bật detect vật. Đổi trạng thái có hiệu lực sau khi Stop → Start lại "
-            "(detector nạp 1 lần lúc khởi động). Depth/Overlay đổi tức thì.")
+            "Enable object detection. Changes take effect after Stop → Start again "
+            "(detector loads once at startup). Depth/Overlay change instantly.")
         self._cam_overlay_chk = QCheckBox("Overlay"); self._cam_overlay_chk.setChecked(True)
         self._cam_show_depth = False
         self._cam_show_overlay = True
@@ -142,13 +142,13 @@ class CameraMixin:
         opt_row.addStretch(1)
         v.addLayout(opt_row)
 
-        self._cam_info = QLabel("Nguồn: —  |  0.0 FPS  |  0 vật")
+        self._cam_info = QLabel("Source: —  |  0.0 FPS  |  0 objects")
         self._cam_info.setWordWrap(True)
         self._cam_info.setStyleSheet("color:#9aa0aa; font-size:11px;")
         v.addWidget(self._cam_info)
 
         # Dataset capture — collapsible (gập mặc định, ít dùng hơn control).
-        ds_sec = CollapsibleSection("Dataset — chụp ảnh", expanded=False)
+        ds_sec = CollapsibleSection("Dataset — capture images", expanded=False)
         ds_form = QFormLayout()
         # Class: danh sách do bài toán định nghĩa (CellConfig.object_classes) +
         # nút quản lý (thêm/xóa/sửa). Combo nạp qua _refresh_class_combo().
@@ -156,8 +156,8 @@ class CameraMixin:
         cls_row = QHBoxLayout()
         cls_row.setContentsMargins(0, 0, 0, 0); cls_row.setSpacing(4)
         cls_row.addWidget(self._cam_cls_cb, 1)
-        btn_mng_cls = QPushButton("Quản lý…")
-        btn_mng_cls.setToolTip("Định nghĩa danh sách class cho bài toán (lưu vào Cell)")
+        btn_mng_cls = QPushButton("Manage…")
+        btn_mng_cls.setToolTip("Define the class list for the task (saved into Cell)")
         btn_mng_cls.clicked.connect(self._manage_classes_dlg)
         cls_row.addWidget(btn_mng_cls)
         self._cam_light_cb = QComboBox(); self._cam_light_cb.addItems(_CAM_LIGHTING)
@@ -168,10 +168,10 @@ class CameraMixin:
         ds_form.addRow("Overlap", self._cam_overlap_cb)
         ds_form.addRow("Background", self._cam_bg_cb)
         ds_sec.add_layout(ds_form)
-        self._cam_save_depth_chk = QCheckBox("Lưu depth (.npy)")
+        self._cam_save_depth_chk = QCheckBox("Save depth (.npy)")
         self._cam_save_depth_chk.setChecked(True)
         self._cam_save_depth_chk.setToolTip(
-            "Bật: lưu cả RGB (.png) + depth (.npy, mét). Tắt: chỉ lưu RGB.")
+            "On: save both RGB (.png) + depth (.npy, meters). Off: save RGB only.")
         ds_sec.add_widget(self._cam_save_depth_chk)
         cap_btn = QPushButton("📷 Capture")
         cap_btn.clicked.connect(self._camera_capture)
@@ -181,7 +181,7 @@ class CameraMixin:
         # Control — vision-guided (vòng kín) — collapsible, xổ sẵn. Lưới 2×2
         # TOÀN NÚT (cân bằng 2 cột thẳng mép); Approach Z = hàng riêng full-width.
         ctl_sec = CollapsibleSection(
-            "Control — vision-guided (vòng kín)", expanded=True)
+            "Control — vision-guided (closed-loop)", expanded=True)
         # Bỏ thụt lề ngang nội dung → nút span đúng bề rộng section ⇒ mép trái/
         # phải thẳng hàng với header Dataset & Control.
         ctl_sec.content_layout().setContentsMargins(0, 6, 0, 6)
@@ -190,17 +190,17 @@ class CameraMixin:
         grid.setColumnStretch(0, 1); grid.setColumnStretch(1, 1)
 
         teach_btn = QPushButton("Detect → Teach grasp")
-        teach_btn.setToolTip("Lấy vật detect được → grasp pose (calibration) → "
-                              "IK → lưu target")
+        teach_btn.setToolTip("Take the detected object → grasp pose (calibration) → "
+                              "IK → save target")
         teach_btn.clicked.connect(self._camera_teach_grasp)
         pick_btn = QPushButton("Pick → Program")
-        pick_btn.setToolTip("Thêm chuỗi approach→grasp→close→retreat vào job hiện tại")
+        pick_btn.setToolTip("Add approach→grasp→close→retreat sequence to the current job")
         pick_btn.clicked.connect(self._camera_pick_to_program)
         run_btn = QPushButton("▶ Run on Robot")
         run_btn.clicked.connect(self._on_run_on_robot)
-        sync_btn = QPushButton("Đồng bộ Camera → Cell")
-        sync_btn.setToolTip("Ghi pose (từ hand-eye calibration) + intrinsics thật "
-                            "vào node Camera của Cell → vẽ frustum (RoboDK-style)")
+        sync_btn = QPushButton("Sync Camera → Cell")
+        sync_btn.setToolTip("Write pose (from hand-eye calibration) + real intrinsics "
+                            "into the Cell's Camera node → draw frustum (RoboDK-style)")
         sync_btn.clicked.connect(self._camera_sync_to_cell)
         # minWidth 0 + Expanding → 2 cột chia đều bất kể độ dài chữ ⇒ mép thẳng.
         for b in (teach_btn, pick_btn, run_btn, sync_btn):
@@ -214,7 +214,7 @@ class CameraMixin:
 
         # Approach Z — hàng riêng full-width (tham số cho 'Pick → Program').
         app_row = QHBoxLayout()
-        app_row.addWidget(QLabel("Approach Z (cho Pick):"))
+        app_row.addWidget(QLabel("Approach Z (for Pick):"))
         self._cam_approach_spin = QDoubleSpinBox()
         self._cam_approach_spin.setRange(10.0, 400.0)
         self._cam_approach_spin.setSingleStep(10.0)
@@ -277,7 +277,7 @@ class CameraMixin:
             QDialog, QInputDialog, QListWidget, QListWidgetItem, QMessageBox)
         self._ensure_cell_config()
         cur = list(getattr(self._cell_config, "object_classes", None) or _CAM_CLASSES)
-        dlg = QDialog(self); dlg.setWindowTitle("Quản lý class")
+        dlg = QDialog(self); dlg.setWindowTitle("Manage classes")
         dlg.setMinimumSize(420, 300)
         outer = QHBoxLayout(dlg); outer.setSpacing(8)
         lst = QListWidget()
@@ -293,11 +293,11 @@ class CameraMixin:
 
         # Cột nút bên phải — gồm cả OK/Cancel, cùng độ rộng + khoảng cách ĐỀU.
         col = QVBoxLayout(); col.setSpacing(8)
-        b_add = QPushButton("＋  Thêm")
-        b_edit = QPushButton("✎  Sửa")
-        b_del = QPushButton("－  Xóa")
-        b_up = QPushButton("↑  Lên")
-        b_dn = QPushButton("↓  Xuống")
+        b_add = QPushButton("＋  Add")
+        b_edit = QPushButton("✎  Edit")
+        b_del = QPushButton("－  Delete")
+        b_up = QPushButton("↑  Up")
+        b_dn = QPushButton("↓  Down")
         b_ok = QPushButton("OK"); b_cancel = QPushButton("Cancel")
         for b in (b_add, b_edit, b_del, b_up, b_dn, b_ok, b_cancel):
             b.setMinimumWidth(108)
@@ -306,7 +306,7 @@ class CameraMixin:
         outer.addLayout(col)
 
         def _add():
-            name, ok = QInputDialog.getText(dlg, "Thêm class", "Tên class:")
+            name, ok = QInputDialog.getText(dlg, "Add class", "Class name:")
             if ok and name.strip():
                 it = _mk_item(name.strip()); lst.addItem(it); lst.setCurrentItem(it)
 
@@ -340,13 +340,13 @@ class CameraMixin:
             if s and s not in seen:
                 seen.add(s); names.append(s)
         if not names:
-            QMessageBox.warning(self, "Quản lý class",
-                                "Danh sách rỗng — giữ nguyên cũ.")
+            QMessageBox.warning(self, "Manage classes",
+                                "List is empty — keeping the previous one.")
             return
         self._cell_config.object_classes = names
         self._refresh_class_combo()
         self._set_status(
-            f"Đã cập nhật {len(names)} class: {', '.join(names)}", level="ok")
+            f"Updated {len(names)} classes: {', '.join(names)}", level="ok")
 
     # ── Acquisition thread ─────────────────────────────────────────────
     def _start_camera(self) -> None:
@@ -364,7 +364,7 @@ class CameraMixin:
         self._cam_stop_btn.setEnabled(True)
         self._cam_thread = threading.Thread(target=self._camera_loop, daemon=True)
         self._cam_thread.start()
-        self._set_status("Camera: đang khởi động…", level="info")
+        self._set_status("Camera: starting up…", level="info")
 
     def _stop_camera(self) -> None:
         self._cam_stop.set()
@@ -385,7 +385,7 @@ class CameraMixin:
                 self._cam_source, D455Camera, MockCamera,
                 self._cam_color_size, self._cam_fps)
         except Exception as e:                              # noqa: BLE001
-            self._signals.status.emit(f"Camera mở thất bại: {e}", "err")
+            self._signals.status.emit(f"Camera failed to open: {e}", "err")
             self._cam_running = False
             self._signals.camera_result.emit({"stopped": True})
             return
@@ -395,10 +395,10 @@ class CameraMixin:
                 detector = self._open_detector(ObjectDetector, MockDetector)
             except Exception as e:                          # noqa: BLE001
                 self._signals.status.emit(
-                    f"Detector lỗi → chạy không detect: {e}", "warn")
+                    f"Detector error → running without detection: {e}", "warn")
         extractor = PoseExtractor(camera.intrinsics)
         self._signals.status.emit(
-            f"Camera ON — nguồn {source_label}"
+            f"Camera ON — source {source_label}"
             + (" + detector" if detector is not None else ""), "ok")
         period = 1.0 / 15.0
         prev_t = time.time()
@@ -445,7 +445,7 @@ class CameraMixin:
                 if left > 0:
                     time.sleep(left)
         except Exception as e:                              # noqa: BLE001
-            self._signals.status.emit(f"Camera loop lỗi: {e}", "err")
+            self._signals.status.emit(f"Camera loop error: {e}", "err")
         finally:
             try:
                 camera.stop()
@@ -470,7 +470,7 @@ class CameraMixin:
                 if want == "d455":
                     raise
                 self._signals.status.emit(
-                    f"D455 không sẵn sàng → fallback Mock ({e})", "warn")
+                    f"D455 not ready → fallback to Mock ({e})", "warn")
         return MockCamera(rgb_frames=[self._synthetic_mock_frame()]), "Mock"
 
     def _open_detector(self, ObjectDetector, MockDetector):
@@ -480,7 +480,7 @@ class CameraMixin:
         if weights:
             return ObjectDetector(model_path=str(weights[0]))
         self._signals.status.emit(
-            "Chưa có trọng số YOLO (models/*.pt) → MockDetector", "warn")
+            "No YOLO weights yet (models/*.pt) → MockDetector", "warn")
         return MockDetector(scripted=[[
             MockDetector.make_detection("tray", mask_box=_MOCK_BOX)]])
 
@@ -512,7 +512,7 @@ class CameraMixin:
             self._cam_start_btn.setEnabled(True)
             self._cam_stop_btn.setEnabled(False)
             self._cam_running = False
-            self._cam_view.setText("Camera tắt — bấm Start")
+            self._cam_view.setText("Camera off — press Start")
             return
         disp = self._last_display
         if disp is None:
@@ -523,10 +523,10 @@ class CameraMixin:
             Qt.TransformationMode.SmoothTransformation))
         intr = self._last_intrinsics or {}
         self._cam_info.setText(
-            f"Nguồn: {self._last_source or '?'}  |  "
+            f"Source: {self._last_source or '?'}  |  "
             f"{getattr(self, '_last_fps', 0.0):.1f} FPS  |  "
             f"{intr.get('width', '?')}×{intr.get('height', '?')}  |  "
-            f"{len(self._last_camera_objects)} vật")
+            f"{len(self._last_camera_objects)} objects")
 
     def _draw_overlay(self, rgb, objects):
         """Vẽ bbox + centroid + nhãn class lên ảnh RGB (in-place trên copy)."""
@@ -568,13 +568,13 @@ class CameraMixin:
         Checkbox 'Lưu depth' tắt → chỉ lưu RGB."""
         rgb = getattr(self, "_last_rgb", None)
         if rgb is None:
-            self._set_status("Chưa có khung camera — bấm Start trước", level="warn")
+            self._set_status("No camera frame yet — press Start first", level="warn")
             return
         save_depth = self._cam_save_depth_chk.isChecked()
         depth = self._last_depth
         if save_depth and depth is None:
             self._set_status(
-                "Không có depth để lưu — bỏ tick 'Lưu depth' hoặc Start lại",
+                "No depth to save — uncheck 'Save depth' or Start again",
                 level="warn")
             return
         import cv2
@@ -594,46 +594,46 @@ class CameraMixin:
             if save_depth:
                 np.save(str(out / f"{name}_depth.npy"), np.asarray(depth))
         except Exception as e:                              # noqa: BLE001
-            self._set_status(f"Capture lỗi: {e}", level="err"); return
+            self._set_status(f"Capture error: {e}", level="err"); return
         kind = "RGB+depth" if save_depth else "RGB"
-        self._set_status(f"Đã lưu {name} ({kind}) → data/raw", level="ok")
+        self._set_status(f"Saved {name} ({kind}) → data/raw", level="ok")
 
     # ── Vision-guided control (vòng kín) ───────────────────────────────
     def _camera_teach_grasp(self) -> None:
         """Vật detect mới nhất → camera_to_base → make_grasp_pose → teach target."""
         if self._model is None:
             self._set_status(
-                "Chưa load robot — load robot trước khi teach grasp", level="warn")
+                "Robot not loaded — load the robot before teaching a grasp", level="warn")
             return
         objects = self._last_camera_objects
         if not objects:
             self._set_status(
-                "Chưa detect vật nào — bật Detector + Start", level="warn")
+                "No object detected — enable Detector + Start", level="warn")
             return
         target = max(objects, key=lambda o: o.get("confidence", 0.0))
         pose_cam = target.get("pose_camera")
         if pose_cam is None:
-            self._set_status("Vật thiếu pose 3D (không có depth)", level="warn")
+            self._set_status("Object missing 3D pose (no depth)", level="warn")
             return
         from ..coord_conv import camera_to_base, load_calibration, make_grasp_pose
         calib = self._project_root / "config" / "calibration" / "T_base_camera.npy"
         try:
             t_bc = load_calibration(calib)
         except Exception as e:                              # noqa: BLE001
-            self._set_status(f"Lỗi calibration: {e}", level="err"); return
+            self._set_status(f"Calibration error: {e}", level="err"); return
         xyz_base = camera_to_base(np.asarray(pose_cam[:3], dtype=float), t_bc)
         T = make_grasp_pose(xyz_base, float(pose_cam[3]))
         cls = target.get("class_name", "?")
         name = self._teach_target_from_matrix(
             T, default_name=f"PICK_{len(self._targets) + 1:02d}",
             prompt_label=(
-                f"Target grasp '{cls}' @ base XYZ = "
+                f"Grasp target '{cls}' @ base XYZ = "
                 f"{xyz_base[0]:.0f}, {xyz_base[1]:.0f}, {xyz_base[2]:.0f} mm:"))
         if name:
             self._last_grasp_target = name
             self._last_grasp_T = T
             self._set_status(
-                f"Teach grasp '{name}' từ vật '{cls}'", level="ok")
+                f"Taught grasp '{name}' from object '{cls}'", level="ok")
 
     def _camera_pick_to_program(self) -> None:
         """Thêm chuỗi pick (open→approach→grasp→close→retreat) vào job hiện tại."""
@@ -641,7 +641,7 @@ class CameraMixin:
         T = getattr(self, "_last_grasp_T", None)
         if not name or name not in self._targets or T is None:
             self._set_status(
-                "Chưa có grasp target — bấm 'Detect → Teach grasp' trước",
+                "No grasp target yet — press 'Detect → Teach grasp' first",
                 level="warn")
             return
         approach_mm = float(self._cam_approach_spin.value())
@@ -651,7 +651,7 @@ class CameraMixin:
             t_app, default_name=f"{name}_APP", prompt=False)
         if not app_name:
             self._set_status(
-                "IK approach fail — giảm Approach Z", level="warn")
+                "IK approach failed — reduce Approach Z", level="warn")
             return
         seq = [
             Instruction(type="SetGripper", gripper_close=False),    # mở kẹp
@@ -664,7 +664,7 @@ class CameraMixin:
         self._program.extend(seq)
         self._refresh_program_list()
         self._set_status(
-            f"Đã thêm pick sequence cho '{name}' ({len(seq)} lệnh) vào job",
+            f"Added pick sequence for '{name}' ({len(seq)} instructions) to job",
             level="ok")
 
     def _camera_sync_to_cell(self) -> None:
@@ -674,7 +674,7 @@ class CameraMixin:
         intr = getattr(self, "_last_intrinsics", None)
         if not intr:
             self._set_status(
-                "Chưa có khung camera — Start camera trước khi đồng bộ", level="warn")
+                "No camera frame yet — Start the camera before syncing", level="warn")
             return
         from ...cell.cell_models import (
             CameraConfig, CameraIntrinsics, PoseConfig)
@@ -686,15 +686,15 @@ class CameraMixin:
         try:
             x, y, z, rx, ry, rz = _matrix_to_xyz_rpy_deg(load_calibration(calib))
             pose = PoseConfig(xyz_mm=(x, y, z), rpy_deg=(rx, ry, rz))
-            pose_note = "pose từ calibration"
+            pose_note = "pose from calibration"
         except Exception as e:                              # noqa: BLE001
             existing = getattr(self._cell_config, "camera", None)
             if existing is not None:
-                pose = existing.pose; pose_note = "giữ pose cũ"
+                pose = existing.pose; pose_note = "keeping previous pose"
             else:
                 pose = PoseConfig(xyz_mm=(700.0, 0.0, 1200.0),
                                   rpy_deg=(180.0, 0.0, 0.0))
-                pose_note = f"pose mặc định (chưa calibrate: {e})"
+                pose_note = f"default pose (not calibrated: {e})"
         is_d455 = "D455" in str(getattr(self, "_last_source", "") or "")
         w = int(intr.get("width", 1280)); h = int(intr.get("height", 720))
         cam = CameraConfig(
@@ -710,5 +710,5 @@ class CameraMixin:
         self._refresh_cell_tree()
         self._load_cell_assets()
         self._set_status(
-            f"Đồng bộ Camera → Cell: {pose_note}, intrinsics thật "
+            f"Sync Camera → Cell: {pose_note}, real intrinsics "
             f"fx={float(intr['fx']):.0f} ({w}×{h})", level="ok")

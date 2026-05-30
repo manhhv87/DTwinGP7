@@ -45,6 +45,7 @@ lập kế hoạch gắp an toàn rồi điều khiển GP7 gắp và đặt v�
 <img src="figures/cell_overview.png" width="460" alt="Cell GP7 mô phỏng: robot + bàn + camera D455 + vật">
 
 ```mermaid
+%%{init: {'flowchart': {'nodeSpacing': 60, 'rankSpacing': 85, 'useMaxWidth': false}}}%%
 flowchart TB
     CAM[Camera D455] --> PER[Perception<br/>YOLOv8-seg + pose 3D]
     PER --> ORC[Orchestrator<br/>state machine + an toàn]
@@ -59,6 +60,7 @@ flowchart TB
     style DT fill:#9C27B0,color:#fff
     style BE fill:#1565C0,color:#fff
     style GP7 fill:#E65100,color:#fff
+    linkStyle default stroke:#FF1744,stroke-width:3px
 ```
 
 **Hai chiều (bidirectional):** PC → robot (lệnh) và robot → PC (trạng thái khớp
@@ -100,10 +102,14 @@ nền tảng đã verify — không sửa.**
 - `urdf_chain.py` — `gp7_urdf()`, `forward_kinematics_urdf`, `link_frames_urdf`
   (mô hình URDF từ ros-industrial/motoman).
 - `dh_model.py`, `forward_kinematics.py` — mô hình Modified DH (Craig).
-- `inverse_kinematics.py` — IK số: **DLS**, **LM**, **SDLS**, **BFGS**,
-  `inverse_kinematics_seeded`, `inverse_kinematics_batch`.
-- `pieper_gp7.py` — **IK giải tích Pieper** (mặc định trong app): ~170µs, sai số
-  ~1e-13 mm, trả 3–8 nghiệm để đổi cấu hình tay.
+- `pieper_gp7.py` — **IK giải tích Pieper** (closed-form, đường chính): exact
+  (~1e-13 mm), ~0.24 ms, deterministic; trả **tất cả nhánh** (≤8 cấu hình tay) rồi
+  chọn nhánh gần tư thế hiện tại (`inverse_kinematics_pieper_gp7_nearest`), kèm
+  bản gắn nhãn cấu hình (`inverse_kinematics_pieper_gp7_tagged`) cho dialog đổi
+  cấu hình. Cả app (Find branches / Change Config) lẫn Orchestrator client-IK đều
+  dùng Pieper.
+- `inverse_kinematics.py` — IK số (**fallback**): **DLS**, **LM**, **SDLS**,
+  **BFGS**, `inverse_kinematics_seeded` (đa-seed, bền nhất), `inverse_kinematics_batch`.
 - `trajectory.py` — nội suy quỹ đạo + kiểm tra joint-limit + tự va chạm (sphere).
 
 ### 3.4. Điều phối & Digital Twin — `src/orchestrator/`
@@ -114,7 +120,9 @@ nền tảng đã verify — không sửa.**
 - `state_machine.py` (`PickPlaceStateMachine`, `PickState`) — máy trạng thái thuần
   logic: IDLE→DETECT→PLAN→APPROACH→GRASP→LIFT→TRANSFER→PLACE→RETREAT→DONE.
 - `digital_twin.py` (`DigitalTwinMirror`) — facade hai chiều: backend + mirror
-  viewport + telemetry + phát hiện drift + auto-stop khi alarm nặng.
+  viewport + telemetry + phát hiện drift + auto-stop khi alarm nặng. Có **E-stop
+  latch**: sau `Stop()` / alarm nghiêm trọng → từ chối mọi lệnh motion (MoveJ/MoveL)
+  tiếp theo cho tới khi mirror khởi động lại.
 - `sim_robot.py` (`SimRobot`) — robot mô phỏng thuần Python (không cần phần cứng).
 - `coord_conv.py` — `camera_to_base`, `make_grasp_pose`, `load_calibration`...
 - `frame_convert.py` — chuyển World ↔ Robot-base cho HSE Cartesian (quy ước Yaskawa).
@@ -140,6 +148,11 @@ nghiệp; ghép từ các **mixin**:
 - `mixin_camera` — **dock Camera (D455)**: live view RGB/depth, chụp dataset,
   điều khiển vòng kín (detect→grasp→teach→pick→Run on Robot), đồng bộ camera vào
   cell + vẽ **frustum** (nón nhìn).
+- `mixin_experiment` — **dock "Digital Twin"** chạy với robot THẬT (HSE):
+  **Live mirror** (đọc joints thật, vẽ viewport @~2Hz + ghi telemetry CSV — chỉ
+  đọc, robot không nhận lệnh) và **Run experiment** (pick-place tự động qua
+  Orchestrator + perception D455+YOLO/Mock — robot di chuyển). Tái dùng
+  `DigitalTwinMirror` + `MotomanHSEBackend` + `Orchestrator`.
 - `mixin_connection` — kết nối HSE + Run on Robot (có dialog an toàn).
 - `mixin_job_target` — thư viện target (pose đặt tên, kiểu RoboDK).
 - `mixin_program_io` — Save/Load project JSON (v3) + Export .JBI.
@@ -205,6 +218,8 @@ Trong app:
 - **Jog dock**: di chuyển khớp/Cartesian; **Program dock**: build MoveJ/L/C, teach
   target, Export .JBI, Run on Robot (qua HSE, có dialog an toàn).
 - **View → Window → Camera (D455)**: mở dock camera (xem 4.4).
+- **Digital Twin → Show Digital Twin panel**: mở dock "Digital Twin" cho robot
+  thật (xem 4.5).
 - **Teach on Surface** (Ctrl+Shift+T): click vào mesh 3D để tạo target theo pháp
   tuyến bề mặt.
 
@@ -223,7 +238,18 @@ Trong app:
 4. **Đồng bộ Camera → Cell**: ghi pose (từ calibration) + intrinsics thật vào node
    `camera`, vẽ **frustum** trong viewport (một camera-item duy nhất, kiểu RoboDK).
 
-### 4.5. Chạy trên robot GP7 thật (HSE)
+### 4.5. Digital Twin robot thật trong app (dock "Digital Twin")
+Mở qua **Digital Twin → Show Digital Twin panel** (cần Load Robot GP7 + IP YRC1000
+ở Robot → Connection settings). Hai chế độ:
+- **▶ Start live mirror** — đọc joints THẬT từ YRC1000 (HSE) và vẽ vào viewport
+  @~2Hz, ghi telemetry CSV. **Chỉ đọc** — robot không nhận lệnh nào → an toàn.
+- **▶ Start experiment** — pick-place tự động trên robot THẬT qua Orchestrator +
+  perception (D455+YOLO hoặc Mock dry-run); chọn IK source (YRC onboard / Pieper
+  client), số trial, ultra-fast. **Robot sẽ di chuyển** (có dialog cảnh báo).
+- **⏹ Stop Digital Twin** — dừng; với experiment thì servo-off ngay. Sau Stop /
+  alarm nặng, `DigitalTwinMirror` **latch** từ chối mọi lệnh motion tiếp theo.
+
+### 4.6. Chạy trên robot GP7 thật (HSE)
 ```powershell
 python scripts/02_run_calibration.py --hse-ip 192.168.1.100   # hiệu chỉnh hand-eye
 python scripts/03_run_experiment.py --mode real --backend hse `

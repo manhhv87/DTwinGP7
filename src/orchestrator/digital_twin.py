@@ -83,6 +83,9 @@ class DigitalTwinMirror:
         alarm_poll_period_s: float = DEFAULT_ALARM_POLL_PERIOD_S,
         auto_stop_on_major_alarm: bool = True,
         viewport_mirror_enabled: bool = True,
+        grasp_callback: Any = None,
+        release_callback: Any = None,
+        reset_callback: Any = None,
     ) -> None:
         self.backend = backend
         # Backward compat: nhiều site truy cập `.hse` — giữ alias để khỏi break.
@@ -105,6 +108,12 @@ class DigitalTwinMirror:
         # Tắt viewport_callback → mirror loop vẫn chạy (telemetry + drift +
         # alarm), chỉ skip render. Dùng để giảm overhead khi không cần visual.
         self.viewport_mirror_enabled = bool(viewport_mirror_enabled)
+        # Optional viewport-visual hooks: Orchestrator gọi attach_object/
+        # detach_object/reset_scene (duck-typed, có hasattr guard) → forward sang
+        # callback để app GUI gắn/thả/reset vật trong scene. None = no-op.
+        self._grasp_callback = grasp_callback
+        self._release_callback = release_callback
+        self._reset_callback = reset_callback
 
         self._mirror_thread: threading.Thread | None = None
         self._stop_flag = threading.Event()
@@ -112,6 +121,10 @@ class DigitalTwinMirror:
         self._last_actual: list[float] | None = None
         self._current_alarm: AlarmInfo = decode_alarm(0)
         self._auto_stopped = False
+        # E-stop latch: sau Stop()/auto-stop-on-alarm → từ chối MỌI lệnh motion
+        # tiếp theo (MoveJ/MoveL) cho tới khi start_mirror() clear. Chuẩn công
+        # nghiệp: không gửi lệnh chuyển động sau khi đã hold/E-stop.
+        self._motion_halted = threading.Event()
         self._lock = threading.Lock()
 
     # ────────────────────────────────────────────────────────────────────
@@ -125,6 +138,7 @@ class DigitalTwinMirror:
         if self.telemetry is not None:
             self.telemetry.open()
         self._stop_flag.clear()
+        self._motion_halted.clear()     # (re)start → cho phép motion trở lại
         # Fire alarm poll trên tick đầu (0.0 < monotonic), giúp test ngắn pass
         # + thực tế cũng hợp lý: check alarm ngay khi start để biết state ban đầu.
         self._next_alarm_poll_t = 0.0
@@ -231,7 +245,7 @@ class DigitalTwinMirror:
                     and not self._auto_stopped):
                 logger.error("Auto-stop triggered bởi alarm %d", code)
                 try:
-                    self.hse.Stop()
+                    self.Stop()          # latch motion-halt + servo-off backend
                     self._auto_stopped = True
                 except Exception as e:               # noqa: BLE001
                     logger.error("Auto-stop Stop() lỗi: %s", e)
@@ -311,7 +325,13 @@ class DigitalTwinMirror:
         return -1
 
     def Stop(self) -> None:
-        """Emergency stop. No-op nếu backend không support (SimRobot)."""
+        """Emergency stop: latch motion-halt RỒI servo-off backend.
+
+        Set `_motion_halted` TRƯỚC khi forward → mọi MoveJ/MoveL sau đó (kể cả
+        đang giữa một chu trình Orchestrator) bị từ chối ngay, không gửi thêm
+        lệnh tới robot. No-op forward nếu backend không support (SimRobot).
+        """
+        self._motion_halted.set()
         if hasattr(self.backend, "Stop") and callable(self.backend.Stop):
             self.backend.Stop()
 
@@ -356,7 +376,14 @@ class DigitalTwinMirror:
         """
         return getattr(type(self.backend), "supports_cartesian_pose", False) is True
 
+    def _check_not_halted(self) -> None:
+        """Raise nếu đã Stop()/auto-stop — chặn motion sau E-stop/hold."""
+        if self._motion_halted.is_set():
+            raise RuntimeError(
+                "Digital Twin halted (Stop/alarm) — motion command refused")
+
     def MoveJ(self, target: Any) -> None:
+        self._check_not_halted()
         # Cartesian pass-through cho HSE backend khi target là 4x4 pose
         if (isinstance(target, np.ndarray) and target.shape == (4, 4)
                 and self._backend_supports_cartesian()):
@@ -370,6 +397,7 @@ class DigitalTwinMirror:
         self.backend.MoveJ(joints)
 
     def MoveL(self, target: Any) -> None:
+        self._check_not_halted()
         if (isinstance(target, np.ndarray) and target.shape == (4, 4)
                 and self._backend_supports_cartesian()):
             with self._lock:
@@ -380,6 +408,32 @@ class DigitalTwinMirror:
         with self._lock:
             self._last_commanded = list(joints)
         self.backend.MoveL(joints)
+
+    # ── Viewport-visual hooks (Orchestrator gọi nếu robot hỗ trợ) ────────
+    def attach_object(self, class_name: Any = None) -> None:
+        """Orchestrator báo gripper đã GẮP vật → forward để app gắn vật vào
+        gripper trong viewport (visual). No-op nếu không set callback."""
+        if self._grasp_callback is not None:
+            try:
+                self._grasp_callback(class_name)
+            except Exception as e:                              # noqa: BLE001
+                logger.debug("grasp_callback lỗi: %s", e)
+
+    def detach_object(self) -> None:
+        """Orchestrator báo gripper đã THẢ vật → forward để app thả vật."""
+        if self._release_callback is not None:
+            try:
+                self._release_callback()
+            except Exception as e:                              # noqa: BLE001
+                logger.debug("release_callback lỗi: %s", e)
+
+    def reset_scene(self) -> None:
+        """Orchestrator reset đầu mỗi trial → forward để app đưa vật về chỗ cũ."""
+        if self._reset_callback is not None:
+            try:
+                self._reset_callback()
+            except Exception as e:                              # noqa: BLE001
+                logger.debug("reset_callback lỗi: %s", e)
 
     def _target_to_joints(self, target: Any) -> list[float]:
         """Convert target joint list → list[float] of 6 floats.
