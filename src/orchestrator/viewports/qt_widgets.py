@@ -87,3 +87,5 @@ class WorkerSignals(QObject):
     program_done  = pyqtSignal()
     camera_result = pyqtSignal(object)      # dict {rgb, depth, objects, fps, source}
     sim_reset     = pyqtSignal()            # SimEvent 'reset_objects' → objects về vị trí ban đầu
+    exp_progress  = pyqtSignal(int, object)  # (trial đã xong, stats dict) — Digital Twin experiment
+    exp_done      = pyqtSignal(object)       # stats dict — mirror/experiment kết thúc → re-enable UI

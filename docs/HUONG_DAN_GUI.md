@@ -19,13 +19,13 @@
 - [§3. Phím tắt](#3-phím-tắt)
 - [§4. Di chuyển góc nhìn 3D](#4-di-chuyển-góc-nhìn-3d)
 - [§5. Nạp robot / cell](#5-nạp-robot--cell)
-- [§6. Jog robot (panel Controls)](#6-jog-robot-panel-controls)
+- [§6. Jog robot (panel Yaskawa GP7 panel)](#6-jog-robot-panel-yaskawa-gp7-panel)
 - [§7. Dựng & chạy chương trình (panel Program)](#7-dựng--chạy-chương-trình-panel-program)
 - [§8. Teach nâng cao: Surface + Config](#8-teach-nâng-cao-surface--config)
-- [§9. Camera & vision-guided (panel Camera D455)](#9-camera--vision-guided-panel-camera-d455)
+- [§9. Camera & vision-guided (panel Camera (D455))](#9-camera--vision-guided-panel-camera-d455)
 - [§10. Lưu / mở / xuất file](#10-lưu--mở--xuất-file)
-- [§11. Chạy trên robot thật (HSE)](#11-chạy-trên-robot-thật-hse)
-- [§12. Chỉnh sửa Cell (panel Cell components)](#12-chỉnh-sửa-cell-panel-cell-components)
+- [§11. Chạy trên robot thật (HSE) + Digital Twin](#11-chạy-trên-robot-thật-hse--digital-twin)
+- [§12. Chỉnh sửa Cell (panel Cell)](#12-chỉnh-sửa-cell-panel-cell)
 - [§13. Sự cố GUI thường gặp](#13-sự-cố-gui-thường-gặp)
 
 ---
@@ -46,10 +46,10 @@ python scripts/16_app_qt.py --program examples/sample_program.json  # mở chư�
 
 **Bố cục cửa sổ:**
 - **Giữa**: viewport 3D (VTK) — scene robot + bàn + vật.
-- **Thanh menu** trên cùng: File · Edit · View · Robot · Program · Help (§2).
-- **Cụm dock bên trái** (4 panel xếp dạng tab): **Cell components**, **Controls**, **Program**, **Camera (D455)**.
+- **Thanh menu** trên cùng: File · Edit · View · Robot · Program · Digital Twin · Help (§2).
+- **Cụm dock bên trái** (xếp dạng tab): **Cell**, **Yaskawa GP7 panel**, **Program**, **Camera (D455)**, **Digital Twin**.
 
-**Hiện / ẩn panel:** **View → Window →** tích/bỏ tích panel. Mặc định chỉ **Cell components** hiện; Controls / Program / Camera **ẩn** — bật khi cần.
+**Hiện / ẩn panel:** **View → Window →** tích/bỏ tích panel (panel Digital Twin mở qua menu **Digital Twin**). Mặc định chỉ **Cell** hiện; **Yaskawa GP7 panel** / Program / Camera / Digital Twin **ẩn** — bật khi cần.
 
 > 💡 Panel mới bật gộp vào cụm tab trái. Kéo tiêu đề panel để tách ra cửa sổ nổi; thả về vùng dock để gộp lại.
 
@@ -61,7 +61,7 @@ python scripts/16_app_qt.py --program examples/sample_program.json  # mở chư�
 
 ## §2. Bản đồ Menu
 
-<img src="figures/panel_menubar.png" width="460" alt="Thanh menu: File Edit View Robot Program Help">
+<img src="figures/panel_menubar.png" width="460" alt="Thanh menu: File Edit View Robot Program Digital Twin Help">
 
 **File**
 - **Load Robot GP7** — nạp robot GP7 vào scene (cold start).
@@ -95,6 +95,9 @@ python scripts/16_app_qt.py --program examples/sample_program.json  # mở chư�
 - **Clear all** — xóa toàn bộ lệnh.
 - **Post-processor settings…** — đặt `max_speed_pct`, VJ/V mặc định cho .JBI.
 - **Generate from Python script…** — mở editor sinh lệnh bằng Python (xem [`HUONG_DAN_LAP_TRINH.md` §4](HUONG_DAN_LAP_TRINH.md)).
+
+**Digital Twin**
+- **Show Digital Twin panel** — mở dock **Digital Twin** (mirror robot thật + chạy thí nghiệm pick-place tự động — §11).
 
 **Help → About...**
 
@@ -164,13 +167,13 @@ toàn scene, **Perspective view** để bật/tắt phối cảnh.
 
 ---
 
-## §6. Jog robot (panel Controls)
+## §6. Jog robot (panel Yaskawa GP7 panel)
 
-Bật: **View → Window → Controls panel**.
+Bật: **View → Window → Controls panel** (dock hiện ra có tiêu đề **Yaskawa GP7 panel**).
 
 <table>
 <tr>
-<td width="340"><img src="figures/panel_controls.png" width="340" alt="Panel Controls"></td>
+<td width="340"><img src="figures/panel_controls.png" width="340" alt="Panel Yaskawa GP7 panel"></td>
 <td>
 
 - **Cartesian Jog**: combo **Tool** + **Ref** (hệ quy chiếu) + **Step** (mm/độ); 6 ô
@@ -204,11 +207,12 @@ Cấu trúc panel (trên xuống):
 4. **Tab thêm lệnh:**
    - **Motion**: **+ MoveJ** · **+ MoveL** · **+ MoveC (set MID)** — chèn lệnh đi tới
      **pose hiện tại** của robot. (Muốn đi tới target đặt tên → dùng **+ MoveJ →** ở mục Targets.)
-   - **Logic**: ô **OUT# [n] = [ON/OFF]** + **+ DOUT** (bật/tắt ngõ ra số — đóng/mở
+   - **I/O & Flow**: ô **OUT# [n] = [ON/OFF]** + **+ DOUT** (bật/tắt ngõ ra số — đóng/mở
      gripper, thường OT#1) · **+ WaitIO** · **+ Wait** · **+ MSG** · **+ Call** · **+ SimEvent**.
    - **Modal**: **+ SetSpeed** (VJ% + V mm/s) · **+ Rounding** (PL) · **+ SetTool** (TL#)
      · **+ RefFrame** (UF#).
-5. **Thanh playback**: **▶ Run Sim** · **▮▮ Pause** · **■ Stop** · **⚙ Run on Robot (real — HSE)** + ô tốc độ.
+5. **Thanh playback** (2 hàng): hàng Sim **▶ Run Sim** · **▮▮ Pause** · **■ Stop** + ô **Speed**;
+   hàng robot thật **⚙ Run on Robot (real — HSE)**. Dưới cùng có hàng file: **Save** · **Load** · **Export .JBI** · **Clear all**.
 
 </td>
 </tr>
@@ -224,13 +228,13 @@ Mục tiêu: HOME → PICK → đóng kẹp → về HOME.
 5. Dựng chuỗi lệnh:
    - Chọn `HOME` trong Targets → **+ MoveJ →**  ⇒ MOVJ HOME
    - Chọn `PICK` → **+ MoveJ →**  ⇒ MOVJ PICK
-   - Tab **Logic**: OUT# = 1, chọn **ON** → **+ DOUT** (đóng kẹp)
-   - Tab **Logic**: **+ Wait** 0.3 s
+   - Tab **I/O & Flow**: OUT# = 1, chọn **ON** → **+ DOUT** (đóng kẹp)
+   - Tab **I/O & Flow**: **+ Wait** 0.3 s
    - Chọn `HOME` → **+ MoveJ →** (về)
 6. **▶ Run Sim** để xem mô phỏng.
 7. **File → Save program (.json)** (`Ctrl+S`).
 8. **File → Export .JBI** → file nạp cho YRC1000.
-9. (robot thật) **⚙ Run on Robot** → §11.
+9. (robot thật) **⚙ Run on Robot (real — HSE)** → §11.
 
 ---
 
@@ -239,8 +243,8 @@ Mục tiêu: HOME → PICK → đóng kẹp → về HOME.
 - **Teach on Surface** (`Ctrl+Shift+T` hoặc **Robot → Teach on surface**): bật chế độ →
   **click vào mesh** trong scene 3D → app raycast lấy điểm + pháp tuyến bề mặt → IK →
   tạo target với trục Z của TCP vuông góc bề mặt. Tắt bằng `Ctrl+Shift+T` lần nữa.
-- **Change Configuration** (`F4` hoặc nút **Config** ở mục Targets): 1 pose có thể có
-  nhiều cấu hình tay (tới 8) → mở dialog chọn cấu hình khác (elbow up/down…).
+- **Config** (`F4` hoặc nút **Config** ở mục Targets): 1 pose có thể có
+  nhiều cấu hình tay (tới 8) → mở dialog **Change Config** chọn cấu hình khác (elbow up/down…).
 
 ---
 
@@ -253,22 +257,22 @@ Bật: **View → Window → Camera (D455)**.
 <td width="250"><img src="figures/panel_camera.png" width="250" alt="Panel Camera (D455)"></td>
 <td>
 
-1. **Nguồn + Start**: chọn nguồn (Auto → D455 nếu có, không thì Mock) → **Start**.
-   Chưa cắm D455 → tự fallback **Mock**. **Stop** để dừng. Đổi **độ phân giải** xong
-   cần Stop → Start để áp.
+1. **Source + Start**: chọn nguồn ở combo **Source** (**Auto (D455→Mock)** → D455 nếu có,
+   không thì Mock; hoặc **D455** / **Mock**) → **Start**. Chưa cắm D455 → tự fallback **Mock**.
+   **Stop** để dừng. Đổi **Resolution** xong cần Stop → Start để áp.
 2. **Toggle hiển thị**: **Depth colormap** · **Detector** · **Overlay**.
    (Detector đổi xong cần Stop → Start để nạp model.)
-3. **Dataset — chụp ảnh**: chọn **Class** (nút **Quản lý…** định nghĩa danh sách lớp
-   → lưu vào cell), tùy chọn lưu depth → **📷 Capture**.
-4. **Vision-guided (vòng kín)**: **Detect → Teach grasp** (vật → grasp pose → IK →
+3. **Dataset — capture images** (section gập): chọn **Class** (nút **Manage…** định nghĩa
+   danh sách lớp → lưu vào cell), **Save depth (.npy)** → **📷 Capture**.
+4. **Control — vision-guided (closed-loop)**: **Detect → Teach grasp** (vật → grasp pose → IK →
    target) · **Pick → Program** (chèn approach→grasp→đóng kẹp→nhấc) · **▶ Run on Robot**
-   · **Đồng bộ Camera → Cell** (ghi pose+intrinsics, vẽ frustum).
+   · **Sync Camera → Cell** (ghi pose+intrinsics, vẽ frustum).
 
 </td>
 </tr>
 </table>
 
-Sau **Đồng bộ Camera → Cell**, frustum (nón nhìn) hiện trong viewport:
+Sau **Sync Camera → Cell**, frustum (nón nhìn) hiện trong viewport:
 
 <table>
 <tr>
@@ -279,7 +283,7 @@ Sau **Đồng bộ Camera → Cell**, frustum (nón nhìn) hiện trong viewport
 `config/calibration/T_base_camera.npy` (sinh bằng `calibration_from_layout.py`
 cho sim, hoặc `02_run_calibration.py` cho thật).
 
-**Quản lý dialog class:** **＋ Thêm** · **✎ Sửa** · **－ Xóa** · **↑ Lên** · **↓ Xuống** · **OK** / **Cancel**.
+**Dialog Manage classes:** **＋ Add** · **✎ Edit** · **－ Delete** · **↑ Up** · **↓ Down** · **OK** / **Cancel**.
 
 </td>
 </tr>
@@ -294,15 +298,18 @@ cho sim, hoặc `02_run_calibration.py` cho thật).
 | Lưu chương trình | **File → Save program (.json)** (`Ctrl+S`) | `.json` (jobs + targets, v3) |
 | Mở chương trình | **File → Open program (.json)** (`Ctrl+O`) | `.json` |
 | Xuất cho robot | **File → Export .JBI (Yaskawa INFORM)** | `.JBI` |
-| Lưu / nạp cell | **File → Save/Load Cell to/from YAML** | `.yaml` |
+| Lưu / nạp cell | **File → Save Cell to YAML… / Load Cell from YAML…** | `.yaml` |
 
 ---
 
-## §11. Chạy trên robot thật (HSE)
+## §11. Chạy trên robot thật (HSE) + Digital Twin
 
-1. **Robot → Connection settings... (HSE IP)**: nhập IP YRC1000, tool#, FTP; bấm nút
-   **Test** trong dialog (heartbeat + đọc joints + check alarm).
-2. **⚙ Run on Robot** (thanh playback) hoặc **Program → Run on Robot…**:
+### 11.1 Kết nối + chạy 1 job (Run on Robot)
+
+1. **Robot → Connection settings... (HSE IP)**: mở dialog **Robot connection (HSE)** —
+   nhập IP YRC1000, tool#, FTP; bấm nút **Test** trong dialog (heartbeat + đọc joints +
+   check alarm).
+2. **⚙ Run on Robot (real — HSE)** (thanh playback) hoặc **Program → Run on Robot…**:
    - Hiện **dialog an toàn** (xác nhận REMOTE mode + speed ≤ 10% + E-stop sẵn sàng).
    - App: connect → upload `.JBI` (FTP) → JOB_SELECT → START → chờ chạy xong.
 3. **■ Stop** (hoặc **Program → Stop**): dừng khẩn — **servo OFF**.
@@ -310,13 +317,42 @@ cho sim, hoặc `02_run_calibration.py` cho thật).
 > Yêu cầu: YRC1000 ở **REMOTE mode** + HSE Server ON, **TOOL01** đã setup. Xem
 > [`HUONG_DAN_CAI_DAT.md` §2.9–§2.10](HUONG_DAN_CAI_DAT.md).
 
+### 11.2 Panel Digital Twin (robot thật)
+
+Mở panel: menu **Digital Twin → Show Digital Twin panel** (dock **Digital Twin**).
+Panel gồm 2 nhóm tham số + 3 nút điều khiển. Trước khi dùng phải đã **Load Robot GP7**
+và đã nhập IP ở **Robot → Connection settings...**.
+
+**Nhóm tham số:**
+- **Digital Twin — real robot (HSE)**: **Mirror Hz (viewport)** (tần số vẽ joint thật vào
+  viewport, mặc định 2 Hz) · **Telemetry Hz (CSV)** (tần số ghi telemetry ra CSV, mặc định 10 Hz).
+- **Experiment parameters (autonomous pick-place)**: **Trials** (số lần thử) ·
+  **IK source** (`yrc (YRC1000 onboard IK)` hoặc `client (Pieper analytical)`) ·
+  **Perception** (`D455 + YOLO (real)` hoặc `Mock (dry-run test)`) ·
+  **Ultra-fast (P-var, upload template once)** (chế độ nhanh, upload template 1 lần).
+
+**3 nút điều khiển:**
+- **▶ Start live mirror** — CHỈ ĐỌC joint thật từ YRC1000 và vẽ vào viewport theo Mirror Hz,
+  ghi telemetry CSV. **Robot KHÔNG nhận lệnh** (an toàn). Có dialog xác nhận **Live mirror — real robot**.
+- **▶ Start experiment** — Orchestrator điều khiển **robot THẬT** gắp-thả tự động qua
+  perception (D455+YOLO thật hoặc Mock dry-run). **Robot SẼ chuyển động** → hiện dialog an toàn
+  **Run experiment — the REAL robot WILL MOVE** (yêu cầu workspace trống, E-stop trong tầm tay,
+  YRC ở PLAY/REMOTE). Cần sẵn `config/calibration/T_base_camera.npy`.
+- **⏹ Stop Digital Twin** — dừng. Với experiment (robot đang chuyển động) → **servo OFF NGAY**.
+
+**E-stop (latch):** bấm **⏹ Stop Digital Twin** → robot dừng và **KHÔNG nhận thêm lệnh
+motion** cho tới khi khởi động lại. App cũng **tự Stop** khi gặp alarm nghiêm trọng.
+
+> Mock dry-run vẫn khiến robot **di chuyển** tới pose tính từ detection GIẢ — đảm bảo
+> workspace trống trước khi chạy. Kết quả + telemetry ghi vào thư mục `results/`.
+
 ---
 
-## §12. Chỉnh sửa Cell (panel Cell components)
+## §12. Chỉnh sửa Cell (panel Cell)
 
 <table>
 <tr>
-<td width="170"><img src="figures/panel_cell.png" width="170" alt="Panel Cell components"></td>
+<td width="170"><img src="figures/panel_cell.png" width="170" alt="Panel Cell"></td>
 <td>
 
 Cây thành phần: robot, gripper, objects, frames, worktable, pedestal, floor, camera, camera mount.
@@ -346,6 +382,7 @@ Cây thành phần: robot, gripper, objects, frames, worktable, pedestal, floor,
 ---
 
 ## Liên kết
+- **Digital Twin (robot thật) đầy đủ**: [`HUONG_DAN_DIGITAL_TWIN.md`](HUONG_DAN_DIGITAL_TWIN.md)
 - Lập trình bằng code/API: [`HUONG_DAN_LAP_TRINH.md`](HUONG_DAN_LAP_TRINH.md)
 - Workflow + CLI: [`HUONG_DAN_SU_DUNG.md`](HUONG_DAN_SU_DUNG.md)
 - Cài đặt: [`HUONG_DAN_CAI_DAT.md`](HUONG_DAN_CAI_DAT.md)

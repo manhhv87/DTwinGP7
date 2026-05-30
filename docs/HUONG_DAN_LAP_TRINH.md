@@ -91,6 +91,10 @@ x, y, z, rx, ry, rz = _matrix_to_xyz_rpy_deg(T)
 - **FK (Forward Kinematics)**: biết 6 góc khớp → tính pose TCP. *Luôn có 1 đáp án.*
 - **IK (Inverse Kinematics)**: biết pose TCP → tính 6 góc khớp. *Có thể 0, 1, hoặc
   nhiều (tới 8) đáp án (các "cấu hình" tay khác nhau), hoặc không với tới được.*
+  GP7 có cổ tay cầu (spherical wrist) nên IK giải được **giải tích (closed-form)
+  Pieper** — đây là đường chính: exact (sai số ~1e-13 mm), trả tất cả nghiệm rồi
+  chọn nhánh gần tư thế hiện tại, xử lý tool offset. IK số (DLS, lặp) chỉ làm
+  **fallback** khi cần.
 
 ### 1.4. Hand-eye calibration
 Ma trận `T_base_camera` (4×4, file `.npy`) cho biết camera nằm ở đâu so với base
@@ -251,32 +255,36 @@ print("TCP tại (mm):", T[:3, 3].round(1))
 > `gp7_urdf` dùng mô hình URDF đã **verify khớp RoboDK 0.00 mm**.
 
 ### 5.2. Inverse Kinematics — pose → góc khớp
+
+**Đường chính — IK giải tích Pieper** (closed-form, exact, trả mọi cấu hình tay):
 ```python
 import math
 from src.orchestrator.kinematics.urdf_chain import gp7_urdf
-from src.orchestrator.kinematics import inverse_kinematics_seeded
+from src.orchestrator.kinematics.pieper_gp7 import (
+    inverse_kinematics_pieper_gp7,          # trả tất cả nghiệm (≤8)
+    inverse_kinematics_pieper_gp7_nearest,  # trả nghiệm gần q_init nhất
+)
 from src.orchestrator.viewports.control_panel import _xyz_rpy_to_matrix
 
 model = gp7_urdf(base_xyz_mm=(0.0, 0.0, 330.0))
 T_target = _xyz_rpy_to_matrix(450, 0, 400, 180, 0, 0)   # pose mong muốn (mm, độ)
 q_init = [math.radians(q) for q in [0, 0, 0, 0, 0, 0]]  # seed = tư thế hiện tại
 
-sol_rad = inverse_kinematics_seeded(model, T_target, q_init)   # bền: thử nhiều seed
-if sol_rad is None:
-    print("Không với tới được pose này")
-else:
-    print("Góc khớp (độ):", [round(math.degrees(q), 1) for q in sol_rad])
-```
-
-**IK giải tích Pieper** (nhanh + trả mọi cấu hình tay):
-```python
-from src.orchestrator.kinematics.pieper_gp7 import (
-    inverse_kinematics_pieper_gp7,          # trả tất cả nghiệm
-    inverse_kinematics_pieper_gp7_nearest,  # trả nghiệm gần q_init nhất
-)
 sols = inverse_kinematics_pieper_gp7(model, T_target)     # list (có thể 0..8 nghiệm)
 print(f"Số cấu hình tay với tới được: {len(sols)}")
 best = inverse_kinematics_pieper_gp7_nearest(model, T_target, q_init)  # cho chuyển động liên tục
+if best is None:
+    print("Không với tới được pose này")
+else:
+    print("Góc khớp (độ):", [round(math.degrees(q), 1) for q in best])
+```
+Pieper exact (~1e-13 mm), nhanh, deterministic — dùng làm IK mặc định trong app
+(Find branches / Change Config) và Orchestrator client-IK.
+
+**Fallback — IK số DLS** (lặp, generic 6R, khi cần robot khác / cấu hình đặc biệt):
+```python
+from src.orchestrator.kinematics import inverse_kinematics_seeded
+sol_rad = inverse_kinematics_seeded(model, T_target, q_init)   # bền: thử nhiều seed
 ```
 
 ### 5.3. Tọa độ & grasp pose

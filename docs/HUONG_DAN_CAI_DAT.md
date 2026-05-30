@@ -15,6 +15,7 @@ hàng ngày.
 ## Setup flow tổng quan
 
 ```mermaid
+%%{init: {'flowchart': {'nodeSpacing': 60, 'rankSpacing': 85, 'useMaxWidth': false}}}%%
 flowchart TB
     S0[Section 0-1<br/>2 máy Windows + Linux] --> S1[Section 2.1-2.3<br/>Python 3.10 venv<br/>requirements.txt]
     S1 --> Q1{Mode<br/>sim only?}
@@ -33,6 +34,7 @@ flowchart TB
     style S3 fill:#E65100,stroke:#fff,stroke-width:3px,color:#fff
     style S5 fill:#558B2F,stroke:#fff,color:#fff
     style DONE fill:#7E57C2,stroke:#fff,color:#fff
+    linkStyle default stroke:#FF1744,stroke-width:3px
 ```
 
 ---
@@ -177,6 +179,79 @@ với của robot** — giao của hai vùng này là vùng gắp thực tế.
 > Lưu ý: khi *chụp dataset* (mục 4.3 tài liệu thiết kế hệ thống) có nghiêng giàn ±10° để
 > tạo đa dạng ảnh; nhưng khi *vận hành thật*, camera phải ở **một vị trí cố
 > định duy nhất** đã calibrate.
+
+#### 2.8.1. Sinh ma trận calibration `config/calibration/T_base_camera.npy`
+
+Cả pipeline (sim lẫn real) đều cần file `config/calibration/T_base_camera.npy` —
+ma trận đồng nhất 4×4 `T_BC` mô tả pose camera trong **base/world frame**, đơn vị
+translation **mm**. Có **2 cách** sinh file này tuỳ chế độ chạy.
+
+**Cách A — SIM / Mock dry-run (KHÔNG cần phần cứng).** Trong sim ta biết chính
+xác `camera.pose` khai báo trong cell layout, nên calib chỉ là phép hình học
+(không cần ChArUco thật):
+
+```powershell
+python scripts/calibration_from_layout.py --config config/cell_layout.yaml
+```
+
+Script đọc `camera.pose` (xyz mm + rpy độ) từ YAML, dựng `T_BC` rồi ghi ra
+`config/calibration/T_base_camera.npy`. **File đã commit sẵn trong repo là đúng**
+cho cell layout mặc định — chỉ cần chạy lại nếu bạn đổi `camera.pose` trong YAML.
+
+**Cách B — REAL (hand-eye thật, cần phần cứng).** Khi vận hành robot + camera
+thật, phải đo `T_BC` bằng hand-eye calibration với bảng ChArUco:
+
+```powershell
+python scripts/02_run_calibration.py --hse-ip <IP_YRC1000> --method park
+```
+
+##### Bảng ChArUco — thông số BẮT BUỘC in đúng
+
+Các tham số dưới đây được **hard-code** trong `CharucoBoardEstimator`
+(`src/calibration/capture_calibration.py`). In bảng phải khớp **chính xác**, đặc
+biệt là kích thước vật lý — in sai tỉ lệ → calib sai tỉ lệ theo.
+
+| Tham số | Giá trị | Ghi chú |
+|---|---|---|
+| Số ô (`squares_xy`) | **7 × 5** ô | cols × rows |
+| Cạnh ô vuông (`square_length`) | **40 mm** | đo cạnh thật của ô sau khi in |
+| Cạnh marker (`marker_length`) | **30 mm** | marker ArUco nằm trong ô |
+| Từ điển (`dictionary`) | **DICT_4X4_50** | |
+
+> Nếu buộc phải dùng bảng kích thước khác, **phải sửa tham số** khi khởi tạo
+> `CharucoBoardEstimator(squares_xy=..., square_length_m=..., marker_length_m=...)`
+> trong code — đơn vị tham số code là **mét** (vd 40 mm → `0.04`).
+
+##### Quy trình chạy `02_run_calibration.py`
+
+1. **YRC1000 ở mode TEACH** — script chỉ **đọc joints** qua HSE để tính FK, **không
+   gửi lệnh motion**, nên không cần REMOTE.
+2. Bật **HSE Server function** trên YRC1000 (xem §2.9) và `ping` được IP controller.
+3. Gắn bảng ChArUco **cứng** lên end-effector (không xê dịch trong suốt quá trình).
+4. Di robot bằng teach pendant tới **~15–25 pose đa dạng**, mỗi pose **xoay ±30°**
+   theo nhiều trục để phủ đủ rotation. Mỗi pose gõ **ENTER** để ghi (script đọc
+   joints → FK → `T_gripper2base`, đồng thời phát hiện bảng → `T_target2cam`).
+5. Cần **≥ 10 pose** hợp lệ. Gõ **`s`** để giải → lưu `T_base_camera.npy`
+   (gõ `q` để huỷ).
+6. Dùng `--method park` (mặc định). **KHÔNG dùng `tsai`** — Tsai-Lenz sai với
+   camera nhìn xuống (T_BC xoay ~180° rơi vào điểm kỳ dị của thuật toán).
+
+##### Đơn vị — toàn pipeline dùng mm
+
+FK `gripper2base` trả **mm**; ChArUco `target2cam` được quy đổi mét → mm ngay
+trong `estimate_pose`. `solve_hand_eye` yêu cầu 2 input **cùng đơn vị** → giữ mm
+cả hai → output `T_BC` cũng **mm**, lưu thẳng (KHÔNG đổi sang mét).
+
+> ⚠ Bản script trước đây từng lệch đơn vị và **đã được sửa**. Nếu ai từng tạo
+> `T_base_camera.npy` bằng script cũ (lệch đơn vị, hoặc đơn vị mét) thì **PHẢI
+> calibrate lại** — file calib cũ không dùng được.
+
+##### Kiểm chứng trước khi chạy thí nghiệm thật
+
+Sau khi có `T_base_camera.npy`, **touch-test** đo sai số định vị (cho robot chạm
+tới một điểm đã biết, so với toạ độ camera trả về) trước khi chạy thí nghiệm
+pick-place thật. Sai số lớn (>5 mm) thường do dùng nhầm Tsai-Lenz hoặc pose thiếu
+rotation — calibrate lại với `--method park` + thêm pose xoay ±30°.
 
 ---
 

@@ -82,8 +82,8 @@ _DEFAULT_CONFIG: dict[str, Any] = {
     # Max joint speed (deg/s) dùng cho predict interpolation. Phải khớp tốc độ
     # thực tế của robot để predict đúng motion sequence.
     "predict_max_speed_deg_s": 30.0,
-    # Khi True: dùng numerical IK client-side (URDF chain DLS pure-Python).
-    # Default cho mọi backend non-YRC.
+    # Khi True: dùng IK client-side (Pieper analytical nearest-branch, DLS
+    # fallback). Default cho mọi backend non-YRC.
     "use_client_ik": False,
     # Base pose của robot trong world frame (mm + radian). Dùng để init URDF
     # model với base offset đúng cho client IK.
@@ -298,7 +298,16 @@ class Orchestrator:
 
         Cho phép `_execute_pick_place` gom 5-7 motion call thành 1 INFORM upload —
         giảm overhead từ ~1-2s/trial xuống ~200ms/trial (HSE backend M3).
+
+        QUAN TRỌNG: với `use_yrc_ik`, motion là pose Cartesian (4x4 → P-var BASE,
+        YRC tự IK). Backend HSE CHƯA hỗ trợ Cartesian trong batch/ultra-fast
+        (`_move_pose` raise NotImplementedError) → batch sẽ làm MỖI MoveJ/MoveL
+        Cartesian raise, robot không chạy. Vì vậy KHÔNG batch khi yrc — mỗi move
+        chạy single-shot (đúng, chỉ tốn thêm vài INFORM upload/trial). Batch chỉ
+        bật cho path joint-list (client IK).
         """
+        if self.config.get("use_yrc_ik", False):
+            return contextlib.nullcontext()
         if hasattr(self.robot, "batch") and callable(self.robot.batch):
             return self.robot.batch()
         return contextlib.nullcontext()
@@ -425,38 +434,72 @@ class Orchestrator:
         return result
 
     def _solve_ik_client(self, target_T_world: np.ndarray) -> list[float] | None:
-        """Numerical IK client-side qua kinematics module (DLS pure-Python).
+        """IK client-side: **Pieper analytical** (nearest-branch) → DLS fallback.
 
-        URDF chain verified match RoboDK SolveFK 0.00mm — không cần RoboDK fallback.
+        Pieper exact (~1e-10mm, deterministic, ~50µs) + chọn nhánh gần
+        `_current_joints` để continuous motion không "chong chóng" cổ tay — đây
+        chính là solver app GUI dùng (Find branches / Change Config). DLS
+        (`inverse_kinematics_seeded`) chỉ làm fallback khi Pieper rỗng (pose
+        ngoài tầm hoàn toàn — hiếm). URDF chain verified match RoboDK 0.00mm.
 
         Args:
             target_T_world: 4x4 pose trong WORLD frame (orchestrator native).
 
         Returns:
-            Joints (degrees) gần `_current_joints`, hoặc None nếu không converge.
+            Joints (degrees) gần `_current_joints`, hoặc None nếu unreachable.
         """
         try:
             from .kinematics import inverse_kinematics_seeded
+            from .kinematics.pieper_gp7 import (
+                inverse_kinematics_pieper_gp7_nearest,
+            )
             from .kinematics.urdf_chain import gp7_urdf
         except ImportError:
             return None
 
+        tool_offset = float(self.config.get("robot_tool_offset_mm", 0.0))
         if not hasattr(self, "_dh_model_cached"):
-            # URDF chain — verified match RoboDK SolveFK (0.00mm diff)
+            # URDF chain — verified match RoboDK SolveFK (0.00mm diff). Truyền
+            # ĐỦ base_xyz + base_rpy để khớp _world_to_robot_base (YRC path) —
+            # nếu robot base xoay mà thiếu rpy, IK sẽ giải sai frame.
+            base_rpy_deg = self.config.get("robot_base_rpy_deg", (0.0, 0.0, 0.0))
             self._dh_model_cached = gp7_urdf(
                 base_xyz_mm=tuple(self.config.get("robot_base_xyz_mm", (0.0, 0.0, 0.0))),
-                tool_offset_mm=float(self.config.get("robot_tool_offset_mm", 0.0)),
+                base_rpy_rad=tuple(float(np.deg2rad(d)) for d in base_rpy_deg),
+                tool_offset_mm=tool_offset,
             )
         model = self._dh_model_cached
 
-        q_init = (
-            [np.deg2rad(q) for q in self._current_joints]
-            if self._current_joints is not None
-            else [0.0] * 6
-        )
-        # Multi-seed: thử q_init trước (nghiệm gần, mượt); fail thì retry từ seed
-        # đa dạng → ~100% hội tụ.
-        sol_rad = inverse_kinematics_seeded(model, target_T_world, q_init)
+        # Seed nearest-branch: joints hiện tại nếu có; nếu chưa (trial đầu / sau
+        # YRC_POSE move set None) dùng HOME thay vì [0]*6 — tránh Pieper chọn
+        # nhánh "gần 0" khác tư thế thật → MoveJ nhảy lớn.
+        if self._current_joints is not None:
+            q_init = [np.deg2rad(q) for q in self._current_joints]
+        else:
+            home = self.config.get("home_joints_deg") or [0.0] * 6
+            q_init = [np.deg2rad(q) for q in home]
+
+        # Path 1: Pieper analytical → nhánh gần q_init (exact + đúng branch).
+        # Pieper giải cho FLANGE (tool0), KHÔNG tự cộng tool_offset_mm. Khi có
+        # tool offset, hạ target TCP về flange (lùi tool_offset dọc trục Z công
+        # cụ = cột Z của pose) TRƯỚC khi gọi Pieper — đúng nguyên lý controller
+        # công nghiệp (IK quanh wrist center, TCP là offset cố định). Nghiệm trả
+        # về vẫn đặt TCP đúng target.
+        if abs(tool_offset) > 1e-6:
+            pieper_target = target_T_world.copy()
+            pieper_target[:3, 3] = (
+                target_T_world[:3, 3] - tool_offset * target_T_world[:3, 2])
+        else:
+            pieper_target = target_T_world
+        try:
+            sol_rad = inverse_kinematics_pieper_gp7_nearest(
+                model, pieper_target, q_init)
+        except Exception as e:                                  # noqa: BLE001
+            logger.debug("Pieper IK lỗi (%s) → fallback DLS", e)
+            sol_rad = None
+        # Path 2 (fallback): DLS multi-seed — FK đầy đủ (tự xử lý tool offset).
+        if sol_rad is None:
+            sol_rad = inverse_kinematics_seeded(model, target_T_world, q_init)
         if sol_rad is None:
             return None
         return [float(np.rad2deg(q)) for q in sol_rad]
@@ -472,12 +515,13 @@ class Orchestrator:
         return world_to_robot_base(T_world, base_xyz, base_rpy)
 
     def _solve_ik_routed(self, target_T_world: np.ndarray):
-        """Pick IK source: YRC controller (Cartesian) hoặc client-side DLS.
+        """Pick IK source: YRC controller (Cartesian) hoặc client-side (Pieper/DLS).
 
         Priority:
           1. use_yrc_ik=True → gửi pose Cartesian thẳng cho backend (YRC tự IK).
              Trả về ("YRC_POSE", T_base).
-          2. Default → numerical DLS client-side. Trả về (joint_list, None).
+          2. Default → client-side IK (Pieper analytical, DLS fallback).
+             Trả về (joint_list, None).
 
         Returns:
             ("YRC_POSE", T_base): caller gọi MoveJ(T_base) Cartesian
@@ -492,7 +536,7 @@ class Orchestrator:
         # Path 2: client-side numerical IK (default — URDF chain match RoboDK 0.00mm)
         joint_list = self._solve_ik_client(target_T_world)
         if joint_list is None:
-            logger.warning("Client DLS IK fail tại world %s",
+            logger.warning("Client IK (Pieper/DLS) fail tại world %s",
                            target_T_world[:3, 3].round(1).tolist())
             return (None, None)
         return (joint_list, None)

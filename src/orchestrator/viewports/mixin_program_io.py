@@ -119,8 +119,8 @@ class ProgramIOMixin:
         if len(non_empty_jobs) > 1:
             r = QMessageBox.question(
                 self, "Export INFORM .JBI",
-                f"Project có {len(non_empty_jobs)} non-empty jobs.\n\n"
-                f"  Yes → Export ALL jobs (separate .JBI files vào 1 thư mục)\n"
+                f"Project has {len(non_empty_jobs)} non-empty jobs.\n\n"
+                f"  Yes → Export ALL jobs (separate .JBI files into one folder)\n"
                 f"  No  → Export only current ({self._active_job})",
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
                 | QMessageBox.StandardButton.Cancel)
@@ -146,7 +146,7 @@ class ProgramIOMixin:
 
     def _export_all_jobs(self, job_names: list[str]) -> None:
         out_dir = QFileDialog.getExistingDirectory(
-            self, "Export ALL jobs — chọn thư mục output")
+            self, "Export ALL jobs — choose output folder")
         if not out_dir: return
         # Sequential — IK solving (~1.4ms hot, ~10ms cold) per MoveL có GIL
         # contention nếu parallel; benchmark confirms threading SLOWER for sub-ms
@@ -186,7 +186,7 @@ class ProgramIOMixin:
                 if ins.target_name not in target_cvars:
                     if ins.target_name not in self._targets:
                         raise KeyError(
-                            f"Target '{ins.target_name}' không tồn tại")
+                            f"Target '{ins.target_name}' does not exist")
                     cvar_name = f"T_{ins.target_name}"[:32]
                     builder.add_position(
                         cvar_name, self._targets[ins.target_name]["joints"])

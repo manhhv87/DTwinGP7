@@ -72,9 +72,9 @@ class ProgramPlaybackMixin:
             return
         r = QMessageBox.question(
             self, "Clear all",
-            f"Xoá toàn bộ {len(self._jobs)} job(s), {total_steps} instructions, "
-            f"và {len(self._targets)} target(s)?\n\n"
-            "Reset project về MAIN job rỗng.",
+            f"Delete all {len(self._jobs)} job(s), {total_steps} instructions, "
+            f"and {len(self._targets)} target(s)?\n\n"
+            "Reset the project to an empty MAIN job.",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
         if r != QMessageBox.StandardButton.Yes: return
         self._jobs = {"MAIN": []}
@@ -124,7 +124,7 @@ class ProgramPlaybackMixin:
             tgt = self._targets.get(ins.target_name)
             if tgt is None:
                 self._signals.status.emit(
-                    f"Target '{ins.target_name}' không tồn tại", "err")
+                    f"Target '{ins.target_name}' does not exist", "err")
                 return None
             return list(tgt[want])
         return list(ins.joints if want == "joints" else ins.tcp_pose)

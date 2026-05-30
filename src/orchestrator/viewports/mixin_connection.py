@@ -49,15 +49,15 @@ class ConnectionMixin:
         form.addRow("FTP pass", ed_pass)
         form.addRow("FTP job dir", ed_dir)
         info = QLabel(
-            "<small><i>⚠ Robot phải ở REMOTE mode + HSE Server function enabled."
-            "<br>Speed slider trên TP nên ≤ 10% lần đầu.</i></small>")
+            "<small><i>⚠ Robot must be in REMOTE mode + HSE Server function enabled."
+            "<br>TP speed slider should be ≤ 10% on first run.</i></small>")
         info.setWordWrap(True); form.addRow(info)
         # Buttonbox: thêm "Test" cùng OK/Cancel. Click Test → ping với values
         # đang edit trong form (chứ không phải self._hse_* đã save trước đó).
         bb = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         btn_test = bb.addButton("Test", QDialogButtonBox.ButtonRole.ActionRole)
-        btn_test.setToolTip("Ping HSE với values trong form (không save)")
+        btn_test.setToolTip("Ping HSE with the values in this form (without saving)")
         btn_test.clicked.connect(lambda: self._test_hse_connection(
             ip=ed_ip.text().strip(),
             tool_no=int(sp_tool.value()),
@@ -88,7 +88,7 @@ class ConnectionMixin:
         """
         if not ip:
             self._set_status(
-                "Chưa cấu hình HSE IP — Robot → Connection settings", level="warn")
+                "HSE IP not configured — Robot → Connection settings", level="warn")
             return
         self._set_status(f"Pinging {ip}…", level="info")
         QApplication.processEvents()
@@ -116,15 +116,15 @@ class ConnectionMixin:
                         f"Connected but deep probe fail: {e}", level="warn")
             else:
                 self._set_status(
-                    f"Connection FAIL — kiểm tra HSE Server enable",
+                    f"Connection FAIL — check HSE Server is enabled",
                     level="err")
                 QMessageBox.warning(
                     self, "Connection failed",
-                    f"YRC1000 {ip} không phản hồi READ_STATUS.\n"
+                    f"YRC1000 {ip} did not respond to READ_STATUS.\n"
                     "Verify:\n"
                     " • Ping {ip} OK?\n"
-                    " • HSE Server function enabled trong Maintenance mode?\n"
-                    " • PC cùng subnet với YRC1000?".format(ip=ip))
+                    " • HSE Server function enabled in Maintenance mode?\n"
+                    " • PC on the same subnet as the YRC1000?".format(ip=ip))
         except Exception as e:                              # noqa: BLE001
             self._set_status(f"Connection error: {e}", level="err")
             QMessageBox.critical(self, "Connection error", str(e))
@@ -150,7 +150,7 @@ class ConnectionMixin:
         if not self._hse_ip:
             r = QMessageBox.question(
                 self, "Run on Robot",
-                "Chưa cấu hình HSE IP. Mở Connection settings bây giờ?",
+                "HSE IP not configured. Open Connection settings now?",
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
             if r == QMessageBox.StandardButton.Yes:
                 self._on_show_connection_settings()
@@ -158,22 +158,22 @@ class ConnectionMixin:
         if not self._program:
             self._set_status("Current job empty", level="warn"); return
         if self._hse_thread is not None and self._hse_thread.is_alive():
-            self._set_status("Robot đang chạy job — wait done hoặc Stop",
+            self._set_status("Robot is running a job — wait for it to finish or Stop",
                               level="warn"); return
         # Safety confirm
         n_steps = len(self._program)
         r = QMessageBox.warning(
             self, "Run on Robot — Safety check",
-            f"<b>⚠ ROBOT SẼ CHUYỂN ĐỘNG THẬT</b><br><br>"
+            f"<b>⚠ THE ROBOT WILL MOVE FOR REAL</b><br><br>"
             f"Job: <code>{self._active_job}</code> ({n_steps} instructions)<br>"
             f"HSE IP: <code>{self._hse_ip}</code><br>"
             f"Max VJ: {self._pp_max_speed_pct:.0f}%<br><br>"
-            f"Trước khi tiếp tục, verify:<br>"
-            f"&nbsp;✓ YRC1000 ở REMOTE mode<br>"
-            f"&nbsp;✓ Speed slider TP ≤ 10%<br>"
-            f"&nbsp;✓ Workspace clear, tay sẵn sàng E-stop<br>"
-            f"&nbsp;✓ Không có alarm active<br><br>"
-            f"Tiếp tục?",
+            f"Before continuing, verify:<br>"
+            f"&nbsp;✓ YRC1000 in REMOTE mode<br>"
+            f"&nbsp;✓ TP speed slider ≤ 10%<br>"
+            f"&nbsp;✓ Workspace clear, hand ready on E-stop<br>"
+            f"&nbsp;✓ No active alarm<br><br>"
+            f"Continue?",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
             QMessageBox.StandardButton.Cancel)
         if r != QMessageBox.StandardButton.Yes: return
@@ -213,7 +213,7 @@ class ConnectionMixin:
             code, sub = backend.read_alarm()
             if code != 0:
                 self._signals.status.emit(
-                    f"Robot: ALARM 0x{code:04X} (sub 0x{sub:04X}) — reset TP trước",
+                    f"Robot: ALARM 0x{code:04X} (sub 0x{sub:04X}) — reset on TP first",
                     "err"); return
             if self._hse_stop.is_set():
                 self._signals.status.emit("Robot: aborted before upload", "warn"); return

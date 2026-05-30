@@ -20,8 +20,9 @@ Lưu ý:
   - Robot mode: TEACH (không cần REMOTE — chỉ đọc joints, không gửi motion)
   - URDF chain forward kinematics đã verify match RoboDK SolveFK 0.00mm
     (xem scripts/13_verify_vs_robodk.py)
-  - target2cam (OpenCV) đơn vị MÉT → quy đổi mm sang mét trước khi solve,
-    output cuối T_BC ở mm
+  - ĐƠN VỊ: toàn pipeline dùng mm. FK gripper2base trả mm; estimate_pose đã quy
+    đổi ChArUco target2cam mét→mm. solve_hand_eye yêu cầu 2 input CÙNG đơn vị →
+    giữ mm cả hai, output T_BC cũng mm → lưu thẳng (KHÔNG đổi mét).
 """
 from __future__ import annotations
 
@@ -127,12 +128,12 @@ def main() -> int:
                 continue
             gray = cv2.cvtColor(rgb, cv2.COLOR_BGR2GRAY)
 
-            # Đọc joints từ YRC1000 qua HSE → FK pure-Python → T_gripper2base (m)
+            # Đọc joints từ YRC1000 qua HSE → FK pure-Python → T_gripper2base (mm)
             joints_deg = backend.Joints()
             joints_rad = [np.deg2rad(j) for j in joints_deg]
-            T_gripper2base_mm = forward_kinematics_urdf(urdf_model, joints_rad)
-            T_gripper2base = T_gripper2base_mm.copy()
-            T_gripper2base[:3, 3] /= 1000.0          # mm → m cho OpenCV hand-eye
+            # FK trả mm; session + estimate_pose đều mm → KHÔNG đổi sang mét
+            # (solve_hand_eye yêu cầu gripper2base & target2cam CÙNG đơn vị).
+            T_gripper2base = forward_kinematics_urdf(urdf_model, joints_rad)
 
             if session.capture_pose(gray, T_gripper2base, K, dist):
                 log.info("→ Đã ghi pose #%d (joints=%s)",
@@ -143,9 +144,8 @@ def main() -> int:
         backend.disconnect()
 
     # ─── Giải + lưu ───
-    T_BC_m = session.solve(method=args.method)
-    T_BC_mm = T_BC_m.copy()
-    T_BC_mm[:3, 3] *= 1000.0
+    # Input toàn mm → solve trả T_BC mm (cùng đơn vị input) → lưu thẳng.
+    T_BC_mm = session.solve(method=args.method)
 
     out_path = PROJECT_ROOT / args.output
     save_calibration(out_path, T_BC_mm)

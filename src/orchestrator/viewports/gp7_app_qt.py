@@ -111,6 +111,7 @@ from .control_panel import (
 from .mixin_about import AboutMixin
 from .mixin_camera import CameraMixin
 from .mixin_connection import ConnectionMixin
+from .mixin_experiment import ExperimentMixin
 from .mixin_job_target import JobTargetMixin
 from .mixin_program_io import ProgramIOMixin
 from .mixin_program_playback import ProgramPlaybackMixin
@@ -158,6 +159,7 @@ class GP7AppQt(
     ProgramPlaybackMixin,
     AboutMixin,
     CameraMixin,
+    ExperimentMixin,
 ):
     """GP7 Digital Twin — PyQt6 main window + pyvistaqt 3D viewport."""
 
@@ -327,6 +329,8 @@ class GP7AppQt(
         self._signals.sim_reset.connect(self._on_reset_scene)
         self._signals.program_done.connect(self._on_program_done)
         self._signals.camera_result.connect(self._on_camera_result)
+        self._signals.exp_progress.connect(self._on_exp_progress)
+        self._signals.exp_done.connect(self._on_exp_done)
 
         # Build UI (fast — Qt widget construction only)
         self._build_viewport()
@@ -335,6 +339,7 @@ class GP7AppQt(
         self._build_cell_tree_dock()
         self._build_program_dock()
         self._build_camera_dock()
+        self._build_experiment_dock()
         self._connect_group_dock_redock()
         self._build_status_bar()
 
@@ -368,7 +373,7 @@ class GP7AppQt(
             # Empty state: disable robot-dependent UI; status hint.
             self._set_robot_dependent_enabled(False)
             self._set_status(
-                "Chưa load robot — File → Load Robot GP7 để bắt đầu",
+                "Robot not loaded — File → Load Robot GP7 to begin",
                 level="info")
 
         # Auto-load program file (--program) — sau khi robot sẵn sàng.
@@ -493,7 +498,7 @@ class GP7AppQt(
         m_edit.addSeparator()
         for kind, label in (("worktable", "Add &Worktable…"),
                               ("robot_pedestal", "Add &Pedestal…"),
-                              ("floor", "Add Floo&r…"),
+                              ("floor", "Add F&loor…"),
                               ("camera_mount", "Add Camera &Mount…")):
             act = QAction(label, self)
             act.triggered.connect(
@@ -646,6 +651,14 @@ class GP7AppQt(
         act_script.triggered.connect(self._on_show_script_editor)
         m_prog.addAction(act_script)
 
+        # ── DIGITAL TWIN (robot thật) ──
+        # Start/Stop nằm dưới dạng nút trong panel Digital Twin → menu chỉ mở panel.
+        m_dtwin = mb.addMenu("&Digital Twin")
+        act_dt_panel = QAction("Show Digital &Twin panel", self)
+        act_dt_panel.triggered.connect(
+            lambda: self._open_dock_tab(self._experiment_dock, True))
+        m_dtwin.addAction(act_dt_panel)
+
         # ── HELP ──
         m_help = mb.addMenu("&Help")
         act_about = QAction("&About...", self)
@@ -730,7 +743,7 @@ class GP7AppQt(
         self._step_mm_spin.setRange(0.1, 500.0)
         self._step_mm_spin.setValue(self._jog_step_mm)
         self._step_mm_spin.setSuffix(" mm"); self._step_mm_spin.setFixedWidth(94)
-        self._step_mm_spin.setToolTip("Bước tịnh tiến (Translation jog)")
+        self._step_mm_spin.setToolTip("Translation step (Translation jog)")
         self._step_mm_spin.valueChanged.connect(
             lambda v: setattr(self, "_jog_step_mm", float(v)))
         tr_row.addWidget(self._step_mm_spin)
@@ -738,7 +751,7 @@ class GP7AppQt(
         self._step_deg_spin.setRange(0.1, 90.0)
         self._step_deg_spin.setValue(self._jog_step_deg)
         self._step_deg_spin.setSuffix(" °"); self._step_deg_spin.setFixedWidth(74)
-        self._step_deg_spin.setToolTip("Bước xoay (Rotation jog)")
+        self._step_deg_spin.setToolTip("Rotation step (Rotation jog)")
         self._step_deg_spin.valueChanged.connect(
             lambda v: setattr(self, "_jog_step_deg", float(v)))
         tr_row.addWidget(self._step_deg_spin)
@@ -825,8 +838,8 @@ class GP7AppQt(
         self._jog_dial.setWrapping(True)                  # xoay không giới hạn
         self._jog_dial.setFixedSize(64, 64)
         self._jog_dial.setToolTip(
-            "Xoay dial (như rotary encoder) → jog từng step theo radio đã chọn.\n"
-            "Xoay phải = sign +, xoay trái = sign −. Thả ra giữ nguyên vị trí.")
+            "Turn the dial (like a rotary encoder) → jog one step per notch for the selected radio.\n"
+            "Turn right = sign +, turn left = sign −. Release keeps the position.")
         self._last_dial_value = 0
         self._dial_accumulator = 0.0
         self._jog_dial.valueChanged.connect(self._on_dial_value_changed)
@@ -916,7 +929,7 @@ class GP7AppQt(
         oh.addWidget(find_btn)
         cfg_btn = QPushButton("Configurations…")
         cfg_btn.setToolTip("Robot Configurations table (Front/Rear · Elbow "
-                            "Up/Down · Flip/Non-Flip) — như RoboDK")
+                            "Up/Down · Flip/Non-Flip)")
         cfg_btn.clicked.connect(self._show_configurations_dlg)
         oh.addWidget(cfg_btn)
         other_sec.add_layout(oh)
@@ -1142,7 +1155,7 @@ class GP7AppQt(
         parts = [p.strip() for p in text.replace(";", ",").split(",")]
         if len(parts) != 6:
             self._set_status(
-                f"Clipboard '{text[:40]}' không phải 6-value pose", level="err")
+                f"Clipboard '{text[:40]}' is not a 6-value pose", level="err")
             return
         try:
             x, y, z, rx, ry, rz = (float(p) for p in parts)
@@ -1309,9 +1322,9 @@ class GP7AppQt(
         mot_w = QWidget()
         mot_lay = QGridLayout(mot_w); mot_lay.setSpacing(4)
         mot_lay.setColumnStretch(0, 1); mot_lay.setColumnStretch(1, 1)
-        b_mj = QPushButton("+ MoveJ"); b_mj.setToolTip("Joint move tới pose hiện tại")
+        b_mj = QPushButton("+ MoveJ"); b_mj.setToolTip("Joint move to current pose")
         b_mj.clicked.connect(self._on_prog_add_movej)
-        b_ml = QPushButton("+ MoveL"); b_ml.setToolTip("Linear move tới pose hiện tại")
+        b_ml = QPushButton("+ MoveL"); b_ml.setToolTip("Linear move to current pose")
         b_ml.clicked.connect(self._on_prog_add_movel)
         self._btn_movec = QPushButton("+ MoveC (set MID)")
         self._btn_movec.setToolTip("2-step: click 1 = MID waypoint, click 2 = END")
@@ -1326,10 +1339,10 @@ class GP7AppQt(
         mot_lay.addWidget(_line, 3, 0, 1, 2)
         mot_lay.addWidget(QLabel("To selected target:"), 4, 0, 1, 2)
         b_uj = QPushButton("+ MoveJ →")
-        b_uj.setToolTip("Add MoveJ → target đang chọn trong list Targets")
+        b_uj.setToolTip("Add MoveJ → selected target in Targets list")
         b_uj.clicked.connect(lambda: self._on_prog_add_move_to_target("MoveJ"))
         b_ul = QPushButton("+ MoveL →")
-        b_ul.setToolTip("Add MoveL → target đang chọn trong list Targets")
+        b_ul.setToolTip("Add MoveL → selected target in Targets list")
         b_ul.clicked.connect(lambda: self._on_prog_add_move_to_target("MoveL"))
         mot_lay.addWidget(b_uj, 5, 0); mot_lay.addWidget(b_ul, 5, 1)
         mot_lay.setRowStretch(6, 1)
@@ -1361,7 +1374,7 @@ class GP7AppQt(
         self._prog_io_tout = QDoubleSpinBox()
         self._prog_io_tout.setRange(0.0, 600.0); self._prog_io_tout.setValue(0.0)
         self._prog_io_tout.setSuffix("s"); self._prog_io_tout.setMinimumWidth(64)
-        self._prog_io_tout.setToolTip("0 = block vô hạn")
+        self._prog_io_tout.setToolTip("0 = block forever")
         b_wio = QPushButton("+ WaitIO"); b_wio.clicked.connect(self._on_prog_add_waitio)
         b_wio.setToolTip("Wait until input IN#n = ON/OFF (timeout 0 = block forever)")
         # idx/=/state pack trái; addStretch đẩy nhóm "T + timeout" sang phải →
@@ -1401,7 +1414,7 @@ class GP7AppQt(
         self._prog_ev_edit.setMaxLength(32)
         self._prog_ev_edit.setPlaceholderText("sim checkpoint name")
         b_ev = QPushButton("+ SimEvent")
-        b_ev.setToolTip("Sim checkpoint — không export ra .JBI")
+        b_ev.setToolTip("Sim checkpoint — not exported to .JBI")
         b_ev.clicked.connect(self._on_prog_add_simevent)
         _grid_row(log_lay, r, "Event", self._prog_ev_edit, b_ev); r += 1
         log_lay.setRowStretch(r, 1)
@@ -1589,7 +1602,7 @@ class GP7AppQt(
           3. Defaults: (0, 0, 630) mm và [0]*6 deg.
         """
         if self._model is not None:
-            self._set_status("Robot GP7 đã load rồi", level="info")
+            self._set_status("Robot GP7 already loaded", level="info")
             return
         cc = self._cell_config
         if base_xyz_mm is not None:
@@ -1650,7 +1663,7 @@ class GP7AppQt(
         try:
             cfg = CellConfig.from_yaml(path)
         except Exception as e:                                   # noqa: BLE001
-            self._set_status(f"Lỗi load cell '{path.name}': {e}", level="err")
+            self._set_status(f"Error loading cell '{path.name}': {e}", level="err")
             return
         self._cell_config = cfg
         # Auto-load robot GP7 trước (nếu chưa) để base_xyz + home joints lấy
@@ -1707,7 +1720,7 @@ class GP7AppQt(
         """Dump CellConfig hiện tại sang YAML file. Cũng save visibility
         state (Show/Hide từ cell tree) vào metadata cho persistence."""
         if self._cell_config is None:
-            self._set_status("Chưa có cell config để save", level="warn")
+            self._set_status("No cell config to save", level="warn")
             return
         # Snapshot visibility state vào metadata trước khi dump
         vis = getattr(self, "_component_visibility", {})
@@ -1717,7 +1730,7 @@ class GP7AppQt(
             self._cell_config.to_yaml(Path(path))
             self._set_status(f"Cell saved: {Path(path).name}", level="ok")
         except Exception as e:                                   # noqa: BLE001
-            self._set_status(f"Lỗi save cell: {e}", level="err")
+            self._set_status(f"Error saving cell: {e}", level="err")
 
     def _set_robot_dependent_enabled(self, enabled: bool) -> None:
         """Bật/tắt mọi widget phụ thuộc model. Khi enabled=False, jog dock
@@ -2105,8 +2118,8 @@ class GP7AppQt(
         Hiện tại chỉ support GP7 (single variant); design vẫn extensible."""
         if self._model is not None:
             QMessageBox.information(self, "Add Robot",
-                "Robot đã load rồi. Để đổi pose/home, dùng Edit "
-                "trên item robot trong cell tree.")
+                "Robot already loaded. To change pose/home, use Edit "
+                "on the robot item in the cell tree.")
             return
         dlg = QDialog(self); dlg.setWindowTitle("Add Robot")
         dlg.setMinimumWidth(560)
@@ -2150,13 +2163,13 @@ class GP7AppQt(
             xyz, rpy = self._read_pose(pw)
             if rpy != (0.0, 0.0, 0.0):
                 QMessageBox.warning(dlg, "Add Robot",
-                    "Robot base hiện chỉ hỗ trợ xyz (rpy=0). RPY field bỏ qua.")
+                    "Robot base currently supports xyz only (rpy=0). RPY field ignored.")
             home = [sp.value() for sp in home_spins]
             # variant lookup — tương lai có thể switch _load_robot_*()
             variant = variant_combo.currentData()
             if variant != "gp7":
                 QMessageBox.warning(dlg, "Add Robot",
-                    f"Variant '{variant}' chưa support.")
+                    f"Variant '{variant}' not supported yet.")
                 return
             self._load_robot_gp7(base_xyz_mm=xyz, home_joints_deg=home)
             dlg.accept()
@@ -2202,7 +2215,7 @@ class GP7AppQt(
         mesh_row.addWidget(btn_pick)
         form.addRow("Mesh:", mesh_row)
         v.addLayout(form)
-        v.addWidget(QLabel("<b>TCP offset (từ flange link_tool0):</b>"))
+        v.addWidget(QLabel("<b>TCP offset (from flange link_tool0):</b>"))
         pose_form, pw = self._make_pose_form(xyz=(0.0, 0.0, 100.0))
         v.addLayout(pose_form)
         btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok
@@ -2211,11 +2224,11 @@ class GP7AppQt(
             name = name_edit.text().strip()
             if not name:
                 QMessageBox.warning(dlg, "Add Gripper",
-                                     "Name không được trống"); return
+                                     "Name cannot be empty"); return
             mesh = mesh_edit.text().strip()
             if not mesh:
                 QMessageBox.warning(dlg, "Add Gripper",
-                                     "Mesh path bắt buộc"); return
+                                     "Mesh path is required"); return
             xyz, rpy = self._read_pose(pw)
             try:
                 from ...cell.cell_models import GripperConfig
@@ -2271,7 +2284,7 @@ class GP7AppQt(
         mesh_row.addWidget(btn_pick)
         form.addRow("Mesh:", mesh_row)
         v.addLayout(form)
-        v.addWidget(QLabel("<b>TCP offset (từ flange link_tool0):</b>"))
+        v.addWidget(QLabel("<b>TCP offset (from flange link_tool0):</b>"))
         pose_form, pw = self._make_pose_form(
             xyz=g.tcp_offset_xyz_mm, rpy=g.tcp_offset_rpy_deg)
         v.addLayout(pose_form)
@@ -2556,7 +2569,7 @@ class GP7AppQt(
         actor = self._find_actor(actor_name)
         if actor is None:
             self._set_status(
-                f"Không tìm thấy mesh actor cho '{kind}' — chưa load?",
+                f"Mesh actor for '{kind}' not found — not loaded?",
                 level="warn")
             return
 
@@ -2592,8 +2605,8 @@ class GP7AppQt(
         widget.On()
         self._plotter.render()
         self._set_status(
-            "Drag handles → move/rotate. Right-click cell tree để Commit "
-            "move (lưu vào cell) hoặc Cancel move (revert).",
+            "Drag handles → move/rotate. Right-click the cell tree to Commit "
+            "move (save into cell) or Cancel move (revert).",
             level="info")
 
     def _on_move_interact(self, actor) -> None:
@@ -2778,25 +2791,25 @@ class GP7AppQt(
         def _ok():
             name = name_edit.text().strip()
             if not name:
-                QMessageBox.warning(dlg, "Add Object", "Name không được trống")
+                QMessageBox.warning(dlg, "Add Object", "Name cannot be empty")
                 return
             existing = {o.name for o in (self._cell_config.objects or [])}
             if name in existing:
                 QMessageBox.warning(dlg, "Add Object",
-                                     f"Name '{name}' đã tồn tại")
+                                     f"Name '{name}' already exists")
                 return
             mesh = mesh_edit.text().strip()
             if not mesh:
-                QMessageBox.warning(dlg, "Add Object", "Mesh path bắt buộc")
+                QMessageBox.warning(dlg, "Add Object", "Mesh path is required")
                 return
             # Heuristic: nếu user add object tên/path "gripper", suggest
             # đúng workflow (Add Gripper) thay vì Add Object — gripper khác
             # về schema (TCP offset, follow flange).
             if "gripper" in name.lower() or "gripper" in mesh.lower():
-                ret = QMessageBox.question(dlg, "Có phải gripper?",
-                    "Tên/đường dẫn chứa 'gripper'. Gripper có workflow riêng "
-                    "(Edit → Add Gripper) để gắn vào flange robot và "
-                    "set TCP offset đúng.\n\nTiếp tục Add Object thường?",
+                ret = QMessageBox.question(dlg, "Is this a gripper?",
+                    "The name/path contains 'gripper'. Grippers have a separate "
+                    "workflow (Edit → Add Gripper) to attach to the robot flange "
+                    "and set the correct TCP offset.\n\nContinue with a normal Add Object?",
                     QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
                 if ret != QMessageBox.StandardButton.Yes:
                     return
@@ -2824,7 +2837,7 @@ class GP7AppQt(
             wy = parent_xyz[1] + xyz[1]
             wz = parent_xyz[2] + xyz[2]
             self._set_status(
-                f"Added object '{name}' ở world=({wx:.0f}, {wy:.0f}, "
+                f"Added object '{name}' at world=({wx:.0f}, {wy:.0f}, "
                 f"{wz:.0f}) mm", level="ok")
             dlg.accept()
         btns.accepted.connect(_ok); btns.rejected.connect(dlg.reject)
@@ -2871,12 +2884,12 @@ class GP7AppQt(
         def _ok():
             name = name_edit.text().strip()
             if not name:
-                QMessageBox.warning(dlg, "Add Frame", "Name không được trống")
+                QMessageBox.warning(dlg, "Add Frame", "Name cannot be empty")
                 return
             existing = {f.name for f in (self._cell_config.frames or [])}
             if name in existing:
                 QMessageBox.warning(dlg, "Add Frame",
-                                     f"Name '{name}' đã tồn tại")
+                                     f"Name '{name}' already exists")
                 return
             xyz, rpy = self._read_pose(pw)
             new_fr = FrameConfig(
@@ -3037,7 +3050,7 @@ class GP7AppQt(
             cam_w["w"] = QSpinBox(); cam_w["w"].setRange(100, 8192)
             cam_w["h"] = QSpinBox(); cam_w["h"].setRange(100, 8192)
             cam_w["w"].setValue(int(sz[0])); cam_w["h"].setValue(int(sz[1]))
-            form.addRow("FOV ngang:", cam_w["fov"])
+            form.addRow("Horizontal FOV:", cam_w["fov"])
             form.addRow("Width (px):", cam_w["w"])
             form.addRow("Height (px):", cam_w["h"])
         v.addLayout(form)
@@ -3081,7 +3094,7 @@ class GP7AppQt(
         if self._cell_config.camera is not None:
             QMessageBox.information(
                 self, "Add Camera",
-                "Cell đã có Camera. Double-click node Camera để Edit.")
+                "Cell already has a Camera. Double-click the Camera node to Edit.")
             return
         dlg = QDialog(self); dlg.setWindowTitle("Add Camera")
         dlg.setMinimumWidth(420)
@@ -3097,7 +3110,7 @@ class GP7AppQt(
         form.addRow("Type:", cb_type)
         form.addRow("Model:", ed_model)
         form.addRow("Mount:", cb_mount)
-        form.addRow("FOV ngang:", sp_fov)
+        form.addRow("Horizontal FOV:", sp_fov)
         form.addRow("Width (px):", sp_w)
         form.addRow("Height (px):", sp_h)
         v.addLayout(form)
@@ -3195,7 +3208,7 @@ class GP7AppQt(
             mesh = mesh_edit.text().strip()
             if not mesh:
                 QMessageBox.warning(dlg, f"Add {label}",
-                                     "Mesh path bắt buộc")
+                                     "Mesh path is required")
                 return
             xyz, rpy = self._read_pose(pw)
             try:
@@ -3234,9 +3247,9 @@ class GP7AppQt(
                    if o.parent_frame == fr.name]
         msg = f"Delete frame '{fr.name}'?"
         if orphans:
-            msg += (f"\n\n{len(orphans)} object(s) tham chiếu frame này: "
+            msg += (f"\n\n{len(orphans)} object(s) reference this frame: "
                     f"{', '.join(orphans)}. "
-                    "Sau khi delete, các object đó sẽ trỏ về base.")
+                    "After deletion, those objects will revert to base.")
         ret = QMessageBox.question(self, "Delete Frame", msg,
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
         if ret != QMessageBox.StandardButton.Yes: return
@@ -3297,7 +3310,7 @@ class GP7AppQt(
 
     def _make_preview_label(self, size=(300, 300)) -> QLabel:
         """QLabel khung preview (style chung) — đặt ở bất kỳ layout nào."""
-        lbl = QLabel("Đang tạo preview…")
+        lbl = QLabel("Generating preview…")
         lbl.setMinimumSize(size[0], size[1])
         lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         lbl.setStyleSheet("background:#16161c; border:1px solid #2a2a33; "
@@ -3318,7 +3331,7 @@ class GP7AppQt(
 
         render_fn nhận (w, h) = kích thước THẬT của label tại thời điểm render
         → render off-screen đúng tỷ lệ khung, tránh letterbox (dải đen trống)."""
-        lbl.setText("Đang tạo preview…")
+        lbl.setText("Generating preview…")
 
         def _do():
             size = (max(120, lbl.width()), max(120, lbl.height()))
@@ -3331,7 +3344,7 @@ class GP7AppQt(
                     lbl.size(), Qt.AspectRatioMode.KeepAspectRatio,
                     Qt.TransformationMode.SmoothTransformation))
             else:
-                lbl.setText("Chưa có preview\n(chọn mesh hợp lệ)")
+                lbl.setText("No preview\n(select a valid mesh)")
         QTimer.singleShot(0, _do)
 
     def _render_mesh_thumbnail(self, mesh_rel, color, size=(300, 300), zoom=1.05):
@@ -3433,18 +3446,18 @@ class GP7AppQt(
         if abs(target_z - current_z) < 1.0:                # đã đúng vị trí
             return
         r = QMessageBox.question(
-            self, "Nâng robot lên pedestal",
-            f"Pedestal vừa thêm cao tới Z={ped_top:.0f} mm.\n\n"
-            f"Nâng robot lên đỉnh pedestal (base Z: {current_z:.0f} → "
-            f"{target_z:.0f} mm) để chân đế robot chạm đỉnh pedestal?",
+            self, "Lift robot onto pedestal",
+            f"The pedestal just added reaches Z={ped_top:.0f} mm.\n\n"
+            f"Lift the robot onto the top of the pedestal (base Z: {current_z:.0f} → "
+            f"{target_z:.0f} mm) so the robot base sits on the pedestal top?",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.Yes)
         if r != QMessageBox.StandardButton.Yes:
             return
         self._set_robot_base_z(target_z)
         self._set_status(
-            f"Đã nâng robot Z={current_z:.0f}→{target_z:.0f} mm "
-            f"(stand chạm đỉnh pedestal)", level="ok")
+            f"Lifted robot Z={current_z:.0f}→{target_z:.0f} mm "
+            f"(stand on pedestal top)", level="ok")
 
     def _offer_lower_robot_off_pedestal(self, prev_pedestal_cfg) -> None:
         """Delete Pedestal ⇒ AUTO-LOWER robot về Z=330 (stand chạm sàn).
@@ -3456,7 +3469,7 @@ class GP7AppQt(
         self._set_robot_base_z(target_z)
         self._set_status(
             f"Auto-lowered robot Z={current_z:.0f}→{target_z:.0f} mm "
-            f"(stand chạm sàn)", level="ok")
+            f"(stand on floor)", level="ok")
 
     def _set_robot_base_z(self, z_mm: float) -> None:
         """Update robot base Z + rebuild URDF model + refresh viewport."""
@@ -3875,7 +3888,7 @@ class GP7AppQt(
                     self._set_toggle(act, False)
             self._set_status("Camera reset (fit all)", level="ok")
         except Exception as e:                              # noqa: BLE001
-            self._set_status(f"Fit all lỗi: {e}", level="err")
+            self._set_status(f"Fit all error: {e}", level="err")
 
     def _on_toggle_perspective(self, perspective_on: bool) -> None:
         """Toggle perspective ↔ orthographic projection (engineering view)."""
@@ -3886,7 +3899,7 @@ class GP7AppQt(
             mode = "Perspective" if perspective_on else "Orthographic"
             self._set_status(f"Projection: {mode}", level="ok")
         except Exception as e:                              # noqa: BLE001
-            self._set_status(f"Projection toggle lỗi: {e}", level="err")
+            self._set_status(f"Projection toggle error: {e}", level="err")
 
     def _on_toggle_fullscreen(self, fullscreen_on: bool) -> None:
         """Toggle window fullscreen (F11). Bỏ menu + dock + status."""
@@ -3909,7 +3922,8 @@ class GP7AppQt(
         return [d for d in (getattr(self, "_cell_tree_dock", None),
                             getattr(self, "_jog_dock", None),
                             getattr(self, "_program_dock", None),
-                            getattr(self, "_camera_dock", None))
+                            getattr(self, "_camera_dock", None),
+                            getattr(self, "_experiment_dock", None))
                 if d is not None]
 
     def _open_dock_tab(self, dock, show: bool) -> None:
@@ -4250,8 +4264,8 @@ class GP7AppQt(
                              level="warn")
             QMessageBox.information(
                 self, "Robot Configurations",
-                "TCP pose hiện tại không có nghiệm IK (ngoài tầm với / "
-                "vượt giới hạn khớp).")
+                "Current TCP pose has no IK solution (out of reach / "
+                "joint limits exceeded).")
             return
 
         dlg = QDialog(self)
@@ -4498,7 +4512,7 @@ class GP7AppQt(
     def _show_parameters_dlg(self) -> None:
         from PyQt6.QtWidgets import QDialog, QTextEdit
         if self._model is None:
-            self._set_status("Chưa load robot — File → Load Robot GP7", "warn")
+            self._set_status("Robot not loaded — File → Load Robot GP7", "warn")
             return
         dlg = QDialog(self)
         dlg.setWindowTitle("Robot parameters (read-only)")
@@ -4979,9 +4993,9 @@ class GP7AppQt(
             lo = math.degrees(self._model.joints[i].joint_min)
             hi = math.degrees(self._model.joints[i].joint_max)
             if d >= hi - tol_deg:
-                return f"θ{i+1} chạm giới hạn +{hi:.0f}°"
+                return f"θ{i+1} at limit +{hi:.0f}°"
             if d <= lo + tol_deg:
-                return f"θ{i+1} chạm giới hạn {lo:.0f}°"
+                return f"θ{i+1} at limit {lo:.0f}°"
         return None
 
     # Ngưỡng manipulability cảnh báo singularity (hiệu chỉnh cho GP7:
@@ -5011,8 +5025,8 @@ class GP7AppQt(
             w_new = manipulability(self._model, sol)
             if min(w_now, w_new) < self._W_SINGULAR:
                 self._set_status(
-                    f"{label} {full_amount:.1f}{unit} — ⚠ gần singularity "
-                    f"(w={w_new:.3f}); chuyển động Cartesian kém ổn định",
+                    f"{label} {full_amount:.1f}{unit} — ⚠ near singularity "
+                    f"(w={w_new:.3f}); Cartesian motion less stable",
                     level="warn")
             else:
                 self._set_status(f"{label} {full_amount:.1f}{unit}", level="ok")
@@ -5029,25 +5043,25 @@ class GP7AppQt(
                 hi_f = mid
         if best is None or lo_f < 0.02:
             # Không jog được kể cả bước nhỏ → phân loại nguyên nhân.
-            cause = ("gần singularity — đổi hướng hoặc jog khớp ra khỏi "
-                     "singularity trước" if w_now < self._W_SINGULAR
-                     else "ngoài tầm với / vượt giới hạn khớp")
+            cause = ("near singularity — change orientation or jog joints out of "
+                     "the singularity first" if w_now < self._W_SINGULAR
+                     else "out of reach / joint limits exceeded")
             self._set_status(
                 f"IK fail: {label} {full_amount:.1f}{unit} — {cause}",
                 level="err")
             return
         self._apply_joints_main([math.degrees(q) for q in best])
-        blk = self._limit_blocker(best) or "biên vùng làm việc / singularity"
+        blk = self._limit_blocker(best) or "workspace boundary / singularity"
         self._set_status(
             f"{label} {lo_f*full_amount:.1f}/{full_amount:.1f}{unit} — "
-            f"dừng do {blk}", level="warn")
+            f"stopped by {blk}", level="warn")
 
     def _apply_cartesian_target(self, T_world_tool_target, source: str) -> None:
         """1-shot Cartesian target (paste / teach) — không interpolate."""
         sol = self._solve_cartesian(T_world_tool_target)
         if sol is None:
             self._set_status(
-                f"IK fail: {source} — ngoài tầm với / vượt giới hạn khớp",
+                f"IK fail: {source} — out of reach / joint limits exceeded",
                 level="err")
             return
         self._apply_joints_main([math.degrees(q) for q in sol])
@@ -5064,14 +5078,14 @@ class GP7AppQt(
 
     def _on_home(self) -> None:
         if self._model is None:
-            self._set_status("Chưa load robot", level="warn"); return
+            self._set_status("Robot not loaded", level="warn"); return
         threading.Thread(target=self._animate_to,
                           args=(list(self._home_joints),), daemon=True).start()
         self._set_status("Move: Home", level="ok")
 
     def _on_zero(self) -> None:
         if self._model is None:
-            self._set_status("Chưa load robot", level="warn"); return
+            self._set_status("Robot not loaded", level="warn"); return
         threading.Thread(target=self._animate_to,
                           args=([0.0] * 6,), daemon=True).start()
         self._set_status("Move: Zero", level="ok")
@@ -5255,7 +5269,7 @@ class GP7AppQt(
             self._pending_movc_mid = pose
             self._btn_movec.setText("+ MoveC (set END)")
             self._set_status(
-                "MoveC: MID captured — di chuyển robot tới END pose rồi click lại",
+                "MoveC: MID captured — move robot to the END pose then click again",
                 level="info")
             return
         # 2nd click → commit
@@ -5315,7 +5329,7 @@ class GP7AppQt(
     def _on_prog_add_msg(self) -> None:
         text = self._prog_msg_edit.text().strip()
         if not text:
-            self._set_status("MSG empty — nhập text trước", level="warn"); return
+            self._set_status("MSG empty — enter text first", level="warn"); return
         self._program.append(Instruction(type="ShowMessage", message=text))
         self._refresh_program_list()
         self._prog_msg_edit.clear()
@@ -5333,7 +5347,7 @@ class GP7AppQt(
         """
         idx = self._prog_list.currentRow()
         if idx < 0 or idx >= len(self._program):
-            self._set_status("Chọn instruction để Edit", level="warn"); return
+            self._set_status("Select an instruction to Edit", level="warn"); return
         ins = self._program[idx]
         t = ins.type
         # ── Motion (inline vs target-ref) ─────────────────────────────
@@ -5357,7 +5371,7 @@ class GP7AppQt(
         elif t == "MoveC":
             r = QMessageBox.question(
                 self, "Modify MoveC",
-                f"Replace step {idx+1} END với current pose? (MID giữ nguyên)",
+                f"Replace step {idx+1} END with current pose? (MID unchanged)",
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
             if r != QMessageBox.StandardButton.Yes: return
             T = self._current_tool_world()
@@ -5418,7 +5432,7 @@ class GP7AppQt(
             if not ok: return
             safe = "".join(c for c in v if c.isalnum() or c == "_")[:32].upper()
             if not safe:
-                self._set_status("Job name không hợp lệ", level="warn"); return
+                self._set_status("Invalid job name", level="warn"); return
             ins.job_name = safe
         elif t == "SimEvent":
             new = self._dlg_edit_simevent(ins)
@@ -5475,8 +5489,8 @@ class GP7AppQt(
         form.addRow("Initial VJ", sp_vj)
         form.addRow("Initial V (linear)", sp_v)
         info = QLabel(
-            "<small><i>Initial speeds áp dụng cho MOVJ/MOVL trước khi user "
-            "đặt SetSpeed. Max VJ giới hạn an toàn cho mọi move.</i></small>")
+            "<small><i>Initial speeds apply to MOVJ/MOVL before the user "
+            "sets SetSpeed. Max VJ is the safety limit for every move.</i></small>")
         info.setWordWrap(True)
         form.addRow(info)
         bb = QDialogButtonBox(
@@ -5502,18 +5516,18 @@ class GP7AppQt(
         dlg.resize(720, 520)
         lay = QVBoxLayout(dlg)
         lay.addWidget(QLabel(
-            "<b>Python script</b> — dùng <code>p.add_*()</code> để thêm "
-            "instruction vào job hiện tại. Helpers: <code>math</code>, "
+            "<b>Python script</b> — use <code>p.add_*()</code> to add "
+            "instructions to the current job. Helpers: <code>math</code>, "
             "<code>np</code>, target dict <code>p.targets</code>."))
         editor = QPlainTextEdit()
         editor.setPlaceholderText(
-            "# Example: tạo 8 MoveJ điểm vòng tròn quanh Z=500\n"
+            "# Example: create 8 MoveJ points on a circle around Z=500\n"
             "import math\n"
             "for i in range(8):\n"
             "    angle = i * 2 * math.pi / 8\n"
             "    x = 500 + 200 * math.cos(angle)\n"
             "    y = 0   + 200 * math.sin(angle)\n"
-            "    # Cần solve IK riêng, hoặc dùng target có sẵn:\n"
+            "    # Solve IK separately, or use an existing target:\n"
             "    p.add_movej_to('HOME')")
         from PyQt6.QtGui import QFont
         mono = QFont("Consolas"); mono.setStyleHint(QFont.StyleHint.Monospace)
@@ -5555,7 +5569,7 @@ class GP7AppQt(
                     f"instruction(s) to job '{self._active_job}'</span>")
                 self._refresh_program_list()
                 self._set_status(
-                    f"Script: +{added} instructions vào '{self._active_job}'",
+                    f"Script: +{added} instructions to '{self._active_job}'",
                     level="ok")
             except Exception as e:                          # noqa: BLE001
                 result_lbl.setText(
@@ -5601,7 +5615,7 @@ class GP7AppQt(
         # Sanitize: uppercase, alphanumeric + _ (INFORM job name rules)
         safe = "".join(c for c in raw if c.isalnum() or c == "_")[:32].upper()
         if not safe:
-            self._set_status("Job name không hợp lệ", level="warn"); return
+            self._set_status("Invalid job name", level="warn"); return
         self._program.append(Instruction(type="CallJob", job_name=safe))
         self._refresh_program_list()
         self._prog_call_edit.clear()
@@ -5636,14 +5650,14 @@ class GP7AppQt(
         tố _2, _3… nếu trùng) — dùng cho target phụ sinh tự động (vd approach)."""
         if self._model is None:
             self._set_status(
-                "Chưa load robot — IK cần robot model", level="warn")
+                "Robot not loaded — IK needs a robot model", level="warn")
             return None
         sol = self._solve_cartesian(T, seeded=True)
         if sol is None:
             p = T[:3, 3]
             self._set_status(
-                f"IK fail tại ({p[0]:.0f},{p[1]:.0f},{p[2]:.0f})mm — "
-                "ngoài tầm với", level="err")
+                f"IK fail at ({p[0]:.0f},{p[1]:.0f},{p[2]:.0f})mm — "
+                "out of reach", level="err")
             return None
         if prompt:
             if prompt_label is None:
@@ -5657,10 +5671,10 @@ class GP7AppQt(
                 return None
             name = self._safe_target_name(v)
             if not name:
-                self._set_status("Name không hợp lệ", level="warn"); return None
+                self._set_status("Invalid name", level="warn"); return None
             if name in self._targets:
                 self._set_status(
-                    f"Target '{name}' đã tồn tại — Modify (F3) để update",
+                    f"Target '{name}' already exists — Modify (F3) to update",
                     level="warn"); return None
         else:
             base = self._safe_target_name(default_name) or "TGT"
@@ -5677,7 +5691,7 @@ class GP7AppQt(
     def _on_toggle_surface_pick(self, enabled: bool) -> None:
         if enabled and self._model is None:
             self._set_status(
-                "Chưa load robot — load robot trước khi Teach on surface",
+                "Robot not loaded — load the robot before Teach on surface",
                 level="warn")
             self._surface_pick_mode = False
             self._set_toggle(self._act_surface_pick, False)
@@ -5697,7 +5711,7 @@ class GP7AppQt(
                     left_clicking=True,
                 )
                 self._set_status(
-                    "Teach on surface ON — click vào cell/floor để tạo target",
+                    "Teach on surface ON — click cell/floor to create a target",
                     level="info")
             except Exception as e:                          # noqa: BLE001
                 self._set_status(f"Surface pick fail: {e}", level="err")
@@ -5726,7 +5740,7 @@ class GP7AppQt(
         if picked_point is None: return
         if self._model is None:
             self._set_status(
-                "Chưa load robot — không thể teach target (IK cần robot model)",
+                "Robot not loaded — cannot teach target (IK needs a robot model)",
                 level="warn")
             return
         pt_m = np.asarray(picked_point, dtype=float)
@@ -5870,7 +5884,7 @@ class GP7AppQt(
         pick alternative joint configuration."""
         idx = self._tgt_list.currentRow()
         if idx < 0 or not self._targets:
-            self._set_status("Chọn target để Change Config", level="warn"); return
+            self._set_status("Select a target to Change Config", level="warn"); return
         name = list(self._targets.keys())[idx]
         tgt = self._targets[name]
         # Need TCP pose to enumerate. Compute T_target_tool0 từ stored tcp_pose
@@ -5904,8 +5918,8 @@ class GP7AppQt(
         lw.setCurrentRow(best_idx)
         layout.addWidget(lw)
         layout.addWidget(QLabel(
-            "<small><i>★ = config hiện tại (Δ ≈ 0°). Δ = max joint difference "
-            "so với current. Pick & OK để swap.</i></small>"))
+            "<small><i>★ = current config (Δ ≈ 0°). Δ = max joint difference "
+            "from current. Pick & OK to swap.</i></small>"))
         bb = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         bb.accepted.connect(dlg.accept); bb.rejected.connect(dlg.reject)
@@ -5924,9 +5938,9 @@ class GP7AppQt(
         instruction — chỉ jog robot để verify pose hợp lệ."""
         idx = self._tgt_list.currentRow()
         if idx < 0 or not self._targets:
-            self._set_status("Chọn target để Go to", level="warn"); return
+            self._set_status("Select a target to Go to", level="warn"); return
         if self._prog_thread is not None and self._prog_thread.is_alive():
-            self._set_status("Program đang chạy — không thể Go to", level="warn"); return
+            self._set_status("Program is running — cannot Go to", level="warn"); return
         name = list(self._targets.keys())[idx]
         target_joints = list(self._targets[name]["joints"])
         # Chạy animation trong worker thread (như Play, nhưng 1-step).
@@ -5965,11 +5979,11 @@ class GP7AppQt(
     def closeEvent(self, event: QCloseEvent) -> None:
         if self._has_unsaved_changes():
             r = QMessageBox.question(
-                self, "Thay đổi chưa lưu",
-                "Project có thay đổi chưa được lưu.\n\n"
-                "  • Save — lưu project (.json) rồi thoát\n"
-                "  • Discard — thoát luôn, bỏ mọi thay đổi\n"
-                "  • Cancel — quay lại, không thoát",
+                self, "Unsaved changes",
+                "The project has unsaved changes.\n\n"
+                "  • Save — save the project (.json) then exit\n"
+                "  • Discard — exit now, discard all changes\n"
+                "  • Cancel — go back, do not exit",
                 QMessageBox.StandardButton.Save
                 | QMessageBox.StandardButton.Discard
                 | QMessageBox.StandardButton.Cancel,
@@ -5986,6 +6000,12 @@ class GP7AppQt(
         # camera_result (worker emit 'stopped' lúc join) không chạm widget đã hủy.
         self._cam_closing = True
         self._prog_stop.set()
+        self._exp_stop.set()
+        try:
+            if getattr(self, "_twin", None) is not None:
+                self._twin.stop_mirror()
+        except Exception:                                       # noqa: BLE001
+            pass
         self._stop_camera()
         try:
             self._plotter.close()

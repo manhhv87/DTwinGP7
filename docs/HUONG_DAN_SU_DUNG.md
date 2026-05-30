@@ -67,10 +67,11 @@ Module tree đầy đủ: [`phat_bieu_bai_toan_v3_2_HD.md` mục 3](phat_bieu_ba
 ## 4. Workflow theo kịch bản sử dụng
 
 ```mermaid
+%%{init: {'flowchart': {'nodeSpacing': 60, 'rankSpacing': 85, 'useMaxWidth': false}}}%%
 flowchart TB
     START([Bắt đầu]) --> Q1{Có robot<br/>GP7 thật?}
     Q1 -->|KHÔNG| Q2{Cần demo<br/>trực quan?}
-    Q1 -->|CÓ| E[Kịcch bản E<br/>real backend hse<br/>ultra-fast<br/>+ Open3D mirror live]
+    Q1 -->|CÓ| E[Kịch bản E<br/>real backend hse<br/>ultra-fast<br/>+ Open3D mirror live]
     Q2 -->|KHÔNG| B[Kịch bản B<br/>sim headless<br/>500 trial thống kê]
     Q2 -->|CÓ| C[Kịch bản C<br/>sim Open3D GUI<br/>5 trial demo]
     B --> D[Kịch bản D<br/>04 analyze results<br/>06 simulate trial]
@@ -84,6 +85,7 @@ flowchart TB
     style D fill:#FFA000,stroke:#fff,color:#fff
     style E fill:#E65100,stroke:#fff,color:#fff
     style F fill:#D84315,stroke:#fff,color:#fff
+    linkStyle default stroke:#FF1744,stroke-width:3px
 ```
 
 ### 🎯 Kịch bản A — Test code đang hoạt động (10 giây)
@@ -157,9 +159,16 @@ python scripts/06_simulate_trial.py --no-show
 
 **Bạn muốn**: Robot thật di chuyển, gắp vật thật.
 
+> **Hai cách chạy**: (a) **CLI** `03_run_experiment.py --mode real` (bên dưới), hoặc
+> (b) **NGAY TRONG APP** `16_app_qt.py` qua panel **Digital Twin** (live mirror + run
+> experiment có nút Stop ngắt giữa chừng) — xem mục *"Chạy Digital Twin NGAY TRONG
+> APP"* cuối kịch bản này. Khuyến nghị **leo thang theo bậc an toàn 3 bước** (mục
+> *"Workflow LÊN ROBOT THẬT theo bậc an toàn"*).
+
 **3-tier performance ladder** — chọn theo nhu cầu:
 
 ```mermaid
+%%{init: {'flowchart': {'nodeSpacing': 60, 'rankSpacing': 85, 'useMaxWidth': false}}}%%
 graph LR
     T1[Single-shot<br/>1 FTP per move<br/>1500ms per trial<br/>Debug only] -->|backend hse flag| T2[Batch M3<br/>1 FTP per trial<br/>200ms per trial<br/>Default real mode]
     T2 -->|ultra-fast flag| T3[Ultra-fast M3++<br/>1 FTP per experiment<br/>50ms per trial<br/>Production 500+ trial]
@@ -167,6 +176,7 @@ graph LR
     style T1 fill:#9E9E9E,stroke:#fff,color:#fff
     style T2 fill:#1565C0,stroke:#fff,color:#fff
     style T3 fill:#E65100,stroke:#fff,stroke-width:3px,color:#fff
+    linkStyle default stroke:#FF1744,stroke-width:3px
 ```
 
 **Yêu cầu phần cứng + setup 1 lần**: xem [`HUONG_DAN_CAI_DAT.md` §2.9](HUONG_DAN_CAI_DAT.md) (HSE Server function, network, REMOTE mode, CIO ladder). Pre-flight checklist:
@@ -202,7 +212,8 @@ python scripts/03_run_experiment.py --mode real --backend hse \
     --ultra-fast --no-viewport-mirror
 
 # Mode C — Backup nếu chưa setup TOOL01 trên TP
-# Dùng client DLS IK (PC compute, URDF chain match RoboDK 0.00mm)
+# Dùng client IK (PC compute): Pieper analytical (exact, chọn nhánh gần),
+# DLS chỉ là fallback. URDF chain match RoboDK 0.00mm.
 python scripts/03_run_experiment.py --mode real --backend hse \
     --hse-ip 192.168.1.100 --trials 50 --ik-source client
 ```
@@ -211,8 +222,9 @@ python scripts/03_run_experiment.py --mode real --backend hse \
 - **Reach envelope check** (per pose, ~µs): `ReachEnvelope.gp7_default()` sphere
   150–927 mm tính từ J1. Reject pose ngoài envelope tại PLAN state.
 - **Predictive safety check** (per trial, **~2ms** sau optimization): solve client
-  DLS IK cho 6 waypoint (current → lift → grasp → lift → place_lift → place →
-  place_lift), interpolate trajectory, pure-Python FK verify joint limit +
+  IK (Pieper analytical, DLS fallback) cho 6 waypoint (current → lift → grasp → lift
+  → place_lift → place → place_lift), interpolate trajectory, pure-Python FK verify
+  joint limit +
   self-collision sphere **toàn bộ path** trước khi gửi MoveJ đầu tiên. Reject
   trial với failure_reason `predicted_joint_limit` hoặc `predicted_self_collision`.
 
@@ -230,6 +242,67 @@ python scripts/05_analyze_telemetry.py latest --no-show
 # Replay thành MP4 cho demo / presentation
 python scripts/07_replay_telemetry.py latest --mp4 figures/replay.mp4
 ```
+
+#### Chạy Digital Twin NGAY TRONG APP (panel "Digital Twin") — MỚI
+
+Ngoài CLI `03_run_experiment.py`, giờ có thể chạy robot THẬT trực tiếp trong app
+`16_app_qt.py` qua panel **Digital Twin** (dock tab cùng cụm Jog/Program — mở bằng
+menu **Digital Twin → Show Digital Twin panel**). Tái dùng đúng pipeline real-mode của CLI
+(`MotomanHSEBackend` + `DigitalTwinMirror` + `Orchestrator`), nhưng vòng trial NGẮT
+ĐƯỢC giữa chừng.
+
+Trước khi dùng: **Robot → Connection settings…** nhập IP YRC1000, và đã **Load Robot
+GP7** (cần model để dựng viewport).
+
+```
+Digital Twin — real robot (HSE)
+   • Mirror Hz (viewport) — mặc định 2.0
+   • Telemetry Hz (CSV)   — mặc định 10.0
+
+Experiment parameters (autonomous pick-place)
+   • Trials               — 1..1000 (mặc định 10)
+   • IK source            — yrc (YRC1000 onboard IK) | client (Pieper analytical)
+   • Perception           — D455 + YOLO (real) | Mock (dry-run test)
+   • ☐ Ultra-fast (P-var, upload template once)
+
+[▶ Start live mirror]   [▶ Start experiment]
+[⏹ Stop Digital Twin]
+```
+
+- **▶ Start live mirror** — CHỈ ĐỌC joints robot thật @Hz vẽ vào viewport + ghi
+  telemetry CSV (`results/telemetry_*.csv`). Robot **không nhận lệnh** → an toàn để
+  kiểm HSE/mạng. Có dialog xác nhận (yêu cầu HSE Server ON + ping OK).
+- **▶ Start experiment** — Orchestrator điều khiển robot thật gắp-thả **tự động
+  (robot DI CHUYỂN)**. Có **dialog an toàn** (cảnh báo "robot WILL move", yêu cầu
+  vùng làm việc trống + E-stop trong tầm + YRC ở PLAY/REMOTE). Predictive safety +
+  reach envelope BẬT. Kết quả ghi `results/experiment_real_*.csv` + telemetry CSV.
+- **⏹ Stop Digital Twin** — dừng tức thì. Với experiment (robot đang chuyển động) là
+  **E-stop latch**: set stop flag + servo OFF NGAY, không gửi thêm lệnh motion.
+
+> **Lưu ý IK source trong panel**: `client` ở đây dùng **Pieper analytical** (giống
+> Mode C của CLI), `yrc` để YRC1000 tự IK (cần TOOL01 trên TP).
+
+#### Workflow LÊN ROBOT THẬT theo bậc an toàn (3 bước)
+
+Đừng chạy thẳng experiment thật — leo thang theo mức rủi ro tăng dần:
+
+1. **Bước 1 — Live mirror (chỉ đọc)**: bấm *Start live mirror* (hoặc CLI Mode A).
+   Robot không nhận lệnh → kiểm mạng/HSE an toàn, xác nhận joints đọc về đúng, drift
+   OK. Không có rủi ro va chạm.
+2. **Bước 2 — Experiment Mock (dry-run) trên robot thật**: panel → Perception =
+   **Mock (dry-run test)** → *Start experiment*. Robot DI CHUYỂN tới pose tính từ
+   detection GIẢ → kiểm chuỗi motion + gripper + nút E-stop có dừng được không. **Vùng
+   làm việc PHẢI trống.** Lưu ý: dry-run dùng calib sim (`T_base_camera.npy` sinh từ
+   layout) nên pose có thể **lệch so với thực** — chỉ để kiểm chuỗi, KHÔNG để gắp thật.
+3. **Bước 3 — Experiment thật (D455 + YOLO)**: chỉ chạy khi đủ HẾT:
+   - ✅ YOLO weights `models/*.pt` đã copy về (vd `models/yolov8s-seg_best.pt`)
+   - ✅ Hand-eye calibration **THẬT**: chạy `python scripts/02_run_calibration.py`
+     (ChArUco) → `config/calibration/T_base_camera.npy`, KHÔNG dùng calib sim
+   - ✅ **TOOL01** đã setup trên teach-pendant (TCP offset gripper)
+   - ✅ Gripper CC-Link bits đã verify trên TP (clamp/unclamp/sensor/detect)
+   - ✅ YRC1000 ở **PLAY/REMOTE** mode
+
+   → panel: Perception = **D455 + YOLO (real)** → *Start experiment* (hoặc CLI Mode A/B).
 
 ---
 
@@ -283,7 +356,7 @@ python scripts/16_app_qt.py --config config/cell_layout_real.yaml   # cell thậ
 - **Python Script generator** (menu Program → Generate from Python script…): viết Python với API `p.add_movej_to('HOME')`, `p.add_wait(0.5)`,... → script generate hàng loạt instructions (vd: 8 điểm vòng tròn).
 - **Post-processor settings** (menu Program): cap `max_speed_pct` (safety), initial VJ%, V mm/s cho INFORM codegen.
 
-**Kinematics**: dùng [Pieper analytical IK](../src/orchestrator/kinematics/pieper_gp7.py) — ~170µs/call (0.17ms), 1e-13mm accuracy (= RoboDK SolveIK), trả 3-8 native solutions cho Change Configuration. Fallback DLS nếu Pieper miss.
+**Kinematics**: dùng [Pieper analytical IK](../src/orchestrator/kinematics/pieper_gp7.py) — ~0.24ms/call, 1e-13mm accuracy (= RoboDK SolveIK), trả 3-8 native solutions cho Change Configuration. Fallback DLS nếu Pieper miss.
 
 #### Camera D455 & thị giác trong app (dock "Camera (D455)")
 
@@ -412,6 +485,19 @@ Mỗi row = 1 tick (~100ms):
 - **Sim**: tự sinh bằng `scripts/calibration_from_layout.py` (lấy từ YAML)
 - **Real**: chạy `scripts/02_run_calibration.py` với ChArUco board
 
+### Q: `--ik-source client` giờ dùng solver nào?
+**A**: **Pieper analytical** (giải tích, closed-form, exact — ~0.24ms, accuracy
+1e-13mm bằng RoboDK SolveIK), chọn nhánh nghiệm gần joints hiện tại để chuyển động
+liên tục. **DLS chỉ còn là fallback** khi Pieper rỗng (pose ngoài tầm hoàn toàn —
+hiếm). `yrc` (YRC1000 tự IK qua HSE Cartesian) vẫn là mặc định cho real mode. Áp dụng
+cả CLI lẫn panel Digital Twin trong app.
+
+### Q: Real mode `yrc` có batch / ultra-fast được không?
+**A**: `yrc` gửi **pose Cartesian** thẳng tới YRC1000 (controller tự IK) → backend HSE
+chưa hỗ trợ Cartesian trong batch/ultra-fast, nên mỗi move chạy **single-shot** (chỉ
+tốn thêm vài INFORM upload/trial, vẫn chạy đúng). Muốn **batch / ultra-fast** thì dùng
+`--ik-source client` (joint-list, Pieper) — gom 5-7 motion thành 1 INFORM upload/trial.
+
 ---
 
 ## 7. Debug khi gặp lỗi
@@ -481,7 +567,7 @@ Mỗi row = 1 tick (~100ms):
 | `--lighting LABEL` | "" | Nhãn điều kiện ánh sáng ghi vào CSV trial (phân tích sau) |
 | `--overlap LABEL` | "" | Nhãn mức chồng lấn ghi vào CSV trial |
 | **IK source** | | |
-| `--ik-source {yrc, client}` | auto | Cách compute IK. Auto: `yrc` cho real, `client` cho sim. URDF DLS verified match RoboDK 0.00mm. |
+| `--ik-source {yrc, client}` | auto | Cách compute IK. Auto: `yrc` cho real, `client` cho sim. `client` = Pieper analytical (exact, DLS chỉ fallback), URDF chain verified match RoboDK 0.00mm. |
 | `--tool-no N` | 1 | TOOL coordinate trên YRC (TOOL01 default). Cần setup trên TP — xem `docs/HUONG_DAN_CAI_DAT.md` §2.10 |
 | **HSE backend specific** | | |
 | `--hse-ip IP` | (từ cell YAML) | Override IP YRC1000 |
@@ -495,7 +581,12 @@ Mỗi row = 1 tick (~100ms):
 | Source | Tốc độ | Accuracy | Khi nào dùng |
 |---|---|---|---|
 | `yrc` | ~50ms/move (HSE) | YRC controller's own IK | **Real mode default**, cần setup TOOL01 trên TP |
-| `client` | ~5-15ms/move (DLS) | 0.001-0.058mm (match RoboDK) | **Sim default** + real backup; URDF chain pure Python |
+| `client` | ~0.24ms/move (Pieper) | 1e-13mm (= RoboDK SolveIK) | **Sim default** + real backup; URDF chain pure Python |
+
+**Client IK = Pieper analytical** (giải tích, closed-form, exact — chọn nhánh gần
+joints hiện tại để chuyển động liên tục), nhanh + chuẩn hơn DLS. **DLS chỉ còn là
+fallback** khi Pieper rỗng (pose ngoài tầm hoàn toàn — hiếm). `yrc` (YRC1000 tự IK)
+vẫn là mặc định cho real mode.
 
 URDF chain (`src/orchestrator/kinematics/urdf_chain.py`) lấy từ ros-industrial/motoman
 noetic-devel, đã verify match RoboDK SolveFK exactly (0.00mm/0.00°). Verify lại
@@ -525,6 +616,7 @@ bất kỳ lúc nào: `python scripts/13_verify_vs_robodk.py`.
 ## 9. Workflow tổng — Cheatsheet 1 trang
 
 ```mermaid
+%%{init: {'flowchart': {'nodeSpacing': 60, 'rankSpacing': 85, 'useMaxWidth': false}}}%%
 flowchart TB
     START([Bắt đầu]) --> Q1{Có robot<br/>GP7 thật?}
 
@@ -553,6 +645,7 @@ flowchart TB
     style REAL fill:#E65100,stroke:#fff,stroke-width:3px,color:#fff
     style ANALYZE fill:#FFA000,stroke:#fff,color:#fff
     style END fill:#558B2F,stroke:#fff,color:#fff
+    linkStyle default stroke:#FF1744,stroke-width:3px
 ```
 
 ---
