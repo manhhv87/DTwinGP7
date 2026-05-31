@@ -29,6 +29,7 @@ Workflow:
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import Literal
 
@@ -275,6 +276,75 @@ class InformJobBuilder:
         """Thêm comment 'NOP // <text>' để debug."""
         safe = text.replace("\r", "").replace("\n", " ")[:80]
         self._instructions.append(_Instruction(f"'{safe}"))    # ' = INFORM comment
+        return self
+
+    # ─── Flow control + variables (INFORM logic) ───
+    _RE_VARNAME = re.compile(r"^[BI]\d{1,3}$")
+
+    @classmethod
+    def _validate_var(cls, name: str) -> str:
+        name = name.strip().upper()
+        if not cls._RE_VARNAME.match(name):
+            raise ValueError(f"Tên biến không hợp lệ: '{name}' (cần B###/I###)")
+        return name
+
+    @staticmethod
+    def _fmt_cond(lhs: str, op: str, rhs: str) -> str:
+        if op not in ("=", "<>", ">", "<", ">=", "<="):
+            raise ValueError(f"Toán tử điều kiện không hỗ trợ: '{op}'")
+        return f"{lhs.strip()}{op}{rhs.strip()}"
+
+    def label(self, name: str) -> "InformJobBuilder":
+        """*LABEL — đích nhảy. Tên theo quy ước job (start letter, ≤32 alnum/_)."""
+        self._validate_name(name)
+        self._instructions.append(_Instruction(f"*{name}"))
+        return self
+
+    def jump(self, label: str, cond: tuple[str, str, str] | None = None,
+             ) -> "InformJobBuilder":
+        """JUMP *LABEL [IF <cond>]. cond = (lhs, op, rhs) hoặc None (vô điều kiện)."""
+        self._validate_name(label)
+        text = f"JUMP *{label}"
+        if cond is not None:
+            text += f" IF {self._fmt_cond(*cond)}"
+        self._instructions.append(_Instruction(text))
+        return self
+
+    def set_var(self, name: str, op: str, arg: str | int = "",
+                ) -> "InformJobBuilder":
+        """SET/ADD/SUB/MUL/DIV Bxxx arg | INC/DEC Bxxx."""
+        name = self._validate_var(name)
+        op = op.upper()
+        if op in ("INC", "DEC"):
+            self._instructions.append(_Instruction(f"{op} {name}"))
+        elif op in ("SET", "ADD", "SUB", "MUL", "DIV"):
+            self._instructions.append(_Instruction(f"{op} {name} {arg}"))
+        else:
+            raise ValueError(f"Phép gán biến không hỗ trợ: '{op}'")
+        return self
+
+    def if_then(self, cond: tuple[str, str, str]) -> "InformJobBuilder":
+        self._instructions.append(_Instruction(f"IFTHEN {self._fmt_cond(*cond)}"))
+        return self
+
+    def else_if(self, cond: tuple[str, str, str]) -> "InformJobBuilder":
+        self._instructions.append(_Instruction(f"ELSEIF {self._fmt_cond(*cond)}"))
+        return self
+
+    def else_(self) -> "InformJobBuilder":
+        self._instructions.append(_Instruction("ELSE"))
+        return self
+
+    def end_if(self) -> "InformJobBuilder":
+        self._instructions.append(_Instruction("ENDIF"))
+        return self
+
+    def while_(self, cond: tuple[str, str, str]) -> "InformJobBuilder":
+        self._instructions.append(_Instruction(f"WHILE {self._fmt_cond(*cond)}"))
+        return self
+
+    def end_while(self) -> "InformJobBuilder":
+        self._instructions.append(_Instruction("ENDWHILE"))
         return self
 
     def _clamp_joint_speed(self, speed_pct: float | None) -> float:

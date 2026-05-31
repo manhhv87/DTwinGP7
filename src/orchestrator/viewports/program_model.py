@@ -36,6 +36,17 @@ class Instruction:
 
     Operator:
       ShowMessage  → message (≤ 32 ASCII) — MSG
+
+    Flow / variables (INFORM logic — Tier B1 flat):
+      Label        → label_name — *LABEL
+      Jump         → label_name + optional cond (cond_op="" ⇒ unconditional) —
+                     JUMP *LABEL [IF <cond>]
+      SetVar       → var_name (B###/I###), var_op (SET/ADD/SUB/MUL/DIV/INC/DEC),
+                     var_arg (operand token; bỏ qua cho INC/DEC) — SET/ADD/...
+
+    Structured (INFORM logic — Tier B2): IfThen/ElseIf/Else/EndIf (cond ở
+    IfThen/ElseIf) + While/EndWhile (cond ở While). cond = cond_lhs cond_op
+    cond_rhs (op ∈ =,<>,>,<,>=,<=; toán hạng = B###/I### | literal | IN#(n)).
     """
 
     type: str
@@ -71,6 +82,15 @@ class Instruction:
     # event_name = identifier ngắn (e.g. "CHECKPOINT_1"), event_payload = info chi tiết.
     event_name: str = ""
     event_payload: str = ""
+    # Flow / variables (INFORM logic). label_name dùng cho Label + Jump.
+    label_name: str = ""
+    var_name: str = ""                  # B### / I###
+    var_op: str = ""                    # SET/ADD/SUB/MUL/DIV/INC/DEC
+    var_arg: str = ""                   # operand token (literal | var); "" cho INC/DEC
+    # Condition (Jump IF / IfThen / ElseIf / While). cond_op="" ⇒ unconditional.
+    cond_lhs: str = ""
+    cond_op: str = ""                   # =, <>, >, <, >=, <=
+    cond_rhs: str = ""
 
     def describe(self, modal: dict | None = None) -> str:
         """Render dòng theo cú pháp INFORM III (MOVJ/MOVL/MOVC/DOUT/WAIT/TIMER/
@@ -146,7 +166,36 @@ class Instruction:
         if t == "SimEvent":
             pl = f" ({self.event_payload[:24]})" if self.event_payload else ""
             return f"'⚑ SIMEVENT {self.event_name}{pl}"
+        # ── Flow / variables (INFORM logic) ──
+        if t == "Label":
+            return f"*{self.label_name}"
+        if t == "Jump":
+            tail = f"  IF {self._cond_str()}" if self.cond_op else ""
+            return f"JUMP  *{self.label_name}{tail}"
+        if t == "SetVar":
+            op = self.var_op.upper()
+            if op in ("INC", "DEC"):
+                return f"{op}  {self.var_name}"
+            return f"{op}  {self.var_name} {self.var_arg}"
+        if t == "IfThen":
+            return f"IFTHEN  {self._cond_str()}"
+        if t == "ElseIf":
+            return f"ELSEIF  {self._cond_str()}"
+        if t == "Else":
+            return "ELSE"
+        if t == "EndIf":
+            return "ENDIF"
+        if t == "While":
+            return f"WHILE  {self._cond_str()}"
+        if t == "EndWhile":
+            return "ENDWHILE"
         return f"?{t}"
+
+    def _cond_str(self) -> str:
+        """Render điều kiện INFORM 'lhs op rhs' (vd 'B000>5'). Rỗng nếu chưa set."""
+        if not self.cond_op:
+            return ""
+        return f"{self.cond_lhs}{self.cond_op}{self.cond_rhs}"
 
     def to_dict(self) -> dict:
         d: dict[str, Any] = {"type": self.type}
@@ -191,6 +240,24 @@ class Instruction:
         elif t == "SimEvent":
             d["event_name"] = str(self.event_name)
             d["event_payload"] = str(self.event_payload)
+        elif t == "Label":
+            d["label_name"] = str(self.label_name)
+        elif t == "Jump":
+            d["label_name"] = str(self.label_name)
+            if self.cond_op:
+                d["cond_lhs"] = str(self.cond_lhs)
+                d["cond_op"] = str(self.cond_op)
+                d["cond_rhs"] = str(self.cond_rhs)
+        elif t == "SetVar":
+            d["var_name"] = str(self.var_name)
+            d["var_op"] = str(self.var_op)
+            if self.var_op.upper() not in ("INC", "DEC"):
+                d["var_arg"] = str(self.var_arg)
+        elif t in ("IfThen", "ElseIf", "While"):
+            d["cond_lhs"] = str(self.cond_lhs)
+            d["cond_op"] = str(self.cond_op)
+            d["cond_rhs"] = str(self.cond_rhs)
+        # Else / EndIf / EndWhile: chỉ cần "type".
         return d
 
     @classmethod
@@ -239,4 +306,24 @@ class Instruction:
             return cls(type=t,
                        event_name=str(d.get("event_name", "")),
                        event_payload=str(d.get("event_payload", "")))
+        if t == "Label":
+            return cls(type=t, label_name=str(d.get("label_name", "")))
+        if t == "Jump":
+            return cls(type=t,
+                       label_name=str(d.get("label_name", "")),
+                       cond_lhs=str(d.get("cond_lhs", "")),
+                       cond_op=str(d.get("cond_op", "")),
+                       cond_rhs=str(d.get("cond_rhs", "")))
+        if t == "SetVar":
+            return cls(type=t,
+                       var_name=str(d.get("var_name", "")),
+                       var_op=str(d.get("var_op", "SET")),
+                       var_arg=str(d.get("var_arg", "")))
+        if t in ("IfThen", "ElseIf", "While"):
+            return cls(type=t,
+                       cond_lhs=str(d.get("cond_lhs", "")),
+                       cond_op=str(d.get("cond_op", "")),
+                       cond_rhs=str(d.get("cond_rhs", "")))
+        if t in ("Else", "EndIf", "EndWhile"):
+            return cls(type=t)
         raise ValueError(f"Unknown instruction type: {t}")

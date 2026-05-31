@@ -141,7 +141,10 @@ logger = logging.getLogger(__name__)
 # để vùng co được khi cell active (tab ẩn sau có QScrollArea nên không vấn đề).
 _JOG_DOCK_W = 580
 _CELL_DOCK_W = 180
-_PROG_DOCK_W = 440
+# Rộng đủ chứa HẾT content program dock không cần cuộn ngang: hàng rộng nhất
+# (Modal "Speed": VJ + V spinbox + nút 138px) min ~449px + vbox margin + thanh
+# cuộn dọc ~480px; +dư cho font Windows thật → 540.
+_PROG_DOCK_W = 540
 
 # Chiều sâu nón frustum camera: mặc định kéo theo trục quang tới khi chạm sàn
 # (Z=0) → đúng vùng quan sát thực. Nếu camera không hướng xuống thì dùng far
@@ -261,6 +264,9 @@ class GP7AppQt(
         self._prog_thread: threading.Thread | None = None
         self._prog_stop = threading.Event()
         self._prog_pause = threading.Event()        # set = pause (held)
+        # Sim digital inputs cho điều kiện IN#(n) trong JUMP/IF/WHILE. Sim không
+        # có IO thật → mặc định OFF (False); user/script có thể set qua đây.
+        self._sim_io: dict[int, bool] = {}
         # Multi-job project. Một dock chứa nhiều job; chỉ 1 job active tại
         # 1 thời điểm (combo box). self._program (property) trỏ vào job đang
         # active. Targets là project-global (RoboDK convention).
@@ -473,6 +479,9 @@ class GP7AppQt(
         act_export = QAction("&Export .JBI (Yaskawa INFORM)...", self)
         act_export.triggered.connect(self._on_prog_export_dlg)
         m_file.addAction(act_export)
+        act_import_jbi = QAction("&Import .JBI (Yaskawa INFORM)...", self)
+        act_import_jbi.triggered.connect(self._on_prog_import_jbi_dlg)
+        m_file.addAction(act_import_jbi)
         m_file.addSeparator()
         act_exit = QAction("E&xit", self)
         act_exit.setShortcut(QKeySequence.StandardKey.Quit)
@@ -1283,7 +1292,7 @@ class GP7AppQt(
         # ══ 3. ADD INSTRUCTION (Motion / I-O & Flow / Modal) ═════════
         # Mọi row dùng grid 3-cột [label | inputs(stretch) | + button(fixed)]
         # → các nút "+ Add" thẳng hàng dọc, gọn & pro. Helper bên dưới.
-        _BTN_W = 90
+        _BTN_W = 138        # đủ rộng cho nhãn dài nhất (+ WaitIO / + SetVar) — không cắt chữ
         tabs = QTabWidget()
         tabs.setDocumentMode(True)
         # Maximum vertical policy → tabs widget chỉ cao = content, KHÔNG nở ra
@@ -1302,6 +1311,15 @@ class GP7AppQt(
                 h.addWidget(x, 1 if (fill and i == last) else 0)
             if not fill:
                 h.addStretch()
+            return w
+
+        def _btn_fill_row(*btns):
+            """Hàng nút giãn đều lấp hết bề rộng (mỗi nút stretch=1) — không dồn
+            trái chừa khoảng trống bên phải."""
+            w = QWidget(); h = QHBoxLayout(w)
+            h.setContentsMargins(0, 0, 0, 0); h.setSpacing(4)
+            for b in btns:
+                h.addWidget(b, 1)
             return w
 
         # Label col cố định (căn nhãn thẳng), input col STRETCH lấp hết bề
@@ -1413,8 +1431,8 @@ class GP7AppQt(
         self._prog_ev_edit = QLineEdit()
         self._prog_ev_edit.setMaxLength(32)
         self._prog_ev_edit.setPlaceholderText("sim checkpoint name")
-        b_ev = QPushButton("+ SimEvent")
-        b_ev.setToolTip("Sim checkpoint — not exported to .JBI")
+        b_ev = QPushButton("+ Event")
+        b_ev.setToolTip("Sim checkpoint (SimEvent) — not exported to .JBI")
         b_ev.clicked.connect(self._on_prog_add_simevent)
         _grid_row(log_lay, r, "Event", self._prog_ev_edit, b_ev); r += 1
         log_lay.setRowStretch(r, 1)
@@ -1445,26 +1463,111 @@ class GP7AppQt(
         _spd_h.addStretch(1)                            # gap giữa VJ và "V"
         _spd_h.addWidget(QLabel("V"))
         _spd_h.addWidget(self._prog_spd_v)             # width tự nhiên; gap nằm bên trái "V"
-        b_spd = QPushButton("+ SetSpeed"); b_spd.clicked.connect(self._on_prog_add_setspeed)
+        b_spd = QPushButton("+ Speed"); b_spd.clicked.connect(self._on_prog_add_setspeed)
         b_spd.setToolTip("Set speed VJ% (joint) + V mm/s (linear) for following moves")
         _grid_row(mod_lay, r, "Speed", _spd_mid, b_spd); r += 1
         self._prog_pl = QSpinBox(); self._prog_pl.setRange(0, 8); self._prog_pl.setValue(0)
         self._prog_pl.setMinimumWidth(64)
-        b_pl = QPushButton("+ Rounding"); b_pl.clicked.connect(self._on_prog_add_setrounding)
+        b_pl = QPushButton("+ Round"); b_pl.clicked.connect(self._on_prog_add_setrounding)
         b_pl.setToolTip("Corner rounding PL (0 = sharp/exact … 8 = smooth/fast)")
         _grid_row(mod_lay, r, "PL", _hwrap(self._prog_pl, fill=True), b_pl); r += 1
         self._prog_tool_no = QSpinBox(); self._prog_tool_no.setRange(0, 15)
         self._prog_tool_no.setValue(0); self._prog_tool_no.setMinimumWidth(64)
-        b_tool = QPushButton("+ SetTool"); b_tool.clicked.connect(self._on_prog_add_settool)
+        b_tool = QPushButton("+ Tool"); b_tool.clicked.connect(self._on_prog_add_settool)
         b_tool.setToolTip("Select tool coordinate TL# for following moves")
         _grid_row(mod_lay, r, "TL#", _hwrap(self._prog_tool_no, fill=True), b_tool); r += 1
         self._prog_uf_no = QSpinBox(); self._prog_uf_no.setRange(0, 15)
         self._prog_uf_no.setValue(0); self._prog_uf_no.setMinimumWidth(64)
-        b_uf = QPushButton("+ RefFrame"); b_uf.clicked.connect(self._on_prog_add_setrefframe)
+        b_uf = QPushButton("+ Frame"); b_uf.clicked.connect(self._on_prog_add_setrefframe)
         b_uf.setToolTip("Select user/reference frame UF# for following moves")
         _grid_row(mod_lay, r, "UF#", _hwrap(self._prog_uf_no, fill=True), b_uf); r += 1
         mod_lay.setRowStretch(r, 1)
         tabs.addTab(mod_w, "Modal")
+
+        # ─ Tab: Logic (flow control + variables — INFORM JUMP/LABEL/SET) ─
+        lgc_w = QWidget()
+        lgc_lay = QGridLayout(lgc_w); lgc_lay.setSpacing(4)
+        lgc_lay.setColumnStretch(1, 1)
+        r = 0
+        # Label (*LABEL) — đích nhảy
+        self._prog_lbl_edit = QLineEdit(); self._prog_lbl_edit.setMaxLength(32)
+        self._prog_lbl_edit.setPlaceholderText("label name (e.g. LOOP)")
+        b_lbl = QPushButton("+ Label")
+        b_lbl.setToolTip("Jump target: *LABEL")
+        b_lbl.clicked.connect(self._on_prog_add_label)
+        _grid_row(lgc_lay, r, "Label", _hwrap(self._prog_lbl_edit, fill=True), b_lbl); r += 1
+        # Jump *LABEL [IF cond]
+        self._prog_jmp_edit = QLineEdit(); self._prog_jmp_edit.setMaxLength(32)
+        self._prog_jmp_edit.setPlaceholderText("target label")
+        b_jmp = QPushButton("+ Jump")
+        b_jmp.setToolTip("JUMP *LABEL — optionally only IF the condition below holds")
+        b_jmp.clicked.connect(self._on_prog_add_jump)
+        _grid_row(lgc_lay, r, "Jump *", _hwrap(self._prog_jmp_edit, fill=True), b_jmp); r += 1
+        # Condition row (áp cho Jump phía trên). "(uncond)" = nhảy vô điều kiện.
+        self._prog_jc_lhs = QLineEdit(); self._prog_jc_lhs.setPlaceholderText("B000 / IN#(1)")
+        self._prog_jc_lhs.setMinimumWidth(78)
+        self._prog_jc_op = QComboBox()
+        self._prog_jc_op.addItems(["(uncond)", "=", "<>", ">", "<", ">=", "<="])
+        self._prog_jc_op.setMinimumWidth(74)
+        self._prog_jc_rhs = QLineEdit(); self._prog_jc_rhs.setPlaceholderText("value / var")
+        self._prog_jc_rhs.setMinimumWidth(78)
+        lgc_lay.addWidget(QLabel("IF"), r, 0)
+        lgc_lay.addWidget(
+            _hwrap(self._prog_jc_lhs, self._prog_jc_op, self._prog_jc_rhs, fill=True),
+            r, 1, 1, 2)
+        r += 1
+        # SetVar: SET/ADD/SUB/MUL/DIV Bxxx arg | INC/DEC Bxxx
+        self._prog_var_name = QLineEdit(); self._prog_var_name.setMaxLength(5)
+        self._prog_var_name.setPlaceholderText("B000"); self._prog_var_name.setMinimumWidth(64)
+        self._prog_var_op = QComboBox()
+        self._prog_var_op.addItems(["SET", "ADD", "SUB", "MUL", "DIV", "INC", "DEC"])
+        self._prog_var_op.setMinimumWidth(64)
+        self._prog_var_arg = QLineEdit(); self._prog_var_arg.setPlaceholderText("value / var")
+        self._prog_var_arg.setMinimumWidth(70)
+        b_var = QPushButton("+ SetVar")
+        b_var.setToolTip("Variable op: SET/ADD/SUB/MUL/DIV need an operand; INC/DEC don't")
+        b_var.clicked.connect(self._on_prog_add_setvar)
+        _grid_row(
+            lgc_lay, r, "Var",
+            _hwrap(self._prog_var_name, self._prog_var_op, self._prog_var_arg, fill=True),
+            b_var); r += 1
+        # ── Structured blocks (IFTHEN/ELSEIF/ELSE/ENDIF + WHILE/ENDWHILE) ──
+        _sep = QFrame(); _sep.setFrameShape(QFrame.Shape.HLine)
+        _sep.setFrameShadow(QFrame.Shadow.Sunken)
+        lgc_lay.addWidget(_sep, r, 0, 1, 3); r += 1
+        lgc_lay.addWidget(QLabel("Structured blocks:"), r, 0, 1, 3); r += 1
+        # Shared condition cho IfThen / ElseIf / While (luôn có điều kiện).
+        self._prog_sc_lhs = QLineEdit(); self._prog_sc_lhs.setPlaceholderText("B000 / IN#(1)")
+        self._prog_sc_lhs.setMinimumWidth(78)
+        self._prog_sc_op = QComboBox()
+        self._prog_sc_op.addItems(["=", "<>", ">", "<", ">=", "<="])
+        self._prog_sc_op.setMinimumWidth(64)
+        self._prog_sc_rhs = QLineEdit(); self._prog_sc_rhs.setPlaceholderText("value / var")
+        self._prog_sc_rhs.setMinimumWidth(78)
+        lgc_lay.addWidget(QLabel("Cond"), r, 0)
+        lgc_lay.addWidget(
+            _hwrap(self._prog_sc_lhs, self._prog_sc_op, self._prog_sc_rhs, fill=True),
+            r, 1, 1, 2)
+        r += 1
+        # Row: các nút cần điều kiện (đọc Cond ở trên).
+        b_if = QPushButton("+ IfThen"); b_if.clicked.connect(self._on_prog_add_ifthen)
+        b_if.setToolTip("IFTHEN <cond> … (đóng bằng ENDIF)")
+        b_elif = QPushButton("+ ElseIf"); b_elif.clicked.connect(self._on_prog_add_elseif)
+        b_elif.setToolTip("ELSEIF <cond> — nhánh điều kiện kế (trong IFTHEN)")
+        b_while = QPushButton("+ While"); b_while.clicked.connect(self._on_prog_add_while)
+        b_while.setToolTip("WHILE <cond> … (đóng bằng ENDWHILE)")
+        lgc_lay.addWidget(_btn_fill_row(b_if, b_elif, b_while), r, 0, 1, 3); r += 1
+        # Row: các nút đóng/không điều kiện.
+        b_else = QPushButton("+ Else"); b_else.clicked.connect(self._on_prog_add_else)
+        b_endif = QPushButton("+ EndIf"); b_endif.clicked.connect(self._on_prog_add_endif)
+        b_endw = QPushButton("+ EndWhile"); b_endw.clicked.connect(self._on_prog_add_endwhile)
+        lgc_lay.addWidget(_btn_fill_row(b_else, b_endif, b_endw), r, 0, 1, 3); r += 1
+        _hint = QLabel("Operands: B###/I### variable, integer literal, or IN#(n). "
+                       "IF/WHILE blocks must be balanced (validated before Run/Export).")
+        _hint.setWordWrap(True); _hint.setStyleSheet("color: #8a8a8a; font-size: 11px;")
+        lgc_lay.addWidget(_hint, r, 0, 1, 3); r += 1
+        lgc_lay.setRowStretch(r, 1)
+        tabs.addTab(lgc_w, "Logic")
 
         # Căn giữa giá trị trong mọi spinbox — vì input fill hết col1 (rộng),
         # số canh giữa trông cân đối thay vì lệch trái để trống bên phải.
@@ -5214,6 +5317,7 @@ class GP7AppQt(
         # cách export fold modal vào từng MOV line).
         modal = {"vj": self._pp_default_vj, "v": self._pp_default_v_mms,
                  "pl": None, "tl": None, "uf": None}
+        depth = 0       # độ sâu lồng khối IF/WHILE → thụt lề cho dễ đọc
         for i, ins in enumerate(self._program):
             t = ins.type
             if t == "SetSpeed":
@@ -5225,7 +5329,17 @@ class GP7AppQt(
                 modal["tl"] = ins.tool_no
             elif t == "SetRefFrame":
                 modal["uf"] = ins.ref_frame_no
-            self._prog_list.addItem(f"{i+1:>2}. {ins.describe(modal)}")
+            # Đóng khối → giảm depth TRƯỚC khi render (keyword về ngang khối mở).
+            if t in ("EndIf", "EndWhile"):
+                depth = max(0, depth - 1)
+            line_depth = depth
+            if t in ("ElseIf", "Else"):        # keyword giữa khối lùi 1 nấc
+                line_depth = max(0, depth - 1)
+            indent = "    " * line_depth
+            self._prog_list.addItem(f"{i+1:>2}. {indent}{ins.describe(modal)}")
+            # Mở khối → tăng depth cho các dòng SAU.
+            if t in ("IfThen", "While"):
+                depth += 1
 
     def _on_prog_add_movej(self) -> None:
         self._program.append(Instruction(type="MoveJ", joints=list(self._joints)))
@@ -5334,6 +5448,107 @@ class GP7AppQt(
         self._refresh_program_list()
         self._prog_msg_edit.clear()
         self._set_status(f'Program +MSG "{text[:32]}"', level="ok")
+
+    # ── Logic instructions (flow control + variables) ─────────────────
+    def _on_prog_add_label(self) -> None:
+        name = self._prog_lbl_edit.text().strip().upper()
+        if (not name or not name[0].isalpha()
+                or not name.replace("_", "").isalnum()):
+            self._set_status(
+                "Label: start with a letter; letters/digits/_ only", level="warn")
+            return
+        self._program.append(Instruction(type="Label", label_name=name[:32]))
+        self._refresh_program_list(); self._prog_lbl_edit.clear()
+        self._set_status(f"Program +*{name}", level="ok")
+
+    def _read_jump_cond(self):
+        """Đọc 3 widget điều kiện → (lhs,op,rhs) | None (uncond) | 'ERR'."""
+        op = self._prog_jc_op.currentText()
+        if op == "(uncond)":
+            return None
+        lhs = self._prog_jc_lhs.text().strip()
+        rhs = self._prog_jc_rhs.text().strip()
+        if not lhs or not rhs:
+            return "ERR"
+        return (lhs, op, rhs)
+
+    def _on_prog_add_jump(self) -> None:
+        label = self._prog_jmp_edit.text().strip().upper()
+        if not label:
+            self._set_status("Jump: enter a target label", level="warn"); return
+        cond = self._read_jump_cond()
+        if cond == "ERR":
+            self._set_status(
+                "Jump IF: fill both sides, or set op to (uncond)", level="warn")
+            return
+        ins = Instruction(type="Jump", label_name=label[:32])
+        if cond:
+            ins.cond_lhs, ins.cond_op, ins.cond_rhs = cond
+        self._program.append(ins)
+        self._refresh_program_list()
+        self._set_status(f"Program +{ins.describe()}", level="ok")
+
+    def _on_prog_add_setvar(self) -> None:
+        from .program_logic import VarStore
+        var = self._prog_var_name.text().strip().upper()
+        op = self._prog_var_op.currentText()
+        arg = self._prog_var_arg.text().strip()
+        try:
+            VarStore.validate(var)
+        except ValueError as e:
+            self._set_status(str(e), level="warn"); return
+        if op not in ("INC", "DEC") and not arg:
+            self._set_status(
+                f"{op} needs an operand (value or variable)", level="warn")
+            return
+        ins = Instruction(
+            type="SetVar", var_name=var, var_op=op,
+            var_arg=("" if op in ("INC", "DEC") else arg))
+        self._program.append(ins)
+        self._refresh_program_list()
+        self._set_status(f"Program +{ins.describe()}", level="ok")
+
+    # ── Structured blocks (IF / WHILE) ────────────────────────────────
+    def _read_struct_cond(self):
+        """Đọc condition builder của khối structured → (lhs,op,rhs) | None."""
+        lhs = self._prog_sc_lhs.text().strip()
+        rhs = self._prog_sc_rhs.text().strip()
+        if not lhs or not rhs:
+            return None
+        return (lhs, self._prog_sc_op.currentText(), rhs)
+
+    def _append_block(self, ins_type: str, need_cond: bool) -> None:
+        """Append 1 lệnh khối; đọc condition nếu need_cond."""
+        kwargs = {}
+        if need_cond:
+            cond = self._read_struct_cond()
+            if not cond:
+                self._set_status(
+                    f"{ins_type}: enter a condition (both sides)", level="warn")
+                return
+            kwargs = dict(cond_lhs=cond[0], cond_op=cond[1], cond_rhs=cond[2])
+        ins = Instruction(type=ins_type, **kwargs)
+        self._program.append(ins)
+        self._refresh_program_list()
+        self._set_status(f"Program +{ins.describe()}", level="ok")
+
+    def _on_prog_add_ifthen(self) -> None:
+        self._append_block("IfThen", need_cond=True)
+
+    def _on_prog_add_elseif(self) -> None:
+        self._append_block("ElseIf", need_cond=True)
+
+    def _on_prog_add_while(self) -> None:
+        self._append_block("While", need_cond=True)
+
+    def _on_prog_add_else(self) -> None:
+        self._append_block("Else", need_cond=False)
+
+    def _on_prog_add_endif(self) -> None:
+        self._append_block("EndIf", need_cond=False)
+
+    def _on_prog_add_endwhile(self) -> None:
+        self._append_block("EndWhile", need_cond=False)
 
     def _on_prog_modify(self) -> None:
         """F2 / double-click / Edit button — edit selected instruction.
