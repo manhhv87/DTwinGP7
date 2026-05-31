@@ -25,7 +25,19 @@ from ..kinematics.inverse_kinematics import inverse_kinematics_seeded
 from ..kinematics.pieper_gp7 import inverse_kinematics_pieper_gp7_nearest
 from ..kinematics.urdf_chain import forward_kinematics_urdf
 from .control_panel import _xyz_rpy_to_matrix
+from .program_logic import (
+    CONTROL_FLOW,
+    VarStore,
+    apply_setvar,
+    build_block_map,
+    next_pc,
+    resolve_labels,
+    validate_program,
+)
 from .program_model import Instruction
+
+# Backstop: chặn loop vô hạn (JUMP/WHILE) treo sim thread.
+_LOOP_GUARD_MAX = 200_000
 
 logger = logging.getLogger(__name__)
 
@@ -90,6 +102,13 @@ class ProgramPlaybackMixin:
             self._set_status("Program already running", level="warn"); return
         if not self._program:
             self._set_status("Program empty", level="warn"); return
+        errs = validate_program(self._program)
+        if errs:
+            self._set_status(
+                f"Program invalid — {len(errs)} error(s): {errs[0]}"
+                + (f" (+{len(errs)-1} more)" if len(errs) > 1 else ""),
+                level="err")
+            return
         self._prog_stop.clear()
         self._set_status(f"Program: running ({len(self._program)} steps)", "ok")
         self._prog_thread = threading.Thread(
@@ -130,19 +149,65 @@ class ProgramPlaybackMixin:
         return list(ins.joints if want == "joints" else ins.tcp_pose)
 
     def _play_program_loop(self) -> None:
-        n = len(self._program)
+        prog = self._program
+        n = len(prog)
         # Modal sim state (scale animation speed; modifiers chỉ là metadata).
         sim_vj_pct: float = 10.0
+        # ── Logic infra: interpreter có program counter + biến + nhãn/khối ──
         try:
-            for i, ins in enumerate(self._program):
+            label_map = resolve_labels(prog)
+            block_map = build_block_map(prog)
+        except ValueError as e:
+            self._signals.status.emit(f"Program logic error: {e}", "err")
+            self._signals.program_done.emit()
+            return
+        store = VarStore()
+        sim_io = getattr(self, "_sim_io", {})        # IN# sim (mặc định OFF)
+        def io_reader(idx: int) -> bool:
+            return bool(sim_io.get(idx, False))
+        if_state: dict[int, bool] = {}
+        pc = 0
+        guard = 0
+        try:
+            while pc < n:
+                guard += 1
+                if guard > _LOOP_GUARD_MAX:
+                    self._signals.status.emit(
+                        f"Program: loop guard tripped (>{_LOOP_GUARD_MAX} "
+                        f"steps) — aborted (vòng lặp vô hạn?)", "err")
+                    return
                 if self._prog_stop.is_set():
                     self._signals.status.emit("Program: stopped", "warn"); return
                 self._wait_while_paused()
                 if self._prog_stop.is_set():
                     self._signals.status.emit("Program: stopped", "warn"); return
-                self._signals.status.emit(
-                    f"Step {i+1}/{n}: {ins.describe()}", "info")
+                ins = prog[pc]
                 t = ins.type
+                self._signals.status.emit(
+                    f"Step {pc+1}/{n}: {ins.describe()}", "info")
+                # ── Biến: SET/ADD/INC/... — mutate store, không chuyển động ──
+                if t == "SetVar":
+                    try:
+                        apply_setvar(ins.var_name, ins.var_op, ins.var_arg,
+                                     store, io_reader)
+                        self._signals.status.emit(
+                            f"Step {pc+1}: {ins.var_op.upper()} {ins.var_name} "
+                            f"→ {store.get(ins.var_name)}", "info")
+                    except ValueError as e:
+                        self._signals.status.emit(
+                            f"Step {pc+1}: var error: {e}", "err"); return
+                    pc += 1
+                    continue
+                # ── Rẽ nhánh: Label/Jump/IfThen/.../EndWhile → next_pc thuần ──
+                if t in CONTROL_FLOW:
+                    try:
+                        pc = next_pc(prog, pc, store, io_reader,
+                                     block_map, label_map, if_state)
+                    except ValueError as e:
+                        self._signals.status.emit(
+                            f"Step {pc+1}: flow error: {e}", "err"); return
+                    continue
+                i = pc                               # alias cho khối bên dưới
                 # Animation step count: VJ% nhỏ + sim_speed_mult thấp → chậm.
                 base_steps = int(40 * 30.0 / max(5.0, sim_vj_pct))
                 steps = max(8, int(base_steps / max(0.1, self._sim_speed_mult)))
@@ -227,7 +292,9 @@ class ProgramPlaybackMixin:
                     time.sleep(0.15 / max(0.1, self._sim_speed_mult))
                 # SetRounding / SetTool / SetRefFrame: pure metadata cho .JBI,
                 # sim không cần làm gì — đã hiện trong status.
-            self._signals.status.emit(f"Program: done ({n} steps)", "ok")
+                pc += 1
+            self._signals.status.emit(
+                f"Program: done ({guard} steps executed)", "ok")
         except Exception as e:                              # noqa: BLE001
             self._signals.status.emit(f"Program error: {e}", "err")
         finally:

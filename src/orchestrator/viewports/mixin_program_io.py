@@ -13,12 +13,20 @@ Host class (GP7AppQt) phải cung cấp:
 from __future__ import annotations
 
 import json
+import logging
+import math
 from pathlib import Path
 
 from PyQt6.QtWidgets import QFileDialog, QMessageBox
 
 from ..backends.inform_codegen import InformJobBuilder
+from ..backends.inform_parser import ParsedJob, parse_jbi
+from ..kinematics.urdf_chain import forward_kinematics_urdf
+from .control_panel import _matrix_to_xyz_rpy_deg
+from .program_logic import validate_program
 from .program_model import Instruction
+
+logger = logging.getLogger(__name__)
 
 
 class ProgramIOMixin:
@@ -110,6 +118,182 @@ class ProgramIOMixin:
             self._set_status(f"Load failed: {e}", level="err")
             return False
 
+    # ─── Import INFORM .JBI (reverse of export) ───
+    def _on_prog_import_jbi_dlg(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Import Yaskawa INFORM .JBI", "",
+            "INFORM (*.JBI *.jbi);;All files (*)")
+        if not path:
+            return
+        self._load_jbi_file(path)
+
+    def _load_jbi_file(self, path) -> bool:
+        """Parse 1 file .JBI → list[Instruction] → load thành job hiện tại.
+
+        Thay TOÀN BỘ project (giống Load JSON) vì .JBI = 1 job đơn. MOVL/MOVC
+        cần model robot (FK dựng lại Cartesian pose) → báo lỗi nếu chưa load
+        robot. Return True nếu OK.
+        """
+        try:
+            text = Path(path).read_text(encoding="utf-8", errors="replace")
+            parsed = parse_jbi(text)
+            instrs = self._jbi_to_instructions(parsed)
+            job_name = self._safe_job_name(parsed.name) or "IMPORTED"
+            self._jobs = {job_name: instrs}
+            self._active_job = job_name
+            self._targets = {}
+            self._refresh_job_combo()
+            self._refresh_program_list()
+            self._refresh_target_list()
+            self._saved_signature = self._project_signature()   # imported = clean
+            for w in parsed.warnings:
+                logger.warning("JBI import: %s", w)
+            msg = f"Imported .JBI '{job_name}': {len(instrs)} steps"
+            if parsed.warnings:
+                msg += f" — {len(parsed.warnings)} line(s) skipped/warned"
+                QMessageBox.warning(
+                    self, "Import .JBI — warnings",
+                    f"{len(parsed.warnings)} dòng không nằm trong subset hỗ trợ "
+                    f"(JUMP/IF/SET/biến/P-var…) đã bị bỏ qua:\n\n"
+                    + "\n".join(f"• {w}" for w in parsed.warnings[:12])
+                    + ("\n…" if len(parsed.warnings) > 12 else ""))
+            self._set_status(msg, level=("warn" if parsed.warnings else "ok"))
+            return True
+        except Exception as e:                              # noqa: BLE001
+            self._set_status(f"Import .JBI failed: {e}", level="err")
+            return False
+
+    def _joints_deg_to_tcp_pose(self, joints_deg: list[float]) -> list[float]:
+        """Joints (deg) → TCP pose [X,Y,Z mm, Rx,Ry,Rz deg] WORLD frame.
+
+        Inverse chính xác của `_solve_movel` forward path: FK(joints)=T_tool0,
+        rồi áp tool frame T_tcp = T_tool0 @ T_flange_tool. Vì _solve_movel làm
+        T_target_tool0 = T_target @ inv(T_flange_tool), round-trip khử nhau →
+        re-export trả về đúng joints ban đầu.
+        """
+        if self._model is None:
+            raise RuntimeError(
+                "MOVL/MOVC cần model robot — load robot GP7 trước khi import")
+        T_flange_tool = self._tool_frames[self._tool_idx][1]
+        sol_rad = [math.radians(q) for q in joints_deg]
+        T_tcp = forward_kinematics_urdf(self._model, sol_rad) @ T_flange_tool
+        return list(_matrix_to_xyz_rpy_deg(T_tcp))
+
+    def _jbi_to_instructions(self, parsed: ParsedJob) -> list[Instruction]:
+        """ParsedJob → list[Instruction] của editor.
+
+        - MOVJ → MoveJ (joints inline, exact).
+        - MOVL → MoveL (FK joints → Cartesian pose).
+        - MOVC (cặp liên tiếp) → MoveC (mid+end); MOVC lẻ → degrade MoveL.
+        - Modifier VJ/V/PL/TL/UF tái tạo thành Set* instruction khi đổi giá trị.
+        - DOUT→SetDO, TIMER→Wait, WAIT→WaitIO, MSG→ShowMessage, CALL→CallJob.
+        """
+        out: list[Instruction] = []
+        cur_vj: float | None = None
+        cur_v: float | None = None
+        cur_pl: int | None = None
+        cur_tl: int | None = None
+        cur_uf: int | None = None
+        items = parsed.instructions
+        n = len(items)
+        i = 0
+        while i < n:
+            p = items[i]
+            if p.kind in ("movj", "movl", "movc"):
+                # Modal: emit Set* khi modifier đổi so với trạng thái hiện tại.
+                new_vj = p.vj_pct if p.vj_pct is not None else cur_vj
+                new_v = p.v_mm_s if p.v_mm_s is not None else cur_v
+                if (new_vj, new_v) != (cur_vj, cur_v) and (
+                        new_vj is not None or new_v is not None):
+                    out.append(Instruction(
+                        type="SetSpeed",
+                        speed_joint_pct=float(new_vj if new_vj is not None
+                                              else 10.0),
+                        speed_linear_mm_s=float(new_v if new_v is not None
+                                                else 100.0)))
+                    cur_vj, cur_v = new_vj, new_v
+                if p.tool_no is not None and p.tool_no != cur_tl:
+                    out.append(Instruction(type="SetTool", tool_no=int(p.tool_no)))
+                    cur_tl = p.tool_no
+                if p.user_frame is not None and p.user_frame != cur_uf:
+                    out.append(Instruction(type="SetRefFrame",
+                                           ref_frame_no=int(p.user_frame)))
+                    cur_uf = p.user_frame
+                if p.pl is not None and p.pl != cur_pl:
+                    out.append(Instruction(type="SetRounding",
+                                           rounding_pl=int(p.pl)))
+                    cur_pl = p.pl
+                # Move itself
+                if p.kind == "movj":
+                    out.append(Instruction(type="MoveJ",
+                                           joints=list(p.joints_deg or [])))
+                elif p.kind == "movl":
+                    out.append(Instruction(
+                        type="MoveL",
+                        tcp_pose=self._joints_deg_to_tcp_pose(p.joints_deg or [])))
+                else:                                       # movc
+                    if i + 1 < n and items[i + 1].kind == "movc":
+                        out.append(Instruction(
+                            type="MoveC",
+                            tcp_pose_mid=self._joints_deg_to_tcp_pose(
+                                p.joints_deg or []),
+                            tcp_pose=self._joints_deg_to_tcp_pose(
+                                items[i + 1].joints_deg or [])))
+                        i += 1                              # consume cặp
+                    else:
+                        parsed.warnings.append(
+                            "MOVC lẻ (thiếu cặp mid+end) → coi như MOVL")
+                        out.append(Instruction(
+                            type="MoveL",
+                            tcp_pose=self._joints_deg_to_tcp_pose(
+                                p.joints_deg or [])))
+            elif p.kind == "dout":
+                out.append(Instruction(type="SetDO", do_index=int(p.do_index),
+                                       do_state=bool(p.do_on)))
+            elif p.kind == "timer":
+                out.append(Instruction(type="Wait",
+                                       wait_seconds=float(p.seconds)))
+            elif p.kind == "wait_in":
+                out.append(Instruction(
+                    type="WaitIO", io_index=int(p.in_index),
+                    io_state=bool(p.in_on),
+                    io_timeout_s=float(p.in_timeout_s)))
+            elif p.kind == "msg":
+                out.append(Instruction(type="ShowMessage", message=p.text))
+            elif p.kind == "call":
+                out.append(Instruction(type="CallJob", job_name=p.text))
+            # ── Flow control + variables ──
+            elif p.kind == "label":
+                out.append(Instruction(type="Label", label_name=p.label_name))
+            elif p.kind == "jump":
+                out.append(Instruction(
+                    type="Jump", label_name=p.label_name,
+                    cond_lhs=p.cond_lhs, cond_op=p.cond_op, cond_rhs=p.cond_rhs))
+            elif p.kind == "setvar":
+                out.append(Instruction(
+                    type="SetVar", var_name=p.var_name, var_op=p.var_op,
+                    var_arg=p.var_arg))
+            elif p.kind == "ifthen":
+                out.append(Instruction(
+                    type="IfThen", cond_lhs=p.cond_lhs, cond_op=p.cond_op,
+                    cond_rhs=p.cond_rhs))
+            elif p.kind == "elseif":
+                out.append(Instruction(
+                    type="ElseIf", cond_lhs=p.cond_lhs, cond_op=p.cond_op,
+                    cond_rhs=p.cond_rhs))
+            elif p.kind == "else":
+                out.append(Instruction(type="Else"))
+            elif p.kind == "endif":
+                out.append(Instruction(type="EndIf"))
+            elif p.kind == "while":
+                out.append(Instruction(
+                    type="While", cond_lhs=p.cond_lhs, cond_op=p.cond_op,
+                    cond_rhs=p.cond_rhs))
+            elif p.kind == "endwhile":
+                out.append(Instruction(type="EndWhile"))
+            i += 1
+        return out
+
     def _on_prog_export_dlg(self) -> None:
         # Multi-job: nếu project có > 1 job, hỏi user mode export.
         non_empty_jobs = [n for n, p in self._jobs.items() if p]
@@ -176,6 +360,10 @@ class ProgramIOMixin:
         Raises trên IK failure / invalid CallJob name. Caller catch để show
         status. KHÔNG đụng self._program — chỉ dùng `program` param.
         """
+        errs = validate_program(program)
+        if errs:
+            raise RuntimeError(
+                f"Program logic invalid ({len(errs)} error): {errs[0]}")
         builder = InformJobBuilder(
             name=job_name, max_speed_pct=self._pp_max_speed_pct)
         # Pre-pass: collect referenced targets, add as named C-vars upfront
@@ -268,4 +456,25 @@ class ProgramIOMixin:
                 # Không export ra INFORM (sim-only). Emit comment để traceable.
                 pl = f" — {ins.event_payload}" if ins.event_payload else ""
                 builder.comment(f"SimEvent: {ins.event_name}{pl}")
+            # ── Flow control + variables (INFORM logic) ──
+            elif t == "Label":
+                builder.label(ins.label_name)
+            elif t == "Jump":
+                cond = ((ins.cond_lhs, ins.cond_op, ins.cond_rhs)
+                        if ins.cond_op else None)
+                builder.jump(ins.label_name, cond)
+            elif t == "SetVar":
+                builder.set_var(ins.var_name, ins.var_op, ins.var_arg)
+            elif t == "IfThen":
+                builder.if_then((ins.cond_lhs, ins.cond_op, ins.cond_rhs))
+            elif t == "ElseIf":
+                builder.else_if((ins.cond_lhs, ins.cond_op, ins.cond_rhs))
+            elif t == "Else":
+                builder.else_()
+            elif t == "EndIf":
+                builder.end_if()
+            elif t == "While":
+                builder.while_((ins.cond_lhs, ins.cond_op, ins.cond_rhs))
+            elif t == "EndWhile":
+                builder.end_while()
         path.write_bytes(builder.render().encode("utf-8"))

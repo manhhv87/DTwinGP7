@@ -210,3 +210,46 @@ class TestLineEndings:
         lines = text.split("\r\n")
         for line in lines:
             assert "\n" not in line, f"Line has stray \\n: {line!r}"
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# Flow control + variables (INFORM logic)
+# ─────────────────────────────────────────────────────────────────────────
+
+
+class TestLogicCodegen:
+    def test_label_jump_setvar(self):
+        b = InformJobBuilder(name="J")
+        b.add_position("p", [0] * 6)
+        b.set_var("B000", "SET", 0).label("LOOP").set_var("B000", "INC")
+        b.movj("p").jump("LOOP", cond=("B000", "<", "3"))
+        text = b.render()
+        assert "SET B000 0" in text
+        assert "*LOOP" in text
+        assert "INC B000" in text
+        assert "JUMP *LOOP IF B000<3" in text
+
+    def test_unconditional_jump(self):
+        b = InformJobBuilder(name="J")
+        b.add_position("p", [0] * 6).movj("p").jump("DONE")
+        assert "JUMP *DONE\r\n" in b.render()
+
+    def test_structured_if_while(self):
+        b = InformJobBuilder(name="J")
+        b.add_position("p", [0] * 6).movj("p")
+        b.if_then(("B000", "=", "1")).msg("HIT").else_().msg("MISS").end_if()
+        b.while_(("B001", "<>", "0")).set_var("B001", "DEC").end_while()
+        text = b.render()
+        for tok in ["IFTHEN B000=1", "ELSE", "ENDIF",
+                    "WHILE B001<>0", "DEC B001", "ENDWHILE"]:
+            assert tok in text, tok
+
+    def test_invalid_varname_raises(self):
+        b = InformJobBuilder(name="J")
+        with pytest.raises(ValueError, match="biến"):
+            b.set_var("XX", "SET", 1)
+
+    def test_invalid_condition_op_raises(self):
+        b = InformJobBuilder(name="J")
+        with pytest.raises(ValueError, match="điều kiện"):
+            b.if_then(("B000", "==", "1"))
