@@ -1,24 +1,25 @@
 """
 inform_parser.py
 ────────────────
-Parser INFORM (.JBI) → cấu trúc trung gian (ParsedJob) cho GP7 / YRC1000.
+Parser INFORM (.JBI) → intermediate structure (ParsedJob) for GP7 / YRC1000.
 
-Đây là CHIỀU NGƯỢC của `inform_codegen.py`: đọc file .JBI text → trích positions
-(C-variables, pulse → degrees) + instruction list (MOVJ/MOVL/MOVC/DOUT/TIMER/
-WAIT/MSG/CALL). Tầng app (mixin_program_io) chuyển ParsedJob → list[Instruction]
-của editor (MOVL được FK lại thành Cartesian pose ở tầng đó vì cần model/tool
-frame — parser này giữ PURE TEXT, không numpy/IO/kinematics).
+This is the REVERSE of `inform_codegen.py`: reads a .JBI text file → extracts
+positions (C-variables, pulse → degrees) + instruction list (MOVJ/MOVL/MOVC/DOUT/
+TIMER/WAIT/MSG/CALL). The app layer (mixin_program_io) converts ParsedJob →
+list[Instruction] for the editor (MOVL is FK'd back to Cartesian pose at that
+layer because it needs model/tool frame — this parser stays PURE TEXT, no
+numpy/IO/kinematics).
 
-Round-trip: parse_jbi(builder.render()) tái tạo lại đúng joints (pulse là int
-nên chia ngược không drift) + motion kind + modifiers (VJ/V/PL/TL/UF).
+Round-trip: parse_jbi(builder.render()) faithfully reconstructs joints (pulses are
+ints so reverse division has no drift) + motion kind + modifiers (VJ/V/PL/TL/UF).
 
-Phạm vi (khớp subset codegen hỗ trợ):
+Scope (matches the subset codegen supports):
   MOVJ, MOVL, MOVC, DOUT OT#(), TIMER T=, WAIT IN#()=ON/OFF [T=], MSG "...",
-  CALL JOB:. Lệnh ngoài subset (JUMP/IF/SET/biến...) → ghi vào `warnings` và bỏ
-  qua dòng đó (không raise) để vẫn load được phần còn lại.
+  CALL JOB:. Instructions outside the subset (JUMP/IF/SET/variables...) → logged
+  to `warnings` and skipped (no raise) so the rest of the file still loads.
 
-P-variable (P000...) KHÔNG khai báo trong //POS (set runtime qua HSE) → không có
-dữ liệu joints trong file ⇒ motion tham chiếu P### được ghi warning + bỏ qua.
+P-variable (P000...) is NOT declared in //POS (set at runtime via HSE) → no joint
+data in the file ⇒ motions referencing P### are warned and skipped.
 """
 from __future__ import annotations
 
@@ -30,7 +31,7 @@ from .hse_protocol import GP7_PULSE_PER_DEG
 
 @dataclass
 class ParsedInstr:
-    """1 instruction đã parse. `kind` quyết định trường nào có nghĩa.
+    """One parsed instruction. `kind` determines which fields are meaningful.
 
     kind ∈ {movj, movl, movc, dout, timer, wait_in, msg, call}.
     """
@@ -73,9 +74,9 @@ class ParsedJob:
     warnings: list[str] = field(default_factory=list)
 
 
-# ───── Regex grammar (khớp output inform_codegen) ─────
-# Mọi token uppercase, space-separated. Tolerant: cho phép nhiều space, optional
-# modifiers theo thứ tự bất kỳ (PL/TL/UF). Position token = C##### hoặc P###.
+# ───── Regex grammar (matches inform_codegen output) ─────
+# All tokens uppercase, space-separated. Tolerant: allows extra spaces, optional
+# modifiers in any order (PL/TL/UF). Position token = C##### or P###.
 
 _RE_NAME = re.compile(r"^//NAME\s+(\S.*?)\s*$")
 _RE_POSTYPE = re.compile(r"^///POSTYPE\s+(\S+)")
@@ -104,14 +105,14 @@ _RE_INCDEC = re.compile(r"^(INC|DEC)\s+([BI]\d{1,3})$", re.IGNORECASE)
 _RE_IFTHEN = re.compile(r"^IFTHEN\s+(.+)$", re.IGNORECASE)
 _RE_ELSEIF = re.compile(r"^ELSEIF\s+(.+)$", re.IGNORECASE)
 _RE_WHILE = re.compile(r"^WHILE\s+(.+)$", re.IGNORECASE)
-# Điều kiện: lhs op rhs (op dài '<>','>=','<=' ưu tiên trước '=','>','<').
+# Condition: lhs op rhs (long ops '<>','>=','<=' take priority over '=','>','<').
 _RE_COND = re.compile(r"^\s*(\S+?)\s*(<>|>=|<=|=|>|<)\s*(\S+?)\s*$")
 
 
 def _parse_cond(expr: str, warnings: list[str]) -> tuple[str, str, str] | None:
     m = _RE_COND.match(expr.strip())
     if not m:
-        warnings.append(f"Điều kiện không parse được: {expr!r}")
+        warnings.append(f"Could not parse condition: {expr!r}")
         return None
     return (m.group(1), m.group(2), m.group(3))
 
@@ -119,8 +120,8 @@ def _parse_cond(expr: str, warnings: list[str]) -> tuple[str, str, str] | None:
 def _pulses_to_deg(
     pulses: list[int], pulse_per_deg: tuple[float, ...],
 ) -> list[float]:
-    """Chia ngược pulse → degrees. Chỉ lấy len(pulse_per_deg) axis đầu (bỏ pad
-    axis 7-8 = 0 nếu file emit 8 giá trị)."""
+    """Reverse-divide pulses → degrees. Takes only the first len(pulse_per_deg)
+    axes (discards pad axes 7-8 = 0 if the file emits 8 values)."""
     n = len(pulse_per_deg)
     return [pulses[i] / pulse_per_deg[i] for i in range(min(n, len(pulses)))]
 
@@ -132,23 +133,23 @@ def parse_jbi(
     """Parse INFORM .JBI text → ParsedJob.
 
     Args:
-        text: Nội dung file .JBI (CRLF hoặc LF đều được).
-        pulse_per_deg: Ratio pulse/deg cho mỗi axis (default GP7) để chuyển
-            C-var pulse → degrees.
+        text: Content of the .JBI file (CRLF or LF both accepted).
+        pulse_per_deg: Pulse/deg ratio per axis (default GP7) used to convert
+            C-var pulses → degrees.
 
     Returns:
-        ParsedJob(name, instructions, pos_type, warnings). Không raise trên lệnh
-        lạ — gom vào warnings.
+        ParsedJob(name, instructions, pos_type, warnings). Does not raise on
+        unknown instructions — collects them in warnings.
 
     Raises:
-        ValueError: nếu không phải file INFORM (thiếu /JOB) hoặc thiếu //INST.
+        ValueError: if not a valid INFORM file (missing /JOB) or missing //INST.
     """
-    # Chuẩn hoá line ending + bỏ trailing whitespace mỗi dòng.
+    # Normalise line endings + strip trailing whitespace from each line.
     raw_lines = text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
     lines = [ln.rstrip() for ln in raw_lines]
 
     if not any(ln.strip() == "/JOB" for ln in lines):
-        raise ValueError("Không phải file INFORM .JBI (thiếu '/JOB' header)")
+        raise ValueError("Not a valid INFORM .JBI file (missing '/JOB' header)")
 
     name = ""
     pos_type = "PULSE"
@@ -183,7 +184,7 @@ def parse_jbi(
                     vals = [int(round(float(x)))
                             for x in mc.group(2).split(",") if x.strip() != ""]
                 except ValueError:
-                    warnings.append(f"C-var không parse được: {s!r}")
+                    warnings.append(f"Could not parse C-var: {s!r}")
                     continue
                 positions[token] = _pulses_to_deg(vals, pulse_per_deg)
             continue
@@ -191,9 +192,9 @@ def parse_jbi(
             inst_lines.append(s)
 
     if not in_inst and not inst_lines:
-        raise ValueError("File INFORM thiếu section //INST")
+        raise ValueError("INFORM file is missing the //INST section")
 
-    # ── Pass 2: //INST body (giữa NOP và END) ──
+    # ── Pass 2: //INST body (between NOP and END) ──
     instructions: list[ParsedInstr] = []
     started = False
     for s in inst_lines:
@@ -207,7 +208,7 @@ def parse_jbi(
         if s == "END":
             break
         if not started:
-            # Trước NOP (không nên có instruction) — bỏ qua an toàn.
+            # Before NOP (no instruction expected here) — skip safely.
             continue
         if s.startswith("'"):                    # comment INFORM → non-exec, drop
             continue
@@ -225,7 +226,7 @@ def parse_jbi(
 
 
 def _parse_motion_modifiers(s: str, instr: ParsedInstr) -> None:
-    """Trích VJ/V/PL/TL/UF từ phần đuôi của 1 dòng motion vào instr."""
+    """Extract VJ/V/PL/TL/UF from the tail of a motion line into instr."""
     m = _RE_VJ.search(s)
     if m:
         instr.vj_pct = float(m.group(1))
@@ -249,22 +250,22 @@ def _parse_inst_line(
     pulse_per_deg: tuple[float, ...],
     warnings: list[str],
 ) -> ParsedInstr | None:
-    """Parse 1 dòng //INST → ParsedInstr (None nếu skip)."""
+    """Parse one //INST line → ParsedInstr (None if skipped)."""
     head = s.split(None, 1)[0].upper()
 
     if head in ("MOVJ", "MOVL", "MOVC"):
         parts = s.split()
         if len(parts) < 2:
-            warnings.append(f"Motion thiếu position: {s!r}")
+            warnings.append(f"Motion instruction missing position token: {s!r}")
             return None
         token = parts[1]
         if not _RE_POS_TOKEN.match(token):
-            warnings.append(f"Position token lạ: {token!r} trong {s!r}")
+            warnings.append(f"Unrecognised position token: {token!r} in {s!r}")
             return None
         if token not in positions:
             warnings.append(
-                f"{head} tham chiếu '{token}' không có trong //POS "
-                f"(P-var runtime?) — bỏ qua dòng")
+                f"{head} references '{token}' not found in //POS "
+                f"(P-var runtime?) — skipping line")
             return None
         instr = ParsedInstr(kind=head.lower(),
                             joints_deg=list(positions[token]))
@@ -339,5 +340,5 @@ def _parse_inst_line(
     if head == "ENDWHILE":
         return ParsedInstr(kind="endwhile")
 
-    warnings.append(f"Lệnh ngoài subset hỗ trợ — bỏ qua: {s!r}")
+    warnings.append(f"Instruction outside supported subset — skipping: {s!r}")
     return None

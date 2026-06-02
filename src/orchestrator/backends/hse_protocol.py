@@ -1,20 +1,20 @@
 """
 hse_protocol.py
 ───────────────
-Codec cho Yaskawa High-Speed Ethernet Server protocol.
+Codec for Yaskawa High-Speed Ethernet Server protocol.
 
-Tham chiếu spec:
+Spec reference:
   - Yaskawa "High-Speed Ethernet Server Function" manual (HW1485553-1)
-  - Port UDP 10040 cho robot commands, UDP 10041 cho file load/save
-  - Mỗi packet: 32-byte sub-header + variable payload (≤ ~478 byte)
+  - Port UDP 10040 for robot commands, UDP 10041 for file load/save
+  - Each packet: 32-byte sub-header + variable payload (≤ ~478 bytes)
 
-Module này PURE — chỉ encode/decode byte sequence. Socket I/O ở `motoman_hse.py`.
-Test được bằng known byte sequences, không cần YRC1000 thật.
+This module is PURE — encode/decode byte sequences only. Socket I/O is in `motoman_hse.py`.
+Testable with known byte sequences; no physical YRC1000 required.
 
 Conventions:
-  - Tất cả integer multi-byte = LITTLE ENDIAN (Yaskawa default cho YRC1000)
+  - All multi-byte integers = LITTLE ENDIAN (Yaskawa default for YRC1000)
   - Identifier "YERC" ASCII = 0x59 0x45 0x52 0x43
-  - Reserve2 = "99999999" ASCII (yes, 8 ký tự '9')
+  - Reserve2 = "99999999" ASCII (yes, 8 '9' characters)
 
 Service codes:
   0x01 = Get_Attribute_All
@@ -31,8 +31,8 @@ from enum import IntEnum
 # ───── Constants ─────
 HSE_IDENTIFIER = b"YERC"
 HSE_HEADER_SIZE = 0x0020          # 32 bytes
-HSE_RESERVE1 = 0x03               # luôn 0x03
-HSE_RESERVE2 = b"99999999"        # 8 ký tự ASCII '9'
+HSE_RESERVE1 = 0x03               # always 0x03
+HSE_RESERVE2 = b"99999999"        # 8 ASCII '9' characters
 
 DIVISION_ROBOT = 0x01             # robot command service
 DIVISION_FILE = 0x02              # file command service
@@ -42,7 +42,7 @@ ACK_RESPONSE = 0x01               # server → client
 
 
 class Service(IntEnum):
-    """HSE service code (byte 29 trong request sub-header)."""
+    """HSE service code (byte 29 in request sub-header)."""
 
     GET_ATTRIBUTE_ALL = 0x01
     SET_ATTRIBUTE_ALL = 0x02
@@ -51,9 +51,9 @@ class Service(IntEnum):
 
 
 class Command(IntEnum):
-    """HSE command code thường dùng (byte 24-25, little-endian).
+    """Commonly used HSE command codes (bytes 24-25, little-endian).
 
-    Danh sách rút gọn — manual có ~30 commands. Thêm khi cần.
+    Abbreviated list — the manual has ~30 commands. Add as needed.
     """
 
     READ_ALARM = 0x70
@@ -81,20 +81,20 @@ class Command(IntEnum):
 
 
 class DataType(IntEnum):
-    """Position variable data type field cho WRITE_POSITION_VAR / READ_POSITION.
+    """Position variable data type field for WRITE_POSITION_VAR / READ_POSITION.
 
-    Per Yaskawa HSE spec HW1485553. Quyết định cách interpret 8 axis values:
-      - PULSE: joint angles in encoder pulse units (cần convert qua pulse_per_deg)
-      - BASE: Cartesian pose trong robot BASE frame (X,Y,Z,Rx,Ry,Rz)
-      - ROBOT: giống BASE cho non-track robot (single arm GP7)
-      - USER01-63: Cartesian trong user-defined frame
-      - TOOL: Cartesian trong current tool frame (hiếm dùng)
+    Per Yaskawa HSE spec HW1485553. Determines how the 8 axis values are interpreted:
+      - PULSE: joint angles in encoder pulse units (requires conversion via pulse_per_deg)
+      - BASE: Cartesian pose in robot BASE frame (X,Y,Z,Rx,Ry,Rz)
+      - ROBOT: same as BASE for non-track robots (single arm GP7)
+      - USER01-63: Cartesian in user-defined frame
+      - TOOL: Cartesian in current tool frame (rarely used)
     """
 
     PULSE = 0
-    BASE = 16                       # Robot base coordinate (recommended cho pick-place)
-    ROBOT = 17                      # = BASE cho GP7 (no track axis)
-    USER01 = 18                     # USER01 frame; +N cho USER02..USER63 (max 80)
+    BASE = 16                       # Robot base coordinate (recommended for pick-place)
+    ROBOT = 17                      # = BASE for GP7 (no track axis)
+    USER01 = 18                     # USER01 frame; +N for USER02..USER63 (max 80)
     USER63 = 80
     TOOL = 65                       # tool frame
 
@@ -114,47 +114,47 @@ def encode_cartesian_position(
     form: int = 0,
     data_type: int = DataType.BASE,
 ) -> bytes:
-    """Encode Cartesian pose → 52-byte payload cho WRITE_POSITION_VAR (cmd 0x7F).
+    """Encode Cartesian pose → 52-byte payload for WRITE_POSITION_VAR (cmd 0x7F).
 
-    Layout giống joint variant nhưng axis values là Cartesian thay vì pulse:
-        [0-3]    data_type (BASE=16 cho robot base frame)
+    Layout matches the joint variant but axis values are Cartesian instead of pulse:
+        [0-3]    data_type (BASE=16 for robot base frame)
         [4-7]    form bits (IK config branch — bit 0=back, 1=elbow, 2=flip, ...)
         [8-11]   tool_no (0-63, gripper TCP)
-        [12-15]  user_frame (0 nếu BASE, 1-63 nếu USER)
-        [16-19]  extended_form (0 cho GP7 — không có track)
-        [20-23]  X position (int32, đơn vị 0.001mm = μm)
+        [12-15]  user_frame (0 if BASE, 1-63 if USER)
+        [16-19]  extended_form (0 for GP7 — no track axis)
+        [20-23]  X position (int32, unit 0.001mm = μm)
         [24-27]  Y position
         [28-31]  Z position
-        [32-35]  Rx rotation (int32, đơn vị 0.0001° degree)
+        [32-35]  Rx rotation (int32, unit 0.0001° degree)
         [36-39]  Ry rotation
         [40-43]  Rz rotation
         [44-47]  Reserved (0)
         [48-51]  Reserved (0)
 
-    Convention rotation: Yaskawa dùng XYZ-fixed (= ZYX-intrinsic Tait-Bryan).
-    Caller phải convert pose matrix → (rx, ry, rz) đúng convention này — xem
+    Rotation convention: Yaskawa uses XYZ-fixed (= ZYX-intrinsic Tait-Bryan).
+    Caller must convert pose matrix → (rx, ry, rz) using this convention — see
     `frame_convert.matrix_to_rpy_yaskawa()`.
 
     Args:
-        x_mm, y_mm, z_mm: Position trong frame chỉ định bởi `data_type`.
-        rx_deg, ry_deg, rz_deg: Rotation degrees (XYZ-fixed convention).
-        tool_no: 0-63 — gripper TCP đã setup trên teach pendant.
-        user_frame: 0 cho BASE, 1-63 cho USER01-USER63.
+        x_mm, y_mm, z_mm: Position in the frame specified by `data_type`.
+        rx_deg, ry_deg, rz_deg: Rotation in degrees (XYZ-fixed convention).
+        tool_no: 0-63 — gripper TCP configured on the teach pendant.
+        user_frame: 0 for BASE, 1-63 for USER01-USER63.
         form: IK config bits (0 = front + elbow up + no flip — default pick-place).
         data_type: 16 (BASE), 17 (ROBOT), 18-80 (USER), 65 (TOOL).
 
     Returns:
-        52-byte payload sẵn sàng gửi qua HSE.
+        52-byte payload ready to send via HSE.
 
     Raises:
-        ValueError: Bất kỳ field nào ngoài int32 range sau khi scale.
+        ValueError: Any field is outside int32 range after scaling.
     """
     if not (0 <= tool_no <= 63):
-        raise ValueError(f"tool_no phải 0-63, got {tool_no}")
+        raise ValueError(f"tool_no must be 0-63, got {tool_no}")
     if not (0 <= user_frame <= 63):
-        raise ValueError(f"user_frame phải 0-63, got {user_frame}")
+        raise ValueError(f"user_frame must be 0-63, got {user_frame}")
     if not (0 <= form <= 0xFF):
-        raise ValueError(f"form bits phải 0-255 (8 bit), got {form}")
+        raise ValueError(f"form bits must be 0-255 (8 bits), got {form}")
 
     # Scale to Yaskawa integer units
     x_i = int(round(x_mm * POSITION_UNIT_SCALE))
@@ -169,7 +169,7 @@ def encode_cartesian_position(
     for name, v in (("X", x_i), ("Y", y_i), ("Z", z_i),
                     ("Rx", rx_i), ("Ry", ry_i), ("Rz", rz_i)):
         if not (INT32_MIN <= v <= INT32_MAX):
-            raise ValueError(f"{name} value sau scale ngoài int32 range: {v}")
+            raise ValueError(f"{name} value after scaling is outside int32 range: {v}")
 
     return struct.pack(
         "<5I 8i",
@@ -188,21 +188,21 @@ def encode_cartesian_position(
 
 
 class HSEError(Exception):
-    """Base lỗi cho HSE codec / IO."""
+    """Base error for HSE codec / IO."""
 
 
 class HSEDecodeError(HSEError):
-    """Bytes không decode được (kích thước/identifier sai)."""
+    """Bytes cannot be decoded (wrong size or identifier)."""
 
 
 class HSEResponseError(HSEError):
-    """Server trả status != 0 (lỗi từ controller).
+    """Server returned status != 0 (error from controller).
 
-    Status code tham khảo manual mục "Added status". Common:
-      0x08 = sub command sai
-      0x0E = data sai
-      0x1F = robot không sẵn sàng
-      0x23 = key switch không ở chế độ remote
+    Status code reference: manual section "Added status". Common:
+      0x08 = invalid sub command
+      0x0E = invalid data
+      0x1F = robot not ready
+      0x23 = key switch not in remote mode
     """
 
     def __init__(self, status: int, added_status: int = 0) -> None:
@@ -218,23 +218,23 @@ class HSEResponseError(HSEError):
 
 @dataclass
 class HSERequest:
-    """Một HSE request packet (client → server).
+    """A single HSE request packet (client → server).
 
-    Encode ra 32-byte sub-header + payload. request_id để pair request/response
-    khi gửi đồng thời nhiều command.
+    Encodes to a 32-byte sub-header + payload. request_id pairs request/response
+    when multiple commands are sent concurrently.
     """
 
     command: int                              # Command enum value
-    instance: int = 0                         # data instance (vd robot 1 = 1)
+    instance: int = 0                         # data instance (e.g. robot 1 = 1)
     attribute: int = 0                        # attribute selector (0 = all)
-    service: int = Service.GET_ATTRIBUTE_ALL  # GET hay SET
-    payload: bytes = b""                      # data payload (cho SET)
-    request_id: int = 0                       # 0-255, pair với response
+    service: int = Service.GET_ATTRIBUTE_ALL  # GET or SET
+    payload: bytes = b""                      # data payload (for SET)
+    request_id: int = 0                       # 0-255, paired with response
     division: int = DIVISION_ROBOT
     block_no: int = 0
 
     def encode(self) -> bytes:
-        """Pack thành bytes gửi qua UDP."""
+        """Pack into bytes for sending over UDP."""
         if not (0 <= self.request_id <= 0xFF):
             raise ValueError(f"request_id must be 0-255, got {self.request_id}")
         if not (0 <= self.command <= 0xFFFF):
@@ -242,9 +242,9 @@ class HSERequest:
 
         payload_size = len(self.payload)
         if payload_size > 0xFFFF:
-            raise ValueError(f"payload quá lớn: {payload_size} > 65535 bytes")
+            raise ValueError(f"payload too large: {payload_size} > 65535 bytes")
 
-        # Sub-header 32 bytes (little-endian theo spec Yaskawa)
+        # Sub-header 32 bytes (little-endian per Yaskawa spec)
         header = struct.pack(
             "<4s H H B B B B I 8s H H B B H",
             HSE_IDENTIFIER,       # [0-3]   "YERC"
@@ -263,7 +263,7 @@ class HSERequest:
             0x0000,               # [30-31] padding
         )
         assert len(header) == HSE_HEADER_SIZE, (
-            f"header encode lỗi: {len(header)} != {HSE_HEADER_SIZE}"
+            f"header encode error: {len(header)} != {HSE_HEADER_SIZE}"
         )
         return header + self.payload
 
@@ -273,18 +273,18 @@ class HSERequest:
 
 @dataclass
 class HSEResponse:
-    """Một HSE response packet (server → client).
+    """A single HSE response packet (server → client).
 
-    Layout sub-header khác request (byte 24-29):
-      [24]    Service (echo từ request)
+    Sub-header layout differs from request (bytes 24-29):
+      [24]    Service (echoed from request)
       [25]    Status (0 = OK, non-zero = error)
-      [26]    Added status size (số byte added_status)
+      [26]    Added status size (number of added_status bytes)
       [27]    Padding
       [28-29] Added status (uint16 LE)
       [30-31] Padding
     """
 
-    command_echo: int = 0          # nếu server echo, để debug
+    command_echo: int = 0          # if server echoes, for debug
     instance_echo: int = 0
     service: int = 0
     status: int = 0
@@ -296,10 +296,10 @@ class HSEResponse:
 
     @classmethod
     def decode(cls, data: bytes) -> "HSEResponse":
-        """Parse bytes từ socket.recv → HSEResponse. Raise HSEDecodeError nếu sai."""
+        """Parse bytes from socket.recv → HSEResponse. Raises HSEDecodeError on failure."""
         if len(data) < HSE_HEADER_SIZE:
             raise HSEDecodeError(
-                f"Response quá ngắn: {len(data)} < {HSE_HEADER_SIZE} bytes"
+                f"Response too short: {len(data)} < {HSE_HEADER_SIZE} bytes"
             )
 
         (
@@ -309,16 +309,16 @@ class HSEResponse:
         ) = struct.unpack("<4s H H B B B B I 8s B B B B H H", data[:HSE_HEADER_SIZE])
 
         if ident != HSE_IDENTIFIER:
-            raise HSEDecodeError(f"Identifier sai: {ident!r}, mong YERC")
+            raise HSEDecodeError(f"Invalid identifier: {ident!r}, expected YERC")
         if header_size != HSE_HEADER_SIZE:
-            raise HSEDecodeError(f"Header size sai: {header_size}")
+            raise HSEDecodeError(f"Invalid header size: {header_size}")
         if ack != ACK_RESPONSE:
-            raise HSEDecodeError(f"ACK byte sai: {ack} (mong 0x01 cho response)")
+            raise HSEDecodeError(f"Invalid ACK byte: {ack} (expected 0x01 for response)")
 
         payload = data[HSE_HEADER_SIZE:HSE_HEADER_SIZE + payload_size]
         if len(payload) != payload_size:
             raise HSEDecodeError(
-                f"Payload size lệch: declared {payload_size}, got {len(payload)}"
+                f"Payload size mismatch: declared {payload_size}, got {len(payload)}"
             )
 
         return cls(
@@ -332,7 +332,7 @@ class HSEResponse:
         )
 
     def raise_for_status(self) -> None:
-        """Raise HSEResponseError nếu status != 0."""
+        """Raise HSEResponseError if status != 0."""
         if self.status != 0:
             raise HSEResponseError(self.status, self.added_status)
 
@@ -341,33 +341,33 @@ class HSEResponse:
 
 
 def parse_position_response(payload: bytes) -> dict[str, list[float]]:
-    """Parse payload READ_POSITION (Command 0x75) thành dict.
+    """Parse READ_POSITION payload (Command 0x75) into a dict.
 
-    Theo spec, payload READ_POSITION trả về tối thiểu:
+    Per spec, the READ_POSITION payload returns at minimum:
       [0-3]    Data type (0x10 = pulse, 0x11 = base coord, ...)
       [4-7]    Figure / form
       [8-11]   Tool no
       [12-15]  User coord no
       [16-19]  Extended figure
-      [20-23]  Axis 1 (S) — int32 LE, đơn vị pulse hoặc 0.0001° tuỳ data type
+      [20-23]  Axis 1 (S) — int32 LE, unit: pulse or 0.0001° depending on data type
       [24-27]  Axis 2 (L)
       [28-31]  Axis 3 (U)
       [32-35]  Axis 4 (R)
       [36-39]  Axis 5 (B)
       [40-43]  Axis 6 (T)
-      [44-47]  Axis 7 (nếu có — GP7 chỉ 6 axis, để 0)
+      [44-47]  Axis 7 (if present — GP7 has only 6 axes, set to 0)
       [48-51]  Axis 8
 
     Returns:
-        dict {data_type, joints_raw, ...}. Caller convert pulse → degrees
-        bằng pulse/degree ratio của GP7 (xem `pulse_to_deg()`).
+        dict {data_type, joints_raw, ...}. Caller converts pulse → degrees
+        using the GP7 pulse/degree ratio (see `pulse_to_deg()`).
     """
     if len(payload) < 52:
-        raise HSEDecodeError(f"Position payload quá ngắn: {len(payload)} < 52 bytes")
+        raise HSEDecodeError(f"Position payload too short: {len(payload)} < 52 bytes")
 
     fields = struct.unpack("<5I 8i", payload[:52])
     data_type = fields[0]
-    joints_raw = list(fields[5:11])           # 6 axis cho GP7
+    joints_raw = list(fields[5:11])           # 6 axes for GP7
     return {
         "data_type": data_type,
         "form": fields[1],
@@ -378,10 +378,10 @@ def parse_position_response(payload: bytes) -> dict[str, list[float]]:
     }
 
 
-# Pulse/degree conversion ratio cho Yaskawa GP7 (datasheet).
-# Mỗi axis có encoder ratio khác nhau — đây là giá trị mặc định
-# (Yaskawa GP7-A00 controller pack). Verify lại trên controller thật qua
-# parameter file (PULSE_PER_DEG trong SF#xxx).
+# Pulse/degree conversion ratio for Yaskawa GP7 (datasheet).
+# Each axis has a different encoder ratio — these are the default values
+# (Yaskawa GP7-A00 controller pack). Verify against the real controller via
+# parameter file (PULSE_PER_DEG in SF#xxx).
 GP7_PULSE_PER_DEG: tuple[float, ...] = (
     1341.4,  # S axis
     1341.4,  # L axis
@@ -394,9 +394,9 @@ GP7_PULSE_PER_DEG: tuple[float, ...] = (
 
 def pulse_to_deg(joints_pulse: list[int],
                  ratio: tuple[float, ...] = GP7_PULSE_PER_DEG) -> list[float]:
-    """Đổi joint pulse (raw từ HSE) sang degrees."""
+    """Convert joint pulse (raw from HSE) to degrees."""
     if len(joints_pulse) != len(ratio):
         raise ValueError(
-            f"Số joint {len(joints_pulse)} != ratio {len(ratio)} — sai robot model?"
+            f"Joint count {len(joints_pulse)} != ratio count {len(ratio)} — wrong robot model?"
         )
     return [float(p) / r for p, r in zip(joints_pulse, ratio)]

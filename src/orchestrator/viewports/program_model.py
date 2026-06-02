@@ -1,12 +1,12 @@
 """
 program_model.py
 ────────────────
-Instruction dataclass dùng chung giữa các GUI app (gp7_app.py Open3D legacy +
-gp7_app_qt.py PyQt6+VTK). Tách khỏi gp7_app.py để Qt app không phải import
-ngược vào Open3D module chỉ để lấy 1 dataclass.
+Instruction dataclass shared between GUI apps (gp7_app.py Open3D legacy +
+gp7_app_qt.py PyQt6+VTK). Decoupled from gp7_app.py so the Qt app does not
+need to import the Open3D module just to obtain one dataclass.
 
-Schema = RoboDK-style program: list[Instruction] đã có sẵn JSON serialization
-v3 với backward-compat cho legacy program files.
+Schema = RoboDK-style program: list[Instruction] with JSON serialization
+v3 and backward-compat for legacy program files.
 """
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ from typing import Any
 
 @dataclass
 class Instruction:
-    """1 dòng program. Type quyết định trường nào dùng.
+    """One program line. The type field determines which fields are used.
 
     Motion:
       MoveJ        → joints (6 deg) — MOVJ
@@ -28,7 +28,7 @@ class Instruction:
       Wait         → wait_seconds — TIMER
       WaitIO       → io_index, io_state (True=ON), io_timeout_s (0=∞) — WAIT IN#
 
-    Modal state (áp vào MOVJ/MOVL/MOVC kế tiếp):
+    Modal state (applied to the next MOVJ/MOVL/MOVC):
       SetSpeed     → speed_joint_pct (VJ=) + speed_linear_mm_s (V=)
       SetRounding  → rounding_pl (0..8, PL=)
       SetTool      → tool_no (TL=)
@@ -42,21 +42,21 @@ class Instruction:
       Jump         → label_name + optional cond (cond_op="" ⇒ unconditional) —
                      JUMP *LABEL [IF <cond>]
       SetVar       → var_name (B###/I###), var_op (SET/ADD/SUB/MUL/DIV/INC/DEC),
-                     var_arg (operand token; bỏ qua cho INC/DEC) — SET/ADD/...
+                     var_arg (operand token; ignored for INC/DEC) — SET/ADD/...
 
-    Structured (INFORM logic — Tier B2): IfThen/ElseIf/Else/EndIf (cond ở
-    IfThen/ElseIf) + While/EndWhile (cond ở While). cond = cond_lhs cond_op
-    cond_rhs (op ∈ =,<>,>,<,>=,<=; toán hạng = B###/I### | literal | IN#(n)).
+    Structured (INFORM logic — Tier B2): IfThen/ElseIf/Else/EndIf (cond on
+    IfThen/ElseIf) + While/EndWhile (cond on While). cond = cond_lhs cond_op
+    cond_rhs (op ∈ =,<>,>,<,>=,<=; operands = B###/I### | literal | IN#(n)).
     """
 
     type: str
-    # Motion (inline pose, used khi target_name == "")
+    # Motion (inline pose, used when target_name == "")
     joints: list[float] = field(default_factory=list)
     tcp_pose: list[float] = field(default_factory=list)
     tcp_pose_mid: list[float] = field(default_factory=list)
-    # Target library reference. Khi non-empty + type ∈ {MoveJ,MoveL}, motion
-    # dereferences via app._targets[target_name] → tái sử dụng pose chung
-    # giữa nhiều instructions (RoboDK-style).
+    # Target library reference. When non-empty + type ∈ {MoveJ,MoveL}, motion
+    # dereferences via app._targets[target_name] → reuses a shared pose
+    # across multiple instructions (RoboDK-style).
     target_name: str = ""
     # Gripper / timing
     gripper_close: bool = False
@@ -65,7 +65,7 @@ class Instruction:
     io_index: int = 1
     io_state: bool = True
     io_timeout_s: float = 0.0           # 0 = block forever
-    # SetDO — generic digital output (general-purpose, thay cho gripper-specific).
+    # SetDO — generic digital output (general-purpose, replacing gripper-specific).
     do_index: int = 1
     do_state: bool = True               # True = ON
     # Modal state
@@ -78,29 +78,29 @@ class Instruction:
     message: str = ""
     # Sub-program call (CALL JOB:job_name)
     job_name: str = ""
-    # Simulation event — checkpoint/trigger không export ra INFORM (chỉ log).
-    # event_name = identifier ngắn (e.g. "CHECKPOINT_1"), event_payload = info chi tiết.
+    # Simulation event — checkpoint/trigger not exported to INFORM (log only).
+    # event_name = short identifier (e.g. "CHECKPOINT_1"), event_payload = detail info.
     event_name: str = ""
     event_payload: str = ""
-    # Flow / variables (INFORM logic). label_name dùng cho Label + Jump.
+    # Flow / variables (INFORM logic). label_name used for Label + Jump.
     label_name: str = ""
     var_name: str = ""                  # B### / I###
     var_op: str = ""                    # SET/ADD/SUB/MUL/DIV/INC/DEC
-    var_arg: str = ""                   # operand token (literal | var); "" cho INC/DEC
+    var_arg: str = ""                   # operand token (literal | var); "" for INC/DEC
     # Condition (Jump IF / IfThen / ElseIf / While). cond_op="" ⇒ unconditional.
     cond_lhs: str = ""
     cond_op: str = ""                   # =, <>, >, <, >=, <=
     cond_rhs: str = ""
 
     def describe(self, modal: dict | None = None) -> str:
-        """Render dòng theo cú pháp INFORM III (MOVJ/MOVL/MOVC/DOUT/WAIT/TIMER/
-        MSG/CALL) — giống pendant Yaskawa thật.
+        """Render the line using INFORM III syntax (MOVJ/MOVL/MOVC/DOUT/WAIT/TIMER/
+        MSG/CALL) — matching a real Yaskawa pendant.
 
-        Tốc độ/PL/TOOL/UF là MODAL trong editor (set qua SET* riêng → áp vào
-        move kế tiếp; export .JBI fold vào từng MOV line). Khi `modal` được
-        truyền (từ program list, tích luỹ theo thứ tự lệnh), move hiển thị ĐẦY
-        ĐỦ tag inline: `MOVJ <pos> VJ=10.00 PL=0`. Không có modal (vd status
-        toast) → move chỉ hiện mnemonic + position.
+        Speed/PL/TOOL/UF are MODAL in the editor (set via dedicated SET* instructions
+        → applied to the next move; .JBI export folds them into each MOV line).
+        When `modal` is provided (from program list, accumulated in instruction order),
+        the move displays FULL inline tags: `MOVJ <pos> VJ=10.00 PL=0`. Without modal
+        (e.g. status toast) → move shows only mnemonic + position.
 
         modal keys: vj(float %), v(float mm/s), pl(int|None), tl(int|None),
         uf(int|None).
@@ -140,7 +140,7 @@ class Instruction:
             return (f"MOVC  MID(X{m[0]:+.0f} Y{m[1]:+.0f} Z{m[2]:+.0f}) "
                     f"END(X{e[0]:+.0f} Y{e[1]:+.0f} Z{e[2]:+.0f}){_move_tail(False)}")
         if t == "SetGripper":
-            # Legacy gripper → DOUT bit 1 cố định (xem inform_codegen).
+            # Legacy gripper → DOUT bit 1 fixed (see inform_codegen).
             return f"DOUT  OT#(1) {'ON' if self.gripper_close else 'OFF'}"
         if t == "SetDO":
             return f"DOUT  OT#({self.do_index}) {'ON' if self.do_state else 'OFF'}"
@@ -192,7 +192,7 @@ class Instruction:
         return f"?{t}"
 
     def _cond_str(self) -> str:
-        """Render điều kiện INFORM 'lhs op rhs' (vd 'B000>5'). Rỗng nếu chưa set."""
+        """Render an INFORM condition 'lhs op rhs' (e.g. 'B000>5'). Empty if not set."""
         if not self.cond_op:
             return ""
         return f"{self.cond_lhs}{self.cond_op}{self.cond_rhs}"
@@ -257,7 +257,7 @@ class Instruction:
             d["cond_lhs"] = str(self.cond_lhs)
             d["cond_op"] = str(self.cond_op)
             d["cond_rhs"] = str(self.cond_rhs)
-        # Else / EndIf / EndWhile: chỉ cần "type".
+        # Else / EndIf / EndWhile: only "type" is needed.
         return d
 
     @classmethod

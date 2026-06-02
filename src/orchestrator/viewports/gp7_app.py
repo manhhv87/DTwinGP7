@@ -1,10 +1,10 @@
 """
 gp7_app.py
 ──────────
-Unified GP7 Digital Twin GUI — **1 cửa sổ**, scene 3D bên trái + side panel với
-tabs bên phải. Dùng `gui.Window + SceneWidget + TabControl` thay vì O3DVisualizer
-(vốn là cửa sổ đóng, không gắn được side panel; multi-window không stable trên
-Windows).
+Unified GP7 Digital Twin GUI — **1 window**, 3D scene on the left + side panel
+with tabs on the right. Uses `gui.Window + SceneWidget + TabControl` instead of
+O3DVisualizer (which is a closed window that cannot host a side panel;
+multi-window is not stable on Windows).
 
 Tabs:
   * **Jog**: joint sliders θ1..θ6, Home/Zero, TCP pose readout, Tool/Reference
@@ -12,11 +12,11 @@ Tabs:
     + step size.
   * **View**: bg dome on/off, world axes on/off, ground tiles on/off, camera
     preset (Iso / Front / Top / Side).
-  * **Cell**: list frame + object trong cell config (readonly readout).
-  * **Run**: chạy demo motion sequence (jog qua vài pose) — verify scene động
-    + worker thread mirror state vào scene.
+  * **Cell**: list frames + objects in cell config (readonly readout).
+  * **Run**: run demo motion sequence (jog through several poses) — verify
+    dynamic scene + worker thread mirroring state into scene.
 
-Sim-only. Để chạy experiment thật vẫn dùng `scripts/03_run_experiment.py`.
+Sim-only. For real experiments use `scripts/03_run_experiment.py`.
 
 Launcher: `python scripts/15_app.py`.
 """
@@ -105,7 +105,7 @@ class GP7App:
     ) -> None:
         _install_filament_stderr_filter()
 
-        # Lazy import — Open3D nặng, chỉ import khi mở app.
+        # Lazy import — Open3D is heavy; only import when the app opens.
         import open3d as o3d
         import open3d.visualization.gui as gui
         import open3d.visualization.rendering as rendering
@@ -144,7 +144,7 @@ class GP7App:
         self._demo_worker: threading.Thread | None = None
         self._demo_stop = threading.Event()
 
-        # Panel visibility — ẩn mặc định, menu View > Show ... để hiện.
+        # Panel visibility — hidden by default; use menu View > Show ... to toggle.
         self._panel_visible = False
         self._program_visible = False
 
@@ -170,7 +170,7 @@ class GP7App:
         self._apply_joints(self._joints, animate=False)
         self._refresh_pose_readout()
 
-        logger.info("GP7App: window mở %dx%d, base=%s, home=%s",
+        logger.info("GP7App: window opened %dx%d, base=%s, home=%s",
                     window_size[0], window_size[1], list(base_xyz),
                     [round(q, 1) for q in self._home_joints])
 
@@ -183,12 +183,12 @@ class GP7App:
         rendering = self._rendering
         self._scene_widget = gui.SceneWidget()
         self._scene_widget.scene = rendering.Open3DScene(self._window.renderer)
-        # Bg fallback (sát đáy dome) — khi user zoom vượt ra ngoài dome.
+        # Bg fallback (at dome bottom) — when the user zooms past the dome boundary.
         try:
             self._scene_widget.scene.set_background([0.031, 0.031, 0.133, 1.0])
             self._scene_widget.scene.show_skybox(False)
         except Exception as e:                         # noqa: BLE001
-            logger.debug("set_background/show_skybox lỗi: %s", e)
+            logger.debug("set_background/show_skybox error: %s", e)
 
         self._add_gradient_dome()
         self._setup_lighting()
@@ -220,7 +220,7 @@ class GP7App:
         return m
 
     def _add_gradient_dome(self) -> None:
-        """Quả cầu LẬT 25m bao scene, gradient top dark→bottom purple-blue."""
+        """Inverted 25m sphere enclosing the scene, gradient top dark→bottom purple-blue."""
         try:
             n_lat, n_lon = 32, 64
             radius_m = 25.0
@@ -263,10 +263,10 @@ class GP7App:
             except Exception:                          # noqa: BLE001
                 pass
         except Exception as e:                         # noqa: BLE001
-            logger.warning("Không add được gradient dome: %s", e)
+            logger.warning("Failed to add gradient dome: %s", e)
 
     def _add_floor(self) -> None:
-        """Sàn 4×3m gạch xám lát — flat plane + procedural texture."""
+        """4×3m grey tile floor — flat plane + procedural texture."""
         try:
             gx0, gx1, gy0, gy1 = -1.20, 2.80, -1.50, 1.50
             z = -0.001
@@ -287,7 +287,7 @@ class GP7App:
             self._scene_widget.scene.add_geometry(
                 "__ground", mesh, self._mat_unlit(tex=tex))
         except Exception as e:                         # noqa: BLE001
-            logger.debug("Không add được ground: %s", e)
+            logger.debug("Failed to add ground: %s", e)
 
     def _make_floor_tile_texture(self, w_m, h_m, tile_size_m: float, px_per_tile: int = 96):
         try:
@@ -317,7 +317,7 @@ class GP7App:
                 img[:, max(0, xp - line_w // 2):min(tex_w, xp + line_w // 2 + 1)] = grout
             return self._o3d.geometry.Image(img)
         except Exception as e:                         # noqa: BLE001
-            logger.debug("Floor tile texture lỗi: %s", e)
+            logger.debug("Floor tile texture error: %s", e)
             return None
 
     def _add_world_axes(self, size_m: float = 0.3) -> None:
@@ -327,7 +327,7 @@ class GP7App:
             self._scene_widget.scene.add_geometry("__world_axes", axes,
                                                   self._mat_unlit())
         except Exception as e:                         # noqa: BLE001
-            logger.debug("Không add được world axes: %s", e)
+            logger.debug("Failed to add world axes: %s", e)
 
     def _setup_lighting(self) -> None:
         try:
@@ -339,10 +339,10 @@ class GP7App:
             raw.enable_sun_light(True)
             raw.set_indirect_light_intensity(90000.0)
         except Exception as e:                         # noqa: BLE001
-            logger.debug("setup_lighting lỗi: %s", e)
+            logger.debug("setup_lighting error: %s", e)
 
     def _load_robot_links(self) -> bool:
-        """Load 7 STL ros-industrial GP7 hoặc fallback primitive."""
+        """Load 7 ros-industrial GP7 STL meshes or fall back to primitives."""
         mesh_dir = self._project_root / "models" / "gp7_links"
         loaded = 0
         if mesh_dir.exists():
@@ -362,7 +362,7 @@ class GP7App:
                     self._dynamic[key] = key
                     loaded += 1
                 except Exception as e:                 # noqa: BLE001
-                    logger.debug("Lỗi load mesh %s: %s", path, e)
+                    logger.debug("Error loading mesh %s: %s", path, e)
         if loaded:
             logger.info("GP7App: %d/%d GP7 link mesh (ros-industrial)",
                         loaded, len(_GP7_MESH_MAP))
@@ -400,7 +400,7 @@ class GP7App:
                 "gripper", m, self._mat_lit([0.78, 0.78, 0.80, 1.0]))
             self._dynamic["gripper"] = "link_tool0"
         except Exception as e:                         # noqa: BLE001
-            logger.debug("Lỗi load gripper: %s", e)
+            logger.debug("Error loading gripper: %s", e)
 
     def _add_cell_meshes(self) -> None:
         cfg = self._cell_config
@@ -441,7 +441,7 @@ class GP7App:
             m.compute_vertex_normals()
             self._scene_widget.scene.add_geometry(name, m, self._mat_lit(_rgba(rgb)))
         except Exception as e:                         # noqa: BLE001
-            logger.debug("Bỏ qua '%s': %s", mesh_rel, e)
+            logger.debug("Skipping '%s': %s", mesh_rel, e)
 
     def _register_object(self, name, mesh_rel, world_xyz_mm, rgb) -> None:
         try:
@@ -464,7 +464,7 @@ class GP7App:
                 "initial_world_T": world_T.copy(),
             }
         except Exception as e:                         # noqa: BLE001
-            logger.debug("Bỏ qua object '%s': %s", name, e)
+            logger.debug("Skipping object '%s': %s", name, e)
 
     def _setup_camera_preset(self, name: str) -> None:
         eye_offset, up = self._CAM_PRESETS.get(name, self._CAM_PRESETS["Iso"])
@@ -476,14 +476,14 @@ class GP7App:
             self._scene_widget.setup_camera(60.0, bbox, center)
             self._scene_widget.look_at(center, eye, up)
         except Exception as e:                         # noqa: BLE001
-            logger.debug("setup_camera_preset lỗi: %s", e)
+            logger.debug("setup_camera_preset error: %s", e)
 
     # ══════════════════════════════════════════════════════════════════
     # Animation (joint → scene transform)
     # ══════════════════════════════════════════════════════════════════
 
     def _apply_joints(self, joints_deg: list[float], animate: bool = False) -> None:
-        """Set joints + update scene transforms. animate=True làm slerp ngắn."""
+        """Set joints + update scene transforms. animate=True performs a short slerp."""
         if animate:
             self._animate_to(joints_deg)
             return
@@ -522,7 +522,7 @@ class GP7App:
                     pass
 
     def _animate_to(self, end_deg: list[float], steps: int = 36, dt: float = 0.02) -> None:
-        """Animation slerp từ joints hiện tại → end_deg, post mỗi frame lên main."""
+        """Slerp animation from current joints → end_deg, posting each frame to the main thread."""
         start = list(self._joints)
         n = min(len(start), len(end_deg))
         for s in range(1, steps + 1):
@@ -537,7 +537,7 @@ class GP7App:
             self._window, self._refresh_pose_readout)
 
     def _post_render(self, joints_deg: list[float]) -> None:
-        """Post _render_scene lên main thread (thread-safe từ worker)."""
+        """Post _render_scene to the main thread (thread-safe call from worker)."""
         self._gui.Application.instance.post_to_main_thread(
             self._window, lambda j=list(joints_deg): self._render_scene(j))
 
@@ -571,13 +571,13 @@ class GP7App:
     _MID_PROG_CLEAR  = 66
 
     def _build_menu(self) -> None:
-        """5 top-level menus, gom theo chức năng:
+        """5 top-level menus grouped by function:
 
             File   View   Robot   Run   Help
 
-          • View   = mọi thứ visual (camera submenu + scene toggles + panel)
-          • Robot  = motion + thông tin cell (cùng "ngữ cảnh robot+cell")
-          • Run    = thao tác chạy theo thời gian (demo, reset scene sau demo)
+          • View   = all visual settings (camera submenu + scene toggles + panel)
+          • Robot  = motion + cell information (same "robot+cell context")
+          • Run    = time-based execution actions (demo, reset scene after demo)
         """
         gui = self._gui
 
@@ -585,15 +585,15 @@ class GP7App:
         file_m.add_item("Exit", self._MID_FILE_EXIT)
 
         # ── View: visual settings ──
-        # 3 submenus: Camera (góc nhìn) + Visibility (3D toggles) + 1 item panel.
+        # 3 submenus: Camera (viewpoint) + Visibility (3D toggles) + 1 panel item.
         camera_sub = gui.Menu()
         camera_sub.add_item("Iso",   self._MID_CAM_ISO)
         camera_sub.add_item("Front", self._MID_CAM_FRONT)
         camera_sub.add_item("Side",  self._MID_CAM_SIDE)
         camera_sub.add_item("Top",   self._MID_CAM_TOP)
 
-        # Visibility submenu — gom 3 toggle scene (dome / floor / axes) tránh
-        # làm rối top-level View.
+        # Visibility submenu — groups the 3 scene toggles (dome / floor / axes)
+        # to avoid cluttering the top-level View menu.
         vis_sub = gui.Menu()
         vis_sub.add_item("Background dome", self._MID_VIEW_DOME)
         vis_sub.set_checked(self._MID_VIEW_DOME, True)
@@ -601,7 +601,7 @@ class GP7App:
         vis_sub.set_checked(self._MID_VIEW_FLOOR, True)
         vis_sub.add_item("World axes", self._MID_VIEW_AXES)
         vis_sub.set_checked(self._MID_VIEW_AXES, True)
-        self._vis_menu = vis_sub                       # ref để set_checked
+        self._vis_menu = vis_sub                       # ref for set_checked
 
         view_m = gui.Menu()
         view_m.add_menu("Camera",     camera_sub)
@@ -691,7 +691,7 @@ class GP7App:
         new = not self._geom_visible.get(mid, True)
         self._geom_visible[mid] = new
         self._toggle_geom(geom_name, new)
-        # Item nằm trong submenu View > Visibility (không phải view_m root).
+        # Item lives in submenu View > Visibility (not in the view_m root).
         try:
             self._vis_menu.set_checked(mid, new)
         except Exception:                              # noqa: BLE001
@@ -699,7 +699,7 @@ class GP7App:
         self._set_status(f"{geom_name.lstrip('_')}: {'on' if new else 'off'}")
 
     def _on_toggle_panel(self) -> None:
-        """Toggle hiện/ẩn side panel qua menu View > Controls panel."""
+        """Toggle side panel visibility via menu View > Controls panel."""
         self._panel_visible = not self._panel_visible
         self._left_panel.visible = self._panel_visible
         try:
@@ -715,7 +715,7 @@ class GP7App:
             level="ok")
 
     def _on_toggle_program(self) -> None:
-        """Toggle hiện/ẩn program panel qua menu Program > Program panel."""
+        """Toggle program panel visibility via menu Program > Program panel."""
         self._program_visible = not self._program_visible
         self._prog_panel.visible = self._program_visible
         try:
@@ -963,7 +963,7 @@ class GP7App:
         self._window.show_dialog(dlg)
 
     def _build_status_bar(self) -> None:
-        """Status bar mỏng ở đáy cửa sổ — chỉ 1 dòng, không che scene."""
+        """Thin status bar at the bottom of the window — single line, does not obscure the scene."""
         gui = self._gui
         em = self._window.theme.font_size
         pad = int(0.3 * em)
@@ -976,10 +976,10 @@ class GP7App:
         self._window.add_child(self._status_bar)
 
     def _build_left_panel(self) -> None:
-        """Side panel: chỉ Joint Jog + Cartesian Jog. Dùng Vert thường (KHÔNG
-        CollapsableVert) vì Open3D Vert tính sai preferred-height của
-        CollapsableVert → các section đè lên nhau khi nhiều children. Tree/Cell
-        info chuyển sang menu Tools > Cell info (Dialog) để panel gọn.
+        """Side panel: Joint Jog + Cartesian Jog only. Uses plain Vert (NOT
+        CollapsableVert) because Open3D Vert mis-calculates the preferred-height
+        of CollapsableVert → sections overlap when there are many children.
+        Tree/Cell info moved to menu Tools > Cell info (Dialog) to keep the panel compact.
         """
         gui = self._gui
         em = self._window.theme.font_size
@@ -1000,16 +1000,16 @@ class GP7App:
         self._build_cartesian_jog_into(cart_box, em)
         self._left_panel.add_child(cart_box)
 
-        # Ẩn mặc định — user nhấn "Show controls" trên toolbar để hiện.
+        # Hidden by default — user clicks "Show controls" on the toolbar to show.
         self._left_panel.visible = self._panel_visible
         self._window.add_child(self._left_panel)
 
     def _build_program_panel(self) -> None:
-        """Panel bên phải: instruction list + Play/Save/Load/Export — RoboDK-style.
+        """Right panel: instruction list + Play/Save/Load/Export — RoboDK-style.
 
-        Add / Delete / Up / Down operate trên `self._program`. Play chạy worker
-        thread tuần tự MoveJ → MoveL → SetGripper → Wait. Export .JBI dùng
-        InformJobBuilder (đã có sẵn).
+        Add / Delete / Up / Down operate on `self._program`. Play runs a worker
+        thread sequentially through MoveJ → MoveL → SetGripper → Wait.
+        Export .JBI uses InformJobBuilder (already available).
         """
         gui = self._gui
         em = self._window.theme.font_size
@@ -1099,7 +1099,7 @@ class GP7App:
         self._window.add_child(self._prog_panel)
 
     def _show_cell_info(self) -> None:
-        """Dialog hiển thị thông tin cell config (Robot / Frames / Objects)."""
+        """Dialog showing cell config information (Robot / Frames / Objects)."""
         gui = self._gui
         em = self._window.theme.font_size
         dlg = gui.Dialog("Cell info")
@@ -1137,15 +1137,16 @@ class GP7App:
         self._window.show_dialog(dlg)
 
     def _build_joint_jog_into(self, parent, em) -> None:
-        """6 row joints, mỗi row CHỈ 'J#' + slider full-width → slider có vị
-        trí trái/phải đồng nhất hoàn hảo.
+        """6 joint rows, each row has ONLY 'J#' + a full-width slider → perfectly
+        uniform left/right slider positions.
 
-        Min/max KHÔNG hiển thị inline (Open3D font proportional → " -65" và
-        "-170" có pixel-width khác → mép slider lệch). Range info có ở:
-          • Tooltip slider (hover → "J1 range: -170 to 170 deg")
-          • Menu Robot > Cell info → dialog liệt kê đầy đủ home + ranges
-        Value hiện tại tự hiện trong track của slider Open3D nên không cần
-        label value ngoài.
+        Min/max are NOT shown inline (Open3D uses a proportional font → " -65" and
+        "-170" have different pixel widths → slider edges would be misaligned).
+        Range info is available via:
+          • Slider tooltip (hover → "J1 range: -170 to 170 deg")
+          • Menu Robot > Cell info → dialog listing full home + ranges
+        Current value is shown natively inside the slider track — no external
+        value label needed.
         """
         gui = self._gui
         self._joint_sliders = []
@@ -1170,11 +1171,11 @@ class GP7App:
             parent.add_child(row)
 
     def _build_cartesian_jog_into(self, parent, em) -> None:
-        """Cartesian jog — form-style với VGrid 2-cols để label+widget thẳng cột.
+        """Cartesian jog — form-style with a 2-column VGrid to align labels and widgets.
 
-        VGrid 2-col → cột 1 chứa Labels, width = max(preferred) → "Translate"
-        là chuẩn → mọi widget cột 2 start cùng X position. Fix triệt để
-        misalignment của Horiz-based rows trước đây.
+        VGrid 2-col → column 1 holds Labels, width = max(preferred) → "Translate"
+        sets the standard → all column-2 widgets start at the same X position.
+        Completely fixes the misalignment of the previous Horiz-based rows.
         """
         gui = self._gui
 
@@ -1214,7 +1215,7 @@ class GP7App:
 
         # ── Bottom form: VGrid 2-col cho Jog inputs ──
         # Col 1 = Labels (width = max "Translate"), col 2 = widgets.
-        # → mọi combo / button-row start cùng X position.
+        # → all combos / button-rows start at the same X position.
         bot_form = gui.VGrid(2, int(0.4 * em), gui.Margins(0, 0, 0, 0))
 
         bot_form.add_child(gui.Label("Jog in"))
@@ -1268,7 +1269,7 @@ class GP7App:
         return row
 
     def _build_jog_buttons_only(self, em, callback):
-        """6 buttons ±X/Y/Z, không có Label inside (Label đã ở VGrid col 1)."""
+        """6 buttons ±X/Y/Z, no Label inside (Label is already in VGrid col 1)."""
         gui = self._gui
         row = gui.Horiz(int(0.2 * em))
         for axis_idx, name in enumerate(self.AXIS_NAMES):
@@ -1280,7 +1281,7 @@ class GP7App:
         return row
 
     def _make_header(self, text: str, color_rgb=None):
-        """Header label với màu accent (light blue mặc định) — dùng cho section."""
+        """Header label with accent color (light blue by default) — used for sections."""
         gui = self._gui
         lbl = gui.Label(text)
         rgb = color_rgb or self.COLOR_HEADER
@@ -1294,11 +1295,11 @@ class GP7App:
         return lbl
 
     def _make_section(self, parent, title: str, open_default: bool = True):
-        """Custom collapsable section (Open3D CollapsableVert có layout bug
-        khi nested vào Vert có nhiều children — tự build Button + Vert.visible
-        toggle để control chính xác).
+        """Custom collapsable section (Open3D CollapsableVert has a layout bug
+        when nested inside a Vert with many children — manually build Button +
+        Vert.visible toggle for precise control).
 
-        Returns inner Vert — caller add_child(...) vào đó.
+        Returns the inner Vert — caller calls add_child(...) on it.
         """
         gui = self._gui
         em = self._window.theme.font_size
@@ -1325,10 +1326,10 @@ class GP7App:
     def _add_pose_row(self, parent, label_text: str = ""):
         """Pose readout = 2 SIMPLE Labels (XYZ row + RxRyRz row).
 
-        Cách trước (6 cells với axis+value, VGrid hay Horiz) bị wrap khi value
-        dài. Single-Label-per-row KHÔNG bao giờ wrap vì Label render text
-        intrinsic width — Open3D không tự cắt text trong Label.
-        Trade-off: mất per-axis text color. Đổi lại: GỌN + KHÔNG wrap.
+        The previous approach (6 cells with axis+value, VGrid or Horiz) would
+        wrap when values were long. A single Label per row NEVER wraps because
+        Label renders at its intrinsic text width — Open3D does not clip Label text.
+        Trade-off: loses per-axis text color. Gain: COMPACT + NO wrap.
         """
         gui = self._gui
         if label_text:
@@ -1410,7 +1411,7 @@ class GP7App:
         try:
             self._scene_widget.scene.show_geometry(name, bool(visible))
         except Exception as e:                         # noqa: BLE001
-            logger.debug("toggle %s lỗi: %s", name, e)
+            logger.debug("toggle %s error: %s", name, e)
 
     def _on_sun_intensity(self, val: float) -> None:
         try:
@@ -1579,7 +1580,7 @@ class GP7App:
             │                                │
             └─Status bar────────────────────┘
 
-        Cả hai panel ẩn mặc định, bật qua menu View / Program.
+        Both panels are hidden by default; toggle via menu View / Program.
         """
         r = self._window.content_rect
         em = self._window.theme.font_size

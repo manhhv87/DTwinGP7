@@ -53,7 +53,7 @@ class TestAnalyzeTelemetry:
         sys.path.insert(0, str(PROJECT_ROOT / "scripts"))
         from importlib import import_module
         mod = import_module("05_analyze_telemetry")
-        with pytest.raises(ValueError, match="thiếu cột"):
+        with pytest.raises(ValueError, match="missing columns"):
             mod.load_telemetry(bad)
 
     def test_compute_velocity_shape(self, synthetic_csv):

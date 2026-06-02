@@ -1,14 +1,14 @@
 """
 telemetry.py
 ────────────
-Logger CSV cho joint state + IO state của robot thật (HSE backend).
+CSV logger for joint state + IO state of the real robot (HSE backend).
 
-Mục đích: ghi snapshot state mỗi tick để:
-  - Post-analysis (vẽ trajectory, đo cycle time)
-  - Drift detection (so sánh commanded vs actual)
-  - Demo bidirectional digital twin (CSV → matplotlib animate)
+Purpose: record a state snapshot every tick for:
+  - Post-analysis (plot trajectory, measure cycle time)
+  - Drift detection (compare commanded vs actual)
+  - Bidirectional digital twin demo (CSV → matplotlib animate)
 
-Thread-safe — gọi `log_state()` từ mirror thread đồng thời orchestrator thread.
+Thread-safe — call `log_state()` from the mirror thread concurrently with the orchestrator thread.
 """
 from __future__ import annotations
 
@@ -23,12 +23,12 @@ logger = logging.getLogger(__name__)
 
 
 class TelemetryLogger:
-    """Log joint angles + optional IO state ra CSV với timestamp UNIX.
+    """Log joint angles + optional IO state to CSV with a UNIX timestamp.
 
-    Cấu trúc CSV:
+    CSV structure:
         timestamp,j1,j2,j3,j4,j5,j6,running,alarm
 
-    `running` và `alarm` optional (None nếu mirror thread không đọc được).
+    `running` and `alarm` are optional (None if the mirror thread could not read them).
     """
 
     HEADER = ("timestamp", "j1", "j2", "j3", "j4", "j5", "j6", "running", "alarm")
@@ -41,7 +41,7 @@ class TelemetryLogger:
         self._row_count = 0
 
     def open(self) -> None:
-        """Mở file + ghi header. Idempotent."""
+        """Open the file and write the header. Idempotent."""
         if self._fp is not None:
             return
         self.csv_path.parent.mkdir(parents=True, exist_ok=True)
@@ -57,11 +57,11 @@ class TelemetryLogger:
         running: bool | None = None,
         alarm: int | None = None,
     ) -> None:
-        """Ghi 1 row state. Thread-safe."""
+        """Write one state row. Thread-safe."""
         if self._writer is None:
             return
         if len(joints) != 6:
-            logger.warning("Telemetry joints có %d phần tử, kỳ vọng 6", len(joints))
+            logger.warning("Telemetry joints has %d elements, expected 6", len(joints))
             return
         row = (
             f"{time.time():.4f}",
@@ -74,12 +74,12 @@ class TelemetryLogger:
             self._row_count += 1
 
     def flush(self) -> None:
-        """Force flush — gọi định kỳ nếu buffer quá lâu (vd 1 lần / giây)."""
+        """Force flush — call periodically if the buffer lags too long (e.g. once per second)."""
         if self._fp is not None:
             self._fp.flush()
 
     def close(self) -> None:
-        """Đóng file. Idempotent."""
+        """Close the file. Idempotent."""
         if self._fp is not None:
             with self._lock:
                 self._fp.flush()

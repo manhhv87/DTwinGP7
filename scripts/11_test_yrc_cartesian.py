@@ -2,27 +2,27 @@
 """
 11_test_yrc_cartesian.py
 ─────────────────────────
-3-phase test cho HSE Cartesian path trên robot GP7 thật.
+3-phase test for HSE Cartesian path on a real GP7 robot.
 
-⚠ AN TOÀN trước khi chạy:
-  - YRC1000 ở REMOTE mode
-  - Speed slider trên TP set 10% (REDUCED SPEED)
-  - Tay sẵn sàng E-stop
-  - Workspace clear, không người trong tầm với
+⚠ SAFETY before running:
+  - YRC1000 in REMOTE mode
+  - Speed slider on TP set to 10% (REDUCED SPEED)
+  - Hand on E-stop
+  - Workspace clear, no personnel within reach
 
-Phase 1 — Protocol verify (KHÔNG di chuyển robot):
-    - Write P000 với Cartesian pose
-    - Read P000 lại
-    - Confirm bytes encode/decode đúng
+Phase 1 — Protocol verify (NO robot motion):
+    - Write P000 with Cartesian pose
+    - Read P000 back
+    - Confirm bytes encode/decode correctly
 
-Phase 2 — Touch test 3 pose:
+Phase 2 — Touch test 3 poses:
     - Pose 1: current pose (sanity check)
     - Pose 2: current + Z offset 50mm (up)
-    - Pose 3: current (về home)
+    - Pose 3: current (return to home)
 
 Phase 3 — Full diagnostic:
-    - Đo round-trip latency
-    - Verify joint state read-back match commanded
+    - Measure round-trip latency
+    - Verify joint state read-back matches commanded
 
 Usage:
     python scripts/11_test_yrc_cartesian.py --phase 1
@@ -59,17 +59,17 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--phase", type=int, choices=[1, 2, 3], default=1)
     p.add_argument("--cell-config", default="config/cell_layout_real.yaml")
     p.add_argument("--hse-ip", default=None,
-                   help="Override IP YRC1000 (default từ cell config).")
+                   help="Override YRC1000 IP (default from cell config).")
     p.add_argument("--tool-no", type=int, default=1)
     p.add_argument("--speed-pct", type=float, default=10.0,
-                   help="Max speed % cho phase 2 (default 10% REDUCED SPEED).")
+                   help="Max speed % for phase 2 (default 10% REDUCED SPEED).")
     p.add_argument("--z-offset-mm", type=float, default=50.0,
-                   help="Z offset cho phase 2 movement (default +50mm).")
+                   help="Z offset for phase 2 movement (default +50mm).")
     return p.parse_args()
 
 
 def phase1_protocol_verify(backend: MotomanHSEBackend, log) -> int:
-    """Write Cartesian pose vào P000, read lại, compare bytes."""
+    """Write Cartesian pose to P000, read back, compare bytes."""
     log.info("=" * 60)
     log.info("PHASE 1: Protocol verify (NO ROBOT MOTION)")
     log.info("=" * 60)
@@ -120,7 +120,7 @@ def phase2_touch_test(backend: MotomanHSEBackend, args, log) -> int:
     log.info("=" * 60)
     log.info("PHASE 2: Touch test (ROBOT WILL MOVE — REDUCED SPEED)")
     log.info("=" * 60)
-    log.warning("⚠ Robot SẼ di chuyển. E-stop trong tầm tay. Speed %.0f%%.",
+    log.warning("⚠ Robot WILL MOVE. Keep E-stop within reach. Speed %.0f%%.",
                 args.speed_pct)
 
     backend.max_speed_pct = args.speed_pct
@@ -136,7 +136,7 @@ def phase2_touch_test(backend: MotomanHSEBackend, args, log) -> int:
     )
     parsed = parse_position_response(resp.payload)
     if parsed["data_type"] == DataType.PULSE:
-        log.error("Robot trả PULSE position. Cần READ_POSITION instance=101 cho BASE.")
+        log.error("Robot returned PULSE position. Need READ_POSITION instance=101 for BASE.")
         # Try alt instance to request BASE Cartesian
         # Note: per spec instance 101 = robot 1 cartesian, but try 1 first
         return 1
@@ -205,7 +205,7 @@ def main() -> int:
         return 2
 
     if not hse_ip:
-        log.error("Cần --hse-ip hoặc robot_connection.ip trong cell config")
+        log.error("Provide --hse-ip or set robot_connection.ip in cell config")
         return 2
 
     log.info("HSE IP: %s, Tool: %d", hse_ip, args.tool_no)

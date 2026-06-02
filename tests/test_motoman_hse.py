@@ -313,7 +313,7 @@ class TestMoveJEndToEnd:
             return _build_response(payload=b"\x02"), ("192.168.1.100", 10040)
         mock_sock.recvfrom.side_effect = respond
 
-        with pytest.raises(TimeoutError, match="không kết thúc"):
+        with pytest.raises(TimeoutError, match="did not complete"):
             backend.MoveJ([0] * 6)
 
 

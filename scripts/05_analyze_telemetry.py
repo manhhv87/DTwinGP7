@@ -2,19 +2,19 @@
 """
 05_analyze_telemetry.py
 ───────────────────────
-Phân tích + visualize CSV telemetry sinh bởi DigitalTwinMirror.
+Analyze + visualize CSV telemetry produced by DigitalTwinMirror.
 
-Đầu vào: `results/telemetry_*.csv` (cột: timestamp, j1..j6, running, alarm)
-Đầu ra (mặc định `figures/`):
+Input:  `results/telemetry_*.csv` (columns: timestamp, j1..j6, running, alarm)
+Output (default to `figures/`):
   - joint_trajectory_<ts>.png   : 6 joint angles vs time
-  - joint_velocity_<ts>.png     : Numerical diff để show velocity profile
-  - drift_events_<ts>.png       : Drift markers + alarms trên timeline
-  - cycle_time_<ts>.png         : Histogram khoảng thời gian giữa rest-pose
+  - joint_velocity_<ts>.png     : Numerical diff to show velocity profile
+  - drift_events_<ts>.png       : Drift markers + alarms on timeline
+  - cycle_time_<ts>.png         : Histogram of intervals between rest-poses
 
 Usage:
     python scripts/05_analyze_telemetry.py results/telemetry_20260520_223842.csv
-    python scripts/05_analyze_telemetry.py latest    # auto-pick file mới nhất
-    python scripts/05_analyze_telemetry.py latest --no-show   # chỉ save PNG
+    python scripts/05_analyze_telemetry.py latest    # auto-pick the latest file
+    python scripts/05_analyze_telemetry.py latest --no-show   # save PNG only
 """
 from __future__ import annotations
 
@@ -38,23 +38,23 @@ def parse_args() -> argparse.Namespace:
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument(
         "csv_path", nargs="?", default="latest",
-        help="Đường dẫn CSV hoặc 'latest' để chọn file mới nhất trong results/",
+        help="Path to CSV or 'latest' to select the newest file in results/",
     )
-    p.add_argument("--no-show", action="store_true", help="Không mở figure window")
-    p.add_argument("--out-dir", default=None, help="Thư mục xuất PNG (default: figures/)")
+    p.add_argument("--no-show", action="store_true", help="Do not open figure window")
+    p.add_argument("--out-dir", default=None, help="Output directory for PNGs (default: figures/)")
     p.add_argument(
         "--rest-threshold-deg-s", type=float, default=2.0,
-        help="Ngưỡng tốc độ joint coi là rest (deg/s). Default 2.0.",
+        help="Joint speed threshold considered as rest (deg/s). Default 2.0.",
     )
     return p.parse_args()
 
 
 def resolve_csv_path(arg: str) -> Path:
-    """Resolve 'latest' hoặc đường dẫn explicit."""
+    """Resolve 'latest' or an explicit path."""
     if arg == "latest":
         candidates = sorted((PROJECT_ROOT / "results").glob("telemetry_*.csv"))
         if not candidates:
-            raise FileNotFoundError("Không có telemetry_*.csv trong results/")
+            raise FileNotFoundError("No telemetry_*.csv found in results/")
         latest = candidates[-1]
         print(f"Auto-pick latest: {latest.name}")
         return latest
@@ -63,28 +63,28 @@ def resolve_csv_path(arg: str) -> Path:
     if not p.is_absolute():
         p = PROJECT_ROOT / p
     if not p.exists():
-        raise FileNotFoundError(f"Không tồn tại: {p}")
+        raise FileNotFoundError(f"File not found: {p}")
     return p
 
 
 def load_telemetry(csv_path: Path) -> pd.DataFrame:
-    """Load CSV → DataFrame với cột time_rel (giây từ tick đầu)."""
+    """Load CSV → DataFrame with time_rel column (seconds from first tick)."""
     df = pd.read_csv(csv_path)
     required = {"timestamp", *(f"j{i}" for i in range(1, 7))}
     missing = required - set(df.columns)
     if missing:
-        raise ValueError(f"CSV thiếu cột: {missing}")
+        raise ValueError(f"CSV missing columns: {missing}")
     df = df.copy()
     df["time_rel"] = df["timestamp"] - df["timestamp"].iloc[0]
     return df
 
 
 def compute_velocity(df: pd.DataFrame) -> pd.DataFrame:
-    """Tính joint velocity (deg/s) bằng numerical diff."""
+    """Compute joint velocity (deg/s) via numerical diff."""
     vel = pd.DataFrame(index=df.index)
     vel["time_rel"] = df["time_rel"]
     dt = np.gradient(df["timestamp"].values)
-    dt = np.where(dt > 1e-6, dt, 1e-6)            # tránh chia 0
+    dt = np.where(dt > 1e-6, dt, 1e-6)            # avoid division by zero
     for i in range(1, 7):
         vel[f"v{i}"] = np.gradient(df[f"j{i}"].values) / dt
     return vel
@@ -97,7 +97,7 @@ def plot_joint_trajectory(df: pd.DataFrame, out_path: Path) -> None:
     for i, (label, color) in enumerate(zip(JOINT_LABELS, JOINT_COLORS), start=1):
         ax.plot(df["time_rel"], df[f"j{i}"], label=f"J{i} ({label})",
                 color=color, linewidth=1.2)
-    ax.set_xlabel("Thời gian (s)")
+    ax.set_xlabel("Time (s)")
     ax.set_ylabel("Joint angle (°)")
     ax.set_title("Joint Trajectory — Bidirectional Digital Twin Mirror")
     ax.legend(loc="upper right", ncol=2, fontsize=8)
@@ -114,7 +114,7 @@ def plot_joint_velocity(vel: pd.DataFrame, out_path: Path) -> None:
     for i, (label, color) in enumerate(zip(JOINT_LABELS, JOINT_COLORS), start=1):
         ax.plot(vel["time_rel"], vel[f"v{i}"], label=f"J{i} ({label})",
                 color=color, linewidth=1.2)
-    ax.set_xlabel("Thời gian (s)")
+    ax.set_xlabel("Time (s)")
     ax.set_ylabel("Velocity (°/s)")
     ax.set_title("Joint Velocity (numerical diff)")
     ax.legend(loc="upper right", ncol=2, fontsize=8)
@@ -126,7 +126,7 @@ def plot_joint_velocity(vel: pd.DataFrame, out_path: Path) -> None:
 
 
 def plot_drift_events(df: pd.DataFrame, out_path: Path) -> None:
-    """Plot alarm + running events trên timeline."""
+    """Plot alarm + running events on timeline."""
     import matplotlib.pyplot as plt
 
     fig, ax = plt.subplots(figsize=(10, 3))
@@ -144,7 +144,7 @@ def plot_drift_events(df: pd.DataFrame, out_path: Path) -> None:
                        color="red", marker="x", s=60, label="Alarm")
 
     ax.set_ylim(-0.1, 1.5)
-    ax.set_xlabel("Thời gian (s)")
+    ax.set_xlabel("Time (s)")
     ax.set_yticks([0, 1])
     ax.set_yticklabels(["Idle", "Running"])
     ax.set_title("Robot State + Alarm Events")
@@ -156,9 +156,9 @@ def plot_drift_events(df: pd.DataFrame, out_path: Path) -> None:
 
 
 def detect_cycle_times(vel: pd.DataFrame, rest_threshold: float) -> list[float]:
-    """Detect cycle = khoảng giữa 2 lần robot vào rest (mọi joint vel < threshold).
+    """Detect cycle = interval between two consecutive robot rest entries (all joint vel < threshold).
 
-    Returns list of cycle durations (giây).
+    Returns list of cycle durations (seconds).
     """
     speed = np.sqrt(sum(vel[f"v{i}"] ** 2 for i in range(1, 7)))
     is_rest = speed < rest_threshold
@@ -183,10 +183,10 @@ def plot_cycle_time_hist(cycle_times: list[float], out_path: Path) -> None:
                    label=f"Mean: {np.mean(cycle_times):.2f}s")
         ax.legend()
     else:
-        ax.text(0.5, 0.5, "Không đủ dữ liệu (cần ≥ 2 chu kỳ)",
+        ax.text(0.5, 0.5, "Insufficient data (need ≥ 2 cycles)",
                 ha="center", va="center", transform=ax.transAxes, fontsize=12)
     ax.set_xlabel("Cycle time (s)")
-    ax.set_ylabel("Số chu kỳ")
+    ax.set_ylabel("Cycle count")
     ax.set_title(f"Cycle Time Distribution (n={len(cycle_times)})")
     ax.grid(alpha=0.3)
     fig.tight_layout()
@@ -195,7 +195,7 @@ def plot_cycle_time_hist(cycle_times: list[float], out_path: Path) -> None:
 
 
 def summarize(df: pd.DataFrame, vel: pd.DataFrame, cycle_times: list[float]) -> None:
-    """In tóm tắt thống kê ra stdout."""
+    """Print statistics summary to stdout."""
     duration = df["time_rel"].iloc[-1]
     print("\n─── Summary ───────────────────────────────────────")
     print(f"  Telemetry rows:   {len(df)}")
@@ -218,7 +218,7 @@ def summarize(df: pd.DataFrame, vel: pd.DataFrame, cycle_times: list[float]) -> 
         print(f"  Cycle time:       {np.mean(cycle_times):.2f}s mean, "
               f"{np.median(cycle_times):.2f}s median")
     else:
-        print("\n  Cycle time:       (chưa đủ chu kỳ rest→move→rest)")
+        print("\n  Cycle time:       (insufficient cycles rest→move→rest)")
 
 
 def main() -> int:
@@ -226,7 +226,7 @@ def main() -> int:
     if args.no_show:
         matplotlib.use("Agg")
 
-    # Windows console mặc định cp1252 không in được unicode arrow/Vietnamese.
+    # Windows console defaults to cp1252 which cannot print unicode arrows/non-ASCII.
     for stream in (sys.stdout, sys.stderr):
         try:
             stream.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[union-attr]
@@ -240,7 +240,7 @@ def main() -> int:
     print(f"Loading: {csv_path}")
     df = load_telemetry(csv_path)
     if len(df) < 2:
-        print("CSV quá ít row (< 2) — không phân tích được.", file=sys.stderr)
+        print("CSV has too few rows (< 2) — cannot analyze.", file=sys.stderr)
         return 1
 
     vel = compute_velocity(df)

@@ -169,20 +169,20 @@ class TestHSEResponse:
         assert resp.payload == b"\x01\x02\x03"
 
     def test_decode_too_short_raises(self):
-        with pytest.raises(HSEDecodeError, match="quá ngắn"):
+        with pytest.raises(HSEDecodeError, match="too short"):
             HSEResponse.decode(b"\x00" * 10)
 
     def test_decode_wrong_identifier_raises(self):
         data = _build_response_bytes()
         data = b"XXXX" + data[4:]
-        with pytest.raises(HSEDecodeError, match="Identifier"):
+        with pytest.raises(HSEDecodeError, match="Invalid identifier"):
             HSEResponse.decode(data)
 
     def test_decode_payload_truncated_raises(self):
         # Header claims 10-byte payload but only 5 bytes follow
         data = _build_response_bytes(payload=b"\x00" * 10)
         truncated = data[: HSE_HEADER_SIZE + 5]
-        with pytest.raises(HSEDecodeError, match="size lệch"):
+        with pytest.raises(HSEDecodeError, match="Payload size mismatch"):
             HSEResponse.decode(truncated)
 
     def test_raise_for_status_with_error(self):
@@ -235,7 +235,7 @@ class TestPositionParse:
             assert abs(actual - expected) < 0.01    # < 0.01° error
 
     def test_pulse_to_deg_wrong_axis_count_raises(self):
-        with pytest.raises(ValueError, match="sai robot model"):
+        with pytest.raises(ValueError, match="wrong robot model"):
             pulse_to_deg([0, 0, 0])                # 3 ≠ 6
 
 

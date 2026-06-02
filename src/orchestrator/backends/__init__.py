@@ -1,11 +1,11 @@
 """
 backends — pluggable robot driver implementations.
 
-Mỗi backend implement interface "RoboDK Item-like" (xem base.py) để Orchestrator
-gọi đồng nhất bất kể đang nói chuyện với:
-  - RoboDK API (sim / real qua RoboDK Educational+)
-  - SimRobot (headless, không RoboDK)
-  - MotomanHSEBackend (real, bypass RoboDK driver — chỉ cần RoboDK Free)
+Each backend implements a "RoboDK Item-like" interface (see base.py) so the
+Orchestrator can call them uniformly regardless of the underlying target:
+  - RoboDK API (sim / real via RoboDK Educational+)
+  - SimRobot (headless, no RoboDK)
+  - MotomanHSEBackend (real, bypass RoboDK driver — requires only RoboDK Free)
 """
 from .base import RobotBackend
 

@@ -1,12 +1,12 @@
 """
 detector.py
 ───────────
-Wrapper inference cho YOLOv8-seg + một MockDetector cho sim/test.
+Inference wrapper for YOLOv8-seg + a MockDetector for sim/test.
 
-ObjectDetector lazy-import ultralytics → module này import được trên máy
-chưa cài ultralytics (chỉ MockDetector dùng được khi đó).
+ObjectDetector lazy-imports ultralytics → this module can be imported on a
+machine without ultralytics installed (only MockDetector is usable then).
 
-Cả hai detector cùng interface:
+Both detectors share the same interface:
     .detect(rgb) → list[Detection]
 """
 from __future__ import annotations
@@ -19,31 +19,31 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
-# Tên class — phải khớp thứ tự khi train (data/splits/dataset.yaml).
+# Class names — must match the order used during training (data/splits/dataset.yaml).
 DEFAULT_CLASS_NAMES = ["tray", "bottle", "cup", "bolt"]
 
 
 @dataclass
 class Detection:
-    """Một vật được phát hiện trong ảnh."""
+    """A single detected object in the image."""
 
     class_id: int
     class_name: str
     confidence: float
-    mask: np.ndarray                       # mask nhị phân (H, W)
+    mask: np.ndarray                       # binary mask (H, W)
     bbox: tuple[float, float, float, float]  # x1, y1, x2, y2
-    # Các trường dưới do PoseExtractor điền sau:
+    # Fields below are filled in by PoseExtractor after detection:
     pose_camera: tuple[float, float, float, float] | None = None
     pixel_uv: tuple[int, int] | None = None
     mask_area: int = 0
-    # Chiều cao thật của vật (mm) — sim mode lấy từ STL bounds. Real mode
-    # có thể tính từ depth gradient hoặc lookup class. Dùng cho adaptive
-    # grasp_depth_offset trong orchestrator.
+    # True height of the object (mm) — sim mode reads from STL bounds. Real mode
+    # can compute from depth gradient or class lookup. Used for adaptive
+    # grasp_depth_offset in the orchestrator.
     height_mm: float | None = None
 
 
 def field_dict(det: Detection) -> dict:
-    """Chuyển Detection → dict (giữ các key mà orchestrator cần)."""
+    """Convert Detection → dict (keeping the keys the orchestrator needs)."""
     return {
         "class_id": det.class_id,
         "class_name": det.class_name,
@@ -60,9 +60,9 @@ def field_dict(det: Detection) -> dict:
 class ObjectDetector:
     """YOLOv8-seg inference wrapper.
 
-    Chỉ dùng để INFERENCE bằng trọng số đã train sẵn — model được train ở
-    máy khác (Linux GPU), repo này chỉ nhận file trọng số. Hỗ trợ cả file
-    .pt lẫn .onnx (ultralytics tự nhận dạng theo đuôi file).
+    Used for INFERENCE only with pre-trained weights — the model is trained on
+    a separate machine (Linux GPU); this repo only receives the weight file.
+    Supports both .pt and .onnx files (ultralytics auto-detects by extension).
     """
 
     def __init__(
@@ -72,15 +72,15 @@ class ObjectDetector:
         iou: float = 0.45,
         class_names: list[str] | None = None,
     ) -> None:
-        # Phải là file trọng số có thật — KHÔNG để ultralytics tự tải về
-        # model COCO khi đường dẫn sai (sẽ cho kết quả sai class).
+        # Must be a real weights file — do NOT let ultralytics auto-download a
+        # COCO model when the path is wrong (that would produce wrong classes).
         weights = Path(model_path)
         if not weights.exists():
             raise FileNotFoundError(
-                f"Không tìm thấy file trọng số: {model_path}\n"
-                f"Model được train trên máy Linux — copy file best.pt (hoặc .onnx) "
-                f"về và đặt đúng đường dẫn này.\n"
-                f"Xem HUONG_DAN_CAI_DAT.md mục 'Đưa trọng số về máy chạy'."
+                f"Weight file not found: {model_path}\n"
+                f"The model is trained on a Linux machine — copy best.pt (or .onnx) "
+                f"here and set the correct path.\n"
+                f"See HUONG_DAN_CAI_DAT.md section 'Transferring weights to the inference machine'."
             )
 
         from ultralytics import YOLO  # lazy import
@@ -88,8 +88,8 @@ class ObjectDetector:
         self.model = YOLO(str(weights))
         self.conf = conf
         self.iou = iou
-        # Ưu tiên tên lớp do CHÍNH model train ra (self.model.names) → tự khớp
-        # mọi bài toán/model khác nhau. Chỉ fallback khi không đọc được.
+        # Prefer class names from the model itself (self.model.names) → automatically
+        # correct for any task/model. Fall back only when names are unavailable.
         model_names = getattr(self.model, "names", None)
         if class_names:
             self.class_names = list(class_names)
@@ -103,7 +103,7 @@ class ObjectDetector:
                     model_path, conf, iou, self.class_names)
 
     def detect(self, rgb: np.ndarray) -> list[Detection]:
-        """Chạy inference, trả về danh sách Detection."""
+        """Run inference and return a list of Detection objects."""
         results = self.model(rgb, conf=self.conf, iou=self.iou, verbose=False)[0]
         detections: list[Detection] = []
 
@@ -127,12 +127,12 @@ class ObjectDetector:
 
 
 class MockDetector:
-    """Detector giả lập — trả về một kịch bản detection cố định.
+    """Simulated detector — returns a fixed scripted detection scenario.
 
-    Dùng cho test orchestrator/perception_node mà không cần model + GPU.
+    Used to test the orchestrator/perception_node without a model or GPU.
 
     Args:
-        scripted: List các list[Detection] — mỗi lần detect() trả phần tử kế.
+        scripted: List of list[Detection] — each detect() call returns the next entry.
     """
 
     def __init__(self, scripted: list[list[Detection]] | None = None) -> None:
@@ -140,7 +140,7 @@ class MockDetector:
         self._i = 0
 
     def detect(self, rgb: np.ndarray) -> list[Detection]:
-        """Trả về kịch bản detection kế tiếp (lặp vòng)."""
+        """Return the next scripted detection scenario (cycles through the list)."""
         out = self._scripted[self._i % len(self._scripted)]
         self._i += 1
         return out
@@ -152,7 +152,7 @@ class MockDetector:
         mask_hw: tuple[int, int] = (720, 1280),
         mask_box: tuple[int, int, int, int] = (600, 320, 680, 420),
     ) -> Detection:
-        """Tiện ích tạo nhanh một Detection với mask hình chữ nhật."""
+        """Convenience helper to create a Detection with a rectangular mask."""
         mask = np.zeros(mask_hw, np.uint8)
         x1, y1, x2, y2 = mask_box
         mask[y1:y2, x1:x2] = 1

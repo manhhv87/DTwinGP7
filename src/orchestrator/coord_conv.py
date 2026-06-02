@@ -1,15 +1,15 @@
 """
 coord_conv.py
 ─────────────
-Coordinate transform utilities cho pipeline pick-and-place.
+Coordinate transform utilities for the pick-and-place pipeline.
 
-Toàn bộ hàm là pure-numpy → testable mà không cần RoboDK/RealSense.
+All functions are pure-numpy → testable without RoboDK/RealSense.
 
-Quy ước thống nhất toàn dự án:
-  - Đơn vị độ dài: mm
-  - Đơn vị góc: radian (trừ khi tên hàm ghi rõ _deg)
-  - Ma trận biến đổi: 4x4 homogeneous, T_A^B nghĩa là "frame A biểu diễn trong frame B"
-  - T_BC = T_base^camera... thực chất là camera-trong-base (camera-to-base):
+Project-wide conventions:
+  - Length unit: mm
+  - Angle unit: radian (unless the function name explicitly says _deg)
+  - Transform matrices: 4x4 homogeneous, T_A^B means "frame A expressed in frame B"
+  - T_BC = T_base^camera... effectively camera-in-base (camera-to-base):
         p_base = T_BC @ p_camera
 """
 from __future__ import annotations
@@ -18,18 +18,18 @@ from pathlib import Path
 
 import numpy as np
 
-# ───── Ma trận xoay/tịnh tiến cơ bản (4x4) ─────
+# ───── Basic rotation/translation matrices (4x4) ─────
 
 
 def transl(x: float, y: float, z: float) -> np.ndarray:
-    """Ma trận tịnh tiến thuần (mm)."""
+    """Pure translation matrix (mm)."""
     T = np.eye(4)
     T[:3, 3] = [x, y, z]
     return T
 
 
 def rotx(angle_rad: float) -> np.ndarray:
-    """Ma trận xoay quanh trục X."""
+    """Rotation matrix about the X axis."""
     c, s = np.cos(angle_rad), np.sin(angle_rad)
     T = np.eye(4)
     T[1, 1], T[1, 2] = c, -s
@@ -38,7 +38,7 @@ def rotx(angle_rad: float) -> np.ndarray:
 
 
 def rotz(angle_rad: float) -> np.ndarray:
-    """Ma trận xoay quanh trục Z."""
+    """Rotation matrix about the Z axis."""
     c, s = np.cos(angle_rad), np.sin(angle_rad)
     T = np.eye(4)
     T[0, 0], T[0, 1] = c, -s
@@ -46,18 +46,18 @@ def rotz(angle_rad: float) -> np.ndarray:
     return T
 
 
-# ───── Phép biến đổi ─────
+# ───── Transforms ─────
 
 
 def transform_point(p_xyz: np.ndarray, T: np.ndarray) -> np.ndarray:
-    """Biến đổi 1 điểm 3D qua ma trận T (4x4).
+    """Transform a single 3D point through a 4x4 matrix T.
 
     Args:
-        p_xyz: Điểm (x, y, z).
-        T: Ma trận biến đổi 4x4.
+        p_xyz: Point (x, y, z).
+        T: 4x4 transform matrix.
 
     Returns:
-        Điểm sau biến đổi (3,).
+        Transformed point (3,).
     """
     p = np.asarray(p_xyz, dtype=float).reshape(3)
     p_h = np.append(p, 1.0)
@@ -65,14 +65,14 @@ def transform_point(p_xyz: np.ndarray, T: np.ndarray) -> np.ndarray:
 
 
 def camera_to_base(xyz_cam: np.ndarray, T_BC: np.ndarray) -> np.ndarray:
-    """Chuyển 1 điểm từ camera frame sang base frame robot.
+    """Convert a point from the camera frame to the robot base frame.
 
     Args:
-        xyz_cam: Điểm (x, y, z) trong camera frame (mm).
-        T_BC: Ma trận camera-to-base 4x4 (output hand-eye calibration).
+        xyz_cam: Point (x, y, z) in the camera frame (mm).
+        T_BC: 4x4 camera-to-base matrix (output of hand-eye calibration).
 
     Returns:
-        Điểm (x, y, z) trong base frame robot (mm).
+        Point (x, y, z) in the robot base frame (mm).
 
     Example:
         >>> T = np.eye(4); T[:3, 3] = [400, 0, 850]
@@ -87,23 +87,23 @@ def make_grasp_pose(
     yaw_rad: float = 0.0,
     yaw_offset_deg: float = 0.0,
 ) -> np.ndarray:
-    """Dựng pose SE(3) cho gripper gắp top-down tại (xyz, yaw).
+    """Build an SE(3) pose for a top-down gripper grasp at (xyz, yaw).
 
-    Gripper hướng thẳng xuống (trục Z tool song song -Z base), xoay quanh
-    trục thẳng đứng theo yaw của vật.
+    The gripper points straight down (tool Z axis parallel to -Z base) and
+    is rotated about the vertical axis by the object yaw.
 
     Args:
-        xyz_base_mm: Vị trí gắp trong base frame (mm).
-        yaw_rad: Góc yaw của vật (radian, từ PCA trên mask).
-        yaw_offset_deg: Bù lệch yaw giữa trục PCA và trục mở của gripper
-            — giá trị này được tinh chỉnh trong pha tuning (mục 9).
+        xyz_base_mm: Grasp position in the base frame (mm).
+        yaw_rad: Object yaw angle (radians, from PCA on the mask).
+        yaw_offset_deg: Yaw offset between the PCA axis and the gripper opening
+            axis — tuned during the calibration phase (section 9).
 
     Returns:
-        Ma trận pose 4x4 (mm).
+        4x4 pose matrix (mm).
     """
     xyz = np.asarray(xyz_base_mm, dtype=float).reshape(3)
     total_yaw = yaw_rad + np.deg2rad(yaw_offset_deg)
-    # Tịnh tiến → xoay yaw quanh Z base → lật gripper hướng xuống.
+    # Translate → rotate yaw about base Z → flip gripper downward.
     return transl(*xyz) @ rotz(total_yaw) @ rotx(np.pi)
 
 
@@ -111,29 +111,29 @@ def make_grasp_pose(
 
 
 def load_calibration(path: str | Path) -> np.ndarray:
-    """Load ma trận hand-eye T_BC từ file .npy.
+    """Load the hand-eye matrix T_BC from a .npy file.
 
     Raises:
-        FileNotFoundError: File không tồn tại.
-        ValueError: Ma trận không phải 4x4.
+        FileNotFoundError: File does not exist.
+        ValueError: Matrix is not 4x4.
     """
     p = Path(path)
     if not p.exists():
         raise FileNotFoundError(
-            f"File calibration không tồn tại: {p}\n"
-            f"Chạy scripts/02_run_calibration.py để tạo."
+            f"Calibration file not found: {p}\n"
+            f"Run scripts/02_run_calibration.py to generate it."
         )
     T = np.load(p)
     if T.shape != (4, 4):
-        raise ValueError(f"Ma trận calibration phải 4x4, nhận {T.shape}")
+        raise ValueError(f"Calibration matrix must be 4x4, got {T.shape}")
     return T
 
 
 def save_calibration(path: str | Path, T_BC: np.ndarray) -> None:
-    """Lưu ma trận hand-eye T_BC ra file .npy."""
+    """Save the hand-eye matrix T_BC to a .npy file."""
     p = Path(path)
     p.parent.mkdir(parents=True, exist_ok=True)
     T = np.asarray(T_BC, dtype=float)
     if T.shape != (4, 4):
-        raise ValueError(f"Ma trận calibration phải 4x4, nhận {T.shape}")
+        raise ValueError(f"Calibration matrix must be 4x4, got {T.shape}")
     np.save(p, T)

@@ -1,14 +1,14 @@
 """
 cell_models.py
 ──────────────
-Pydantic models cho validation cell configuration.
+Pydantic models for cell configuration validation.
 
-Mỗi field trong YAML được map sang một Pydantic field với:
+Each field in the YAML is mapped to a Pydantic field with:
   - Type checking
   - Range validation
   - Cross-field consistency checks
 
-Sử dụng:
+Usage:
     from cell_models import CellConfig
     config = CellConfig.from_yaml('config/cell_layout.yaml')
 
@@ -52,8 +52,8 @@ class PoseConfig(BaseModel):
         for axis, val in zip("xyz", v):
             if abs(val) > MAX_DISTANCE_MM:
                 raise ValueError(
-                    f"{axis}={val:.1f}mm vượt giới hạn ±{MAX_DISTANCE_MM}mm. "
-                    f"Kiểm tra lại đơn vị (mm không phải m)."
+                    f"{axis}={val:.1f}mm exceeds limit ±{MAX_DISTANCE_MM}mm. "
+                    f"Check units (mm not m)."
                 )
         return v
 
@@ -63,26 +63,26 @@ class PoseConfig(BaseModel):
         for axis, val in zip("rpy", v):
             if not ANGLE_MIN <= val <= ANGLE_MAX:
                 raise ValueError(
-                    f"{axis}={val}° ngoài range [{ANGLE_MIN}, {ANGLE_MAX}]"
+                    f"{axis}={val}° out of range [{ANGLE_MIN}, {ANGLE_MAX}]"
                 )
         return v
 
 
 class MetadataConfig(BaseModel):
-    """Optional metadata cho versioning."""
+    """Optional metadata for versioning."""
 
     version: str = "0.0.0"
     last_modified: Optional[str] = None
     author: Optional[str] = None
     notes: Optional[str] = None
-    # Runtime visibility state (Show/Hide từ cell tree). Persist để khi
-    # reload cell, hiển thị nguyên trạng. Key = component_visibility_key
+    # Runtime visibility state (Show/Hide from cell tree). Persisted so that
+    # on cell reload, visibility is restored as-is. Key = component_visibility_key
     # ("robot", "object::name", "frame::name"…), value = bool.
     visibility_state: Optional[dict] = None
 
 
 class RobotConfig(BaseModel):
-    """Cấu hình robot."""
+    """Robot configuration."""
 
     name: str
     source: Literal["library", "file"] = "library"
@@ -104,12 +104,12 @@ class RobotConfig(BaseModel):
     def _validate_joints(cls, v: List[float]) -> List[float]:
         for i, j in enumerate(v):
             if not ANGLE_MIN <= j <= ANGLE_MAX:
-                raise ValueError(f"home_joints_deg[{i}]={j}° ngoài range")
+                raise ValueError(f"home_joints_deg[{i}]={j}° out of range")
         return v
 
 
 class WorktableConfig(BaseModel):
-    """Bàn làm việc."""
+    """Worktable."""
 
     mesh: str
     pose: PoseConfig
@@ -120,35 +120,35 @@ class WorktableConfig(BaseModel):
     def _validate_color(cls, v: Tuple[float, float, float]) -> Tuple[float, float, float]:
         for c, val in zip("rgb", v):
             if not 0.0 <= val <= 1.0:
-                raise ValueError(f"color_rgb[{c}]={val} phải trong [0, 1]")
+                raise ValueError(f"color_rgb[{c}]={val} must be in [0, 1]")
         return v
 
 
 class FloorConfig(BaseModel):
-    """Sàn nhà (optional) — tấm phẳng làm mặt phẳng tham chiếu cho cả cell."""
+    """Floor (optional) — flat plane used as reference surface for the whole cell."""
 
     mesh: str
     pose: PoseConfig
-    color_rgb: Tuple[float, float, float] = (0.50, 0.52, 0.55)  # bê tông/epoxy xám
+    color_rgb: Tuple[float, float, float] = (0.50, 0.52, 0.55)  # concrete/epoxy grey
 
     @field_validator("color_rgb")
     @classmethod
     def _validate_color(cls, v: Tuple[float, float, float]) -> Tuple[float, float, float]:
         for c, val in zip("rgb", v):
             if not 0.0 <= val <= 1.0:
-                raise ValueError(f"color_rgb[{c}]={val} phải trong [0, 1]")
+                raise ValueError(f"color_rgb[{c}]={val} must be in [0, 1]")
         return v
 
 
 class CameraMountConfig(BaseModel):
-    """Giàn lắp camera (optional)."""
+    """Camera mounting gantry (optional)."""
 
     mesh: str
     pose: PoseConfig
 
 
 class PedestalConfig(BaseModel):
-    """Pedestal nâng robot lên (optional, dùng cho cell công nghiệp)."""
+    """Pedestal to elevate the robot (optional, for industrial cells)."""
 
     mesh: str
     pose: PoseConfig
@@ -159,26 +159,26 @@ class PedestalConfig(BaseModel):
     def _validate_color(cls, v: Tuple[float, float, float]) -> Tuple[float, float, float]:
         for c, val in zip("rgb", v):
             if not 0.0 <= val <= 1.0:
-                raise ValueError(f"color_rgb[{c}]={val} phải trong [0, 1]")
+                raise ValueError(f"color_rgb[{c}]={val} must be in [0, 1]")
         return v
 
 
 class CameraIntrinsics(BaseModel):
-    """Tham số quang học pinhole (chuẩn OpenCV/RealSense + tiện ích FOV).
+    """Pinhole optical parameters (OpenCV/RealSense standard + FOV utilities).
 
-    Hai cách khai (đều optional, có thể kết hợp):
-      (a) fx/fy/cx/cy pixel — từ camera THẬT (D455/OpenCV), ưu tiên cho tính FOV.
-      (b) fov_deg/focal_length_mm — camera ẢO/sim kiểu RoboDK.
-    size_px luôn có (mặc định 1280×720).
+    Two declaration styles (both optional, combinable):
+      (a) fx/fy/cx/cy in pixels — from a real camera (D455/OpenCV), preferred for FOV computation.
+      (b) fov_deg/focal_length_mm — virtual/sim camera as in RoboDK.
+    size_px is always present (default 1280×720).
     """
 
     size_px: Tuple[int, int] = (1280, 720)
-    # Pinhole thật (pixel) — từ D455/OpenCV. Optional.
+    # True pinhole (pixels) — from D455/OpenCV. Optional.
     fx: Optional[float] = Field(default=None, gt=0)
     fy: Optional[float] = Field(default=None, gt=0)
     cx: Optional[float] = Field(default=None, ge=0)
     cy: Optional[float] = Field(default=None, ge=0)
-    # Mô tả kiểu sim/RoboDK — Optional.
+    # Sim/RoboDK-style description — Optional.
     fov_deg: Optional[float] = Field(default=None, gt=0, lt=180)
     focal_length_mm: Optional[float] = Field(default=None, gt=0)
 
@@ -187,12 +187,12 @@ class CameraIntrinsics(BaseModel):
     def _validate_size(cls, v: Tuple[int, int]) -> Tuple[int, int]:
         for dim, val in zip(["width", "height"], v):
             if val < 100 or val > 8192:
-                raise ValueError(f"size_px {dim}={val} ngoài range hợp lý [100, 8192]")
+                raise ValueError(f"size_px {dim}={val} out of valid range [100, 8192]")
         return v
 
     def hfov_vfov_deg(self) -> Tuple[float, float]:
-        """Trả (hfov, vfov) độ — dùng dựng frustum. Ưu tiên fx/fy; thiếu thì
-        từ fov_deg (suy vfov theo tỉ lệ khung); cuối cùng fallback D455 87°."""
+        """Return (hfov, vfov) in degrees for frustum construction. Prefers fx/fy;
+        falls back to fov_deg (deriving vfov from aspect ratio); final fallback is D455 87°."""
         w, h = self.size_px
 
         def _vfov_from_hfov(hfov_deg: float) -> float:
@@ -203,22 +203,22 @@ class CameraIntrinsics(BaseModel):
             hfov = math.degrees(2.0 * math.atan(w / (2.0 * self.fx)))
             vfov = math.degrees(2.0 * math.atan(h / (2.0 * self.fy)))
             return hfov, vfov
-        hfov = float(self.fov_deg) if self.fov_deg else 87.0  # D455 RGB mặc định
+        hfov = float(self.fov_deg) if self.fov_deg else 87.0  # D455 RGB default
         return hfov, _vfov_from_hfov(hfov)
 
 
 class CameraConfig(BaseModel):
     type: Literal["virtual", "real"] = "virtual"
     model: Optional[str] = None
-    # Kiểu lắp camera (thuật ngữ robot-vision): eye_to_hand = cố định nhìn vào
-    # vùng làm việc; eye_in_hand = gắn trên flange/tool, di chuyển theo robot.
+    # Camera mount style (robot-vision term): eye_to_hand = fixed, looking at
+    # the work area; eye_in_hand = attached to flange/tool, moves with robot.
     mount: Literal["eye_to_hand", "eye_in_hand"] = "eye_to_hand"
     pose: PoseConfig
     intrinsics: Optional[CameraIntrinsics] = None
 
 
 class GripperConfig(BaseModel):
-    """Cấu hình end-effector tool."""
+    """End-effector tool configuration."""
 
     name: str
     mesh: Optional[str] = None
@@ -235,17 +235,17 @@ class FrameConfig(BaseModel):
 
 
 class ObjectConfig(BaseModel):
-    """Object template (vật cần gắp)."""
+    """Object template (pick target)."""
 
     name: str
     mesh: str
     visible: bool = False
     parent_frame: Optional[str] = None
-    pose: Optional[PoseConfig] = None       # offset so với parent_frame; None = trùng gốc
+    pose: Optional[PoseConfig] = None       # offset relative to parent_frame; None = coincident with origin
 
 
 class RobotConnectionConfig(BaseModel):
-    """Cấu hình kết nối robot thật."""
+    """Real robot connection configuration."""
 
     enabled: bool = False
     ip: Optional[str] = None
@@ -267,9 +267,9 @@ class RobotConnectionConfig(BaseModel):
 class CellConfig(BaseModel):
     """Top-level cell configuration.
 
-    Chỉ `robot` là bắt buộc (cần URDFRobot để FK/IK chạy). Worktable, camera,
-    gripper, floor, pedestal, camera_mount đều OPTIONAL — user add qua Cell
-    Editor UI khi cần, hoặc khai báo trong YAML.
+    Only `robot` is required (URDFRobot needed for FK/IK). Worktable, camera,
+    gripper, floor, pedestal, and camera_mount are all OPTIONAL — add via Cell
+    Editor UI as needed, or declare in YAML.
     """
 
     metadata: MetadataConfig = Field(default_factory=MetadataConfig)
@@ -282,8 +282,8 @@ class CellConfig(BaseModel):
     robot_pedestal: Optional[PedestalConfig] = None
     frames: List[FrameConfig] = Field(default_factory=list)
     objects: List[ObjectConfig] = Field(default_factory=list)
-    # Danh sách lớp vật thể của BÀI TOÁN (do người dùng định nghĩa) — dùng cho
-    # dán nhãn dataset + hiển thị. Detection thật lấy tên lớp từ chính model YOLO.
+    # List of object classes for the task (user-defined) — used for
+    # dataset labeling and display. Real detection reads class names from the YOLO model itself.
     object_classes: List[str] = Field(
         default_factory=lambda: ["tray", "bottle", "cup", "bolt"])
     robot_connection: RobotConnectionConfig = Field(default_factory=RobotConnectionConfig)
@@ -291,7 +291,7 @@ class CellConfig(BaseModel):
     @field_validator("object_classes")
     @classmethod
     def _validate_classes(cls, v: List[str]) -> List[str]:
-        """Strip + bỏ rỗng + khử trùng (giữ thứ tự). Rỗng → default 4 lớp."""
+        """Strip + drop empty + deduplicate (preserve order). Empty → default 4 classes."""
         seen: set[str] = set()
         out: List[str] = []
         for name in v:
@@ -302,29 +302,29 @@ class CellConfig(BaseModel):
 
     @model_validator(mode="after")
     def _validate_frame_references(self) -> "CellConfig":
-        """Đảm bảo parent_frame, parent_frame references đều tồn tại."""
+        """Ensure all parent_frame references exist."""
         frame_names = {f.name for f in self.frames}
 
         for f in self.frames:
             if f.parent and f.parent not in frame_names:
                 raise ValueError(
-                    f"Frame '{f.name}' references parent '{f.parent}' nhưng frame này không tồn tại"
+                    f"Frame '{f.name}' references parent '{f.parent}' but that frame does not exist"
                 )
 
         for obj in self.objects:
             if obj.parent_frame and obj.parent_frame not in frame_names:
                 raise ValueError(
-                    f"Object '{obj.name}' references parent_frame '{obj.parent_frame}' nhưng frame này không tồn tại"
+                    f"Object '{obj.name}' references parent_frame '{obj.parent_frame}' but that frame does not exist"
                 )
 
         return self
 
     @classmethod
     def from_yaml(cls, path: str | Path) -> "CellConfig":
-        """Load và validate từ file YAML."""
+        """Load and validate from a YAML file."""
         path = Path(path)
         if not path.exists():
-            raise FileNotFoundError(f"Config không tồn tại: {path}")
+            raise FileNotFoundError(f"Config not found: {path}")
 
         with path.open("r", encoding="utf-8") as f:
             data = yaml.safe_load(f)
@@ -332,20 +332,20 @@ class CellConfig(BaseModel):
         return cls.model_validate(data)
 
     def to_yaml(self, path: str | Path) -> None:
-        """Dump config sang YAML file giữ toàn bộ field (kể cả floor,
-        camera_mount, robot_pedestal nếu có). Pydantic dump tự convert
-        tuple→list. Format đầu ra:
-          • Top-level: block style (mỗi key 1 dòng) — dễ scan.
-          • List ngắn (xyz, rpy, joints, color): flow style `[a, b, c]` —
-            khớp style input YAML user thường viết, gọn 3 dòng → 1 dòng.
+        """Dump config to a YAML file preserving all fields (including floor,
+        camera_mount, robot_pedestal when present). Pydantic dump auto-converts
+        tuples→lists. Output format:
+          • Top-level: block style (one key per line) — easy to scan.
+          • Short lists (xyz, rpy, joints, color): flow style `[a, b, c]` —
+            matches the input YAML style users typically write, condensing 3 lines → 1.
         """
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
         data = self.model_dump(exclude_none=True, mode="python")
 
-        # Custom dumper: list/tuple of primitives ngắn (<=8 phần tử) ⇒ flow
-        # style. Pydantic dump giữ tuple cho Field Tuple[...] (xyz_mm, rpy_deg,
-        # color_rgb) nên cần register cho cả list lẫn tuple.
+        # Custom dumper: short list/tuple of primitives (<=8 elements) ⇒ flow
+        # style. Pydantic dump preserves tuples for Field Tuple[...] (xyz_mm, rpy_deg,
+        # color_rgb) so register for both list and tuple.
         class _CompactDumper(yaml.SafeDumper):
             pass
 
@@ -376,7 +376,7 @@ def _cli_validate(path: str) -> int:
     """Validate config file. Return exit code (0 = OK, 1 = fail)."""
     try:
         config = CellConfig.from_yaml(path)
-        print(f"✓ Config hợp lệ: {path}")
+        print(f"✓ Config valid: {path}")
         print(f"  Version: {config.metadata.version}")
         print(f"  Robot: {config.robot.name}")
         print(f"  Frames: {[f.name for f in config.frames]}")
@@ -384,13 +384,13 @@ def _cli_validate(path: str) -> int:
         print(f"  Real robot mode: {config.robot_connection.enabled}")
         return 0
     except Exception as e:
-        print(f"✗ Config lỗi: {path}")
+        print(f"✗ Config error: {path}")
         print(f"  {type(e).__name__}: {e}")
         return 1
 
 
 if __name__ == "__main__":
-    # Console Windows cp1252 không in được ✓/✗ → ép stdout sang UTF-8.
+    # Windows console cp1252 cannot print ✓/✗ — force stdout to UTF-8.
     for _stream in (sys.stdout, sys.stderr):
         try:
             _stream.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[union-attr]

@@ -1,14 +1,14 @@
 """
 digital_twin.py
 ───────────────
-DigitalTwinMirror: façade bidirectional digital twin combining:
-  - Motion backend (HSE → YRC1000 thật, hoặc SimRobot cho dev)
+DigitalTwinMirror: facade bidirectional digital twin combining:
+  - Motion backend (HSE → real YRC1000, or SimRobot for dev)
   - Optional viewport callback (Open3D mirror — render robot state live)
   - Mirror thread (poll real state @ 10Hz)
   - Telemetry logger (CSV state log)
   - Drift detection + auto-stop on major alarms
 
-KIẾN TRÚC:
+ARCHITECTURE:
   Orchestrator ──> DigitalTwinMirror ───── MoveJ joints ──> Backend ──> Robot
        (duck-type API)                                                    │
                        MirrorThread <───── poll Joints (10Hz) ────────────┘
@@ -17,10 +17,10 @@ KIẾN TRÚC:
                             ↓
                        TelemetryLogger → CSV (10Hz)
 
-Viewport callback nhận joints (degrees) mỗi N tick — Open3D mirror sẽ render
-state THẬT (không phải commanded). Backend yêu cầu tự handle frame conversion
-(world → robot base) bằng `frame_convert.world_to_robot_base` khi gọi MoveJ
-với pose 4x4.
+Viewport callback receives joints (degrees) every N ticks — Open3D mirror renders
+the ACTUAL state (not commanded). Backend must handle frame conversion
+(world → robot base) via `frame_convert.world_to_robot_base` when calling MoveJ
+with a 4x4 pose.
 """
 from __future__ import annotations
 
@@ -38,38 +38,38 @@ logger = logging.getLogger(__name__)
 
 
 # ─── Decoupled rates ───
-# Loop chạy ở telemetry_hz (cao) → mỗi tick: poll Joints + log CSV + drift check.
-# Viewport setJoints throttle xuống mirror_hz (thấp) để tránh RoboDK Free nagware.
-# Alarm poll theo period giây thay vì tick (decouple khỏi loop rate).
+# Loop runs at telemetry_hz (high) → each tick: poll Joints + log CSV + drift check.
+# Viewport setJoints throttled down to mirror_hz (low) to avoid RoboDK Free nagware.
+# Alarm polled on a time period rather than per-tick (decoupled from loop rate).
 #
-# Defaults được chọn để:
-#   - Telemetry 10Hz: đủ resolution cho velocity analysis (post-process)
-#   - Mirror 2Hz: smooth cho mắt người + an toàn RoboDK Free (~120 setJoints/phút)
-#   - Alarm 2.5s: alarm state ít đổi, không cần poll thường xuyên
+# Defaults chosen so that:
+#   - Telemetry 10Hz: sufficient resolution for velocity analysis (post-process)
+#   - Mirror 2Hz: smooth visually + safe for RoboDK Free (~120 setJoints/min)
+#   - Alarm 2.5s: alarm state changes rarely, no need to poll frequently
 DEFAULT_TELEMETRY_HZ = 10.0
 DEFAULT_MIRROR_HZ = 2.0
 DEFAULT_ALARM_POLL_PERIOD_S = 2.5
 
-# Drift warning: nếu lệch giữa commanded và actual ≥ ngưỡng thì log warning.
+# Drift warning: if deviation between commanded and actual ≥ threshold, log a warning.
 DEFAULT_DRIFT_WARN_DEG = 2.0
 
 
 class DigitalTwinMirror:
-    """Bidirectional digital twin façade.
+    """Bidirectional digital twin facade.
 
-    Bên trong:
-      - motion + I/O → backend (HSE cho real, SimRobot cho dev)
+    Internals:
+      - motion + I/O → backend (HSE for real, SimRobot for dev)
       - actual joint state mirror → optional viewport_callback (Open3D mirror)
       - telemetry logging + drift detection + alarm handling
 
     Args:
-        backend: Robot backend duck-typed (MotomanHSEBackend hoặc SimRobot).
-        viewport_callback: Callable(joints_deg: list[float]) → None, gọi mỗi N
-            tick để render robot state. None → không có viewport mirror.
-        telemetry: TelemetryLogger để log state. None → skip.
-        mirror_hz: Tần số gọi viewport_callback. Default 2Hz.
-        telemetry_hz: Tần số poll Joints + log CSV. Default 10Hz.
-        drift_warn_deg: Threshold cảnh báo lệch commanded vs actual.
+        backend: Duck-typed robot backend (MotomanHSEBackend or SimRobot).
+        viewport_callback: Callable(joints_deg: list[float]) → None, called every N
+            ticks to render robot state. None → no viewport mirror.
+        telemetry: TelemetryLogger for state logging. None → skip.
+        mirror_hz: Viewport callback call frequency. Default 2Hz.
+        telemetry_hz: Joint poll + CSV log frequency. Default 10Hz.
+        drift_warn_deg: Threshold for warning on commanded vs actual drift.
     """
 
     def __init__(
@@ -88,11 +88,11 @@ class DigitalTwinMirror:
         reset_callback: Any = None,
     ) -> None:
         self.backend = backend
-        # Backward compat: nhiều site truy cập `.hse` — giữ alias để khỏi break.
+        # Backward compat: many sites access `.hse` — keep alias to avoid breakage.
         self.hse = backend
         self.viewport_callback = viewport_callback
         self.telemetry = telemetry
-        # Loop chạy ở telemetry_hz (cao). Viewport throttle theo mirror_hz.
+        # Loop runs at telemetry_hz (high). Viewport throttled to mirror_hz.
         self.telemetry_hz = max(0.5, float(telemetry_hz))
         self.mirror_hz = min(max(0.5, float(mirror_hz)), self.telemetry_hz)
         self._viewport_throttle = max(
@@ -100,17 +100,17 @@ class DigitalTwinMirror:
         )
         self._viewport_tick = 0
         self.drift_warn_deg = float(drift_warn_deg)
-        # Min 1ms — đủ cho any reasonable use (alarm state ít đổi nhanh hơn).
+        # Min 1ms — sufficient for any reasonable use (alarm state changes slowly).
         self.alarm_poll_period_s = max(0.001, float(alarm_poll_period_s))
-        # 0.0 = fire ngay tick đầu (không đợi alarm_poll_period_s sau start).
+        # 0.0 = fire on the first tick (don't wait alarm_poll_period_s after start).
         self._next_alarm_poll_t: float = 0.0
         self.auto_stop_on_major_alarm = bool(auto_stop_on_major_alarm)
-        # Tắt viewport_callback → mirror loop vẫn chạy (telemetry + drift +
-        # alarm), chỉ skip render. Dùng để giảm overhead khi không cần visual.
+        # Disabling viewport_callback → mirror loop still runs (telemetry + drift +
+        # alarm), only skips rendering. Use to reduce overhead when visuals not needed.
         self.viewport_mirror_enabled = bool(viewport_mirror_enabled)
-        # Optional viewport-visual hooks: Orchestrator gọi attach_object/
-        # detach_object/reset_scene (duck-typed, có hasattr guard) → forward sang
-        # callback để app GUI gắn/thả/reset vật trong scene. None = no-op.
+        # Optional viewport-visual hooks: Orchestrator calls attach_object/
+        # detach_object/reset_scene (duck-typed, with hasattr guard) → forwarded to
+        # callback so the GUI app can attach/detach/reset objects in the scene. None = no-op.
         self._grasp_callback = grasp_callback
         self._release_callback = release_callback
         self._reset_callback = reset_callback
@@ -121,9 +121,9 @@ class DigitalTwinMirror:
         self._last_actual: list[float] | None = None
         self._current_alarm: AlarmInfo = decode_alarm(0)
         self._auto_stopped = False
-        # E-stop latch: sau Stop()/auto-stop-on-alarm → từ chối MỌI lệnh motion
-        # tiếp theo (MoveJ/MoveL) cho tới khi start_mirror() clear. Chuẩn công
-        # nghiệp: không gửi lệnh chuyển động sau khi đã hold/E-stop.
+        # E-stop latch: after Stop()/auto-stop-on-alarm → reject ALL subsequent motion
+        # commands (MoveJ/MoveL) until start_mirror() clears it. Industry standard:
+        # no motion commands sent after hold/E-stop.
         self._motion_halted = threading.Event()
         self._lock = threading.Lock()
 
@@ -131,16 +131,16 @@ class DigitalTwinMirror:
     # Mirror lifecycle
     # ────────────────────────────────────────────────────────────────────
     def start_mirror(self) -> None:
-        """Spawn daemon thread polling actual state + cập nhật twin."""
+        """Spawn daemon thread polling actual state + updating the twin."""
         if self._mirror_thread is not None and self._mirror_thread.is_alive():
-            logger.debug("Mirror thread đã chạy")
+            logger.debug("Mirror thread already running")
             return
         if self.telemetry is not None:
             self.telemetry.open()
         self._stop_flag.clear()
-        self._motion_halted.clear()     # (re)start → cho phép motion trở lại
-        # Fire alarm poll trên tick đầu (0.0 < monotonic), giúp test ngắn pass
-        # + thực tế cũng hợp lý: check alarm ngay khi start để biết state ban đầu.
+        self._motion_halted.clear()     # (re)start → allow motion again
+        # Fire alarm poll on first tick (0.0 < monotonic), helps short tests pass
+        # + practically sensible: check alarm immediately at start to know initial state.
         self._next_alarm_poll_t = 0.0
         self._mirror_thread = threading.Thread(
             target=self._mirror_loop, name="DigitalTwinMirror", daemon=True,
@@ -164,16 +164,16 @@ class DigitalTwinMirror:
         logger.info("Mirror thread stopped")
 
     def _mirror_loop(self) -> None:
-        """Main loop chạy ở telemetry_hz (cao). Mỗi tick:
-          1. Poll Joints từ backend     (mỗi tick, ~10Hz)
-          2. Log telemetry CSV          (mỗi tick, ~10Hz)
-          3. Drift detection            (mỗi tick, ~10Hz)
-          4. viewport_callback(joints)  (mỗi N tick, throttle xuống ~2Hz)
-          5. Poll alarm                 (mỗi alarm_poll_period_s, ~0.4Hz)
-          6. Flush telemetry disk       (mỗi 1s)
+        """Main loop running at telemetry_hz (high). Each tick:
+          1. Poll Joints from backend   (every tick, ~10Hz)
+          2. Log telemetry CSV          (every tick, ~10Hz)
+          3. Drift detection            (every tick, ~10Hz)
+          4. viewport_callback(joints)  (every N ticks, throttled to ~2Hz)
+          5. Poll alarm                 (every alarm_poll_period_s, ~0.4Hz)
+          6. Flush telemetry to disk    (every 1s)
 
-        Decouple cho phép telemetry resolution cao (cho analysis chính xác)
-        mà không spam viewport render.
+        Decoupling allows high telemetry resolution (for accurate analysis)
+        without spamming the viewport renderer.
         """
         period = 1.0 / self.telemetry_hz
         last_flush = time.monotonic()
@@ -183,29 +183,29 @@ class DigitalTwinMirror:
             try:
                 actual = self.hse.Joints()                # (1) Poll real state
 
-                # (4) Viewport throttled — chỉ gọi callback mỗi N tick
+                # (4) Viewport throttled — only call callback every N ticks
                 self._viewport_tick += 1
                 if self._viewport_tick >= self._viewport_throttle:
                     self._viewport_tick = 0
                     self._update_viewport(actual)
 
-                self._check_drift(actual)                  # (3) Drift mỗi tick
+                self._check_drift(actual)                  # (3) Drift every tick
 
-                # (5) Alarm theo period giây (không phải tick) — decouple loop rate
+                # (5) Alarm on time period (not per-tick) — decouple from loop rate
                 alarm_code = 0
                 if tick_start >= self._next_alarm_poll_t:
                     self._next_alarm_poll_t = tick_start + self.alarm_poll_period_s
                     alarm_code = self._poll_alarm()
 
-                # (2) Telemetry CSV mỗi tick — resolution cao cho analysis
+                # (2) Telemetry CSV every tick — high resolution for analysis
                 if self.telemetry is not None:
                     self.telemetry.log_state(actual, alarm=alarm_code or None)
                 with self._lock:
                     self._last_actual = list(actual)
             except Exception as e:                          # noqa: BLE001
-                logger.warning("Mirror tick lỗi: %s", e)
+                logger.warning("Mirror tick error: %s", e)
 
-            # (6) Flush telemetry mỗi 1s thay vì mỗi tick → giảm IO disk.
+            # (6) Flush telemetry every 1s instead of every tick → reduce disk IO.
             if self.telemetry is not None and (time.monotonic() - last_flush) > 1.0:
                 self.telemetry.flush()
                 last_flush = time.monotonic()
@@ -215,16 +215,16 @@ class DigitalTwinMirror:
             self._stop_flag.wait(sleep_for)
 
     def _poll_alarm(self) -> int:
-        """Poll alarm code từ YRC1000 + auto-respond theo severity.
+        """Poll alarm code from YRC1000 + auto-respond based on severity.
 
-        Returns: alarm code (0 = không có alarm).
+        Returns: alarm code (0 = no alarm).
         """
         if not hasattr(self.hse, "read_alarm"):
             return 0
         try:
             code, sub_code = self.hse.read_alarm()
         except Exception as e:                       # noqa: BLE001
-            logger.debug("read_alarm() lỗi: %s", e)
+            logger.debug("read_alarm() error: %s", e)
             return 0
 
         info = decode_alarm(code, sub_code)
@@ -232,53 +232,53 @@ class DigitalTwinMirror:
             prev = self._current_alarm
             self._current_alarm = info
 
-        # Log alarm transitions (NEW alarm hoặc CHANGED code)
+        # Log alarm transitions (NEW alarm or CHANGED code)
         if code != 0 and info.code != prev.code:
             logger.error(
                 "ALARM %d (%s, severity=%s): %s. Recovery: %s",
                 code, info.name, info.severity.name,
                 info.description, info.recovery_hint,
             )
-            # Auto-stop nếu MAJOR/SYSTEM và config bật + chưa stop trước đó
+            # Auto-stop if MAJOR/SYSTEM and config enabled + not already stopped
             if (self.auto_stop_on_major_alarm
                     and info.severity in (AlarmSeverity.MAJOR, AlarmSeverity.SYSTEM)
                     and not self._auto_stopped):
-                logger.error("Auto-stop triggered bởi alarm %d", code)
+                logger.error("Auto-stop triggered by alarm %d", code)
                 try:
                     self.Stop()          # latch motion-halt + servo-off backend
                     self._auto_stopped = True
                 except Exception as e:               # noqa: BLE001
-                    logger.error("Auto-stop Stop() lỗi: %s", e)
+                    logger.error("Auto-stop Stop() error: %s", e)
         elif code == 0 and prev.code != 0:
-            # Alarm đã được clear (manual reset trên TP)
-            logger.info("Alarm %d (%s) đã clear", prev.code, prev.name)
+            # Alarm has been cleared (manual reset on TP)
+            logger.info("Alarm %d (%s) cleared", prev.code, prev.name)
             self._auto_stopped = False
 
         return code
 
     def current_alarm(self) -> AlarmInfo:
-        """Snapshot alarm hiện tại (cho Orchestrator hỏi giữa các trial)."""
+        """Snapshot of current alarm (for Orchestrator to query between trials)."""
         with self._lock:
             return self._current_alarm
 
     def is_alarm_active(self) -> bool:
-        """True nếu đang có alarm chưa clear."""
+        """True if an alarm is currently active and uncleared."""
         return self.current_alarm().code != 0
 
     def _update_viewport(self, joints: list[float]) -> None:
-        """Gọi viewport_callback với joints (degrees) — render robot state.
+        """Call viewport_callback with joints (degrees) — render robot state.
 
-        Skip nếu `viewport_mirror_enabled=False` hoặc callback chưa set.
+        Skip if `viewport_mirror_enabled=False` or callback not set.
         """
         if self.viewport_callback is None or not self.viewport_mirror_enabled:
             return
         try:
             self.viewport_callback(joints)
         except Exception as e:                           # noqa: BLE001
-            logger.debug("viewport_callback lỗi: %s", e)
+            logger.debug("viewport_callback error: %s", e)
 
     def _check_drift(self, actual: list[float]) -> None:
-        """So sánh actual vs last commanded → warn nếu drift quá lớn."""
+        """Compare actual vs last commanded → warn if drift is too large."""
         with self._lock:
             commanded = self._last_commanded
         if commanded is None or len(commanded) != len(actual):
@@ -287,7 +287,7 @@ class DigitalTwinMirror:
         max_drift = max(deltas)
         if max_drift > self.drift_warn_deg:
             logger.warning(
-                "Drift cao: max %.2f° (per-axis: %s°). "
+                "High drift: max %.2f° (per-axis: %s°). "
                 "Commanded=%s, actual=%s",
                 max_drift,
                 [f"{d:.2f}" for d in deltas],
@@ -296,7 +296,7 @@ class DigitalTwinMirror:
             )
 
     # ────────────────────────────────────────────────────────────────────
-    # Forward calls đến backend
+    # Forward calls to backend
     # ────────────────────────────────────────────────────────────────────
     def Valid(self) -> bool:
         return self.hse.Valid()
@@ -314,81 +314,81 @@ class DigitalTwinMirror:
         self.hse.setDO(index, value)
 
     def set_io(self, bit_addr: int, value: int) -> None:
-        """Forward set_io (absolute bit) tới backend — cho CC-Link bits."""
+        """Forward set_io (absolute bit) to backend — for CC-Link bits."""
         if hasattr(self.backend, "set_io") and callable(self.backend.set_io):
             self.backend.set_io(bit_addr, value)
 
     def read_io(self, bit_addr: int) -> int:
-        """Forward read_io tới backend (CC-Link sensor feedback)."""
+        """Forward read_io to backend (CC-Link sensor feedback)."""
         if hasattr(self.backend, "read_io") and callable(self.backend.read_io):
             return self.backend.read_io(bit_addr)
         return -1
 
     def Stop(self) -> None:
-        """Emergency stop: latch motion-halt RỒI servo-off backend.
+        """Emergency stop: latch motion-halt THEN servo-off backend.
 
-        Set `_motion_halted` TRƯỚC khi forward → mọi MoveJ/MoveL sau đó (kể cả
-        đang giữa một chu trình Orchestrator) bị từ chối ngay, không gửi thêm
-        lệnh tới robot. No-op forward nếu backend không support (SimRobot).
+        Sets `_motion_halted` BEFORE forwarding → all subsequent MoveJ/MoveL
+        (even mid-Orchestrator cycle) are rejected immediately, no further
+        commands sent to robot. No-op forward if backend does not support it (SimRobot).
         """
         self._motion_halted.set()
         if hasattr(self.backend, "Stop") and callable(self.backend.Stop):
             self.backend.Stop()
 
     # ────────────────────────────────────────────────────────────────────
-    # Batch + timer — forward to HSE backend (nếu support)
+    # Batch + timer — forward to HSE backend (if supported)
     # ────────────────────────────────────────────────────────────────────
     def batch(self, job_name: str | None = None) -> Any:
-        """Context manager: gom motion + IO vào 1 INFORM job (M3 optimization).
+        """Context manager: batch motion + IO into one INFORM job (M3 optimization).
 
-        Forward tới HSE backend nếu support, ngược lại trả nullcontext (no-op)
-        để orchestrator code dùng được với mọi backend không cần check.
+        Forwarded to HSE backend if supported, otherwise returns nullcontext (no-op)
+        so orchestrator code works with any backend without needing to check.
         """
         if hasattr(self.hse, "batch") and callable(self.hse.batch):
             return self.hse.batch(job_name)
         return contextlib.nullcontext()
 
     def timer(self, seconds: float) -> None:
-        """Pause — INFORM TIMER trong batch mode, time.sleep ngoài batch."""
+        """Pause — INFORM TIMER in batch mode, time.sleep outside batch."""
         if hasattr(self.hse, "timer") and callable(self.hse.timer):
             self.hse.timer(seconds)
         else:
             time.sleep(seconds)
 
     # ────────────────────────────────────────────────────────────────────
-    # Reachability (predictive safety nếu Orchestrator enable; else assume OK)
+    # Reachability (predictive safety if Orchestrator enables it; else assume OK)
     # ────────────────────────────────────────────────────────────────────
     def MoveJ_Test(self, j_start: Any, target: Any, *args: Any) -> int:
-        """No-op reachability check — kinematic check thực sự nằm ở
-        Orchestrator predictive safety (UC2). Trả 0 = assume reachable.
+        """No-op reachability check — real kinematic check lives in
+        Orchestrator predictive safety (UC2). Returns 0 = assume reachable.
         """
         return 0
 
     # ────────────────────────────────────────────────────────────────────
-    # Motion — Orchestrator đã giải IK (client DLS) trước khi gọi đây
-    # Hoặc pass-through 4x4 pose nếu backend support YRC IK Cartesian
+    # Motion — Orchestrator resolves IK (client DLS) before calling here
+    # Or pass-through 4x4 pose if backend supports YRC IK Cartesian
     # ────────────────────────────────────────────────────────────────────
     def _backend_supports_cartesian(self) -> bool:
-        """True nếu backend có thể nhận 4x4 pose (HSE BASE Cartesian).
+        """True if backend can accept a 4x4 pose (HSE BASE Cartesian).
 
-        Check class-level flag `supports_cartesian_pose=True` thay vì
-        hasattr — MagicMock auto-create attr nên hasattr không phân biệt được.
+        Checks class-level flag `supports_cartesian_pose=True` instead of
+        hasattr — MagicMock auto-creates attrs so hasattr cannot distinguish.
         """
         return getattr(type(self.backend), "supports_cartesian_pose", False) is True
 
     def _check_not_halted(self) -> None:
-        """Raise nếu đã Stop()/auto-stop — chặn motion sau E-stop/hold."""
+        """Raise if Stop()/auto-stop has been triggered — block motion after E-stop/hold."""
         if self._motion_halted.is_set():
             raise RuntimeError(
                 "Digital Twin halted (Stop/alarm) — motion command refused")
 
     def MoveJ(self, target: Any) -> None:
         self._check_not_halted()
-        # Cartesian pass-through cho HSE backend khi target là 4x4 pose
+        # Cartesian pass-through for HSE backend when target is a 4x4 pose
         if (isinstance(target, np.ndarray) and target.shape == (4, 4)
                 and self._backend_supports_cartesian()):
             with self._lock:
-                self._last_commanded = None         # joints không biết trước
+                self._last_commanded = None         # joints not known in advance
             self.backend.MoveJ(target)
             return
         joints = self._target_to_joints(target)
@@ -409,47 +409,47 @@ class DigitalTwinMirror:
             self._last_commanded = list(joints)
         self.backend.MoveL(joints)
 
-    # ── Viewport-visual hooks (Orchestrator gọi nếu robot hỗ trợ) ────────
+    # ── Viewport-visual hooks (Orchestrator calls if robot supports them) ────────
     def attach_object(self, class_name: Any = None) -> None:
-        """Orchestrator báo gripper đã GẮP vật → forward để app gắn vật vào
-        gripper trong viewport (visual). No-op nếu không set callback."""
+        """Orchestrator signals gripper has GRASPED an object → forward so app
+        attaches the object to the gripper in the viewport (visual). No-op if callback not set."""
         if self._grasp_callback is not None:
             try:
                 self._grasp_callback(class_name)
             except Exception as e:                              # noqa: BLE001
-                logger.debug("grasp_callback lỗi: %s", e)
+                logger.debug("grasp_callback error: %s", e)
 
     def detach_object(self) -> None:
-        """Orchestrator báo gripper đã THẢ vật → forward để app thả vật."""
+        """Orchestrator signals gripper has RELEASED an object → forward so app detaches object."""
         if self._release_callback is not None:
             try:
                 self._release_callback()
             except Exception as e:                              # noqa: BLE001
-                logger.debug("release_callback lỗi: %s", e)
+                logger.debug("release_callback error: %s", e)
 
     def reset_scene(self) -> None:
-        """Orchestrator reset đầu mỗi trial → forward để app đưa vật về chỗ cũ."""
+        """Orchestrator reset at start of each trial → forward so app returns objects to original position."""
         if self._reset_callback is not None:
             try:
                 self._reset_callback()
             except Exception as e:                              # noqa: BLE001
-                logger.debug("reset_callback lỗi: %s", e)
+                logger.debug("reset_callback error: %s", e)
 
     def _target_to_joints(self, target: Any) -> list[float]:
         """Convert target joint list → list[float] of 6 floats.
 
-        Pose 4x4 KHÔNG được handle ở đây — caller (MoveJ/MoveL) đã pass-through
-        4x4 pose tới backend nếu backend support Cartesian. Orchestrator giải
-        client-side DLS IK trước khi gọi với joints.
+        4x4 pose is NOT handled here — the caller (MoveJ/MoveL) already passes
+        the 4x4 pose through to backend if backend supports Cartesian. Orchestrator
+        resolves client-side DLS IK before calling with joints.
         """
         if isinstance(target, (list, tuple)) and len(target) >= 6:
             try:
                 return [float(j) for j in target[:6]]
             except (TypeError, ValueError) as e:
-                raise ValueError(f"target joint values không phải float: {e}")
+                raise ValueError(f"target joint values are not float: {e}")
         raise ValueError(
-            f"MoveJ target type không hỗ trợ: {type(target)}. "
-            f"Truyền joint list[float] hoặc 4x4 numpy pose (cần "
+            f"MoveJ target type not supported: {type(target)}. "
+            f"Pass a joint list[float] or 4x4 numpy pose (requires "
             f"backend.supports_cartesian_pose=True)."
         )
 
@@ -457,12 +457,12 @@ class DigitalTwinMirror:
     def _mat_to_joint_list(sol: Any) -> list[float]:
         """Convert IK solution iterable → list[float]."""
         if sol is None:
-            raise RuntimeError("IK trả None — pose ngoài tầm với")
+            raise RuntimeError("IK returned None — pose out of reach")
         if isinstance(sol, (list, tuple)):
             if len(sol) < 6:
-                raise RuntimeError(f"IK trả {len(sol)} phần tử, kỳ vọng ≥6")
+                raise RuntimeError(f"IK returned {len(sol)} elements, expected ≥6")
             return [float(j) for j in sol[:6]]
         arr = np.asarray(sol).flatten()
         if arr.size < 6:
-            raise RuntimeError(f"IK numpy có {arr.size} phần tử")
+            raise RuntimeError(f"IK numpy array has {arr.size} elements")
         return [float(j) for j in arr[:6]]

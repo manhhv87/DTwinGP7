@@ -4,7 +4,7 @@ mixin_job_target.py
 JobTargetMixin: Multi-job project (job selector + add/rename/delete) +
 target library (Teach/Modify/Delete + Add MoveJ/MoveL to selected target).
 
-Host class (GP7AppQt) phải cung cấp:
+Host class (GP7AppQt) must provide:
   attributes: _jobs (dict[str, list[Instruction]]), _active_job, _program,
               _job_combo (QComboBox), _targets, _tgt_list (QListWidget),
               _tgt_name_edit (QLineEdit), _joints
@@ -75,7 +75,7 @@ class JobTargetMixin:
             new_jobs[new if k == old else k] = v_list
         self._jobs = new_jobs
         self._active_job = new
-        # Update CallJob refs nếu có (trong tất cả jobs)
+        # Update CallJob refs if any (across all jobs)
         for job_prog in self._jobs.values():
             for ins in job_prog:
                 if ins.type == "CallJob" and ins.job_name == old:
@@ -88,7 +88,7 @@ class JobTargetMixin:
         if len(self._jobs) <= 1:
             self._set_status("At least one job is required", level="warn"); return
         old = self._active_job
-        # Check CallJob refs trong các job khác
+        # Check CallJob refs in other jobs
         refs = sum(
             1
             for k, prog in self._jobs.items() if k != old
@@ -124,7 +124,7 @@ class JobTargetMixin:
                 f"{name}  [{', '.join(f'{q:+5.0f}' for q in j)}]")
 
     def _capture_current_pose(self) -> dict | None:
-        """Snapshot current joints + tcp_pose từ robot state."""
+        """Snapshot current joints + tcp_pose from robot state."""
         T = self._current_tool_world()
         if T is None: return None
         x, y, z, rx, ry, rz = _matrix_to_xyz_rpy_deg(T)
@@ -153,7 +153,7 @@ class JobTargetMixin:
                           level="ok")
 
     def _on_tgt_modify(self) -> None:
-        """F3 — replace selected target's pose với current pose."""
+        """F3 — replace selected target's pose with current pose."""
         idx = self._tgt_list.currentRow()
         if idx < 0 or not self._targets:
             self._set_status("Select a target to Modify", level="warn"); return
@@ -185,8 +185,8 @@ class JobTargetMixin:
         self._set_status(f"Target '{name}' deleted", level="ok")
 
     def _on_prog_add_move_to_target(self, kind: str) -> None:
-        """kind ∈ {'MoveJ','MoveL'}. Thêm instruction tham chiếu target đang
-        select trong list."""
+        """kind ∈ {'MoveJ','MoveL'}. Append an instruction referencing the
+        currently selected target in the list."""
         idx = self._tgt_list.currentRow()
         if idx < 0 or not self._targets:
             self._set_status(

@@ -2,9 +2,9 @@
 """
 06_simulate_trial.py
 ────────────────────
-UC1 — Offline predictive simulation cho 1 pick-and-place trial.
+UC1 — Offline predictive simulation for a single pick-and-place trial.
 
-Sinh trajectory predicted (pure Python FK, KHÔNG cần RoboDK/robot thật):
+Generates a predicted trajectory (pure Python FK, no RoboDK/real robot required):
   - 3D plot TCP path
   - Joint angles timeline
   - Self-collision events
@@ -12,7 +12,7 @@ Sinh trajectory predicted (pure Python FK, KHÔNG cần RoboDK/robot thật):
 
 Usage:
     python scripts/06_simulate_trial.py                    # default GP7 demo trial
-    python scripts/06_simulate_trial.py --max-speed 60    # tăng tốc độ joint
+    python scripts/06_simulate_trial.py --max-speed 60    # increase joint speed
     python scripts/06_simulate_trial.py --output paper.png
 """
 from __future__ import annotations
@@ -46,25 +46,25 @@ def parse_args() -> argparse.Namespace:
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument(
         "--cell-config", default="config/cell_layout.yaml",
-        help="Cell config YAML để lấy home_joints + base pose.",
+        help="Cell config YAML for loading home_joints + base pose.",
     )
     p.add_argument(
         "--max-speed", type=float, default=30.0,
-        help="Max joint speed (deg/s) cho interpolation. Default 30.",
+        help="Max joint speed (deg/s) for interpolation. Default 30.",
     )
     p.add_argument(
         "--output", default="figures/predicted_trial.png",
-        help="Đường dẫn PNG xuất. Default figures/predicted_trial.png.",
+        help="Output PNG path. Default figures/predicted_trial.png.",
     )
-    p.add_argument("--no-show", action="store_true", help="Không mở matplotlib window")
+    p.add_argument("--no-show", action="store_true", help="Do not open a matplotlib window")
     return p.parse_args()
 
 
 def build_demo_trajectory() -> list[list[float]]:
-    """Sinh trajectory pick-and-place demo: home → approach → grasp → place → home.
+    """Build a demo pick-and-place trajectory: home → approach → grasp → place → home.
 
-    Joint values là sample của 1 GP7 trial điển hình (degrees, sẽ convert sang radian).
-    User có thể replace với joints từ Orchestrator's planning output.
+    Joint values are representative of a typical GP7 trial (degrees, converted to radians).
+    Can be replaced with joints from the Orchestrator's planning output.
     """
     deg = np.deg2rad
     waypoints_deg = [
@@ -95,7 +95,7 @@ def plot_3d_tcp_path(model, samples, out_path: Path) -> None:
     ax.plot(tcp_xyz[:, 0], tcp_xyz[:, 1], tcp_xyz[:, 2],
             "b-", linewidth=2, alpha=0.7, label="TCP path")
 
-    # Skeleton tại sample đầu, giữa, cuối
+    # Skeleton at the first, middle, and last sample
     for idx, color, label in [
         (0, "green", "start"),
         (len(samples) // 2, "orange", "mid"),
@@ -144,14 +144,14 @@ def main() -> int:
         except (AttributeError, ValueError):
             pass
 
-    # Build robot DH model (lấy base offset từ cell config nếu có)
+    # Build robot DH model (load base offset from cell config if available)
     base_xyz = (0.0, 0.0, 0.0)
     try:
         cfg = CellConfig.from_yaml(PROJECT_ROOT / args.cell_config)
         base_xyz = tuple(cfg.robot.pose.xyz_mm)
-        print(f"Cell config: {args.cell_config} → base J1 tại {base_xyz}")
+        print(f"Cell config: {args.cell_config} → base J1 at {base_xyz}")
     except Exception as e:                          # noqa: BLE001
-        print(f"Không load được cell config: {e}. Dùng base (0,0,0).")
+        print(f"Could not load cell config: {e}. Using base (0,0,0).")
 
     model = gp7_default(base_xyz_mm=base_xyz)
 

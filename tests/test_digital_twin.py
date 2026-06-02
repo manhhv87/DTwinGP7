@@ -106,7 +106,7 @@ class TestMoveJ:
     def test_movej_with_pose_no_cartesian_support_raises(self, mock_hse):
         """Backend KHÔNG support Cartesian → MoveJ(pose 4x4) raise."""
         twin = DigitalTwinMirror(mock_hse)
-        with pytest.raises(ValueError, match="kh"):
+        with pytest.raises(ValueError, match="target type not supported"):
             twin.MoveJ(np.eye(4))
 
 
@@ -460,7 +460,7 @@ class TestDriftDetection:
         twin.stop_mirror()
 
         # Có ít nhất 1 warning Drift
-        drift_logs = [r for r in caplog.records if "Drift" in r.message]
+        drift_logs = [r for r in caplog.records if "drift" in r.message]
         assert len(drift_logs) >= 1
 
     def test_no_drift_warning_when_within_threshold(self, mock_hse, viewport_cb, caplog):
@@ -476,5 +476,5 @@ class TestDriftDetection:
         time.sleep(0.15)
         twin.stop_mirror()
 
-        drift_logs = [r for r in caplog.records if "Drift" in r.message]
+        drift_logs = [r for r in caplog.records if "drift" in r.message]
         assert len(drift_logs) == 0

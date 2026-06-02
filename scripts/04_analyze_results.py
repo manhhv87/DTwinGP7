@@ -2,13 +2,13 @@
 """
 04_analyze_results.py
 ─────────────────────
-Phân tích thống kê kết quả thí nghiệm + sinh figure cho paper (mục 10.3).
+Statistical analysis of experiment results + figure generation for paper (section 10.3).
 
-Đọc một hoặc nhiều file CSV trial (từ 03_run_experiment.py), tính:
-    - Success rate tổng + theo class + theo điều kiện
-    - Ma trận failure-mode
-    - Paired t-test so sánh RGB-only vs RGB-D (nếu có cột 'mode')
-    - Figure tổng hợp → figures/results_summary.png
+Reads one or more trial CSV files (from 03_run_experiment.py) and computes:
+    - Overall success rate + by class + by condition
+    - Failure-mode matrix
+    - Paired t-test comparing RGB-only vs RGB-D (if column 'mode' is present)
+    - Summary figure → figures/results_summary.png
 
 Usage:
     python scripts/04_analyze_results.py --csv results/experiment_sim_*.csv
@@ -31,7 +31,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--csv", nargs="+", required=True,
-                        help="File CSV trial (hỗ trợ wildcard)")
+                        help="Trial CSV file(s) (wildcard supported)")
     parser.add_argument("--out", default="figures/results_summary.png")
     return parser.parse_args()
 
@@ -42,28 +42,28 @@ def main() -> int:
 
     import pandas as pd
 
-    # Gom mọi file CSV (mở rộng wildcard).
+    # Collect all CSV files (expand wildcards).
     paths: list[str] = []
     for pattern in args.csv:
         paths.extend(glob.glob(str(PROJECT_ROOT / pattern)))
         paths.extend(glob.glob(pattern))
     paths = sorted(set(paths))
     if not paths:
-        log.error("Không tìm thấy file CSV nào khớp %s", args.csv)
+        log.error("No CSV files found matching %s", args.csv)
         return 1
 
     df = pd.concat([pd.read_csv(p) for p in paths], ignore_index=True)
-    log.info("Đã nạp %d trial từ %d file", len(df), len(paths))
+    log.info("Loaded %d trials from %d file(s)", len(df), len(paths))
 
-    # ─── Thống kê cơ bản ───
-    log.info("Success rate tổng : %.1f%%", df["success"].mean() * 100)
-    log.info("Theo class:\n%s", df.groupby("class_name")["success"].mean())
+    # ─── Basic statistics ───
+    log.info("Overall success rate: %.1f%%", df["success"].mean() * 100)
+    log.info("By class:\n%s", df.groupby("class_name")["success"].mean())
 
     if df["lighting"].notna().any() and df["lighting"].astype(str).str.len().gt(0).any():
-        log.info("Theo điều kiện:\n%s",
+        log.info("By condition:\n%s",
                  df.groupby(["lighting", "overlap"])["success"].mean())
 
-    # ─── Ma trận failure-mode ───
+    # ─── Failure-mode matrix ───
     fails = df[df["success"] == 0]
     if len(fails):
         fm = fails["failure_reason"].value_counts()
@@ -79,7 +79,7 @@ def main() -> int:
         if n > 1:
             t, p = sps.ttest_rel(rgb[:n], rgbd[:n])
             log.info("Depth fusion: t=%.3f, p=%.4f (%s)",
-                     t, p, "có ý nghĩa" if p < 0.05 else "chưa có ý nghĩa")
+                     t, p, "significant" if p < 0.05 else "not significant")
 
     # ─── Figure ───
     try:
@@ -89,16 +89,16 @@ def main() -> int:
 
         fig, axes = plt.subplots(1, 2, figsize=(12, 4))
         df.groupby("class_name")["success"].mean().plot.bar(
-            ax=axes[0], title="Success rate theo class", ylim=(0, 1))
+            ax=axes[0], title="Success rate by class", ylim=(0, 1))
         df.boxplot(column="cycle_time_s", by="class_name", ax=axes[1])
-        axes[1].set_title("Cycle time theo class")
+        axes[1].set_title("Cycle time by class")
         plt.suptitle("")
         out_path = ensure_dir(PROJECT_ROOT / Path(args.out).parent) / Path(args.out).name
         plt.tight_layout()
         plt.savefig(out_path, dpi=300)
-        log.info("Figure lưu tại %s", out_path)
+        log.info("Figure saved to %s", out_path)
     except Exception as e:  # noqa: BLE001
-        log.warning("Không vẽ được figure: %s", e)
+        log.warning("Could not render figure: %s", e)
 
     return 0
 

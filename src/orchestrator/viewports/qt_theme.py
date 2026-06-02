@@ -1,10 +1,10 @@
 """
 qt_theme.py
 ───────────
-Unified dark theme cho PyQt6 app — VSCode/Fluent Design-inspired.
+Unified dark theme for PyQt6 app — VSCode/Fluent Design-inspired.
 
-Apply qua `app.setStyleSheet(DARK_QSS)` 1 lần ở entry point. Đè qua per-widget
-stylesheet được, nhưng nên giữ tối thiểu (vd colored Play/Stop buttons).
+Apply via `app.setStyleSheet(DARK_QSS)` once at the entry point. Can be
+overridden per-widget, but keep overrides minimal (e.g. colored Play/Stop buttons).
 
 Palette:
   Background      #1e1e1e   (window)
@@ -27,8 +27,8 @@ Typography:
 """
 from __future__ import annotations
 
-# Color constants — re-exportable cho widgets nào cần inline color (vd
-# label background dùng status level).
+# Color constants — re-exportable for widgets that need inline color (e.g.
+# label background keyed to status level).
 BG          = "#1e1e1e"
 SURFACE     = "#252526"
 SURFACE_RAISED = "#2d2d30"
@@ -48,7 +48,7 @@ DANGER      = "#cf222e"
 DANGER_HOVER = "#a40e26"
 INFO        = "#38b6e7"
 
-# Status badge colors (cho status bar)
+# Status badge colors (for the status bar)
 STATUS_OK    = SUCCESS
 STATUS_WARN  = WARNING
 STATUS_ERR   = DANGER
@@ -118,8 +118,8 @@ QMenu {{
     padding: 4px;
 }}
 QMenu::item {{
-    /* Native indicator column reserve cùng width cho mọi item (checkable
-       hoặc plain) → text căn lề pixel-perfect. Padding-right 24 cho shortcut. */
+    /* Native indicator column reserves the same width for every item (checkable
+       or plain) → text aligns pixel-perfect. Padding-right 24 for shortcut. */
     padding: 6px 24px 6px 8px;
     border-radius: 4px;
 }}
@@ -131,7 +131,7 @@ QMenu::item:disabled {{
     color: {TEXT_DISABLED};
 }}
 QMenu::indicator {{
-    /* Fixed width column for ✓ — Qt reserve cùng width cho all items. */
+    /* Fixed width column for ✓ — Qt reserves the same width for all items. */
     width: 14px;
     height: 14px;
     background-color: transparent;
@@ -142,7 +142,7 @@ QMenu::indicator:checked {{
     image: url({{CHECK_ICON_PATH}});
 }}
 QMenu::indicator:unchecked {{
-    /* Empty — transparent. Column vẫn reserve để text căn lề. */
+    /* Empty — transparent. Column is still reserved so text aligns. */
     image: none;
 }}
 QMenu::separator {{
@@ -153,7 +153,7 @@ QMenu::separator {{
 
 /* ════════════════════════════════════════════════════════════════════════
    BUTTONS — default + variant via [class] property (objectName="primary",
-   "success", "danger", "warning"). Inline setStyleSheet vẫn override được.
+   "success", "danger", "warning"). Inline setStyleSheet can still override.
    ════════════════════════════════════════════════════════════════════════ */
 QPushButton {{
     background-color: {SURFACE_RAISED};
@@ -288,7 +288,7 @@ QSpinBox::down-button:hover, QDoubleSpinBox::down-button:hover {{
     background-color: {ACCENT};
 }}
 QSpinBox::up-arrow, QDoubleSpinBox::up-arrow {{
-    /* Custom up/down-button làm Fusion ngừng vẽ arrow → cấp image riêng. */
+    /* Custom up/down-button causes Fusion to stop drawing its arrow → supply a custom image. */
     image: url({{SPIN_UP_ICON_PATH}});
     width: 8px; height: 8px;
 }}
@@ -303,8 +303,8 @@ QComboBox::drop-down {{
     background-color: transparent;
 }}
 QComboBox::down-arrow {{
-    /* Styling drop-down sub-control làm Fusion ngừng vẽ arrow mặc định →
-       phải cấp arrow image riêng (▼ glyph generated runtime). */
+    /* Styling the drop-down sub-control causes Fusion to stop drawing its default
+       arrow → must supply a custom arrow image (▼ glyph generated at runtime). */
     image: url({{COMBO_ARROW_ICON_PATH}});
     width: 10px;
     height: 10px;
@@ -349,8 +349,8 @@ QCheckBox, QRadioButton {{
     spacing: 6px;
     color: {TEXT};
     padding: 2px;
-    /* Transparent → hòa vào nền container (groupbox SURFACE) thay vì hiện
-       ô tối #1e1e1e của QWidget base rule phía sau chữ. */
+    /* Transparent → blends into the container background (groupbox SURFACE)
+       instead of showing the dark #1e1e1e QWidget base behind the text. */
     background-color: transparent;
 }}
 QCheckBox::indicator, QRadioButton::indicator {{
@@ -387,8 +387,8 @@ QRadioButton::indicator:checked {{
    ════════════════════════════════════════════════════════════════════════ */
 QDockWidget {{
     color: {TEXT};
-    /* Custom icons cho float (□) + close (✕) — generated runtime, paths
-       được substitute trong apply_dark_theme(). */
+    /* Custom icons for float (□) + close (✕) — generated at runtime, paths
+       are substituted in apply_dark_theme(). */
     titlebar-normal-icon: url({{DOCK_FLOAT_ICON_PATH}});
     titlebar-close-icon:  url({{DOCK_CLOSE_ICON_PATH}});
 }}
@@ -474,7 +474,7 @@ QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{
 }}
 
 /* ════════════════════════════════════════════════════════════════════════
-   SLIDER (cho joint sliders, gripper, sim speed)
+   SLIDER (for joint sliders, gripper, sim speed)
    ════════════════════════════════════════════════════════════════════════ */
 QSlider::groove:horizontal {{
     background: {SURFACE_RAISED};
@@ -510,7 +510,7 @@ QSlider::handle:vertical {{
 }}
 
 /* ════════════════════════════════════════════════════════════════════════
-   PROGRESS BAR (cho potential use)
+   PROGRESS BAR (for potential use)
    ════════════════════════════════════════════════════════════════════════ */
 QProgressBar {{
     background-color: {SURFACE};
@@ -525,7 +525,7 @@ QProgressBar::chunk {{
 }}
 
 /* ════════════════════════════════════════════════════════════════════════
-   QDial — sử dụng cho rotary jog encoder
+   QDial — used for rotary jog encoder
    ════════════════════════════════════════════════════════════════════════ */
 QDial {{
     background-color: {SURFACE_RAISED};
@@ -536,9 +536,9 @@ QDial {{
 def _paint_glyph_png(glyph: str, color: str = TEXT,
                        size: int = 14, font_size: int = 10,
                        suffix: str = "_glyph.png") -> str:
-    """Generic helper — paint a Unicode glyph vào QPixmap + save temp PNG.
+    """Generic helper — paint a Unicode glyph onto a QPixmap and save as a temp PNG.
 
-    Dùng cho QSS `image: url(...)` references (check mark, dock float/close
+    Used for QSS `image: url(...)` references (check mark, dock float/close
     buttons, etc).
     """
     import tempfile
@@ -557,67 +557,69 @@ def _paint_glyph_png(glyph: str, color: str = TEXT,
     tmp = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
     tmp.close()
     pix.save(tmp.name)
-    return tmp.name.replace("\\", "/")              # QSS url() cần forward slash
+    return tmp.name.replace("\\", "/")              # QSS url() requires forward slashes
 
 
 def _generate_check_png() -> str:
-    """Check mark cho QMenu indicator (toggle items)."""
+    """Check mark for QMenu indicator (toggle items)."""
     return _paint_glyph_png("✓", TEXT, size=14, font_size=10,
                               suffix="_check.png")
 
 
 def _generate_dock_close_png() -> str:
-    """Close (✕) icon cho QDockWidget title bar."""
+    """Close (✕) icon for QDockWidget title bar."""
     return _paint_glyph_png("✕", TEXT_MUTED, size=14, font_size=10,
                               suffix="_dock_close.png")
 
 
 def _generate_dock_float_png() -> str:
-    """Float/dock toggle icon (□) cho QDockWidget title bar."""
+    """Float/dock toggle icon (□) for QDockWidget title bar."""
     return _paint_glyph_png("□", TEXT_MUTED, size=14, font_size=11,
                               suffix="_dock_float.png")
 
 
 def _generate_combo_arrow_png() -> str:
-    """Down-arrow (▼) icon cho QComboBox — Fusion ngừng vẽ arrow khi
-    drop-down sub-control bị custom styling."""
+    """Down-arrow (▼) icon for QComboBox — Fusion stops drawing its arrow when
+    the drop-down sub-control has custom styling."""
     return _paint_glyph_png("▼", TEXT_MUTED, size=12, font_size=8,
                               suffix="_combo_arrow.png")
 
 
 def _generate_spin_up_png() -> str:
-    """Up-arrow (▲) icon cho QSpinBox/QDoubleSpinBox up-button."""
+    """Up-arrow (▲) icon for QSpinBox/QDoubleSpinBox up-button."""
     return _paint_glyph_png("▲", TEXT, size=10, font_size=7,
                               suffix="_spin_up.png")
 
 
 def _generate_spin_down_png() -> str:
-    """Down-arrow (▼) icon cho QSpinBox/QDoubleSpinBox down-button."""
+    """Down-arrow (▼) icon for QSpinBox/QDoubleSpinBox down-button."""
     return _paint_glyph_png("▼", TEXT, size=10, font_size=7,
                               suffix="_spin_down.png")
 
 
 def make_check_icon():
-    """Tạo QIcon với 2 state pixmaps cho menu toggle action — Word-style:
-      - State.On  → check mark glyph (✓) painted với theme TEXT color
-      - State.Off → transparent pixmap cùng kích thước (preserve indicator
-                    column width nhưng vô hình)
+    """Build a QIcon with 2 state pixmaps for menu toggle actions — Word-style:
+      - State.On  → check mark glyph (✓) painted with the theme TEXT color
+      - State.Off → transparent pixmap of the same size (preserves indicator
+                    column width but invisible)
 
-    Cách dùng:
+    Usage:
         act = QAction("Fullscreen", self)
         act.setCheckable(True)
         act.setIcon(make_check_icon())
         act.setChecked(initial)
-        # Qt auto-switches On/Off pixmap khi setChecked() được gọi → text
-        # KHÔNG bị shift, check chỉ hiện ở cột margin trái như Word/VSCode.
+        # Qt auto-switches the On/Off pixmap when setChecked() is called →
+        # text does NOT shift; check only appears in the left margin column
+        # as in Word/VSCode.
     """
     from PyQt6.QtCore import Qt
     from PyQt6.QtGui import QColor, QFont, QIcon, QPainter, QPixmap
 
-    # Trick: pixmap rộng (matches Fusion default icon column ~16px) NHƯNG
-    # paint ✓ ở **mép phải** của pixmap → visually ✓ sát text, dù Qt reserve
-    # cả icon column. Fusion không cho phép shrink icon column dễ dàng nên
-    # ta render ✓ "đẩy" về bên phải bên trong column.
+    # Trick: pixmap is wide (matches Fusion default icon column ~16px) BUT
+    # paints ✓ at the **right edge** of the pixmap → visually ✓ sits close to
+    # the text even though Qt reserves the whole icon column. Fusion does not
+    # allow easy shrinking of the icon column, so we render ✓ "pushed" to the
+    # right inside the column.
     size = 16
     # On (checked) — paint ✓ ALIGN RIGHT trong pixmap
     on_pix = QPixmap(size, size)
@@ -627,13 +629,13 @@ def make_check_icon():
     p.setPen(QColor(TEXT))
     f = QFont("Segoe UI Symbol", 11, QFont.Weight.Bold)
     p.setFont(f)
-    # AlignRight → ✓ ở mép phải pixmap, giảm gap visual tới text
+    # AlignRight → ✓ at the right edge of the pixmap, reducing visual gap to text
     p.drawText(on_pix.rect(),
                 Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
                 "✓")
     p.end()
 
-    # Off (unchecked) — fully transparent, cùng size để Qt reserve column
+    # Off (unchecked) — fully transparent, same size so Qt reserves the column
     off_pix = QPixmap(size, size)
     off_pix.fill(QColor(0, 0, 0, 0))
 
@@ -646,30 +648,31 @@ def make_check_icon():
 class TightMenuStyle:
     """QProxyStyle override — force compact menu icon column.
 
-    Fusion style hard-code `PM_SmallIconSize=16` cho menu item icon column +
-    thêm padding mặc định ~8-12px around. Tổng gap icon-to-text = ~25-30px,
-    QSS `icon-size` không override được PM_SmallIconSize.
+    Fusion hard-codes `PM_SmallIconSize=16` for the menu item icon column plus
+    ~8-12px of default padding around it. Total icon-to-text gap = ~25-30px;
+    QSS `icon-size` cannot override PM_SmallIconSize.
 
-    Override `pixelMetric()` để return giá trị nhỏ cho:
+    Override `pixelMetric()` to return smaller values for:
       - PM_SmallIconSize       (icon column width)
       - PM_ButtonIconSize      (button icon area)
 
-    Áp dụng global qua `app.setStyle(TightMenuStyle(app.style()))`.
+    Apply globally via `app.setStyle(TightMenuStyle(app.style()))`.
     """
-    # Defined lazy trong apply_dark_theme để tránh import QProxyStyle ở
-    # module-level (test env có thể không có Qt installed).
+    # Defined lazily inside apply_dark_theme to avoid importing QProxyStyle at
+    # module level (test environments may not have Qt installed).
 
 
 def apply_dark_theme(app) -> None:
-    """Apply dark QSS toàn cục cho QApplication.
+    """Apply dark QSS globally to a QApplication.
 
-    Gọi 1 lần ở entry point sau khi tạo QApplication. Per-widget stylesheets
-    đặt sau sẽ override (vd Play button color, status label color).
+    Call once at the entry point after creating QApplication. Per-widget
+    stylesheets set afterward will override (e.g. Play button color, status
+    label color).
     """
     from PyQt6.QtGui import QPalette, QColor
 
-    app.setStyle("Fusion")              # Base style cho cross-platform consistent
-    # Pre-set palette để widgets không-QSS (vd dialogs popup) hợp tone.
+    app.setStyle("Fusion")              # Base style for cross-platform consistency
+    # Pre-set palette so non-QSS widgets (e.g. popup dialogs) match the theme tone.
     palette = app.palette()
     palette.setColor(QPalette.ColorRole.Window, QColor(BG))
     palette.setColor(QPalette.ColorRole.WindowText, QColor(TEXT))
@@ -685,7 +688,7 @@ def apply_dark_theme(app) -> None:
     palette.setColor(QPalette.ColorRole.Link, QColor(ACCENT_HOVER))
     palette.setColor(QPalette.ColorRole.PlaceholderText, QColor(TEXT_MUTED))
     app.setPalette(palette)
-    # Generate icons PNG runtime để QSS reference qua image: url(...):
+    # Generate icon PNGs at runtime for QSS `image: url(...)` references:
     #   - check.png      : QMenu indicator (toggle items)
     #   - dock_close.png : QDockWidget close button (✕)
     #   - dock_float.png : QDockWidget float/dock toggle button (□)

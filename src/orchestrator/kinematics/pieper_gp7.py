@@ -1,25 +1,25 @@
 """
 pieper_gp7.py
 ─────────────
-Analytical (closed-form) IK cho Yaskawa GP7 dùng Pieper decoupling.
+Analytical (closed-form) IK for Yaskawa GP7 using Pieper decoupling.
 
-GP7 có **spherical wrist** — 3 wrist axes (J4, J5, J6) đều giao tại 1 điểm
-gọi là Wrist Center Point (WCP). Trong URDF chain của ta, J5 và J6 có
-origin (0,0,0) trong parent frame nên cả 3 axes đi qua J4 origin (=WCP).
+GP7 has a **spherical wrist** — 3 wrist axes (J4, J5, J6) all intersect at one
+point called the Wrist Center Point (WCP). In our URDF chain, J5 and J6 have
+origin (0,0,0) in the parent frame, so all 3 axes pass through the J4 origin (=WCP).
 
-Pieper decoupling tách IK 6-DOF thành 2 sub-problem 3-DOF độc lập:
-  1. **Position**: solve q1, q2, q3 từ WCP_world (chỉ phụ thuộc vị trí WCP)
-  2. **Orientation**: solve q4, q5, q6 từ R_J3_J6 = R_world_J3⁻¹ · R_world_J6
+Pieper decoupling splits the 6-DOF IK into 2 independent 3-DOF sub-problems:
+  1. **Position**: solve q1, q2, q3 from WCP_world (depends only on WCP position)
+  2. **Orientation**: solve q4, q5, q6 from R_J3_J6 = R_world_J3⁻¹ · R_world_J6
 
-Cho ra **up to 8 solutions** native:
-  - 2 cho J1 (front / back, J1 ± π/2 around shoulder)
-  - 2 cho elbow (up / down — asin có 2 branches)
-  - 2 cho wrist (normal / flip — XYX Euler có 2 branches qua β = ±)
+Yields **up to 8 solutions** natively:
+  - 2 for J1 (front / back, J1 ± π/2 around shoulder)
+  - 2 for elbow (up / down — asin has 2 branches)
+  - 2 for wrist (normal / flip — XYX Euler has 2 branches via β = ±)
   → 2 × 2 × 2 = 8 configurations
 
-Tốc độ: ~0.24 ms/call (~5× faster than DLS) — benchmark
-`scripts/17_compare_fk_ik.py --fair --samples 200` (phụ thuộc máy).
-Accuracy: float-precision exact (~1e-13 mm, float noise floor), không có DLS
+Speed: ~0.24 ms/call (~5× faster than DLS) — benchmark
+`scripts/17_compare_fk_ik.py --fair --samples 200` (machine-dependent).
+Accuracy: float-precision exact (~1e-13 mm, float noise floor), no DLS
 tolerance gap.
 
 Reference:
@@ -27,7 +27,7 @@ Reference:
   Stanford PhD thesis. Chapter 4: spherical wrist decomposition.
 
 ────────────────────────────────────────────────────────────────────────
-GP7 URDF parameters (từ gp7_urdf):
+GP7 URDF parameters (from gp7_urdf):
   J1 (S): origin (0, 0, 0),    axis (0, 0, 1)
   J2 (L): origin (40, 0, 0),   axis (0, 1, 0)
   J3 (U): origin (0, 0, 445),  axis (0, -1, 0)
@@ -96,11 +96,11 @@ def _wrap_to_pi(angle: float) -> float:
 def _wrap_to_limits(angle: float, lo: float, hi: float) -> float | None:
     """Find equivalent angle (angle + 2π·k) that lies in [lo, hi].
 
-    Cần thiết vì joint limits của GP7 asymmetric (vd J3 = -116°..+255°,
-    J6 = ±360°). Naive wrap-to-(-π, π] có thể đẩy solution ra ngoài limit
-    dù solution kia (+2π hoặc -2π) hoàn toàn hợp lệ.
+    Necessary because GP7 joint limits are asymmetric (e.g. J3 = -116°..+255°,
+    J6 = ±360°). A naive wrap-to-(-π, π] may push a solution outside the limits
+    even though the other branch (+2π or -2π) is perfectly valid.
 
-    Return None nếu không có k nào fit.
+    Returns None if no k fits.
     """
     # Start from canonical (-π, π] representation
     base = _wrap_to_pi(angle)
@@ -119,7 +119,7 @@ def _within_limits(q: float, lo: float, hi: float) -> bool:
 
 
 def _base_R_t(model: URDFRobot) -> tuple[np.ndarray, np.ndarray]:
-    """Return base rotation (3x3) và translation (3,) of robot S frame in world."""
+    """Return base rotation (3x3) and translation (3,) of robot S frame in world."""
     from .urdf_chain import _base_transform
     T = _base_transform(model)
     return T[:3, :3].copy(), T[:3, 3].copy()
@@ -127,9 +127,9 @@ def _base_R_t(model: URDFRobot) -> tuple[np.ndarray, np.ndarray]:
 
 def _solve_q123(wcp_s: np.ndarray, joint_lim: list[tuple[float, float]]
                  ) -> list[tuple[int, int, float, float, float]]:
-    """Solve q1, q2, q3 từ WCP position trong robot S frame.
+    """Solve q1, q2, q3 from the WCP position in the robot S frame.
 
-    Trả về danh sách (front_back, elbow, q1, q2, q3) — up to 4 configs
+    Returns a list of (front_back, elbow, q1, q2, q3) — up to 4 configs
     (2 front/back × 2 elbow). front_back: 0=front, 1=rear. elbow: 0=up, 1=down.
     """
     x, y, z = float(wcp_s[0]), float(wcp_s[1]), float(wcp_s[2])
@@ -163,7 +163,7 @@ def _solve_q123(wcp_s: np.ndarray, joint_lim: list[tuple[float, float]]
                 q3_raw = asin_z - _PSI
             else:                                # π - asin → "elbow down"
                 q3_raw = (math.pi - asin_z) - _PSI
-            # J3 limit asymmetric (-116°…+255°) → try +2π unwrap nếu wrap-to-π fail.
+            # J3 limit asymmetric (-116°…+255°) → try +2π unwrap if wrap-to-π fails.
             q3 = _wrap_to_limits(q3_raw, *joint_lim[2])
             if q3 is None: continue
 
@@ -181,9 +181,9 @@ def _solve_q123(wcp_s: np.ndarray, joint_lim: list[tuple[float, float]]
 
 def _solve_q456(M: np.ndarray, joint_lim: list[tuple[float, float]]
                  ) -> list[tuple[int, float, float, float]]:
-    """Solve q4, q5, q6 từ M = R_J3⁻¹ · R_world_J6.
+    """Solve q4, q5, q6 from M = R_J3⁻¹ · R_world_J6.
 
-    Trả về (wrist_flip, q4, q5, q6) — wrist_flip: 0=non-flip, 1=flip.
+    Returns (wrist_flip, q4, q5, q6) — wrist_flip: 0=non-flip, 1=flip.
 
     M = Rx(-q4) · Ry(-q5) · Rx(-q6)  (URDF axes: J4=-X, J5=-Y, J6=-X)
     Let α = -q4, β = -q5, γ = -q6 → M = Rx(α) Ry(β) Rx(γ)  (XYX Euler).
@@ -195,11 +195,11 @@ def _solve_q456(M: np.ndarray, joint_lim: list[tuple[float, float]]
       M[0,1] = sin(β) sin(γ)
       M[0,2] = sin(β) cos(γ)
 
-    2 branches: β ∈ [0, π] hoặc β ∈ [-π, 0] (sign of sin(β) flips → α, γ flip by π).
+    2 branches: β ∈ [0, π] or β ∈ [-π, 0] (sign of sin(β) flips → α, γ flip by π).
     """
     results: list[tuple[int, float, float, float]] = []
     cb = float(np.clip(M[0, 0], -1.0, 1.0))
-    # Singular wrist: β = 0 (cos = 1) — chỉ α + γ xác định
+    # Singular wrist: β = 0 (cos = 1) — only α + γ is determined
     if abs(cb - 1.0) < 1e-9:
         alpha = math.atan2(M[2, 1], M[1, 1])
         q4 = _wrap_to_limits(-alpha, *joint_lim[3])
@@ -244,16 +244,16 @@ def inverse_kinematics_pieper_gp7(
     model: URDFRobot,
     target_pose_world: np.ndarray,
 ) -> list[list[float]]:
-    """Analytical IK cho GP7 — trả về tất cả solutions (up to 8).
+    """Analytical IK for GP7 — returns all solutions (up to 8).
 
-    Returns: list of joint vectors (radian, length 6). Empty list nếu unreachable.
+    Returns: list of joint vectors (radians, length 6). Empty list if unreachable.
 
-    Performance: ~0.24 ms/call (xem scripts/17_compare_fk_ik.py --fair).
-    Accuracy: float-precision exact (FK(sol) khớp target ~1e-13 mm).
+    Performance: ~0.24 ms/call (see scripts/17_compare_fk_ik.py --fair).
+    Accuracy: float-precision exact (FK(sol) matches target to ~1e-13 mm).
     """
     target = np.asarray(target_pose_world, dtype=float)
     if target.shape != (4, 4):
-        raise ValueError(f"target_pose phải 4x4, got {target.shape}")
+        raise ValueError(f"target_pose must be 4x4, got {target.shape}")
     # Convert target → robot S frame
     base_R, base_t = _base_R_t(model)
     p_world = target[:3, 3]
@@ -262,7 +262,7 @@ def inverse_kinematics_pieper_gp7(
     R_S = base_R.T @ R_world
 
     # WCP in S frame: TCP - 80mm * tool0_Z_world (then expressed in S)
-    # Note: tool0_Z in world = R_world[:, 2] = R_S[:, 2] sau khi đã transform.
+    # Note: tool0_Z in world = R_world[:, 2] = R_S[:, 2] after transform.
     wcp_s = p_S - _D6 * R_S[:, 2]
 
     # Joint limits
@@ -288,12 +288,13 @@ def _joint_turn_variants(
     joints_rad: tuple[float, ...],
     joint_lim: list[tuple[float, float]],
 ) -> list[list[float]]:
-    """Enumerate các biến thể "joint turn" (±360°) hợp lệ cho 1 nghiệm.
+    """Enumerate valid "joint turn" variants (±360°) for one solution.
 
-    Khớp có tầm > 360° (vd J6 = ±360° → range 720°) cho phép cùng 1 hướng
-    cuối đạt được ở nhiều vòng quay (q, q±360°). RoboDK liệt kê chúng như các
-    configuration riêng. Trả về cartesian product mọi giá trị wrap hợp lệ trong
-    joint limits (đã dedupe). Posture flags KHÔNG đổi (turn chỉ thêm/bớt vòng).
+    Joints with range > 360° (e.g. J6 = ±360° → 720° range) allow the same
+    end orientation to be reached at multiple turns (q, q±360°). RoboDK lists
+    these as separate configurations. Returns the Cartesian product of all valid
+    wrapped values within joint limits (deduped). Posture flags are unchanged
+    (turns only add/subtract full revolutions).
     """
     import itertools
     per_joint: list[list[float]] = []
@@ -312,26 +313,27 @@ def inverse_kinematics_pieper_gp7_tagged(
     target_pose_world: np.ndarray,
     include_turns: bool = True,
 ) -> list[dict]:
-    """Như inverse_kinematics_pieper_gp7 nhưng GẮN NHÃN config flags mỗi nghiệm.
+    """Like inverse_kinematics_pieper_gp7 but TAGS each solution with config flags.
 
-    Mỗi config phân biệt bởi 3 cờ nhị phân (chuẩn industrial posture flags):
-      • front:    cánh tay vươn tới trước (True) hay xoay nền ra sau (False=Rear)
-      • elbow_up: khuỷu lên (True) hay xuống (False)
-      • no_flip:  cổ tay không lật (True) hay lật (False)
+    Each config is distinguished by 3 binary flags (standard industrial posture flags):
+      • front:    arm reaching forward (True) or base rotated rearward (False=Rear)
+      • elbow_up: elbow up (True) or down (False)
+      • no_flip:  wrist not flipped (True) or flipped (False)
     → config_id = front_back*4 + elbow*2 + wrist_flip  (0..7)
 
-    Các cờ lấy TRỰC TIẾP từ nhánh thuật toán sinh ra nghiệm (không phải phân
-    loại hậu kỳ) nên chính xác tuyệt đối.
+    Flags are taken DIRECTLY from the algorithm branch that produced the solution
+    (not post-classified), so they are absolutely accurate.
 
-    include_turns=True: liệt kê thêm biến thể joint-turn (±360°) như RoboDK —
-    nhiều dòng cùng config_id, khác vòng quay (vd J6). False = chỉ 8 base.
+    include_turns=True: also enumerates joint-turn variants (±360°) like RoboDK —
+    multiple rows with the same config_id but different turn counts (e.g. J6).
+    False = base 8 solutions only.
 
     Returns: list[dict] — keys: id, front, elbow_up, no_flip, joints_deg(6).
-             Sort theo (id, joints). Empty nếu unreachable.
+             Sorted by (id, joints). Empty if unreachable.
     """
     target = np.asarray(target_pose_world, dtype=float)
     if target.shape != (4, 4):
-        raise ValueError(f"target_pose phải 4x4, got {target.shape}")
+        raise ValueError(f"target_pose must be 4x4, got {target.shape}")
     base_R, base_t = _base_R_t(model)
     p_S = base_R.T @ (target[:3, 3] - base_t)
     R_S = base_R.T @ target[:3, :3]
@@ -369,9 +371,9 @@ def inverse_kinematics_pieper_gp7_nearest(
     target_pose_world: np.ndarray,
     q_init_rad: list[float] | tuple[float, ...] | np.ndarray,
 ) -> list[float] | None:
-    """Pieper IK + pick solution nearest q_init (cho continuous motion).
+    """Pieper IK + pick solution nearest q_init (for continuous motion).
 
-    Returns: joint vector (radian) hoặc None nếu unreachable.
+    Returns: joint vector (radians) or None if unreachable.
     """
     sols = inverse_kinematics_pieper_gp7(model, target_pose_world)
     if not sols:

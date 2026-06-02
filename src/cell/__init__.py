@@ -1,14 +1,14 @@
 """
 cell — Cell configuration schema (Pydantic).
 
-Cell config được dùng cho:
-  - Viewport rendering (Open3D mirror dựng worktable + camera frame)
-  - Robot base pose cho kinematics
+Cell config is used for:
+  - Viewport rendering (Open3D mirror builds worktable + camera frame)
+  - Robot base pose for kinematics
   - Hand-eye calibration sim mode
-  - Object templates cho perception mock
+  - Object templates for perception mock
 
 Public API:
-    CellConfig: Pydantic schema cho cell config
+    CellConfig: Pydantic schema for cell config
 
 Exceptions:
     CellError, InvalidConfigError, MissingMeshError

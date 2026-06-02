@@ -1,8 +1,8 @@
 """
-orchestrator — Điều phối pick-and-place: perception → transform → RoboDK.
+orchestrator — Coordinates pick-and-place: perception → transform → RoboDK.
 
 Public API:
-    Orchestrator: class điều phối chu trình
+    Orchestrator: class that coordinates the pick-and-place cycle
     PickPlaceStateMachine, PickState: state machine
     camera_to_base, transform_point, make_grasp_pose,
     load_calibration, save_calibration: coordinate transforms

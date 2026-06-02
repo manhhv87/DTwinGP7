@@ -1,19 +1,19 @@
 """
 frame_convert.py
 ────────────────
-Frame conversion utilities cho HSE Cartesian motion path.
+Frame conversion utilities for HSE Cartesian motion path.
 
-3 frame chính:
+3 primary frames:
   - WORLD: orchestrator native (cell layout, hand-eye `T_BC` output)
-  - ROBOT BASE: robot's own frame (origin tại J1 axis, what HSE BASE expects)
-  - USER FRAME: optional, define qua YRC1000 teach pendant (chưa dùng)
+  - ROBOT BASE: robot's own frame (origin at J1 axis, what HSE BASE expects)
+  - USER FRAME: optional, defined via YRC1000 teach pendant (not yet used)
 
-Convention rotation: Yaskawa HSE BASE coordinate dùng **XYZ-fixed** Tait-Bryan
+Rotation convention: Yaskawa HSE BASE coordinate uses **XYZ-fixed** Tait-Bryan
 (= ZYX intrinsic): R = Rx(Rx) · Ry(Ry) · Rz(Rz) applied in sequence.
 
 Reference:
   - Yaskawa INFORM Language Manual (RE-CKI-A464), §Cartesian Position
-  - Confirm bằng test thực tế lần đầu trên robot (touch test 3 pose orthogonal)
+  - Verify against first real robot test (touch test 3 orthogonal poses)
 """
 from __future__ import annotations
 
@@ -27,30 +27,30 @@ def world_to_robot_base(
     robot_base_xyz_mm: tuple[float, float, float],
     robot_base_rpy_deg: tuple[float, float, float] = (0.0, 0.0, 0.0),
 ) -> np.ndarray:
-    """Convert pose 4x4 từ world frame → robot base frame.
+    """Convert a 4x4 pose from world frame → robot base frame.
 
-    HSE BASE coordinate frame có origin tại J1 axis của robot. Cell config
-    đặt robot trên pedestal world Z=630 (vd) → cần subtract base pose.
+    HSE BASE coordinate frame has its origin at the robot's J1 axis. Cell config
+    places the robot on a pedestal at world Z=630 (e.g.) → need to subtract base pose.
 
     Math: T_world = T_base_in_world @ T_robot
         → T_robot = inv(T_base_in_world) @ T_world
 
     Args:
-        T_world: 4x4 pose trong world frame (mm).
-        robot_base_xyz_mm: Robot J1 position trong world (mm). Lấy từ
+        T_world: 4x4 pose in world frame (mm).
+        robot_base_xyz_mm: Robot J1 position in world (mm). Taken from
             `cell_config.robot.pose.xyz_mm`.
-        robot_base_rpy_deg: Robot base rotation trong world (degrees XYZ-fixed).
-            Default (0,0,0) — robot upright, không xoay base.
+        robot_base_rpy_deg: Robot base rotation in world (degrees XYZ-fixed).
+            Default (0,0,0) — robot upright, no base rotation.
 
     Returns:
-        T_robot_base: 4x4 pose trong robot base frame.
+        T_robot_base: 4x4 pose in robot base frame.
     """
     T_world = np.asarray(T_world, dtype=float)
     if T_world.shape != (4, 4):
-        raise ValueError(f"T_world phải 4x4, got {T_world.shape}")
+        raise ValueError(f"T_world must be 4x4, got {T_world.shape}")
 
     T_base_in_world = make_homogeneous(robot_base_xyz_mm, robot_base_rpy_deg)
-    # inv của rigid transform: R^T, -R^T @ t
+    # inverse of rigid transform: R^T, -R^T @ t
     R = T_base_in_world[:3, :3]
     t = T_base_in_world[:3, 3]
     T_inv = np.eye(4)
@@ -62,7 +62,7 @@ def world_to_robot_base(
 def matrix_to_rpy_yaskawa(R: np.ndarray) -> tuple[float, float, float]:
     """Decompose 3x3 rotation matrix → (Rx, Ry, Rz) degrees XYZ-fixed convention.
 
-    Yaskawa HSE BASE pose dùng XYZ-fixed Tait-Bryan:
+    Yaskawa HSE BASE pose uses XYZ-fixed Tait-Bryan:
         R = Rx(α) · Ry(β) · Rz(γ)         (applied left-to-right)
         equivalent to Rz then Ry then Rx (intrinsic ZYX)
 
@@ -71,14 +71,14 @@ def matrix_to_rpy_yaskawa(R: np.ndarray) -> tuple[float, float, float]:
         γ = atan2(R[1,0]/cos β, R[0,0]/cos β)         (Rz)
         α = atan2(R[2,1]/cos β, R[2,2]/cos β)         (Rx)
 
-    Gimbal lock khi β = ±90° (cos β = 0) → α + γ degenerate, set γ = 0.
+    Gimbal lock when β = ±90° (cos β = 0) → α + γ degenerate, set γ = 0.
 
     Returns:
         (rx_deg, ry_deg, rz_deg).
     """
     R = np.asarray(R, dtype=float)
     if R.shape != (3, 3):
-        raise ValueError(f"R phải 3x3, got {R.shape}")
+        raise ValueError(f"R must be 3x3, got {R.shape}")
 
     sy = -R[2, 0]                                # = -R[2,0] = sin(β)
     cy = float(np.sqrt(R[0, 0] ** 2 + R[1, 0] ** 2))
@@ -97,18 +97,18 @@ def matrix_to_rpy_yaskawa(R: np.ndarray) -> tuple[float, float, float]:
 
 
 def rpy_yaskawa_to_matrix(rx_deg: float, ry_deg: float, rz_deg: float) -> np.ndarray:
-    """Compose 3x3 rotation matrix từ Yaskawa XYZ-fixed RPY.
+    """Compose 3x3 rotation matrix from Yaskawa XYZ-fixed RPY.
 
-    Yaskawa convention: rotation áp dụng theo thứ tự về AXIS CỐ ĐỊNH (world):
+    Yaskawa convention: rotation applied in order about FIXED AXES (world):
         1. Rotate about world Z by rz
         2. Rotate about world Y by ry
         3. Rotate about world X by rx
-    → R = Rx · Ry · Rz khi áp dụng theo intrinsic = Rz · Ry · Rx khi áp dụng
-       extrinsic. Chuẩn industrial robotics = R = Rz · Ry · Rx (equivalent
+    → R = Rx · Ry · Rz when applied intrinsically = Rz · Ry · Rx when applied
+       extrinsically. Industrial robotics standard = R = Rz · Ry · Rx (equivalent
        to scipy euler 'xyz' extrinsic).
 
-    Inverse của `matrix_to_rpy_yaskawa`. Round-trip rpy → R → rpy phải khớp
-    (trừ gimbal lock ry = ±90°).
+    Inverse of `matrix_to_rpy_yaskawa`. Round-trip rpy → R → rpy must match
+    (except at gimbal lock ry = ±90°).
     """
     rx, ry, rz = np.deg2rad([rx_deg, ry_deg, rz_deg])
     cx, sx = np.cos(rx), np.sin(rx)
@@ -126,14 +126,14 @@ def matrix_to_xyzrpy_yaskawa(
 ) -> tuple[float, float, float, float, float, float]:
     """Decompose 4x4 transform → (x_mm, y_mm, z_mm, Rx_deg, Ry_deg, Rz_deg).
 
-    One-liner cho HSE encode flow:
+    One-liner for HSE encode flow:
         T_base = world_to_robot_base(T_world, base_xyz, base_rpy)
         x, y, z, rx, ry, rz = matrix_to_xyzrpy_yaskawa(T_base)
         payload = encode_cartesian_position(x, y, z, rx, ry, rz, tool_no=1)
     """
     T = np.asarray(T, dtype=float)
     if T.shape != (4, 4):
-        raise ValueError(f"T phải 4x4, got {T.shape}")
+        raise ValueError(f"T must be 4x4, got {T.shape}")
     x, y, z = T[0, 3], T[1, 3], T[2, 3]
     rx, ry, rz = matrix_to_rpy_yaskawa(T[:3, :3])
     return float(x), float(y), float(z), rx, ry, rz

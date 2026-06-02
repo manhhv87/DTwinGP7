@@ -1,11 +1,11 @@
 """
 state_machine.py
 ────────────────
-State machine cho một chu trình pick-and-place.
+State machine for a single pick-and-place cycle.
 
-Pure logic — không phụ thuộc RoboDK → testable trực tiếp bằng pytest.
-Orchestrator dùng class này để kiểm soát luồng và bắt lỗi chuyển trạng thái
-không hợp lệ (vd nhảy thẳng từ IDLE sang PLACE).
+Pure logic — no RoboDK dependency → directly testable with pytest.
+The orchestrator uses this class to control flow and catch invalid
+state transitions (e.g. jumping straight from IDLE to PLACE).
 """
 from __future__ import annotations
 
@@ -15,22 +15,22 @@ from typing import NamedTuple
 
 
 class PickState(Enum):
-    """Các trạng thái trong một chu trình pick-and-place."""
+    """States in a pick-and-place cycle."""
 
-    IDLE = "idle"            # Chờ, chưa làm gì
-    DETECT = "detect"        # Nhận detection từ perception
-    PLAN = "plan"            # Chọn vật + kiểm tra reachability/collision
-    APPROACH = "approach"    # Di chuyển tới điểm approach phía trên vật
-    GRASP = "grasp"          # Hạ xuống + đóng gripper
-    LIFT = "lift"            # Nâng vật lên
-    TRANSFER = "transfer"    # Di chuyển tới vùng đặt
-    PLACE = "place"          # Hạ + mở gripper
-    RETREAT = "retreat"      # Rút về, quay home
-    DONE = "done"            # Hoàn tất thành công
-    ERROR = "error"          # Lỗi — cần recovery
+    IDLE = "idle"            # Idle, doing nothing
+    DETECT = "detect"        # Receiving detection from perception
+    PLAN = "plan"            # Select object + check reachability/collision
+    APPROACH = "approach"    # Move to approach point above the object
+    GRASP = "grasp"          # Lower + close gripper
+    LIFT = "lift"            # Lift the object
+    TRANSFER = "transfer"    # Move to placement area
+    PLACE = "place"          # Lower + open gripper
+    RETREAT = "retreat"      # Withdraw, return home
+    DONE = "done"            # Completed successfully
+    ERROR = "error"          # Error — recovery needed
 
 
-# Các chuyển trạng thái hợp lệ. Mọi state có thể nhảy sang ERROR.
+# Valid state transitions. Any state can jump to ERROR.
 _VALID_TRANSITIONS: dict[PickState, set[PickState]] = {
     PickState.IDLE: {PickState.DETECT},
     PickState.DETECT: {PickState.PLAN, PickState.IDLE},
@@ -47,7 +47,7 @@ _VALID_TRANSITIONS: dict[PickState, set[PickState]] = {
 
 
 class StateRecord(NamedTuple):
-    """Một bản ghi trong lịch sử chuyển trạng thái."""
+    """A record in the state-transition history."""
 
     state: PickState
     timestamp: float
@@ -55,18 +55,18 @@ class StateRecord(NamedTuple):
 
 
 class InvalidTransitionError(RuntimeError):
-    """Chuyển trạng thái không nằm trong sơ đồ hợp lệ."""
+    """Transition not present in the valid-transition graph."""
 
 
 class PickPlaceStateMachine:
-    """State machine cho chu trình pick-and-place.
+    """State machine for a pick-and-place cycle.
 
-    Sử dụng:
+    Usage:
         sm = PickPlaceStateMachine()
         sm.transition_to(PickState.DETECT)
         sm.transition_to(PickState.PLAN)
         ...
-        sm.fail("gripper_slip")   # nhảy sang ERROR bất cứ lúc nào
+        sm.fail("gripper_slip")   # jump to ERROR at any time
     """
 
     def __init__(self) -> None:
@@ -77,34 +77,34 @@ class PickPlaceStateMachine:
 
     @property
     def state(self) -> PickState:
-        """Trạng thái hiện tại."""
+        """Current state."""
         return self._state
 
     def can_transition(self, target: PickState) -> bool:
-        """Kiểm tra có thể chuyển sang `target` không (không thực hiện)."""
+        """Check whether transitioning to `target` is allowed (does not execute it)."""
         if target == PickState.ERROR:
-            return True  # Lỗi có thể xảy ra ở mọi trạng thái
+            return True  # ERROR can occur from any state
         return target in _VALID_TRANSITIONS.get(self._state, set())
 
     def transition_to(self, target: PickState, note: str = "") -> None:
-        """Chuyển sang trạng thái `target`.
+        """Transition to state `target`.
 
         Raises:
-            InvalidTransitionError: Nếu chuyển trạng thái không hợp lệ.
+            InvalidTransitionError: If the transition is not valid.
         """
         if not self.can_transition(target):
             raise InvalidTransitionError(
-                f"Không thể chuyển {self._state.value} → {target.value}"
+                f"Cannot transition {self._state.value} → {target.value}"
             )
         self._state = target
         self.history.append(StateRecord(target, time.time(), note))
 
     def fail(self, reason: str) -> None:
-        """Nhảy sang trạng thái ERROR với lý do (luôn hợp lệ)."""
+        """Jump to ERROR state with a reason (always valid)."""
         self._state = PickState.ERROR
         self.history.append(StateRecord(PickState.ERROR, time.time(), reason))
 
     def reset(self) -> None:
-        """Đưa state machine về IDLE để bắt đầu chu trình mới."""
+        """Reset the state machine to IDLE to start a new cycle."""
         self._state = PickState.IDLE
         self.history.append(StateRecord(PickState.IDLE, time.time(), "reset"))

@@ -1,21 +1,21 @@
 """
 reach_envelope.py
 ─────────────────
-Mô hình reachability đơn giản client-side cho Yaskawa GP7.
+Simple client-side reachability model for the Yaskawa GP7.
 
-Không phải IK chính xác — chỉ check sphere envelope từ J1: pose nằm trong
-vỏ cầu [reach_min, reach_max] thì coi như với tới.
+Not a precise IK — only checks the sphere envelope from J1: if a pose lies
+within [reach_min, reach_max] it is considered reachable.
 
-Mục đích: cho HSE backend có reachability check khi không có RoboDK item làm
-kinematic helper (vd setup standalone không cần RoboDK GUI).
+Purpose: give the HSE backend a reachability check when no RoboDK item is
+available as a kinematic helper (e.g. standalone setup without RoboDK GUI).
 
 Datasheet GP7:
   - Reach max  ~927 mm (J1 to wrist center)
-  - Reach min  ~150 mm (dead zone quanh J1)
-  - Joint limits: tùy axis, không model trong sphere (cần full DH)
+  - Reach min  ~150 mm (dead zone around J1)
+  - Joint limits: per axis, not modelled in sphere (full DH required)
 
-Pattern này cùng nguồn với SimRobot._reachable() — extract thành module dùng
-chung giữa các backend.
+This pattern shares its origin with SimRobot._reachable() — extracted as a
+module shared across backends.
 """
 from __future__ import annotations
 
@@ -27,12 +27,12 @@ import numpy as np
 
 @dataclass
 class ReachEnvelope:
-    """Sphere envelope cho 1 robot.
+    """Sphere envelope for one robot.
 
     Args:
-        base_xyz_mm: Vị trí J1 trong world frame (mm).
-        reach_max_mm: Bán kính tối đa với tới.
-        reach_min_mm: Bán kính tối thiểu (vùng chết quanh base).
+        base_xyz_mm: J1 position in world frame (mm).
+        reach_max_mm: Maximum reachable radius.
+        reach_min_mm: Minimum reachable radius (dead zone around base).
     """
 
     base_xyz_mm: tuple[float, float, float]
@@ -41,7 +41,7 @@ class ReachEnvelope:
 
     @staticmethod
     def gp7_default(base_xyz_mm: tuple[float, float, float] = (0.0, 0.0, 0.0)) -> "ReachEnvelope":
-        """Default cho Yaskawa GP7 — datasheet specs."""
+        """Default envelope for the Yaskawa GP7 — datasheet specs."""
         return ReachEnvelope(
             base_xyz_mm=base_xyz_mm,
             reach_max_mm=927.0,
@@ -49,15 +49,15 @@ class ReachEnvelope:
         )
 
     def can_reach(self, target_xyz_mm: Any) -> bool:
-        """True nếu target trong vỏ cầu envelope."""
+        """True if target lies within the sphere envelope."""
         xyz = self._extract_xyz(target_xyz_mm)
         if xyz is None:
-            return True                              # không xác định được → permissive
+            return True                              # cannot determine → permissive
         dist = float(np.linalg.norm(xyz - np.asarray(self.base_xyz_mm, dtype=float)))
         return self.reach_min_mm <= dist <= self.reach_max_mm
 
     def distance_from_base(self, target_xyz_mm: Any) -> float | None:
-        """Khoảng cách từ J1 tới target (mm). None nếu extract không được."""
+        """Distance from J1 to target (mm). None if extraction fails."""
         xyz = self._extract_xyz(target_xyz_mm)
         if xyz is None:
             return None
@@ -65,7 +65,7 @@ class ReachEnvelope:
 
     @staticmethod
     def _extract_xyz(target: Any) -> np.ndarray | None:
-        """Trích (x, y, z) từ nhiều dạng pose."""
+        """Extract (x, y, z) from various pose representations."""
         # numpy 4x4
         if isinstance(target, np.ndarray) and target.shape == (4, 4):
             return target[:3, 3].astype(float)

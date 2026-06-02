@@ -4,7 +4,7 @@ mixin_connection.py
 ConnectionMixin: HSE connection settings + test-connection + Run on Robot
 worker pipeline + emergency stop.
 
-Mixin pattern — không khởi tạo độc lập. Host class (GP7AppQt) phải cung cấp:
+Mixin pattern — not instantiated standalone. Host class (GP7AppQt) must provide:
   attributes: _hse_ip, _hse_tool_no, _hse_ftp_user, _hse_ftp_pass, _hse_ftp_dir,
               _hse_thread, _hse_stop, _pp_max_speed_pct, _program, _active_job,
               _signals
@@ -29,9 +29,9 @@ class ConnectionMixin:
     def _on_show_connection_settings(self) -> None:
         """Dialog edit HSE connection — IP, tool_no, FTP creds.
 
-        Có nút **Test** ngay trong dialog (replace menu entry "Test connection"
-        riêng cũ — không cần Apply rồi quay lại menu để Test, click trong
-        dialog ping luôn với values đang edit).
+        Has a **Test** button inline in the dialog (replaces the old separate
+        "Test connection" menu entry — no need to Apply then go back to the menu;
+        clicking Test pings immediately with the values currently in the form).
         """
         dlg = QDialog(self); dlg.setWindowTitle("Robot connection (HSE)")
         form = QFormLayout(dlg)
@@ -52,8 +52,8 @@ class ConnectionMixin:
             "<small><i>⚠ Robot must be in REMOTE mode + HSE Server function enabled."
             "<br>TP speed slider should be ≤ 10% on first run.</i></small>")
         info.setWordWrap(True); form.addRow(info)
-        # Buttonbox: thêm "Test" cùng OK/Cancel. Click Test → ping với values
-        # đang edit trong form (chứ không phải self._hse_* đã save trước đó).
+        # Buttonbox: add "Test" alongside OK/Cancel. Clicking Test pings with
+        # the values currently in the form (not the previously saved self._hse_*).
         bb = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         btn_test = bb.addButton("Test", QDialogButtonBox.ButtonRole.ActionRole)
@@ -80,11 +80,11 @@ class ConnectionMixin:
         self, ip: str, tool_no: int,
         ftp_user: str = "", ftp_pass: str = "", ftp_dir: str = "/MPRAM1/JBI",
     ) -> None:
-        """Ping HSE với connection params truyền vào (không đụng self._hse_*).
+        """Ping HSE using the provided connection params (does not touch self._hse_*).
 
-        Dùng từ:
-          • Dialog Connection settings → Test button (values đang edit)
-          • `_on_test_connection` (legacy wrapper với self._hse_* đã save)
+        Called from:
+          • Connection settings dialog → Test button (values currently in the form)
+          • `_on_test_connection` (legacy wrapper using saved self._hse_*)
         """
         if not ip:
             self._set_status(
@@ -100,7 +100,7 @@ class ConnectionMixin:
             backend.connect()
             ok = backend.Valid()
             if ok:
-                # Đọc joints + alarm để verify deeper
+                # Read joints + alarm to verify deeper
                 try:
                     joints = backend.Joints()
                     alarm_code, _ = backend.read_alarm()
@@ -132,10 +132,11 @@ class ConnectionMixin:
             backend.disconnect()
 
     def _on_test_connection(self) -> None:
-        """Legacy wrapper — ping HSE với self._hse_* đã save.
+        """Legacy wrapper — ping HSE using the saved self._hse_* values.
 
-        Menu entry "Test connection" riêng đã bỏ (merge vào dialog), giữ method
-        này cho compatibility nếu có ai bind shortcut/script call.
+        The separate "Test connection" menu entry has been removed (merged into
+        the dialog); this method is kept for compatibility if anything binds a
+        shortcut or script call to it.
         """
         self._test_hse_connection(
             ip=self._hse_ip, tool_no=self._hse_tool_no,
@@ -145,7 +146,7 @@ class ConnectionMixin:
     def _on_run_on_robot(self) -> None:
         """Render current job → upload .JBI → JOB_SELECT + START → wait_idle.
 
-        Chạy trong worker thread để UI không block. Stop button → servo OFF.
+        Runs in a worker thread so the UI stays responsive. Stop button → servo OFF.
         """
         if not self._hse_ip:
             r = QMessageBox.question(
@@ -177,8 +178,8 @@ class ConnectionMixin:
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
             QMessageBox.StandardButton.Cancel)
         if r != QMessageBox.StandardButton.Yes: return
-        # Render JBI trong main thread (cần access self._targets atomically),
-        # rồi pass text + name vào worker.
+        # Render JBI in the main thread (need atomic access to self._targets),
+        # then pass text + name into the worker.
         try:
             stem = self._safe_job_name(self._active_job) or "PROG"
             jbi_path = Path.cwd() / f"{stem}.JBI"
@@ -188,7 +189,7 @@ class ConnectionMixin:
         except Exception as e:                              # noqa: BLE001
             self._set_status(f"JBI render fail: {e}", level="err")
             return
-        # Worker thread chạy upload + JOB_SELECT + START + wait_idle
+        # Worker thread runs upload + JOB_SELECT + START + wait_idle
         self._hse_stop.clear()
         self._hse_thread = threading.Thread(
             target=self._run_on_robot_worker,
@@ -224,7 +225,7 @@ class ConnectionMixin:
             self._signals.status.emit(f"Robot: JOB_SELECT + START '{job_name}'…", "info")
             backend.job_select(job_name)
             backend.job_start()
-            # Poll status until idle hoặc stop
+            # Poll status until idle or stop
             import time as _time
             t_start = _time.monotonic()
             poll_dt = 0.3
@@ -261,7 +262,7 @@ class ConnectionMixin:
                 pass
 
     def _on_stop_all(self) -> None:
-        """Dual-purpose stop: sim playback + robot job (servo OFF nếu đang HSE)."""
+        """Dual-purpose stop: sim playback + robot job (servo OFF if HSE is active)."""
         # Sim stop
         self._on_prog_stop()
         # Robot stop

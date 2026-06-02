@@ -1,16 +1,16 @@
 """
 capture_calibration.py
 ──────────────────────
-Thu thập dữ liệu hand-eye calibration: phát hiện ChArUco board + ghép với
-pose robot, sau đó gọi solver.
+Collect hand-eye calibration data: detect ChArUco board and pair with
+robot pose, then call the solver.
 
-ChArUco estimator dùng cv2 (lazy-import). API theo OpenCV 4.8+
+ChArUco estimator uses cv2 (lazy-import). API follows OpenCV 4.8+
 (CharucoDetector + matchImagePoints + solvePnP).
 
-Quy trình (xem mục 6.3 tài liệu):
-    1. Robot giữ ChArUco board trên end-effector
-    2. Di chuyển robot tới 25-30 pose đa dạng (rotation ±30°)
-    3. Mỗi pose: capture_pose(rgb, robot_pose) ghi lại 1 cặp
+Workflow (see section 6.3 of documentation):
+    1. Robot holds ChArUco board on end-effector
+    2. Move robot to 25-30 diverse poses (rotation ±30°)
+    3. Each pose: capture_pose(rgb, robot_pose) records one pair
     4. solve() → T_BC
 """
 from __future__ import annotations
@@ -25,13 +25,13 @@ logger = logging.getLogger(__name__)
 
 
 class CharucoBoardEstimator:
-    """Phát hiện ChArUco board và ước lượng pose T_target2cam.
+    """Detect ChArUco board and estimate pose T_target2cam.
 
     Args:
-        squares_xy: Số ô (cols, rows). Mặc định (7, 5).
-        square_length_m: Cạnh ô vuông (mét). Mặc định 0.04.
-        marker_length_m: Cạnh marker ArUco (mét). Mặc định 0.03.
-        dictionary: Tên từ điển ArUco. Mặc định "DICT_4X4_50".
+        squares_xy: Number of squares (cols, rows). Default (7, 5).
+        square_length_m: Square side length (meters). Default 0.04.
+        marker_length_m: ArUco marker side length (meters). Default 0.03.
+        dictionary: ArUco dictionary name. Default "DICT_4X4_50".
     """
 
     def __init__(
@@ -60,14 +60,14 @@ class CharucoBoardEstimator:
         dist_coeffs: np.ndarray,
         min_corners: int = 10,
     ) -> np.ndarray | None:
-        """Ước lượng pose board → camera (T_target2cam 4x4, **mm**).
+        """Estimate board → camera pose (T_target2cam 4x4, **mm**).
 
-        Chú ý đơn vị: ChArUco board được tạo với square_length tính bằng mét
-        (convention OpenCV), nên solvePnP trả về tvec tính bằng mét. Convert
-        sang mm để đồng nhất với toàn pipeline (robot.Pose() trả mm, T_BC mm).
+        Unit note: the ChArUco board is created with square_length in meters
+        (OpenCV convention), so solvePnP returns tvec in meters. Convert
+        to mm for consistency with the full pipeline (robot.Pose() returns mm, T_BC mm).
 
         Returns:
-            Ma trận 4x4 đơn vị mm, hoặc None nếu không phát hiện đủ corner.
+            4x4 matrix in mm units, or None if insufficient corners detected.
         """
         cv2 = self._cv2
         ch_corners, ch_ids, _, _ = self.detector.detectBoard(gray)
@@ -87,14 +87,14 @@ class CharucoBoardEstimator:
         R, _ = cv2.Rodrigues(rvec)
         T = np.eye(4)
         T[:3, :3] = R
-        T[:3, 3] = tvec.flatten() * 1000.0       # mét → mm
+        T[:3, 3] = tvec.flatten() * 1000.0       # meters → mm
         return T
 
 
 class CalibrationSession:
-    """Lưu trữ các cặp pose và giải hand-eye.
+    """Store pose pairs and solve hand-eye calibration.
 
-    Tách logic khỏi I/O camera/robot → test được bằng cách feed pose trực tiếp.
+    Logic is decoupled from camera/robot I/O → testable by feeding poses directly.
     """
 
     def __init__(self, estimator: CharucoBoardEstimator | None = None) -> None:
@@ -107,7 +107,7 @@ class CalibrationSession:
         T_gripper2base: np.ndarray,
         T_target2cam: np.ndarray,
     ) -> int:
-        """Thêm trực tiếp một cặp pose đã biết. Trả về tổng số cặp."""
+        """Add a known pose pair directly. Returns the total number of pairs."""
         self.poses_gripper2base.append(np.asarray(T_gripper2base, dtype=float))
         self.poses_target2cam.append(np.asarray(T_target2cam, dtype=float))
         return len(self.poses_gripper2base)
@@ -119,36 +119,36 @@ class CalibrationSession:
         camera_matrix: np.ndarray,
         dist_coeffs: np.ndarray,
     ) -> bool:
-        """Phát hiện board trong ảnh + ghép pose robot.
+        """Detect board in image and pair with robot pose.
 
         Args:
-            gray: Ảnh xám chứa ChArUco board.
-            T_gripper2base: Pose end-effector trong base (mét), từ robot.Pose().
-            camera_matrix: Ma trận nội 3x3.
-            dist_coeffs: Hệ số méo.
+            gray: Grayscale image containing ChArUco board.
+            T_gripper2base: End-effector pose in base frame (meters), from robot.Pose().
+            camera_matrix: 3x3 intrinsic matrix.
+            dist_coeffs: Distortion coefficients.
 
         Returns:
-            True nếu thu được cặp pose, False nếu không phát hiện board.
+            True if a pose pair was captured, False if board not detected.
         """
         if self.estimator is None:
-            raise RuntimeError("CalibrationSession cần estimator để capture_pose")
+            raise RuntimeError("CalibrationSession requires an estimator for capture_pose")
 
         T_target2cam = self.estimator.estimate_pose(
             gray, camera_matrix, dist_coeffs
         )
         if T_target2cam is None:
-            logger.info("Không phát hiện đủ corner — thử pose khác")
+            logger.info("Insufficient corners detected — try a different pose")
             return False
 
         self.add_pose_pair(T_gripper2base, T_target2cam)
-        logger.info("Đã ghi pose #%d", len(self.poses_gripper2base))
+        logger.info("Recorded pose #%d", len(self.poses_gripper2base))
         return True
 
     def solve(self, method: str = "park") -> np.ndarray:
-        """Giải hand-eye từ các cặp pose đã thu. Trả về T_BC (mm).
+        """Solve hand-eye from collected pose pairs. Returns T_BC (mm).
 
-        Default "park" (KHÔNG "tsai") vì camera nhìn xuống → T_BC xoay ~180°
-        trùng điểm kỳ dị Tsai-Lenz — xem ghi chú ở solve_hand_eye.
+        Default "park" (NOT "tsai") because the downward-facing camera causes T_BC
+        to rotate ~180°, hitting the Tsai-Lenz singularity — see notes in solve_hand_eye.
         """
         return solve_hand_eye(
             self.poses_gripper2base, self.poses_target2cam, method=method
@@ -156,5 +156,5 @@ class CalibrationSession:
 
     @property
     def num_poses(self) -> int:
-        """Số cặp pose đã thu."""
+        """Number of pose pairs collected."""
         return len(self.poses_gripper2base)

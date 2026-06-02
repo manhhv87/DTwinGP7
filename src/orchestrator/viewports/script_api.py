@@ -1,9 +1,9 @@
 """
 script_api.py
 ─────────────
-ScriptProgramAPI: read/write façade exposed tới user Python script
-(embedded script editor) qua biến `p`. Tách lớp khỏi GP7AppQt để hạn chế
-surface mà script có thể đụng vào app internals.
+ScriptProgramAPI: read/write facade exposed to the user Python script
+(embedded script editor) via the `p` variable. Decouples the layer from
+GP7AppQt to limit the surface the script can touch of app internals.
 """
 from __future__ import annotations
 
@@ -16,9 +16,9 @@ if TYPE_CHECKING:
 
 
 class ScriptProgramAPI:
-    """Read/write façade exposed tới user Python script qua biến `p`.
+    """Read/write facade exposed to the user Python script via the `p` variable.
 
-    Cho phép script append instruction vào job hiện tại + đọc target library.
+    Allows the script to append instructions to the current job and read the target library.
     """
 
     def __init__(self, app: "GP7AppQt") -> None:
@@ -26,7 +26,7 @@ class ScriptProgramAPI:
 
     @property
     def targets(self) -> dict:
-        """Read-only view của target library."""
+        """Read-only view of the target library."""
         return dict(self._app._targets)
 
     @property
@@ -34,30 +34,30 @@ class ScriptProgramAPI:
         return self._app._active_job
 
     def add_movej(self, joints: list[float]) -> None:
-        """MoveJ với joints (6 deg)."""
+        """MoveJ with joints (6 deg)."""
         if len(joints) != 6:
-            raise ValueError(f"joints phải 6 phần tử, got {len(joints)}")
+            raise ValueError(f"joints must have 6 elements, got {len(joints)}")
         self._app._program.append(
             Instruction(type="MoveJ", joints=[float(q) for q in joints]))
 
     def add_movel(self, tcp_pose: list[float]) -> None:
-        """MoveL với TCP pose [X,Y,Z mm, Rx,Ry,Rz deg] (WORLD frame)."""
+        """MoveL with TCP pose [X,Y,Z mm, Rx,Ry,Rz deg] (WORLD frame)."""
         if len(tcp_pose) != 6:
-            raise ValueError(f"tcp_pose phải 6 phần tử, got {len(tcp_pose)}")
+            raise ValueError(f"tcp_pose must have 6 elements, got {len(tcp_pose)}")
         self._app._program.append(
             Instruction(type="MoveL", tcp_pose=[float(v) for v in tcp_pose]))
 
     def add_movej_to(self, target_name: str) -> None:
         """MoveJ → named target."""
         if target_name not in self._app._targets:
-            raise KeyError(f"Target '{target_name}' không tồn tại")
+            raise KeyError(f"Target '{target_name}' does not exist")
         self._app._program.append(
             Instruction(type="MoveJ", target_name=target_name))
 
     def add_movel_to(self, target_name: str) -> None:
         """MoveL → named target."""
         if target_name not in self._app._targets:
-            raise KeyError(f"Target '{target_name}' không tồn tại")
+            raise KeyError(f"Target '{target_name}' does not exist")
         self._app._program.append(
             Instruction(type="MoveL", target_name=target_name))
 
@@ -83,5 +83,5 @@ class ScriptProgramAPI:
     def add_call(self, job_name: str) -> None:
         safe = "".join(c for c in str(job_name) if c.isalnum() or c == "_")[:32].upper()
         if not safe:
-            raise ValueError(f"job_name không hợp lệ: '{job_name}'")
+            raise ValueError(f"job_name is invalid: '{job_name}'")
         self._app._program.append(Instruction(type="CallJob", job_name=safe))

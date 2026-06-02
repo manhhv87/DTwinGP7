@@ -1,33 +1,33 @@
 """
 open3d_gui_sim_robot.py
 ───────────────────────
-SimRobot + Open3D **GUI** viewport (O3DVisualizer / Filament) — navigate giống
-RoboDK hơn hẳn legacy Visualizer.
+SimRobot + Open3D **GUI** viewport (O3DVisualizer / Filament) — navigation much
+closer to RoboDK than the legacy Visualizer.
 
-Vì sao thêm cái này (bên cạnh open3d_sim_robot.py legacy):
-  - Legacy `o3d.visualization.Visualizer` (OpenGL) chỉ có arcball thô, xoay quanh
-    1 điểm `lookat` cố định, bước zoom/pan scale theo bounding box → "rất khó
-    xoay/đưa góc nhìn ra-vào".
-  - `O3DVisualizer` (Filament) có arcball mượt, ánh sáng IBL + skybox sẵn, panel
-    settings, và camera điều khiển tự nhiên như RoboDK (trái=xoay, phải=pan,
-    lăn=zoom). Render qua GPU Filament.
+Why add this (alongside open3d_sim_robot.py legacy):
+  - Legacy `o3d.visualization.Visualizer` (OpenGL) only has a coarse arcball that
+    orbits a fixed `lookat` point; zoom/pan step scales with bounding box → "hard
+    to rotate/adjust the viewpoint".
+  - `O3DVisualizer` (Filament) has smooth arcball, built-in IBL + skybox, settings
+    panel, and natural camera controls like RoboDK (left=rotate, right=pan,
+    scroll=zoom). Renders via Filament GPU backend.
 
-KHÁC BIỆT KIẾN TRÚC QUAN TRỌNG so với legacy:
-  - GUI Filament BẮT BUỘC chạy event loop trên MAIN thread qua
-    `gui.Application.instance.run()` (blocking). Không thể "pump" thủ công như
-    legacy. → Orchestrator (thí nghiệm) phải chạy ở WORKER thread, GUI ở main.
-  - Vì vậy: scripts/03 dựng robot này (main thread), start worker chạy
-    `orch.run_n_trials(...)`, rồi main thread gọi `robot.run_gui()` (block tới
-    khi user đóng cửa sổ). MoveJ/MoveL (gọi từ worker) KHÔNG đụng GUI trực tiếp
-    mà `post_to_main_thread` các transform → an toàn thread.
-  - Animation = đổi TRANSFORM của geometry (set_geometry_transform), KHÔNG ghi
-    lại vertex như legacy → nhẹ GPU, mượt. Mỗi link mesh add 1 lần ở frame
-    link-local, sau đó chỉ cập nhật ma trận 4x4 world (mm→m).
+IMPORTANT ARCHITECTURE DIFFERENCE vs. legacy:
+  - Filament GUI MUST run its event loop on the MAIN thread via
+    `gui.Application.instance.run()` (blocking). Cannot "pump" manually like
+    legacy. → Orchestrator (experiment) must run on a WORKER thread; GUI on main.
+  - Therefore: scripts/03 builds this robot (main thread), starts a worker running
+    `orch.run_n_trials(...)`, then main thread calls `robot.run_gui()` (blocks
+    until user closes the window). MoveJ/MoveL (called from worker) do NOT touch
+    the GUI directly — they `post_to_main_thread` transforms → thread-safe.
+  - Animation = updating the TRANSFORM of geometry (set_geometry_transform), NOT
+    rewriting vertices like legacy → light on GPU, smooth. Each link mesh is added
+    once in link-local frame; only the 4x4 world matrix is updated later (mm→m).
 
-Render dùng chung FK `link_frames_urdf` (đã verify match RoboDK SolveFK 0.00mm)
-và tái dùng hằng số mesh từ open3d_sim_robot (1 nguồn sự thật).
+Rendering shares FK `link_frames_urdf` (verified to match RoboDK SolveFK 0.00mm)
+and reuses mesh constants from open3d_sim_robot (single source of truth).
 
-open3d import LAZY trong __init__ → import module này không cần open3d.
+open3d import is LAZY in __init__ → importing this module does not require open3d.
 """
 from __future__ import annotations
 
@@ -50,14 +50,16 @@ logger = logging.getLogger(__name__)
 
 
 # ───── Filament stderr filter ─────
-# Open3D's Filament renderer in một cảnh báo "Camera preconditions not met"
-# qua C-stderr (FD 2) khi nó tự gọi setProjection ở frame render đầu tiên
-# (trước khi widget có viewport size). Cảnh báo vô hại (Filament dùng default
-# projection rồi user code override sau ở tick #3) nhưng làm bẩn output.
+# Open3D's Filament renderer prints a "Camera preconditions not met" warning
+# via C-level stderr (FD 2) when it calls setProjection on the first render
+# frame (before the widget has a viewport size). The warning is harmless
+# (Filament uses a default projection; user code overrides it at tick #3)
+# but it pollutes output.
 #
-# Python không bắt được vì in qua libc stderr, không đi qua sys.stderr. Cách
-# DUY NHẤT chặn: dup2 FD 2 sang pipe + thread filter line-based, drop dòng
-# match pattern Filament, forward phần còn lại về terminal thật.
+# Python cannot catch it because it is printed via libc stderr, not sys.stderr.
+# The ONLY way to suppress it: dup2 FD 2 to a pipe + a line-based daemon thread
+# that drops lines matching Filament patterns and forwards the rest to the real
+# terminal.
 _FILAMENT_NOISE = (
     re.compile(rb"FCamera::setProjection"),
     re.compile(rb"Camera preconditions not met"),
@@ -66,28 +68,30 @@ _stderr_filter_installed = False
 
 
 def _install_filament_stderr_filter() -> None:
-    """Cài filter cho FD 2 (idempotent, 1 lần / process).
+    """Install a filter on FD 2 (idempotent, once per process).
 
-    Pipe stderr qua daemon thread; drop line khớp `_FILAMENT_NOISE` + drop
-    blank line ngay sau đó (Filament thường đệm bằng newline trên/dưới). Mọi
-    output khác (Python logging, traceback…) đi qua nguyên vẹn.
+    Pipes stderr through a daemon thread; drops lines matching `_FILAMENT_NOISE`
+    and the blank line immediately following (Filament typically pads with a
+    newline above/below). All other output (Python logging, tracebacks, …) passes
+    through unchanged.
     """
     global _stderr_filter_installed
     if _stderr_filter_installed:
         return
     try:
         sys.stderr.flush()
-        real_fd = os.dup(2)                            # giữ ref tới terminal thật
+        real_fd = os.dup(2)                            # keep ref to real terminal
         r_fd, w_fd = os.pipe()
         os.dup2(w_fd, 2)                               # FD 2 → write end of pipe
         os.close(w_fd)
     except OSError as e:                               # noqa: BLE001
-        logger.debug("Không cài được Filament stderr filter: %s", e)
+        logger.debug("Could not install Filament stderr filter: %s", e)
         return
 
     def _pump() -> None:
-        # Đọc từng dòng từ pipe; nếu match noise pattern → drop + cũng drop
-        # blank line ngay sau. Còn lại ghi thẳng ra FD terminal thật.
+        # Read lines from the pipe; if a line matches a noise pattern → drop it
+        # and also drop the blank line immediately after. Everything else is
+        # written directly to the real terminal FD.
         drop_next_blank = False
         try:
             with os.fdopen(r_fd, "rb", buffering=0) as r:
@@ -132,17 +136,18 @@ _LINK_COLORS = {
     "link_tool0": (0.15, 0.15, 0.15),
 }
 
-# Yaskawa Motoman blue — vivid ROYAL blue như RoboDK render Yaskawa-GP7.robot.
-# RGB(45, 100, 225). Trước đây dùng pure blue (20,25,230) R/G gần 0 → luminance
-# rất thấp → dưới ánh sáng scene mờ thì chìm thành gần-đen. Royal blue này giữ
-# độ bão hoà nhưng có đủ luminance để nổi rõ, kết hợp với _setup_lighting() boost
-# sun + IBL cho robot sáng đúng kiểu RoboDK (vẫn có shading khối 3D).
+# Yaskawa Motoman blue — vivid ROYAL blue as rendered by RoboDK for Yaskawa-GP7.robot.
+# RGB(45, 100, 225). Previously used pure blue (20,25,230) with R/G near 0 → very
+# low luminance → appeared near-black under dim scene lighting. This royal blue
+# retains saturation while having enough luminance to stand out; combined with
+# _setup_lighting() boosting sun + IBL, the robot is lit correctly like RoboDK
+# (3D-block shading still present).
 _YASKAWA_BLUE = (0.176, 0.392, 0.882)
 
 # ros-industrial GP7 visual meshes (motoman_gp7_support, noetic-devel).
-# Tải sẵn vào models/gp7_links/. STL trong MÉT, không scale.
-# base_link mesh có origin ở mounting surface (đáy robot), còn `link_frames_urdf`
-# trả base_link = J1 axis (cao hơn 330mm theo URDF joint_1_s). → bù -0.330m Z.
+# Pre-downloaded into models/gp7_links/. STL units are METRES, no scaling needed.
+# base_link mesh origin is at mounting surface (robot base), while `link_frames_urdf`
+# returns base_link = J1 axis (330mm higher per URDF joint_1_s). → compensate -0.330m Z.
 _GP7_MESH_MAP: tuple[tuple[str, str, tuple[float, float, float]], ...] = (
     ("base_link", "gp7_base_link.stl", (0.0, 0.0, -0.330)),
     ("link_S",    "gp7_link_1_s.stl",  (0.0, 0.0, 0.0)),
@@ -155,14 +160,14 @@ _GP7_MESH_MAP: tuple[tuple[str, str, tuple[float, float, float]], ...] = (
 
 
 def _seg_box(next_mm, thick: float = 0.07):
-    """(size_m, center_m) cho khối bao đoạn (0,0,0)→next trong link frame (mét)."""
+    """(size_m, center_m) for the bounding box of segment (0,0,0)→next in link frame (metres)."""
     dx, dy, dz = (v / 1000.0 for v in next_mm)
     return ((abs(dx) + thick, abs(dy) + thick, abs(dz) + thick),
             (dx / 2.0, dy / 2.0, dz / 2.0))
 
 
 def _gp7_box_specs(model: URDFRobot):
-    """List (link_name, size_m, center_m) cho 6 link + flange (fallback primitive)."""
+    """List of (link_name, size_m, center_m) for 6 links + flange (fallback primitives)."""
     j = model.joints
     return [
         ("link_S", *_seg_box(j[1].origin_mm)),
@@ -180,10 +185,10 @@ def _rgba(rgb, a: float = 1.0) -> list[float]:
 
 
 class O3DGuiSimRobot(SimRobot):
-    """SimRobot + viewport O3DVisualizer (Filament). Drop-in cho `robot=`.
+    """SimRobot + O3DVisualizer (Filament) viewport. Drop-in replacement for `robot=`.
 
-    Khác Open3DSimRobot: GUI chạy trên main thread (`run_gui()`), thí nghiệm chạy
-    worker thread. Mọi cập nhật hình học từ worker đi qua `post_to_main_thread`.
+    Unlike Open3DSimRobot: GUI runs on the main thread (`run_gui()`); experiments run
+    on a worker thread. All geometry updates from the worker go through `post_to_main_thread`.
     """
 
     supports_cartesian_pose: bool = True
@@ -207,15 +212,15 @@ class O3DGuiSimRobot(SimRobot):
         self._anim_dt = anim_duration_s / self._anim_steps
         self._open = True
         self._running = False
-        self._cam_done = False                        # camera set lazy ở tick sau render
-        self._cam_tick = 0                            # đếm tick để defer setup_camera
+        self._cam_done = False                        # camera is set lazily after first render tick
+        self._cam_tick = 0                            # tick counter to defer setup_camera
 
-        # Object follow-gripper state (world_T 4x4 ở MÉT cho mỗi object)
+        # Object follow-gripper state (world_T 4x4 in METRES per object)
         self._objects: dict[str, dict[str, Any]] = {}
         self._grasped_name: str | None = None
         self._grasp_offset_m: np.ndarray | None = None
 
-        # geom_name → frame_key của link nó bám theo (vd "gripper" → "link_tool0")
+        # geom_name → frame_key of the link it tracks (e.g. "gripper" → "link_tool0")
         self._dynamic: dict[str, str] = {}
 
         import open3d as o3d                       # lazy import
@@ -226,14 +231,14 @@ class O3DGuiSimRobot(SimRobot):
         gui.Application.instance.initialize()
         self._vis = o3d.visualization.O3DVisualizer(
             "GP7 Digital Twin — Open3D GUI (Filament)", window_size[0], window_size[1])
-        self._vis.show_settings = False               # panel ẩn cho gọn (menu mở lại được)
-        # KHÔNG dùng show_axes built-in: nó auto-scale triad theo bounding box
-        # của scene, mà dome gradient bán kính 25m kéo bbox lên ~50m → 3 trục
-        # X/Y/Z dài khổng lồ bắn xuyên hết màn hình. Thay bằng triad nhỏ cố
-        # định 0.3m ở gốc world (giống RoboDK) — xem _add_world_axes().
+        self._vis.show_settings = False               # hide panel for cleanliness (menu can re-open it)
+        # Do NOT use the built-in show_axes: it auto-scales the triad to the scene
+        # bounding box, and the 25m gradient dome expands the bbox to ~50m → the
+        # X/Y/Z axes become enormous and shoot across the entire screen. Use a small
+        # fixed 0.3m triad at the world origin instead (like RoboDK) — see _add_world_axes().
         self._vis.show_axes = False
-        # Background fallback dark navy (sát đáy gradient) — khi user zoom vượt
-        # ra ngoài dome sẽ thấy màu này thay vì trắng tinh.
+        # Fallback background dark navy (matching the dome bottom) — if the user
+        # zooms beyond the dome they see this colour instead of pure white.
         for fn in (
             lambda: self._vis.show_skybox(False),
             lambda: self._vis.set_background([0.031, 0.031, 0.133, 1.0], None),
@@ -245,21 +250,21 @@ class O3DGuiSimRobot(SimRobot):
         # Dark navy gradient dome (RoboDK Free style): top dark → bottom
         # purple-blue. Inverted sphere + defaultUnlit + vertex colors.
         self._add_gradient_dome()
-        # Boost ánh sáng cho defaultLit surfaces (robot/gripper/table) — nếu
-        # không robot màu xanh sẽ chìm vào nền dark navy như RoboDK render.
+        # Boost lighting for defaultLit surfaces (robot/gripper/table) — otherwise
+        # the blue robot disappears into the dark navy background as in RoboDK renders.
         self._setup_lighting()
-        # Triad nhỏ cố định ở gốc world (thay show_axes auto-scale khổng lồ).
+        # Small fixed triad at world origin (replaces the auto-scaling built-in show_axes).
         self._add_world_axes()
 
-        # Dựng hình (add 1 lần; animate bằng transform)
+        # Build geometry (add once; animate via transform)
         self._has_meshes = self._load_links(project_root)
         self._load_gripper(cell_config, project_root)
         self._add_static_scene(cell_config, project_root)
 
-        # Pose home ban đầu (gọi trực tiếp — đang ở main thread, app chưa run).
-        # KHÔNG set camera ở đây: event loop chưa chạy → widget size=0×0 → Filament
-        # "Camera preconditions not met" + bỏ qua projection. Camera set lazy trong
-        # _do() ở lần post đầu (lúc đó loop đã chạy, viewport đã có kích thước hợp lệ).
+        # Apply initial home pose (direct call — on main thread, app not yet running).
+        # Do NOT set camera here: event loop not running → widget size=0×0 → Filament
+        # "Camera preconditions not met" + projection is ignored. Camera is set lazily
+        # in _do() on the first post (event loop running, viewport has a valid size).
         self._apply_frames(self._joints, threadsafe=False)
 
         gui.Application.instance.add_window(self._vis)
@@ -267,18 +272,19 @@ class O3DGuiSimRobot(SimRobot):
             self._vis.set_on_close(self._on_close)
         except Exception:                             # noqa: BLE001
             pass
-        # CONTINUOUS RENDER LOOP: mặc định event loop chỉ vẽ lại khi có sự kiện
-        # chuột → robot "đứng im, phải rê chuột mới nhúc nhích". Bật animation mode
-        # để loop tick liên tục và tự vẽ lại mỗi frame (~vsync) → robot tự chạy mượt.
+        # CONTINUOUS RENDER LOOP: by default the event loop only redraws on mouse
+        # events → robot "freezes; must move mouse to see it update". Enable animation
+        # mode so the loop ticks continuously and redraws every frame (~vsync) →
+        # robot updates smoothly on its own.
         try:
             self._vis.set_on_animation_tick(self._on_anim_tick)
             self._vis.is_animating = True
         except Exception as e:                        # noqa: BLE001
-            logger.debug("Không bật được animation tick: %s", e)
-        logger.info("O3DVisualizer mở — GP7 base=%s (mesh=%s)",
+            logger.debug("Could not enable animation tick: %s", e)
+        logger.info("O3DVisualizer open — GP7 base=%s (mesh=%s)",
                     list(base_xyz), "ros-industrial" if self._has_meshes else "primitive")
-        logger.info("Điều khiển chuột: trái-kéo=xoay | phải-kéo=di chuyển | "
-                    "lăn=zoom | (menu Settings để đổi Mouse Controls/ánh sáng)")
+        logger.info("Mouse controls: left-drag=rotate | right-drag=pan | "
+                    "scroll=zoom | (Settings menu to change Mouse Controls/lighting)")
 
     # ── Materials ─────────────────────────────────────────────────────
     def _mat(self, rgba: list[float]):
@@ -292,25 +298,26 @@ class O3DGuiSimRobot(SimRobot):
         sun_intensity: float = 120000.0,
         ibl_intensity: float = 90000.0,
     ) -> None:
-        """Tăng sáng cho mọi defaultLit surface (robot/gripper/table/object).
+        """Boost lighting for all defaultLit surfaces (robot/gripper/table/object).
 
-        Vì sao cần: O3DVisualizer + skybox-off + post-processing-off → exposure
-        thấp, robot defaultLit chìm thành gần-đen trên nền dark navy (eff. ~0.3×
-        base color). RoboDK render robot SÁNG rõ, vẫn có shading khối 3D.
+        Why needed: O3DVisualizer + skybox-off + post-processing-off → low exposure;
+        defaultLit robot appears near-black on the dark navy background (eff. ~0.3×
+        base color). RoboDK renders the robot brightly with 3D-block shading.
 
-        2 nguồn sáng:
-          - Sun (directional): tạo shading khối 3D. Hướng từ phía camera
-            (-X,-Y,trên) chiếu xuống → mặt robot hướng người xem được sáng.
-          - IBL / indirect (ambient all-around): nâng sáng đều cả mặt khuất nắng
-            để robot không có vùng đen tuyền.
+        Two light sources:
+          - Sun (directional): creates 3D shading. Direction from the camera side
+            (-X,-Y,above) pointing down → the robot face toward the viewer is lit.
+          - IBL / indirect (ambient all-around): lifts shadowed faces so the robot
+            has no pitch-black areas.
 
-        Hai hằng số intensity là KNOB chỉnh sáng — tăng/giảm nếu robot quá
-        tối/cháy sáng (sàn + dome dùng defaultUnlit nên KHÔNG bị ảnh hưởng).
+        Both intensity constants are tuning knobs — increase/decrease if the robot
+        looks too dark or overexposed (floor + dome use defaultUnlit so they are
+        NOT affected).
         """
         try:
             self._vis.set_ibl_intensity(ibl_intensity)
         except Exception as e:                          # noqa: BLE001
-            logger.debug("set_ibl_intensity lỗi: %s", e)
+            logger.debug("set_ibl_intensity error: %s", e)
         try:
             raw = self._vis.scene.scene                 # low-level rendering.Scene
             sun_dir = np.array([0.45, 0.45, -0.77], dtype=np.float32)
@@ -322,15 +329,15 @@ class O3DGuiSimRobot(SimRobot):
             raw.enable_sun_light(True)
             raw.set_indirect_light_intensity(ibl_intensity)
         except Exception as e:                          # noqa: BLE001
-            logger.debug("setup_lighting (sun/indirect) lỗi: %s", e)
+            logger.debug("setup_lighting (sun/indirect) error: %s", e)
 
     def _add_world_axes(self, size_m: float = 0.3) -> None:
-        """Triad nhỏ cố định ở gốc world (X=đỏ, Y=lục, Z=lam) — giống RoboDK.
+        """Small fixed triad at the world origin (X=red, Y=green, Z=blue) — like RoboDK.
 
-        Thay cho `show_axes` built-in vốn scale theo bounding box scene; với
-        dome 25m thì trục dài khổng lồ. create_coordinate_frame có sẵn vertex
-        color cho 3 mũi tên → dùng defaultUnlit để hiện đúng màu, không bị
-        scene lighting làm tối.
+        Replaces the built-in `show_axes` which scales to the scene bounding box;
+        with a 25m dome the axes become enormous. create_coordinate_frame already
+        has vertex colors for the three arrows → use defaultUnlit so the colours
+        render correctly without being darkened by scene lighting.
         """
         try:
             axes = self._o3d.geometry.TriangleMesh.create_coordinate_frame(
@@ -340,7 +347,7 @@ class O3DGuiSimRobot(SimRobot):
             mat.base_color = [1.0, 1.0, 1.0, 1.0]
             self._vis.add_geometry("__world_axes", axes, mat)
         except Exception as e:                          # noqa: BLE001
-            logger.debug("Không thêm được world axes: %s", e)
+            logger.debug("Could not add world axes: %s", e)
 
     def _add_gradient_dome(
         self,
@@ -351,18 +358,19 @@ class O3DGuiSimRobot(SimRobot):
         bot_rgb: tuple[int, int, int] = (95, 65, 175),    # vivid purple-blue (bot)
         ease_power: float = 0.45,                          # push dark up
     ) -> None:
-        """Bao scene bằng quả cầu lớn LẬT với vertex-color gradient theo trục Z.
+        """Surround the scene with a large INVERTED sphere with a Z-axis vertex-color gradient.
 
-        Dark navy gradient (RoboDK Free style): top gần đen-navy → bottom
-        purple-blue. Ease 0.45 → top 60% gần như uniform dark, chỉ chuyển sang
-        purple ở 1/3 dưới (match RoboDK).
+        Dark navy gradient (RoboDK Free style): top near-black navy → bottom
+        purple-blue. Ease 0.45 → top 60% is nearly uniform dark; colour shifts to
+        purple only in the bottom third (matches RoboDK).
 
-        Camera đứng BÊN TRONG cầu, mặt trong là front-face → user thấy gradient
-        mọi hướng nhìn. Bán kính 25m: vừa đủ để workspace ~2m không thấy edge
-        cong, vừa đủ để camera 3/4 góc thấy gradient rõ.
+        Camera is INSIDE the sphere; the inner face is front-facing → the gradient
+        is visible in every view direction. Radius 25m: large enough that the ~2m
+        workspace never sees a curved edge; small enough that the 3/4 view camera
+        sees the gradient clearly.
 
-        defaultUnlit shader: vertex colors hiện đúng RGB, không bị scene
-        lighting ảnh hưởng.
+        defaultUnlit shader: vertex colours render as true RGB, unaffected by
+        scene lighting.
         """
         try:
             n_lat = max(8, n_lat)
@@ -382,15 +390,15 @@ class O3DGuiSimRobot(SimRobot):
                     b = a + 1
                     c = a + n_lon
                     d = c + 1
-                    tris.append([a, c, b])               # winding CW (mặt trong)
+                    tris.append([a, c, b])               # winding CW (inner face)
                     tris.append([b, c, d])
             tris = np.asarray(tris, dtype=np.int32)
 
-            # Vertex colors theo Z + easing → top stays dark longer (≈ RoboDK).
-            # z_norm = 0 ở bottom, 1 ở top
+            # Vertex colours along Z + easing → top stays dark longer (≈ RoboDK).
+            # z_norm = 0 at bottom, 1 at top
             z_flat = verts[:, 2]
             z_norm = (z_flat - z_flat.min()) / (z_flat.max() - z_flat.min() + 1e-9)
-            t = z_norm ** ease_power                     # đẩy dark lên top
+            t = z_norm ** ease_power                     # push dark toward top
             top = np.asarray(top_rgb, dtype=np.float32) / 255.0
             bot = np.asarray(bot_rgb, dtype=np.float32) / 255.0
             colors = (1.0 - t[:, None]) * bot + t[:, None] * top
@@ -407,27 +415,27 @@ class O3DGuiSimRobot(SimRobot):
             mat.base_color = [1.0, 1.0, 1.0, 1.0]
             self._vis.add_geometry("__bg_dome", mesh, mat)
 
-            # Tắt post-processing (bloom + tonemap) trên scene view — gradient
-            # vertex color sẽ hiện đúng RGB, không bị tonemap compress về
-            # màu trung tính làm "gradient phẳng".
+            # Disable post-processing (bloom + tonemap) on the scene view — the
+            # gradient vertex colours then render as true RGB; tonemapping would
+            # compress them toward a neutral mid-tone, flattening the gradient.
             try:
                 self._vis.scene.view.set_post_processing(False)
             except Exception as e:                       # noqa: BLE001
-                logger.debug("set_post_processing(False) lỗi: %s", e)
+                logger.debug("set_post_processing(False) error: %s", e)
 
             logger.debug("Gradient dome added (r=%.0fm, %d×%d)",
                          radius_m, n_lat, n_lon)
         except Exception as e:                          # noqa: BLE001
-            logger.warning("Không thêm được gradient dome: %s — dùng solid bg",
+            logger.warning("Could not add gradient dome: %s — using solid background",
                            e)
 
-    # ── Dựng hình ─────────────────────────────────────────────────────
+    # ── Build geometry ────────────────────────────────────────────────
     def _load_links(self, project_root) -> bool:
-        """Add 7 STL ros-industrial ở frame link-local; animate bằng transform.
+        """Add 7 ros-industrial STLs in link-local frame; animate via transform.
 
-        Mesh frame ≡ URDF link frame nên transform = link_frames_urdf output
-        (mm→m). base_link bù -0.330m Z trong local (xem _GP7_MESH_MAP). Thiếu
-        thư mục/mesh → fallback khối hộp primitive.
+        Mesh frame ≡ URDF link frame, so transform = link_frames_urdf output
+        (mm→m). base_link is offset by -0.330m Z in local frame (see _GP7_MESH_MAP).
+        Missing directory or mesh → fallback to primitive box geometry.
         """
         root = Path(project_root) if project_root else Path(".")
         mesh_dir = root / "models" / "gp7_links"
@@ -448,12 +456,12 @@ class O3DGuiSimRobot(SimRobot):
                     self._dynamic[key] = key
                     loaded += 1
                 except Exception as e:                # noqa: BLE001
-                    logger.debug("Lỗi load mesh %s: %s", path, e)
+                    logger.debug("Error loading mesh %s: %s", path, e)
         if loaded:
             logger.info("O3DVisualizer: %d/%d GP7 link mesh (ros-industrial)",
                         loaded, len(_GP7_MESH_MAP))
             return True
-        # Fallback primitive: box ở frame link-local, animate bằng transform.
+        # Fallback primitive: box in link-local frame, animated via transform.
         for name, size, center in _gp7_box_specs(self._model):
             box = self._make_local_box(size, center)
             self._vis.add_geometry(name, box, self._mat(_rgba(
@@ -471,7 +479,7 @@ class O3DGuiSimRobot(SimRobot):
         return m
 
     def _load_gripper(self, cell_config, project_root):
-        """Gripper STL ở frame tool0-local, bám theo link_tool0 (xem legacy)."""
+        """Gripper STL in tool0-local frame, tracks link_tool0 (see legacy)."""
         if cell_config is None or not getattr(cell_config, "gripper", None):
             return
         cfg = cell_config.gripper
@@ -482,27 +490,27 @@ class O3DGuiSimRobot(SimRobot):
         if not path.is_absolute():
             path = root / path
         if not path.exists():
-            logger.warning("Gripper mesh không có: %s — bỏ qua", path)
+            logger.warning("Gripper mesh not found: %s — skipping", path)
             return
         try:
             m = self._o3d.io.read_triangle_mesh(str(path))
             if m.is_empty():
                 return
             m.scale(0.001, center=(0, 0, 0))          # mm → m
-            m.translate([0.0, 0.0, 0.1])              # palm sát flange, bars ra tip
+            m.translate([0.0, 0.0, 0.1])              # palm close to flange, bars extend to tip
             m.compute_vertex_normals()
             self._vis.add_geometry("gripper", m, self._mat([0.78, 0.78, 0.80, 1.0]))
             self._dynamic["gripper"] = "link_tool0"
         except Exception as e:                        # noqa: BLE001
-            logger.debug("Lỗi load gripper STL: %s", e)
+            logger.debug("Error loading gripper STL: %s", e)
 
     def _add_static_scene(self, cell_config, project_root):
         o3d = self._o3d
-        # Sàn lớn ~4×3m, flat plane (2 triangles) với texture lát gạch xám —
-        # thay vì solid color, tạo cảm giác floor thật của xưởng / studio.
+        # Large ~4×3m floor, flat plane (2 triangles) with a grey tile texture —
+        # instead of a solid colour, gives the feel of a real workshop / studio floor.
         try:
             gx0, gx1, gy0, gy1 = -1.20, 2.80, -1.50, 1.50
-            z = -0.001                                  # ngay dưới z=0 để tránh z-fighting
+            z = -0.001                                  # just below z=0 to avoid z-fighting
 
             verts = np.array([
                 [gx0, gy0, z],                          # 0: BL
@@ -511,8 +519,9 @@ class O3DGuiSimRobot(SimRobot):
                 [gx0, gy1, z],                          # 3: TL
             ], dtype=np.float64)
             tris = np.array([[0, 1, 2], [0, 2, 3]], dtype=np.int32)
-            # Triangle UVs: per-vertex per-triangle (6 UVs cho 2 tris). UV [0,1]
-            # ánh xạ tới texture toàn sàn — texture đã chứa pattern lát gạch đầy đủ.
+            # Triangle UVs: per-vertex per-triangle (6 UVs for 2 tris). UV [0,1]
+            # maps to the full floor texture — the texture already contains the
+            # complete tile pattern.
             tri_uvs = np.array([
                 [0.0, 0.0], [1.0, 0.0], [1.0, 1.0],
                 [0.0, 0.0], [1.0, 1.0], [0.0, 1.0],
@@ -529,18 +538,18 @@ class O3DGuiSimRobot(SimRobot):
                 tile_size_m=0.40,
             )
             mat = self._rendering.MaterialRecord()
-            # defaultUnlit: texture hiện đúng RGB design, KHÔNG bị scene
-            # lighting (ambient + directional) darken xuống → tile sáng đúng
-            # như ý muốn trên gradient dome dark.
+            # defaultUnlit: texture renders as its designed RGB, NOT darkened by
+            # scene lighting (ambient + directional) → tiles appear as intended
+            # against the dark gradient dome.
             mat.shader = "defaultUnlit"
-            mat.base_color = [1.0, 1.0, 1.0, 1.0]       # 1× với texture albedo
+            mat.base_color = [1.0, 1.0, 1.0, 1.0]       # 1× multiplier for texture albedo
             if tex is not None:
                 mat.albedo_img = tex
             else:
-                mat.base_color = [0.78, 0.78, 0.80, 1.0]   # fallback gray sáng
+                mat.base_color = [0.78, 0.78, 0.80, 1.0]   # fallback light gray
             self._vis.add_geometry("ground", mesh, mat)
         except Exception as e:                        # noqa: BLE001
-            logger.debug("Không thêm được ground: %s", e)
+            logger.debug("Could not add ground: %s", e)
         self._add_cell_meshes(cell_config, project_root)
 
     def _make_floor_tile_texture(
@@ -550,11 +559,11 @@ class O3DGuiSimRobot(SimRobot):
         tile_size_m: float = 0.40,
         px_per_tile: int = 96,
     ):
-        """Texture lát gạch xám: tile light gray + grout line đậm hơn, alternate
-        shade kiểu checkerboard nhẹ.
+        """Grey tile texture: light-grey tiles + slightly darker grout lines,
+        with a subtle checkerboard alternate shade.
 
-        Texture phủ TOÀN sàn (UV [0,1] → cả floor), nên kích thước pixel = số
-        tile × px_per_tile theo từng trục.
+        The texture covers THE ENTIRE floor (UV [0,1] → whole floor), so pixel
+        dimensions = tile count × px_per_tile per axis.
         """
         try:
             nx = max(1, int(round(floor_w_m / tile_size_m)))
@@ -562,14 +571,14 @@ class O3DGuiSimRobot(SimRobot):
             tex_w = nx * px_per_tile
             tex_h = ny * px_per_tile
 
-            # Base: gạch trắng sáng (tile chính) — nổi RẤT rõ trên gradient
-            # dome dark, robot màu nóng dễ thấy đứng trên.
-            light = np.array([240, 240, 244], dtype=np.uint8)   # gần trắng
-            # Alternate shade nhẹ (checker) — chỉ khác light ~10 đơn vị
+            # Base: bright-white tile (primary) — stands out sharply against the
+            # dark gradient dome; warm-coloured robot is easy to see on top.
+            light = np.array([240, 240, 244], dtype=np.uint8)   # near-white
+            # Alternate checker shade — only ~10 units darker than light
             dark  = np.array([225, 225, 230], dtype=np.uint8)
-            # Grout (đường ron giữa các ô) — gray sáng, nét vẽ rõ nhưng không chát
+            # Grout (line between tiles) — light grey; visible but not harsh
             grout = np.array([160, 160, 168], dtype=np.uint8)
-            line_w = max(2, px_per_tile // 28)            # ~3px grout (mảnh hơn)
+            line_w = max(2, px_per_tile // 28)            # ~3px grout (thin)
 
             img = np.broadcast_to(light, (tex_h, tex_w, 3)).copy()
 
@@ -584,7 +593,7 @@ class O3DGuiSimRobot(SimRobot):
                         if x0 < x1 and y0 < y1:
                             img[y0:y1, x0:x1] = dark
 
-            # Grout lines (ngang + dọc)
+            # Grout lines (horizontal + vertical)
             for i in range(ny + 1):
                 y = i * px_per_tile
                 img[max(0, y - line_w // 2):min(tex_h, y + line_w // 2 + 1), :] = grout
@@ -594,7 +603,7 @@ class O3DGuiSimRobot(SimRobot):
 
             return self._o3d.geometry.Image(img)
         except Exception as e:                          # noqa: BLE001
-            logger.debug("Floor tile texture lỗi: %s", e)
+            logger.debug("Floor tile texture error: %s", e)
             return None
 
     def _add_cell_meshes(self, cell_config, project_root):
@@ -620,7 +629,7 @@ class O3DGuiSimRobot(SimRobot):
                 m.compute_vertex_normals()
                 self._vis.add_geometry(name, m, self._mat(_rgba(rgb)))
             except Exception as e:                    # noqa: BLE001
-                logger.debug("Bỏ qua mesh '%s': %s", mesh_rel, e)
+                logger.debug("Skipping mesh '%s': %s", mesh_rel, e)
 
         for attr, drgb in (("worktable", [0.52, 0.55, 0.58]),
                            ("robot_pedestal", [0.40, 0.40, 0.40]),
@@ -644,7 +653,7 @@ class O3DGuiSimRobot(SimRobot):
                                   rgb=[0.80, 0.75, 0.20])
 
     def _register_object(self, name, mesh_rel, world_xyz_mm, root, rgb):
-        """Object STL như dynamic geometry — transform world cập nhật mỗi frame."""
+        """Object STL as dynamic geometry — world transform updated every frame."""
         try:
             path = Path(mesh_rel)
             if not path.is_absolute():
@@ -654,25 +663,25 @@ class O3DGuiSimRobot(SimRobot):
             m = self._o3d.io.read_triangle_mesh(str(path))
             if m.is_empty():
                 return
-            m.scale(0.001, center=(0, 0, 0))          # mm → m, ở object-local frame
+            m.scale(0.001, center=(0, 0, 0))          # mm → m, in object-local frame
             m.compute_vertex_normals()
             self._vis.add_geometry(name, m, self._mat(_rgba(rgb)))
             world_T = np.eye(4)
             world_T[:3, 3] = [v / 1000.0 for v in world_xyz_mm]
             self._vis.scene.set_geometry_transform(name, world_T)
-            # Lưu initial_world_T để reset_scene() đầu mỗi trial — tránh object
-            # "trôi" dần qua nhiều trial (khay đã gắp + thả không tự quay về
-            # vị trí pick template).
+            # Store initial_world_T for reset_scene() at the start of each trial —
+            # prevents objects from "drifting" across trials (a tray that was picked
+            # and placed does not automatically return to the pick template position).
             self._objects[name] = {
                 "world_T": world_T.copy(),
                 "initial_world_T": world_T.copy(),
             }
         except Exception as e:                        # noqa: BLE001
-            logger.debug("Bỏ qua object '%s': %s", name, e)
+            logger.debug("Skipping object '%s': %s", name, e)
 
     # ── Render / animate ──────────────────────────────────────────────
     def _object_updates(self, T_tool0_mm: np.ndarray | None):
-        """List (name, world_T_m) cho mọi object; grasped bám tool0."""
+        """List of (name, world_T_m) for all objects; grasped object tracks tool0."""
         if not self._objects:
             return []
         if self._grasped_name and self._grasp_offset_m is not None \
@@ -683,10 +692,10 @@ class O3DGuiSimRobot(SimRobot):
         return [(name, o["world_T"]) for name, o in self._objects.items()]
 
     def _apply_frames(self, joints_deg, threadsafe: bool) -> None:
-        """Tính transform world cho mọi geom rồi áp (trực tiếp hoặc post lên GUI).
+        """Compute world transforms for all geometry and apply them (directly or via GUI post).
 
-        Skip nếu cửa sổ đã đóng (`_open=False`) — tránh post_to_main_thread
-        treo khi Application đang teardown.
+        Skips if the window is closed (`_open=False`) — avoids hanging
+        post_to_main_thread calls during Application teardown.
         """
         if not self._open:
             return
@@ -698,7 +707,7 @@ class O3DGuiSimRobot(SimRobot):
             if T is None:
                 continue
             Tm = T.copy()
-            Tm[:3, 3] = T[:3, 3] / 1000.0             # mm → m
+            Tm[:3, 3] = T[:3, 3] / 1000.0             # mm → m (convert translation)
             updates.append((geom, Tm))
         updates += self._object_updates(frames.get("link_tool0"))
 
@@ -709,12 +718,12 @@ class O3DGuiSimRobot(SimRobot):
                     scene.set_geometry_transform(name, Tm)
                 except Exception:                     # noqa: BLE001
                     pass
-            # Camera setup KHÔNG làm ở đây nữa: post_to_main_thread có thể fire
-            # trước khi widget hoàn thành layout đầu tiên → Filament
-            # `setProjection` thấy aspect ratio = 0/0 → in cảnh báo
-            # "Camera preconditions not met" + dùng default projection. Camera
-            # giờ được set lazy trong `_on_anim_tick` khi content_rect đã có
-            # kích thước thật (xem `_on_anim_tick`).
+            # Camera setup is NO LONGER done here: post_to_main_thread can fire
+            # before the widget completes its first layout → Filament's
+            # `setProjection` sees aspect ratio 0/0 → prints "Camera preconditions
+            # not met" warning and falls back to the default projection. Camera is
+            # now set lazily in `_on_anim_tick` once content_rect has a real size
+            # (see `_on_anim_tick`).
             try:
                 self._vis.post_redraw()
             except Exception:                         # noqa: BLE001
@@ -738,39 +747,42 @@ class O3DGuiSimRobot(SimRobot):
             time.sleep(self._anim_dt)
 
     def _on_anim_tick(self, *args):
-        """Tick liên tục khi is_animating=True → luôn vẽ lại (robot tự chạy).
+        """Ticks continuously while is_animating=True → redraws every frame (robot runs smoothly).
 
-        Trả REDRAW mỗi frame: cost vsync-capped, không đáng kể với cảnh này, và
-        đảm bảo các transform vừa post từ worker hiện ngay, không cần rê chuột.
+        Returns REDRAW every frame: cost is vsync-capped, negligible for this scene,
+        and ensures transforms just posted from the worker appear immediately without
+        requiring mouse movement.
 
-        Đây cũng là chỗ ĐÚNG để set camera lần đầu — NHƯNG phải đợi đủ vài
-        tick. Lý do: `content_rect` trả ngay kích thước cấu hình (1280×800) từ
-        constructor, KHÔNG phản ánh state thực của Filament view (vốn chỉ có
-        viewport hợp lệ SAU khi render frame đầu). Tick fires TRƯỚC render mỗi
-        frame; render đầu chỉ chạy SAU tick #1 → tick #2 trở đi mới đảm bảo
-        view đã sized. Đợi tick ≥3 cho chắc (cộng thêm 1 frame buffer).
+        This is also the CORRECT place to set the camera for the first time — but we
+        must wait for several ticks. Reason: `content_rect` immediately returns the
+        configured size (1280×800) from the constructor, which does NOT reflect the
+        actual Filament view state (which only has a valid viewport AFTER the first
+        render frame). The tick fires BEFORE each render frame; the first render runs
+        only AFTER tick #1 → tick #2 onward is guaranteed to have a sized view.
+        We wait for tick ≥3 for safety (an extra frame buffer).
         """
         if not self._cam_done:
             self._cam_tick += 1
-            if self._cam_tick >= 3:                   # 2 render frames đã chạy
+            if self._cam_tick >= 3:                   # 2 render frames have completed
                 self._cam_done = True
                 self._setup_camera()
         return self._o3d.visualization.O3DVisualizer.TickResult.REDRAW
 
     def _setup_camera(self):
-        """Khung nhìn 3/4 ban đầu; fallback reset_camera_to_default.
+        """Initial 3/4 view; fallback to reset_camera_to_default.
 
-        Robot làm việc về phía +X (bàn, vật, camera đều ở X≈700mm). Đặt camera ở
-        phía +X nhìn ngược về -X → thấy MẶT TRƯỚC robot hướng ra người xem
-        ("quay ra ngoài"), tay với về phía mình — giống góc nhìn RoboDK. Đổi dấu
-        thành phần Y (-1.5 ↔ +1.5) nếu muốn xoay sang đường chéo bên kia.
+        The robot works toward +X (table, objects, and eye camera all at X≈700mm).
+        Place the viewport camera on the +X side looking back toward -X → the FRONT
+        face of the robot faces the viewer ("facing outward"), arm reaching toward
+        the user — matches the RoboDK default view angle. Flip the sign of the Y
+        component (-1.5 ↔ +1.5) to switch to the opposite diagonal.
         """
         try:
             center = np.array([0.35, 0.0, 0.50])
             eye = center + np.array([1.8, -1.5, 0.95])
             self._vis.setup_camera(60.0, center, eye, [0.0, 0.0, 1.0])
         except Exception as e:                        # noqa: BLE001
-            logger.debug("setup_camera lỗi (%s) — dùng default", e)
+            logger.debug("setup_camera error (%s) — using default", e)
             try:
                 self._vis.reset_camera_to_default()
             except Exception:                         # noqa: BLE001
@@ -778,11 +790,11 @@ class O3DGuiSimRobot(SimRobot):
 
     # ── Real-mode mirror API ──────────────────────────────────────────
     def mirror_state(self, joints_deg: list[float]) -> None:
-        """Render external joints (degrees) — không animation.
+        """Render external joint angles (degrees) — no animation interpolation.
 
-        Dùng cho real-mode digital twin: HSE backend poll Joints @10Hz từ
-        YRC1000, DigitalTwinMirror callback gọi method này để render state THẬT
-        của robot lên viewport (thread-safe qua post_to_main_thread).
+        Used for real-mode digital twin: the HSE backend polls Joints @10Hz from
+        the YRC1000; DigitalTwinMirror callback calls this method to render the
+        robot's REAL state in the viewport (thread-safe via post_to_main_thread).
         """
         if not self._open:
             return
@@ -803,7 +815,7 @@ class O3DGuiSimRobot(SimRobot):
             self._animate(start, list(self._joints))
 
     def timer(self, seconds: float) -> None:
-        """Worker chỉ ngủ — GUI tự render trên main thread."""
+        """Worker sleeps only — GUI renders independently on the main thread."""
         deadline = time.monotonic() + max(0.0, seconds)
         while time.monotonic() < deadline:
             if not self._open:
@@ -812,38 +824,38 @@ class O3DGuiSimRobot(SimRobot):
 
     # ── Lifecycle ─────────────────────────────────────────────────────
     def run_gui(self, message: str = "") -> None:
-        """BLOCKING — chạy event loop GUI trên MAIN thread tới khi user đóng."""
+        """BLOCKING — runs the GUI event loop on the MAIN thread until the user closes."""
         if message:
             logger.info(message)
         self._running = True
         try:
-            self._gui.Application.instance.run()      # block tới khi đóng cửa sổ
+            self._gui.Application.instance.run()      # blocks until window is closed
         finally:
             self._open = False
             self._running = False
 
     def _on_close(self) -> bool:
-        """User đóng cửa sổ → set flag để worker abort sớm."""
+        """User closes the window → set flag so the worker aborts early."""
         self._open = False
-        # KHÔNG gọi Application.quit() ở đây — run() đang trên main thread sẽ
-        # tự return sau khi cửa sổ cuối cùng đóng. Quit từ event handler có thể
-        # deadlock với event loop đang chạy.
-        return True                                   # cho phép đóng
+        # Do NOT call Application.quit() here — run() on the main thread will
+        # return automatically after the last window closes. Calling quit() from
+        # an event handler can deadlock with the running event loop.
+        return True                                   # allow the close
 
     def spin(self, message: str = "") -> None:
-        """Tương thích interface: nếu gọi từ worker, chờ tới khi cửa sổ đóng."""
+        """Interface compatibility: if called from a worker, waits until the window closes."""
         if message:
             logger.info(message)
         while self._open:
             time.sleep(0.05)
 
     def disconnect(self) -> None:
-        """Tear-down: ép Application quit để Filament thả C-level threads.
+        """Tear-down: force Application.quit() so Filament releases C-level threads.
 
-        Gọi SAU khi run_gui() đã return (window đã đóng). Lý do explicit quit:
-        Filament có background threads (asset loader, renderer pool) không tự
-        chết khi run() return — Python process không exit. Application.quit()
-        ép cleanup.
+        Call AFTER run_gui() has returned (window already closed). Explicit quit is
+        needed because Filament has background threads (asset loader, renderer pool)
+        that do not die automatically when run() returns — the Python process would
+        otherwise hang. Application.quit() forces cleanup.
         """
         self._open = False
         try:
@@ -851,7 +863,7 @@ class O3DGuiSimRobot(SimRobot):
             if inst is not None:
                 inst.quit()
         except Exception as e:                          # noqa: BLE001
-            logger.debug("Application.quit() lỗi: %s", e)
+            logger.debug("Application.quit() error: %s", e)
 
     def Stop(self) -> None:
         logger.debug("O3DGuiSimRobot.Stop() no-op")
@@ -885,31 +897,31 @@ class O3DGuiSimRobot(SimRobot):
             if d < best_d:
                 best_name, best_d = name, d
         if best_name is None or best_d > 0.25:
-            logger.debug("Grasp close nhưng không có object gần tool0 (<25cm)")
+            logger.debug("Grasp closed but no object near tool0 (<25cm)")
             return
         T_tool_m = T_tool0.copy()
         T_tool_m[:3, 3] = tool0_pos_m
         self._grasp_offset_m = np.linalg.inv(T_tool_m) @ self._objects[best_name]["world_T"]
         self._grasped_name = best_name
-        logger.info("O3DVisualizer: grasped '%s' (d=%.3fm) — sẽ theo gripper",
+        logger.info("O3DVisualizer: grasped '%s' (d=%.3fm) — will follow gripper",
                     best_name, best_d)
 
     def _release_object(self) -> None:
         if self._grasped_name:
             pos = self._objects[self._grasped_name]["world_T"][:3, 3].round(3).tolist()
-            logger.info("O3DVisualizer: released '%s' tại %s", self._grasped_name, pos)
+            logger.info("O3DVisualizer: released '%s' at %s", self._grasped_name, pos)
         self._grasped_name = None
         self._grasp_offset_m = None
 
-    # ── Scene reset (gọi từ Orchestrator đầu mỗi trial) ───────────────
+    # ── Scene reset (called from Orchestrator at the start of each trial) ─────
     def reset_scene(self) -> None:
-        """Reset mọi object về `initial_world_T` + clear grasped state.
+        """Reset all objects to `initial_world_T` and clear the grasped state.
 
-        Gọi đầu mỗi trial qua `Orchestrator.run_one_cycle` (duck-type
-        `hasattr(robot, 'reset_scene')`). Tránh tình trạng khay sau khi
-        gắp-thả ở vị trí PLACE không tự quay về PICK template để trial kế
-        tiếp gắp lại — mock detection trả pose template gốc, nhưng visual
-        mesh nằm lệch → robot "gắp vào không khí".
+        Called at the start of each trial via `Orchestrator.run_one_cycle` (duck-typed
+        via `hasattr(robot, 'reset_scene')`). Prevents a tray that was picked and
+        placed at the PLACE position from staying there for the next trial — mock
+        detection returns the original template pose, but the visual mesh would be
+        misaligned → robot "grasps into empty air".
         """
         self._grasped_name = None
         self._grasp_offset_m = None
@@ -927,4 +939,4 @@ class O3DGuiSimRobot(SimRobot):
                     ),
                 )
             except Exception as e:                          # noqa: BLE001
-                logger.debug("reset_scene set_geometry_transform lỗi '%s': %s", name, e)
+                logger.debug("reset_scene set_geometry_transform error '%s': %s", name, e)

@@ -1,10 +1,10 @@
 """
 forward_kinematics.py
 ─────────────────────
-Pure-numpy forward kinematics cho 6R serial robot dùng Modified DH.
+Pure-numpy forward kinematics for a 6R serial robot using Modified DH.
 
-KHÔNG phụ thuộc RoboDK — chạy độc lập + testable. Tốc độ ~50µs/call trên CPU
-modern → predict 100-sample trajectory < 5ms.
+No RoboDK dependency — runs standalone + testable. Speed ~50µs/call on a
+modern CPU → predicts a 100-sample trajectory in < 5ms.
 """
 from __future__ import annotations
 
@@ -17,12 +17,12 @@ from .dh_model import DHLink, RobotDHModel
 
 @lru_cache(maxsize=None)
 def _dh_link_consts(link: DHLink) -> tuple[float, float, float, np.ndarray]:
-    """Hằng số của 1 link KHÔNG phụ thuộc joint angle — cache 1 lần.
+    """Constants for one link that do NOT depend on joint angle — cached once.
 
-    `cos/sin(alpha)`, `theta_offset` và toàn bộ entry hằng của ma trận DH
-    (a, -sa, -sa·d, ca, ca·d, hàng cuối) được dựng sẵn vào template. FK khỏi
-    tính lại trig của alpha hay parse list lồng mỗi call → nhanh hơn ~1.7×.
-    Kết quả số HỌC y hệt (cùng phép cos/sin/nhân).
+    `cos/sin(alpha)`, `theta_offset`, and all constant entries of the DH matrix
+    (a, -sa, -sa·d, ca, ca·d, bottom row) are pre-built into a template. FK
+    avoids recomputing alpha trig or parsing nested lists on every call → ~1.7×
+    faster. Numerical results are identical (same cos/sin/multiply operations).
     """
     ca, sa = float(np.cos(link.alpha)), float(np.sin(link.alpha))
     tpl = np.zeros((4, 4))
@@ -37,18 +37,19 @@ def _dh_link_consts(link: DHLink) -> tuple[float, float, float, np.ndarray]:
 
 @lru_cache(maxsize=None)
 def _base_transform_cached(model: RobotDHModel) -> np.ndarray:
-    """Base transform cache (chỉ phụ thuộc base_xyz/base_rpy của model)."""
+    """Base transform cache (depends only on base_xyz/base_rpy of the model)."""
     return _base_transform(model)
 
 
 def _dh_transform(link: DHLink, joint_rad: float) -> np.ndarray:
-    """Modified DH 4x4 transform cho 1 link.
+    """Modified DH 4x4 transform for one link.
 
     Per Craig 1986 convention:
         T = Rot_x(alpha) · Trans_x(a) · Rot_z(theta + offset) · Trans_z(d)
 
-    Chỉ 6 entry phụ thuộc joint angle; phần còn lại lấy từ template cache
-    (`_dh_link_consts`) → bit-identical với bản dựng `np.array([...])` cũ.
+    Only 6 entries depend on the joint angle; the rest are taken from the
+    template cache (`_dh_link_consts`) → bit-identical with the old
+    `np.array([...])` construction.
     """
     ca, sa, theta_offset, tpl = _dh_link_consts(link)
     theta = float(joint_rad) + theta_offset
@@ -65,10 +66,10 @@ def _dh_transform(link: DHLink, joint_rad: float) -> np.ndarray:
 
 
 def _dh_transform_batch(link: DHLink, q_col: np.ndarray) -> np.ndarray:
-    """Stack (N,4,4) DH transform cho N joint angle cùng link — vectorized.
+    """Stack (N,4,4) DH transforms for N joint angles of the same link — vectorized.
 
-    M[k] == _dh_transform(link, q_col[k]) (bit-identical): cùng cos/sin và phép
-    nhân, chỉ chạy theo vector numpy thay vì vòng lặp Python.
+    M[k] == _dh_transform(link, q_col[k]) (bit-identical): same cos/sin and
+    multiply operations, executed as numpy vectors instead of a Python loop.
     """
     ca, sa, theta_offset, _ = _dh_link_consts(link)
     theta = q_col + theta_offset
@@ -91,7 +92,7 @@ def _dh_transform_batch(link: DHLink, q_col: np.ndarray) -> np.ndarray:
 
 
 def _base_transform(model: RobotDHModel) -> np.ndarray:
-    """Compose base frame transform từ base_xyz + base_rpy."""
+    """Compose base frame transform from base_xyz + base_rpy."""
     roll, pitch, yaw = model.base_rpy_rad
     cr, sr = np.cos(roll), np.sin(roll)
     cp, sp = np.cos(pitch), np.sin(pitch)
@@ -112,13 +113,13 @@ def forward_kinematics(
     model: RobotDHModel,
     joints_rad: list[float] | tuple[float, ...] | np.ndarray,
 ) -> np.ndarray:
-    """Compute TCP pose 4x4 trong WORLD frame từ joint angles (radian).
+    """Compute TCP pose 4x4 in the WORLD frame from joint angles (radians).
 
     Returns:
-        T_world_tcp: 4x4 homogeneous transform. Translation mm.
+        T_world_tcp: 4x4 homogeneous transform. Translation in mm.
 
     Raises:
-        ValueError: Joint count không khớp model.
+        ValueError: Joint count does not match the model.
     """
     joints = np.asarray(joints_rad, dtype=float).flatten()
     if len(joints) != model.num_joints():
@@ -130,7 +131,7 @@ def forward_kinematics(
     for link, q in zip(model.links, joints):
         T = T @ _dh_transform(link, q)
 
-    # Apply TCP offset theo Z tool (cuối cùng) nếu có
+    # Apply TCP offset along the tool Z axis (last frame) if present
     if model.tool_offset_mm != 0.0:
         tool = np.eye(4)
         tool[2, 3] = model.tool_offset_mm
@@ -143,15 +144,15 @@ def joint_positions(
     model: RobotDHModel,
     joints_rad: list[float] | tuple[float, ...] | np.ndarray,
 ) -> list[np.ndarray]:
-    """Compute vị trí (x, y, z) của TỪNG joint origin trong world frame.
+    """Compute the (x, y, z) position of EACH joint origin in the world frame.
 
-    Hữu ích cho:
-      - Visualize skeleton trong matplotlib 3D
+    Useful for:
+      - Visualizing the skeleton in matplotlib 3D
       - Self-collision check (segment between consecutive joints)
 
     Returns:
-        List 7 điểm 3D: [base, J1, J2, J3, J4, J5, J6, TCP] — len = num_joints + 2
-        (bao gồm base origin và TCP cuối).
+        List of 7 3D points: [base, J1, J2, J3, J4, J5, J6, TCP] — len = num_joints + 2
+        (includes the base origin and the final TCP).
     """
     joints = np.asarray(joints_rad, dtype=float).flatten()
     if len(joints) != model.num_joints():
@@ -180,20 +181,21 @@ def joint_positions_batch(
     model: RobotDHModel,
     joints_batch_rad: np.ndarray,
 ) -> list[np.ndarray]:
-    """Vectorized `joint_positions` cho N samples cùng lúc (batched matmul).
+    """Vectorized `joint_positions` for N samples at once (batched matmul).
 
-    Tính FK cho cả batch trong vài phép matmul (N,4,4) thay vì gọi
-    `joint_positions` N lần → nhanh hơn nhiều cho self-collision check trên
-    trajectory (~30× cho 200+ samples). Vì batched matmul tính từng sample độc
-    lập bằng đúng routine BLAS, kết quả BIT-IDENTICAL với từng call lẻ:
+    Computes FK for the entire batch with a few (N,4,4) matmuls instead of
+    calling `joint_positions` N times → much faster for self-collision checks
+    over a trajectory (~30× for 200+ samples). Because batched matmul processes
+    each sample independently using the exact same BLAS routine, results are
+    BIT-IDENTICAL to individual calls:
         positions[p][k] == joint_positions(model, joints_batch_rad[k])[p]
 
     Args:
-        joints_batch_rad: (N, num_joints) joint angles (radian).
+        joints_batch_rad: (N, num_joints) joint angles (radians).
 
     Returns:
-        List dài (num_joints + 1 [+1 nếu tool_offset]); mỗi phần tử là array
-        (N, 3) — vị trí world của 1 joint origin cho tất cả N samples.
+        List of length (num_joints + 1 [+1 if tool_offset]); each element is an
+        (N, 3) array — world position of one joint origin for all N samples.
     """
     J = np.asarray(joints_batch_rad, dtype=float)
     if J.ndim != 2 or J.shape[1] != model.num_joints():

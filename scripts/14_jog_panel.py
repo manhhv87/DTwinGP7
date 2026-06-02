@@ -2,9 +2,9 @@
 """
 14_jog_panel.py
 ───────────────
-Standalone JOG mode — mở viewport Open3D + Control Panel (style RoboDK) cho phép
-JOG robot bằng joint slider hoặc Cartesian button. Không chạy experiment, không
-gửi command tới robot thật — sim only.
+Standalone JOG mode — opens Open3D viewport + Control Panel (RoboDK style) allowing
+jogging the robot via joint sliders or Cartesian buttons. No experiment runs, no
+commands sent to the real robot — sim only.
 
 Usage:
     python scripts/14_jog_panel.py
@@ -28,7 +28,7 @@ from src.utils import setup_logging                                   # noqa: E4
 
 def parse_args() -> argparse.Namespace:
     # ASCII-only description so --help works on Windows cp1252 consoles.
-    # Full Vietnamese docstring vẫn ở đầu file để dev đọc.
+    # Full docstring is at the top of the file for developer reference.
     p = argparse.ArgumentParser(
         description=("Standalone JOG mode: open Open3D viewport + "
                      "RoboDK-style control panel for joint / Cartesian jog "
@@ -47,24 +47,24 @@ def main() -> int:
 
     config_path = PROJECT_ROOT / args.config
     if not config_path.exists():
-        print(f"Không tìm thấy cell config: {config_path}", file=sys.stderr)
+        print(f"Cell config not found: {config_path}", file=sys.stderr)
         return 2
     cell_config = CellConfig.from_yaml(config_path)
 
-    # Robot base position + home joints lấy từ cell config.
+    # Robot base position + home joints loaded from cell config.
     base_xyz = tuple(cell_config.robot.pose.xyz_mm) \
         if getattr(cell_config.robot, "pose", None) else (0.0, 0.0, 630.0)
     home = list(cell_config.robot.home_joints_deg) \
         if getattr(cell_config.robot, "home_joints_deg", None) else [0.0] * 6
 
-    # Viewport — phải tạo TRƯỚC khi run_gui() (init Application + add window).
+    # Viewport — must be created BEFORE run_gui() (initialises Application + adds window).
     robot = O3DGuiSimRobot(
         base_xyz=base_xyz,
         home_joints=home,
         cell_config=cell_config,
         project_root=PROJECT_ROOT,
     )
-    # Control panel — cùng gui.Application, cửa sổ thứ 2.
+    # Control panel — same gui.Application, second window.
     _panel = ControlPanel(
         robot=robot,
         model=robot._model,
@@ -74,8 +74,8 @@ def main() -> int:
 
     try:
         robot.run_gui(message=(
-            "JOG mode — kéo slider/nhấn ± X/Y/Z trong panel để jog. "
-            "Đóng cửa sổ viewport để thoát."
+            "JOG mode — drag sliders or press ± X/Y/Z in the panel to jog. "
+            "Close the viewport window to exit."
         ))
     finally:
         try:
@@ -83,7 +83,7 @@ def main() -> int:
         except Exception:                                              # noqa: BLE001
             pass
 
-    # Force exit để bypass Filament/atexit non-daemon thread (xem 03 _shutdown).
+    # Force exit to bypass Filament/atexit non-daemon thread (see 03 _shutdown).
     os._exit(0)
 
 

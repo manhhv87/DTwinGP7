@@ -1,26 +1,26 @@
 """
 inverse_kinematics.py
 ─────────────────────
-Numerical inverse kinematics qua Damped Least Squares (DLS) — pure numpy.
+Numerical inverse kinematics via Damped Least Squares (DLS) — pure numpy.
 
-KHÔNG phụ thuộc RoboDK. Cho phép HSE backend real mode chạy mà KHÔNG cần
-RoboDK API call cho mỗi MoveJ → bypass RoboDK Free quota hoàn toàn.
+No dependency on RoboDK. Allows HSE backend real mode to run WITHOUT
+RoboDK API calls for each MoveJ → bypasses RoboDK Free quota entirely.
 
-Thuật toán DLS:
+DLS algorithm:
     q_{k+1} = q_k + J^T (J J^T + λ^2 I)^{-1} · error
 
-trong đó:
-    - J: 6x6 spatial Jacobian (numerical finite-difference từ FK)
+where:
+    - J: 6x6 spatial Jacobian (numerical finite-difference from FK)
     - error: 6-vector [position (mm), rotation (rad axis-angle)]
-    - λ: damping factor (default 0.1) — tránh singularity instability
+    - λ: damping factor (default 0.1) — prevents singularity instability
 
-Performance: ~1-5ms/call trên CPU modern cho GP7 (6-DOF, ≤100 iter).
-Accuracy: tol position 0.5mm, orientation 1e-3 rad ~ 0.06°.
+Performance: ~1-5ms/call on modern CPU for GP7 (6-DOF, ≤100 iter).
+Accuracy: position tol 0.5mm, orientation 1e-3 rad ~ 0.06°.
 
 Convergence:
-    - q_init gần solution → 5-15 iter
-    - q_init xa solution → có thể không converge → return None
-    - Singular config (J rank < 6) → damping cứu, vẫn converge nhưng chậm
+    - q_init close to solution → 5-15 iter
+    - q_init far from solution → may not converge → return None
+    - Singular config (J rank < 6) → damping rescues, still converges but slower
 """
 from __future__ import annotations
 
@@ -37,7 +37,7 @@ from .urdf_chain import (
 
 
 def _fk(model, q):
-    """Polymorphic FK: URDFRobot hoặc RobotDHModel."""
+    """Polymorphic FK: URDFRobot or RobotDHModel."""
     if isinstance(model, URDFRobot):
         return forward_kinematics_urdf(model, q)
     return forward_kinematics(model, q)
@@ -46,18 +46,18 @@ def _fk(model, q):
 def _jacobian_analytical_urdf(
     model: URDFRobot, q: np.ndarray,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Analytical Jacobian cho URDFRobot — không cần finite-difference.
+    """Analytical Jacobian for URDFRobot — no finite-difference needed.
 
-    Cho mỗi revolute joint i:
-      J[:3, i] = z_i × (p_tcp - p_i)   (linear velocity từ axis crossing lever arm)
+    For each revolute joint i:
+      J[:3, i] = z_i × (p_tcp - p_i)   (linear velocity from axis crossing lever arm)
       J[3:, i] = z_i                    (angular velocity = axis direction)
 
     Returns:
-        T0: (4,4) FK pose tại q (tránh caller tính FK lần nữa cho convergence check)
+        T0: (4,4) FK pose at q (avoids caller recomputing FK for convergence check)
         J:  (6, n) Jacobian.
 
-    Performance: 1 FK pass thay vì 7 (1 + 6 finite-diff perturbations) → ~6× faster
-    Jacobian computation, giảm IK total từ ~3ms xuống ~1ms.
+    Performance: 1 FK pass instead of 7 (1 + 6 finite-diff perturbations) → ~6× faster
+    Jacobian computation, reducing IK total from ~3ms to ~1ms.
     """
     T0, p_joints, z_joints = fk_with_joint_frames_urdf(model, q)
     p_tcp = T0[:3, 3]
@@ -74,15 +74,16 @@ def _jacobian_analytical_urdf(
 def _jacobian_numerical(
     model, q: np.ndarray, eps: float = 1e-6, T0: np.ndarray | None = None,
 ) -> np.ndarray:
-    """Spatial Jacobian 6x6 qua finite differences.
+    """Spatial Jacobian 6x6 via finite differences.
 
     Args:
-        T0: FK(q) đã tính sẵn (tránh tính lại — caller thường vừa tính cho
-            convergence check). None → tự tính. Truyền vào giữ kết quả y hệt.
+        T0: FK(q) already computed (avoids recomputation — caller typically just
+            computed it for convergence check). None → compute internally. Passing
+            it in keeps results identical.
 
     Returns:
         J: shape (6, num_joints). Rows 0-2 = linear velocity (mm/rad),
-           rows 3-5 = angular velocity (rad/rad). Cột i = đạo hàm theo joint i.
+           rows 3-5 = angular velocity (rad/rad). Column i = derivative w.r.t. joint i.
     """
     n = model.num_joints()
     if T0 is None:
@@ -97,9 +98,9 @@ def _jacobian_numerical(
         T1 = _fk(model, q_plus)
         # Position derivative
         J[:3, i] = (T1[:3, 3] - p0) / eps
-        # Orientation derivative qua skew approximation:
+        # Orientation derivative via skew approximation:
         #   R1 = R0 · (I + eps·skew(ω)) → skew(ω) ≈ (R0^T · R1 - I) / eps
-        # Body-frame angular velocity → convert sang world: ω_world = R0 · ω_body
+        # Body-frame angular velocity → convert to world: ω_world = R0 · ω_body
         dR_body = (R0.T @ T1[:3, :3] - np.eye(3)) / eps
         omega_body = np.array([
             dR_body[2, 1] - dR_body[1, 2],
@@ -115,7 +116,7 @@ def _pose_error(T_current: np.ndarray, T_target: np.ndarray) -> np.ndarray:
 
     Returns:
         err: shape (6,). err[:3] = target - current position (mm).
-            err[3:] = rotation vector (axis * angle, rad) đưa current → target.
+            err[3:] = rotation vector (axis * angle, rad) rotating current → target.
     """
     pos_err = T_target[:3, 3] - T_current[:3, 3]
 
@@ -129,8 +130,8 @@ def _pose_error(T_current: np.ndarray, T_target: np.ndarray) -> np.ndarray:
         rot_err = np.zeros(3)
     elif abs(theta - np.pi) < 1e-6:
         # Special case: 180° rotation. Standard formula sin(θ)≈0 → div-by-zero.
-        # Robust algorithm: R + I = 2·n·n^T at θ=π → cột nào có norm lớn nhất
-        # chứa axis (numerical stable kể cả khi 2 diag entries gần bằng nhau).
+        # Robust algorithm: R + I = 2·n·n^T at θ=π → column with largest norm
+        # contains the axis (numerically stable even when 2 diag entries are nearly equal).
         M = R_err + np.eye(3)
         col_norms = np.linalg.norm(M, axis=0)
         idx = int(np.argmax(col_norms))
@@ -139,8 +140,8 @@ def _pose_error(T_current: np.ndarray, T_target: np.ndarray) -> np.ndarray:
             axis = np.array([1.0, 0.0, 0.0])
         else:
             axis = M[:, idx] / col_norms[idx]
-        # Sign disambiguation: axis-angle in {+axis, -axis} đều biểu diễn 180°
-        # rotation; DLS chỉ cần direction, sign không matter cho convergence.
+        # Sign disambiguation: axis-angle in {+axis, -axis} both represent 180°
+        # rotation; DLS only needs direction, sign does not matter for convergence.
         rot_err = axis * theta
     else:
         # Standard case
@@ -155,25 +156,27 @@ def _pose_error(T_current: np.ndarray, T_target: np.ndarray) -> np.ndarray:
 
 
 def manipulability(model, q_rad, char_length_mm: float = 1000.0) -> float:
-    """Chỉ số manipulability Yoshikawa: w = sqrt(det(Jₙ·Jₙᵀ)).
+    """Yoshikawa manipulability index: w = sqrt(det(Jₙ·Jₙᵀ)).
 
-    Đo độ "khỏe" của cấu hình — khả năng robot tạo vận tốc TCP theo mọi hướng.
-    w → 0 tại **singularity** (Jacobian mất hạng): wrist (θ5≈0, trục 4∥6),
-    boundary (tay duỗi hết tầm), hoặc shoulder. Industrial controller dùng w
-    để giảm tốc / cảnh báo khi jog Cartesian gần singularity.
+    Measures configuration "health" — the robot's ability to generate TCP
+    velocity in all directions. w → 0 at **singularity** (Jacobian rank-deficient):
+    wrist (θ5≈0, axes 4∥6), boundary (arm fully extended), or shoulder.
+    Industrial controllers use w to slow down / warn when Cartesian-jogging
+    near a singularity.
 
-    Phần tịnh tiến của J (mm/rad) được chuẩn hoá / `char_length_mm` để cùng
-    thang đo với phần xoay (rad/rad) — nếu không, đơn vị mm lấn át làm w vô
-    nghĩa. char_length ~ tầm với robot (GP7 ≈ 927mm → dùng 1000mm).
+    The translational part of J (mm/rad) is normalised by `char_length_mm` to
+    match the scale of the rotational part (rad/rad) — without this, mm units
+    dominate and w becomes meaningless. char_length ~ robot reach (GP7 ≈ 927mm
+    → use 1000mm).
 
     Args:
-        model: URDFRobot hoặc RobotDHModel.
-        q_rad: joints (radian), 6 phần tử.
-        char_length_mm: độ dài đặc trưng để chuẩn hoá phần tịnh tiến.
+        model: URDFRobot or RobotDHModel.
+        q_rad: joints (radian), 6 elements.
+        char_length_mm: characteristic length for normalising the translational part.
 
     Returns:
-        w ≥ 0. GP7: ~0.07-0.08 khi khỏe, < 0.01 khi gần singularity, = 0 tại
-        singularity chính xác.
+        w ≥ 0. GP7: ~0.07-0.08 when healthy, < 0.01 near singularity, = 0 at
+        exact singularity.
     """
     q = np.asarray(q_rad, dtype=float).flatten()
     if isinstance(model, URDFRobot):
@@ -181,7 +184,7 @@ def manipulability(model, q_rad, char_length_mm: float = 1000.0) -> float:
     else:
         J = _jacobian_numerical(model, q)
     Jn = J.copy()
-    Jn[:3, :] /= char_length_mm                  # chuẩn hoá lin về cùng thang ang
+    Jn[:3, :] /= char_length_mm                  # normalise linear to same scale as angular
     return float(np.sqrt(max(np.linalg.det(Jn @ Jn.T), 0.0)))
 
 
@@ -195,49 +198,50 @@ def inverse_kinematics(
     damping: float = 0.05,
     max_step_deg: float = 20.0,
 ) -> list[float] | None:
-    """Giải IK numerical: pose 4x4 → joints (radian).
+    """Solve IK numerically: 4x4 pose → joints (radian).
 
     Args:
-        model: GP7 (hoặc generic 6R) DH model.
-        target_pose_world: 4x4 homogeneous transform trong WORLD frame (mm).
-        q_init_rad: Initial guess (radian) — thường là current joints để converge nhanh.
-        max_iter: Max iterations (default 200). Mỗi iter ~50-100µs cho 6-DOF.
-        tol_mm: Position tolerance (mm). Default 0.1mm — đủ cao cho mọi industrial task.
+        model: GP7 (or generic 6R) DH model.
+        target_pose_world: 4x4 homogeneous transform in WORLD frame (mm).
+        q_init_rad: Initial guess (radian) — typically current joints for fast convergence.
+        max_iter: Max iterations (default 200). Each iter ~50-100µs for 6-DOF.
+        tol_mm: Position tolerance (mm). Default 0.1mm — sufficient for any industrial task.
         tol_rad: Orientation tolerance (radian). 1e-4 ~ 0.006°.
-        damping: DLS damping factor λ. Lớn → ổn định, chậm. Nhỏ → nhanh, kém ổn định
-            ở singularity. 0.05 là default tốt (nhỏ hơn → converge nhanh khi xa solution).
-        max_step_deg: Cap step size per iter để tránh overshoot. 20° là an toàn.
+        damping: DLS damping factor λ. Larger → more stable, slower. Smaller → faster,
+            less stable near singularity. 0.05 is a good default (smaller → faster
+            convergence when far from solution).
+        max_step_deg: Cap step size per iter to avoid overshoot. 20° is safe.
 
     Returns:
-        Joints (radian) list 6 phần tử nếu converge, None nếu fail.
+        Joints (radian) list of 6 elements if converged, None if failed.
 
     Notes:
-        - Joint limits được clip mỗi iter — nếu solution đúng nằm ngoài limit,
-          IK sẽ converge tới điểm trên biên.
-        - Multi-solution: chỉ trả 1 solution gần q_init. Để pick branch khác,
-          retry với q_init khác.
+        - Joint limits are clipped each iter — if the true solution lies outside limits,
+          IK will converge to the nearest boundary point.
+        - Multi-solution: returns only 1 solution near q_init. To pick a different
+          branch, retry with a different q_init.
     """
     q = np.asarray(q_init_rad, dtype=float).flatten()
     if len(q) != model.num_joints():
         raise ValueError(
-            f"q_init phải có {model.num_joints()} phần tử, got {len(q)}"
+            f"q_init must have {model.num_joints()} elements, got {len(q)}"
         )
     target = np.asarray(target_pose_world, dtype=float)
     if target.shape != (4, 4):
-        raise ValueError(f"target_pose phải 4x4, got {target.shape}")
+        raise ValueError(f"target_pose must be 4x4, got {target.shape}")
 
     max_step_rad = np.deg2rad(max_step_deg)
     damping_sq = damping ** 2
     I6 = np.eye(6)
 
     # Joint limits
-    # Polymorphic: URDFRobot dùng `.joints`, RobotDHModel dùng `.links`
+    # Polymorphic: URDFRobot uses `.joints`, RobotDHModel uses `.links`
     link_attr = getattr(model, "joints", None) or getattr(model, "links", None)
     q_min = np.array([j.joint_min for j in link_attr])
     q_max = np.array([j.joint_max for j in link_attr])
 
-    # URDFRobot → analytical Jacobian (6× faster). DH model → giữ finite-diff
-    # (legacy, ít dùng — analytical formula sẽ phải implement riêng cho DH).
+    # URDFRobot → analytical Jacobian (6× faster). DH model → keep finite-diff
+    # (legacy, rarely used — analytical formula would need to be implemented for DH).
     use_analytical = isinstance(model, URDFRobot)
 
     for _ in range(max_iter):
@@ -282,24 +286,25 @@ def inverse_kinematics_seeded(
     seed: int = 0,
     **ik_kwargs,
 ) -> list[float] | None:
-    """IK bền vững: thử từ `q_init` trước, fail thì retry từ nhiều seed đa dạng.
+    """Robust IK: tries from `q_init` first, retries from diverse seeds on failure.
 
-    DLS chỉ hội tụ tới 1 nghiệm gần `q_init`; với pose xa hoặc gần singularity,
-    1 lần thử có thể fail (~8% khi q_init lệch >40°). Hàm này thay thế "fallback
-    RoboDK SolveIK" cũ: nếu lần đầu fail, thử lại từ các seed (nhiễu quanh q_init
-    + random trong joint range) → kéo tỉ lệ hội tụ về ~100% mà KHÔNG cần RoboDK.
+    DLS only converges to 1 solution near `q_init`; for poses that are far away
+    or near a singularity, a single attempt can fail (~8% when q_init deviates >40°).
+    This function replaces the old "fallback RoboDK SolveIK": if the first attempt
+    fails, retries from multiple seeds (perturbations around q_init + random within
+    joint range) → pulls convergence rate to ~100% WITHOUT RoboDK.
 
-    Ưu tiên nghiệm gần `q_init` nhất: q_init được thử ĐẦU TIÊN nên nếu nó hội tụ,
-    đó là nghiệm "ít nhảy joint" nhất (tốt cho chuyển động mượt). Chỉ khi q_init
-    fail mới dùng seed khác.
+    Prioritises the solution closest to `q_init`: q_init is tried FIRST so if it
+    converges, that is the "minimum joint-jump" solution (best for smooth motion).
+    Other seeds are only used when q_init fails.
 
     Args:
-        n_random_seeds: Số seed random thêm (sau các seed nhiễu xác định). 0 = tắt.
-        seed: Seed RNG → kết quả tái lập được (deterministic cho test/thesis).
-        **ik_kwargs: Forward tới `inverse_kinematics` (tol_mm, damping, max_iter…).
+        n_random_seeds: Number of additional random seeds (after deterministic perturbations). 0 = disabled.
+        seed: RNG seed → reproducible results (deterministic for tests/thesis).
+        **ik_kwargs: Forwarded to `inverse_kinematics` (tol_mm, damping, max_iter…).
 
     Returns:
-        Joints (radian) list 6 phần tử, hoặc None nếu mọi seed đều fail.
+        Joints (radian) list of 6 elements, or None if all seeds fail.
     """
     sol = inverse_kinematics(model, target_pose_world, q_init_rad, **ik_kwargs)
     if sol is not None:
@@ -312,11 +317,11 @@ def inverse_kinematics_seeded(
     rng = np.random.RandomState(seed)
 
     seeds: list[np.ndarray] = []
-    # (a) Nhiễu xác định quanh q_init — nghiệm gần, thử trước.
+    # (a) Deterministic perturbations around q_init — nearby solutions, tried first.
     for d_deg in (15.0, 30.0, 60.0, 90.0):
         d = np.deg2rad(d_deg)
         seeds.append(np.clip(q0 + rng.uniform(-d, d, len(q0)), q_min, q_max))
-    # (b) Random phủ toàn joint range — cứu pose xa / branch khác.
+    # (b) Random over full joint range — rescues far poses / alternative branches.
     for _ in range(max(0, n_random_seeds)):
         seeds.append(rng.uniform(q_min, q_max))
 
@@ -328,7 +333,7 @@ def inverse_kinematics_seeded(
 
 
 # ───────────────────────────────────────────────────────────────────────
-# Alternative IK algorithms cho thesis comparison
+# Alternative IK algorithms for thesis comparison
 # ───────────────────────────────────────────────────────────────────────
 
 
@@ -344,11 +349,11 @@ def inverse_kinematics_lm(
     lambda_down: float = 0.5,
     max_step_deg: float = 20.0,
 ) -> list[float] | None:
-    """**Levenberg-Marquardt** IK với **adaptive damping**.
+    """**Levenberg-Marquardt** IK with **adaptive damping**.
 
-    Khác DLS (damping cố định): LM tăng/giảm λ dynamic mỗi iter dựa trên cải
-    thiện error → fast Newton-like khi xa solution + stable Gauss-Newton khi
-    gần. Convergence superlinear vs DLS linear.
+    Unlike DLS (fixed damping): LM increases/decreases λ dynamically each iter
+    based on error improvement → fast Newton-like when far from solution + stable
+    Gauss-Newton when close. Superlinear convergence vs DLS linear.
 
     Algorithm:
         loop:
@@ -366,10 +371,10 @@ def inverse_kinematics_lm(
     """
     q = np.asarray(q_init_rad, dtype=float).flatten()
     if len(q) != model.num_joints():
-        raise ValueError(f"q_init phải có {model.num_joints()} phần tử")
+        raise ValueError(f"q_init must have {model.num_joints()} elements")
     target = np.asarray(target_pose_world, dtype=float)
     if target.shape != (4, 4):
-        raise ValueError(f"target_pose phải 4x4, got {target.shape}")
+        raise ValueError(f"target_pose must be 4x4, got {target.shape}")
 
     link_attr = getattr(model, "joints", None) or getattr(model, "links", None)
     q_min = np.array([j.joint_min for j in link_attr])
@@ -436,15 +441,15 @@ def inverse_kinematics_sdls(
 ) -> list[float] | None:
     """**Selectively Damped Least Squares** IK (Buss & Kim 2005).
 
-    Khác DLS (damping `λ²I` cố định cho mọi direction): SDLS dùng **SVD** để
-    damp **chỉ** directions gần singular value nhỏ. Direction với σ lớn (well-
-    conditioned) đi với 1/σ (no damping → fast Gauss-Newton). Direction với σ
-    nhỏ (near singularity) đi với damped pseudoinverse → stable.
+    Unlike DLS (fixed `λ²I` damping for all directions): SDLS uses **SVD** to
+    damp **only** directions near small singular values. Directions with large σ
+    (well-conditioned) use 1/σ (no damping → fast Gauss-Newton). Directions with
+    small σ (near singularity) use a damped pseudoinverse → stable.
 
     Algorithm:
         J = U Σ V^T
-        Cho mỗi component i:
-            λ_i² = max(0, σ_min² · (σ_min/σ_i)²)  hoặc damping selective
+        For each component i:
+            λ_i² = max(0, σ_min² · (σ_min/σ_i)²)  or selective damping
             δ_i = σ_i / (σ_i² + λ_i²) · (U_i^T · err)
         dq = V · diag(δ) — pre clamp each row by gamma_max
         Step-size: clamp |dq_j| ≤ gamma_max per joint
@@ -456,7 +461,7 @@ def inverse_kinematics_sdls(
     q = np.asarray(q_init_rad, dtype=float).flatten()
     target = np.asarray(target_pose_world, dtype=float)
     if target.shape != (4, 4):
-        raise ValueError(f"target_pose phải 4x4, got {target.shape}")
+        raise ValueError(f"target_pose must be 4x4, got {target.shape}")
     link_attr = getattr(model, "joints", None) or getattr(model, "links", None)
     q_min = np.array([j.joint_min for j in link_attr])
     q_max = np.array([j.joint_max for j in link_attr])
@@ -484,8 +489,8 @@ def inverse_kinematics_sdls(
         dq = np.zeros(len(q))
         for i, s in enumerate(sigma):
             if s < sigma_min * 1e-3:
-                continue                            # cực nhỏ → skip (no contribution)
-            # Smooth selective damping: λ_i large khi σ_i ≪ σ_min
+                continue                            # extremely small → skip (no contribution)
+            # Smooth selective damping: λ_i large when σ_i ≪ σ_min
             if s < sigma_min:
                 lam_sq = (sigma_min * sigma_min) * (1.0 - (s / sigma_min)) ** 2
             else:
@@ -500,7 +505,7 @@ def inverse_kinematics_sdls(
                 contrib = contrib * (gamma_max / max_abs)
             dq = dq + contrib
 
-        # Final step-size limit toàn vector
+        # Final step-size limit for full vector
         step_norm = float(np.linalg.norm(dq))
         if step_norm > gamma_max:
             dq = dq * (gamma_max / step_norm)
@@ -520,25 +525,25 @@ def inverse_kinematics_bfgs(
     w_pos: float = 1.0,
     w_rot: float = 1000.0,
 ) -> list[float] | None:
-    """**Newton-Raphson + BFGS** IK qua quasi-Newton optimization.
+    """**Newton-Raphson + BFGS** IK via quasi-Newton optimization.
 
-    Frame IK như nonlinear least squares:
-        minimize F(q) = ½ ||W · err(q)||²    với err = pose_error(FK(q), target)
+    Frames IK as nonlinear least squares:
+        minimize F(q) = ½ ||W · err(q)||²    where err = pose_error(FK(q), target)
 
-    **Quan trọng**: pose_error = [pos_mm (3), rot_rad (3)] mix đơn vị → cost
-    unweighted ½||err||² bị dominated bởi position term. **Weighted cost**
-    với W = diag(w_pos, w_pos, w_pos, w_rot, w_rot, w_rot) cân bằng gradient
-    để L-BFGS-B step properly. Default w_rot = 1000 (≈ tol_mm / tol_rad).
+    **Important**: pose_error = [pos_mm (3), rot_rad (3)] mixes units → unweighted
+    cost ½||err||² is dominated by the position term. **Weighted cost** with
+    W = diag(w_pos, w_pos, w_pos, w_rot, w_rot, w_rot) balances the gradient
+    so L-BFGS-B steps properly. Default w_rot = 1000 (≈ tol_mm / tol_rad).
 
-    Dùng **L-BFGS-B** (limited memory BFGS với box constraints) — quasi-Newton
-    method giữ approximate inverse Hessian qua rank-2 updates, không cần tính
-    Hessian thật. **Joint limits** xử lý naturally qua box constraints.
+    Uses **L-BFGS-B** (limited-memory BFGS with box constraints) — a quasi-Newton
+    method that maintains an approximate inverse Hessian via rank-2 updates, without
+    computing the true Hessian. **Joint limits** are handled naturally via box constraints.
 
-    Gradient analytical: ∇F = J^T · W^T W · err (Gauss-Newton drop second-order).
+    Analytical gradient: ∇F = J^T · W^T W · err (Gauss-Newton, drop second-order term).
 
-    Khác LM (which uses J^T J + λI Gauss-Newton step trực tiếp): BFGS dùng
-    curvature information accumulated qua history → second-order convergence
-    near solution. Worse khi xa nghiệm vì initial H ≈ I.
+    Unlike LM (which directly uses J^T J + λI Gauss-Newton step): BFGS accumulates
+    curvature information over history → second-order convergence near solution.
+    Worse when far from solution because initial H ≈ I.
 
     Reference:
         Nocedal & Wright (2006). "Numerical Optimization", Ch. 6 (BFGS).
@@ -548,16 +553,16 @@ def inverse_kinematics_bfgs(
     q_init = np.asarray(q_init_rad, dtype=float).flatten()
     target = np.asarray(target_pose_world, dtype=float)
     if target.shape != (4, 4):
-        raise ValueError(f"target_pose phải 4x4, got {target.shape}")
+        raise ValueError(f"target_pose must be 4x4, got {target.shape}")
     link_attr = getattr(model, "joints", None) or getattr(model, "links", None)
     bounds = [(j.joint_min, j.joint_max) for j in link_attr]
     use_analytical = isinstance(model, URDFRobot)
-    # Weight diagonal W² (cho cost) và W (cho residual scaling)
+    # Weight diagonal W² (for cost) and W (for residual scaling)
     w_sq = np.array([w_pos] * 3 + [w_rot] * 3) ** 2
 
-    # Last accepted solution thoả industrial tolerance — set bởi callback để
-    # **early-exit fair** ngay khi đạt tol (không optimize past). Nếu None ở
-    # cuối → fallback to scipy's converged result + verify tol.
+    # Last accepted solution satisfying industrial tolerance — set by callback for
+    # **fair early-exit** as soon as tol is reached (does not optimize past it).
+    # If None at the end → fall back to scipy's converged result + verify tol.
     early_exit_q: list[np.ndarray] = []
 
     def _cost_and_grad(q):
@@ -577,8 +582,8 @@ def inverse_kinematics_bfgs(
         pass
 
     def _callback(xk):
-        # Sau mỗi accepted step, check unweighted pose error vs industrial tol.
-        # Nếu đạt → raise để break scipy loop (fair với DLS/LM/SDLS stop-at-tol).
+        # After each accepted step, check unweighted pose error vs industrial tol.
+        # If reached → raise to break scipy loop (fair with DLS/LM/SDLS stop-at-tol).
         T = _fk(model, xk)
         err = _pose_error(T, target)
         if (np.linalg.norm(err[:3]) < tol_mm
@@ -612,12 +617,12 @@ def _pose_error_batch(
     """Batched 6-vector pose error. T_curr (N,4,4), T_target (4,4) → (N, 6).
 
     err[:, :3] = pos_target - pos_curr.
-    err[:, 3:] = axis-angle log map của R_target · R_curr^T.
+    err[:, 3:] = axis-angle log map of R_target · R_curr^T.
 
-    NOTE: 180° corner case dùng standard formula với fallback safe_sin guard.
-    Trong batched, individual elements gần π là rare (random seeds → uniform
-    distribution của rotation, P(180°±tol) << 1%). Trade-off: tốc độ vs
-    robustness — đối với enumeration mục đích "tìm nghiệm khác", chấp nhận.
+    NOTE: 180° corner case uses the standard formula with a safe_sin fallback guard.
+    In batched mode, individual elements near π are rare (random seeds → uniform
+    distribution of rotation, P(180°±tol) << 1%). Trade-off: speed vs
+    robustness — acceptable for enumeration aimed at "finding alternative solutions".
     """
     N = T_curr.shape[0]
     pos_err = T_target[None, :3, 3] - T_curr[:, :3, 3]              # (N, 3)
@@ -649,11 +654,11 @@ def inverse_kinematics_batch(
     damping: float = 0.05,
     max_step_deg: float = 20.0,
 ) -> list[list[float] | None]:
-    """Batched IK: solve N independent IK problems song song qua numpy.
+    """Batched IK: solve N independent IK problems in parallel via numpy.
 
-    Mọi N problems chạy chung outer iter loop. Mỗi iter, tất cả N batched:
-    FK, Jacobian, DLS solve. numpy.linalg.solve trên (N, 6, 6) stacked matrices
-    là 1 BLAS call → tận dụng SIMD + multi-core BLAS (MKL/OpenBLAS).
+    All N problems run in a shared outer iteration loop. Each iter, all N are batched:
+    FK, Jacobian, DLS solve. numpy.linalg.solve on (N, 6, 6) stacked matrices is
+    a single BLAS call → leverages SIMD + multi-core BLAS (MKL/OpenBLAS).
 
     Performance: N=30 sequential ~291ms → batched ~5-15ms (20-50× speedup).
 
@@ -661,14 +666,14 @@ def inverse_kinematics_batch(
         q_init_batch: (N, num_joints) seed configurations.
 
     Returns:
-        List dài N. Mỗi phần tử là solution joints (radian list 6) hoặc None
-        nếu seed đó không converge. Thứ tự khớp với q_init_batch.
+        List of length N. Each element is a solution joints (radian list of 6) or None
+        if that seed did not converge. Order matches q_init_batch.
 
-    Limitation: chỉ support URDFRobot (cần batched FK). DH model fallback dùng
+    Limitation: only supports URDFRobot (requires batched FK). DH model falls back to
     sequential `inverse_kinematics`.
     """
     if not isinstance(model, URDFRobot):
-        # Fallback: chạy sequential cho DH model (rare path).
+        # Fallback: run sequentially for DH model (rare path).
         out: list[list[float] | None] = []
         for q0 in q_init_batch:
             out.append(inverse_kinematics(
@@ -680,7 +685,7 @@ def inverse_kinematics_batch(
     q_batch = np.asarray(q_init_batch, dtype=float).copy()
     target = np.asarray(target_pose_world, dtype=float)
     if target.shape != (4, 4):
-        raise ValueError(f"target_pose phải 4x4, got {target.shape}")
+        raise ValueError(f"target_pose must be 4x4, got {target.shape}")
     N, n = q_batch.shape
 
     q_min = np.array([j.joint_min for j in model.joints])
@@ -720,7 +725,7 @@ def inverse_kinematics_batch(
         JJt = J @ J.transpose(0, 2, 1)                              # (N, 6, 6)
         damped = JJt + damping_sq * I6                              # broadcast (N,6,6)
         try:
-            # np.linalg.solve cần RHS shape (..., m, n); err (N,6) → (N,6,1).
+            # np.linalg.solve needs RHS shape (..., m, n); err (N,6) → (N,6,1).
             x = np.linalg.solve(damped, err[..., None])             # (N, 6, 1)
         except np.linalg.LinAlgError:
             break
@@ -732,8 +737,8 @@ def inverse_kinematics_batch(
         # Update only active + non-newly-converged
         update_mask = active & ~newly
         q_batch[update_mask] = q_batch[update_mask] + dq[update_mask]
-        # Clip to joint limits (all batch — converged sẽ idempotent vì final_q
-        # đã saved value đúng).
+        # Clip to joint limits (all batch — converged entries are idempotent since
+        # final_q already holds the correct saved value).
         q_batch = np.clip(q_batch, q_min, q_max)
 
     # Build result list

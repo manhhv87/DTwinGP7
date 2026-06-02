@@ -2,14 +2,14 @@
 """
 gen_primitive_meshes.py
 ───────────────────────
-Generate các mesh STL nguyên bản (primitive) cho cell:
-  - worktable.stl  : bàn 600 × 400 × 500 mm (tabletop + 4 chân)
-  - pedestal.stl   : cột 300 × 300 × 300 mm (đỉnh trùng mặt lắp robot Z=300)
-  - gripper.stl    : parallel-jaw 2 ngón, opening 90mm, cao 110mm
-                     (thiết kế cho bottle / cup / bolt — xem make_parallel_gripper)
+Generate primitive STL meshes for the cell:
+  - worktable.stl  : table 600 × 400 × 500 mm (tabletop + 4 legs)
+  - pedestal.stl   : column 300 × 300 × 300 mm (top flush with robot mount face Z=300)
+  - gripper.stl    : parallel-jaw 2-finger, opening 90mm, height 110mm
+                     (designed for bottle / cup / bolt — see make_parallel_gripper)
 
-Mục đích: thay thế các mesh CAD download có thể chứa decoration/accessory
-thừa, hoặc kích thước/đơn vị không phù hợp.
+Purpose: replace downloaded CAD meshes that may include unwanted decoration/accessories
+or have incorrect dimensions/units.
 
 Usage:
     python scripts/gen_primitive_meshes.py
@@ -38,10 +38,9 @@ def make_worktable(
     top_thickness: float = 30.0,
     leg_size: float = 50.0,
 ) -> trimesh.Trimesh:
-    """Bàn workbench: tabletop dày + 4 chân hình hộp ở 4 góc.
+    """Workbench table: thick tabletop + 4 box legs at the corners.
 
-    Origin ở **đáy chân bàn** (Z=0), center theo X-Y → bàn dễ đặt tại
-    pose nào cũng trực quan.
+    Origin at **bottom of legs** (Z=0), centered in X-Y → easy placement at any pose.
     """
     top = trimesh.creation.box([width_x, depth_y, top_thickness])
     top.apply_translation([0, 0, height_z - top_thickness / 2])
@@ -64,11 +63,11 @@ def make_pedestal(
     depth: float = 300.0,
     height: float = 300.0,
 ) -> trimesh.Trimesh:
-    """Pedestal: hộp chữ nhật, origin ở đáy.
+    """Pedestal: rectangular box, origin at the base.
 
-    Cao 300mm: đỉnh pedestal (Z=300) phải trùng mặt lắp robot. Robot J1 ở
-    world Z=630, base_link mesh bù -330mm → mặt lắp ở Z=300. Pedestal cao hơn
-    300mm sẽ nuốt phần đế robot (xem cell_layout_real.yaml robot.pose).
+    Height 300mm: pedestal top (Z=300) must align with the robot mount face. Robot J1 at
+    world Z=630, base_link mesh offset -330mm → mount face at Z=300. Pedestal taller than
+    300mm will clip the robot base (see cell_layout_real.yaml robot.pose).
     """
     box = trimesh.creation.box([width, depth, height])
     box.apply_translation([0, 0, height / 2])
@@ -77,33 +76,33 @@ def make_pedestal(
 
 def make_parallel_gripper(
     palm_width: float = 150.0,        # X: 110 opening + 2×10 finger + 20 slack
-    palm_depth: float = 50.0,         # Y: bề dày thân palm (motor)
-    palm_height: float = 60.0,        # Z: cao của palm (chứa motor khí nén)
-    finger_thickness: float = 10.0,   # X: bề dày ngón (theo opening direction)
-    finger_depth: float = 220.0,      # Y: chiều dài "thanh dài" — > tray length 180mm
-    finger_length: float = 40.0,      # Z: vừa ôm chiều cao tray 25mm + clearance
-    finger_inner_gap: float = 110.0,  # X: opening 110mm — vừa khay Y=100mm + 5mm clearance/bên
+    palm_depth: float = 50.0,         # Y: palm body thickness (motor housing)
+    palm_height: float = 60.0,        # Z: palm height (pneumatic actuator inside)
+    finger_thickness: float = 10.0,   # X: finger thickness (along opening direction)
+    finger_depth: float = 220.0,      # Y: finger length (long bar) — > tray length 180mm
+    finger_length: float = 40.0,      # Z: fits tray height 25mm + clearance
+    finger_inner_gap: float = 110.0,  # X: opening 110mm — fits tray Y=100mm + 5mm clearance/side
 ) -> trimesh.Trimesh:
-    """Gripper PNEUMATIC parallel-jaw (kẹp chiều rộng khay Galaxy S23).
+    """PNEUMATIC parallel-jaw gripper (grips Galaxy S23 tray across its width).
 
-    **PLACEHOLDER values** — gripper khít với chiều rộng tray (100mm Y):
-    opening 110mm > 100mm để jaws ôm 2 cạnh DÀI 180mm (X) của khay với
-    clearance 5mm/bên.
+    **PLACEHOLDER values** — gripper fits tray width (100mm Y):
+    opening 110mm > 100mm so jaws span the LONG 180mm (X) edges of the tray with
+    5mm clearance per side.
 
     Default specs:
       - Total height = palm 60 + finger 40 = 100mm
-      - Opening max  = 110mm (vừa khít chiều rộng khay)
+      - Opening max  = 110mm (fits tray width snugly)
       - Stroke       = 55mm per finger
       - Driving      = compressed air (pneumatic)
 
-    Orchestrator dùng yaw_offset_deg=90 để gripper jaws aligns vuông góc PCA
-    major axis (= longest tray dim) → jaws spread theo chiều rộng khay.
+    Orchestrator uses yaw_offset_deg=90 so gripper jaws align perpendicular to PCA
+    major axis (= longest tray dim) → jaws spread along tray width.
 
-    Origin: **tại fingertip (TCP)**, mesh extend theo -Z về phía flange.
-    Cần đồng bộ cell_layout.yaml: tcp_offset_xyz_mm: [0, 0, 100].
+    Origin: **at fingertip (TCP)**, mesh extends along -Z toward the flange.
+    Sync with cell_layout.yaml: tcp_offset_xyz_mm: [0, 0, 100].
     """
-    # Palm tại Z=[-total_height, -finger_length], finger tại Z=[-finger_length, 0].
-    # STL extend theo -Z từ origin (fingertip). rotx(pi) trong grasp pose flip
+    # Palm at Z=[-total_height, -finger_length], fingers at Z=[-finger_length, 0].
+    # STL extends along -Z from origin (fingertip). rotx(pi) in grasp pose flips
     # tool Z → palm world Z = TCP + total_height (ABOVE TCP).
     palm = trimesh.creation.box([palm_width, palm_depth, palm_height])
     palm.apply_translation([0, 0, -finger_length - palm_height / 2])
@@ -123,19 +122,19 @@ def make_parallel_gripper(
 
 
 def make_tray(
-    width: float = 180.0,    # X: chiều rộng khay (Galaxy S23 phone 146mm + lề)
-    depth: float = 100.0,    # Y: chiều sâu khay
-    height: float = 25.0,    # Z: chiều cao khay
+    width: float = 180.0,    # X: tray width (Galaxy S23 phone 146mm + margin)
+    depth: float = 100.0,    # Y: tray depth
+    height: float = 25.0,    # Z: tray height
 ) -> trimesh.Trimesh:
-    """Khay đựng điện thoại Galaxy S23 (simplified box, không handle).
+    """Galaxy S23 phone tray (simplified box, no handle).
 
-    **PLACEHOLDER values** — gripper rộng (opening 200mm) kẹp 2 bên dài của
-    khay trực tiếp, không cần handle. User đo khay thực tế → update params.
+    **PLACEHOLDER values** — wide gripper (opening 200mm) grips the two long sides of the
+    tray directly, no handle needed. User should measure the real tray → update params.
 
-    Galaxy S23 dimensions: 146.3 × 70.9 × 7.6mm → khay 180×100mm vừa chứa.
+    Galaxy S23 dimensions: 146.3 × 70.9 × 7.6mm → 180×100mm tray fits the phone.
 
-    Origin: ở **TÂM ĐÁY** khay (Z=0), khay extend +Z → đặt tại pose Z=table_top
-    thì đáy khay trùng mặt bàn. Top of tray at Z=25.
+    Origin: at **tray bottom center** (Z=0), tray extends +Z → placed at pose Z=table_top
+    the tray bottom aligns with the table surface. Top of tray at Z=25.
     """
     box = trimesh.creation.box([width, depth, height])
     box.apply_translation([0, 0, height / 2])
@@ -148,19 +147,18 @@ def make_floor(
     tile_count_per_side: int = 5,
     gap_mm: float = 5.0,
 ) -> trimesh.Trimesh:
-    """Sàn gạch lát: grid n×n ô vuông với khe hở (grout) giữa các ô.
+    """Tiled floor: n×n grid of square tiles with grout gaps between them.
 
-    Mỗi ô là 1 box riêng, concatenate thành 1 mesh. Khe hở 5mm giữa các ô
-    hiển thị như đường grout (gap rỗng, render background tối). Tổng kích
-    thước = size × size mm.
+    Each tile is a separate box; concatenated into one mesh. The 5mm gap between tiles
+    renders as a grout line (empty gap, dark background). Total size = size × size mm.
 
-    Default: 5×5 grid, ô 596×596mm, khe 5mm → 3000×3000mm tổng.
+    Default: 5×5 grid, tile 596×596mm, gap 5mm → 3000×3000mm total.
 
-    Origin ở tâm, mặt trên ô ở Z=0 (đặt floor tại pose Z=0 → mặt sàn ở Z=0).
+    Origin at center, tile top face at Z=0 (place floor at pose Z=0 → floor surface at Z=0).
     """
     n = max(int(tile_count_per_side), 1)
     if n == 1:
-        # Trường hợp suy biến: 1 ô = tấm phẳng (giữ tương thích cũ)
+        # Degenerate case: single tile = flat plate (preserve backward compatibility)
         plate = trimesh.creation.box([size, size, thickness])
         plate.apply_translation([0, 0, -thickness / 2])
         return plate
@@ -179,10 +177,10 @@ def make_floor(
 
 
 def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="Generate primitive mesh STLs cho cell.")
+    p = argparse.ArgumentParser(description="Generate primitive mesh STLs for the cell.")
     p.add_argument(
         "--only", choices=["worktable", "pedestal", "gripper", "floor", "tray"],
-        help="Chỉ generate 1 mesh; mặc định generate tất cả.",
+        help="Generate only one mesh; default is to generate all.",
     )
     p.add_argument(
         "--table-size", nargs=3, type=float, metavar=("W", "D", "H"),

@@ -4,7 +4,7 @@ mixin_program_playback.py
 ProgramPlaybackMixin: program list ops (delete/move/clear), play/stop/pause,
 play loop worker, MoveL IK solver (Pieper + DLS fallback).
 
-Host class (GP7AppQt) phải cung cấp:
+Host class (GP7AppQt) must provide:
   attributes: _program, _prog_list, _btn_pause, _prog_pause, _prog_stop,
               _prog_thread, _jobs, _active_job, _targets, _signals,
               _sim_speed_mult, _model, _joints, _tool_frames, _tool_idx
@@ -36,14 +36,14 @@ from .program_logic import (
 )
 from .program_model import Instruction
 
-# Backstop: chặn loop vô hạn (JUMP/WHILE) treo sim thread.
+# Backstop: prevent infinite loops (JUMP/WHILE) from hanging the sim thread.
 _LOOP_GUARD_MAX = 200_000
 
 logger = logging.getLogger(__name__)
 
 
 class ProgramPlaybackMixin:
-    """Program list ops + play loop + IK solver cho MoveL."""
+    """Program list ops + play loop + IK solver for MoveL."""
 
     # ── Pause / Resume ────────────────────────────────────────────────
     def _on_prog_toggle_pause(self) -> None:
@@ -118,27 +118,27 @@ class ProgramPlaybackMixin:
     def _on_prog_stop(self) -> None:
         if self._prog_thread is not None and self._prog_thread.is_alive():
             self._prog_stop.set()
-            self._prog_pause.clear()                # unstuck nếu đang pause
+            self._prog_pause.clear()                # unstuck if currently paused
             self._set_status("Program: stopping...", level="warn")
 
     def _on_program_done(self) -> None:
-        # Reset pause UI (program kết thúc → không thể pause nữa).
+        # Reset pause UI (program ended → cannot pause anymore).
         if hasattr(self, "_btn_pause"):
             self._btn_pause.setChecked(False)
             self._btn_pause.setText("▮▮  Pause")
         self._prog_pause.clear()
 
     def _wait_while_paused(self) -> None:
-        """Block player loop khi pause is set, exit nhanh khi stop is set."""
+        """Block the player loop while pause is set; exit quickly when stop is set."""
         while self._prog_pause.is_set() and not self._prog_stop.is_set():
             time.sleep(0.05)
 
     def _resolve_move_target(
         self, ins: Instruction, want: str,
     ) -> list[float] | None:
-        """Resolve joints (want='joints') hoặc tcp_pose (want='tcp_pose') cho
-        MoveJ/MoveL — từ target library nếu ins.target_name set, không thì
-        inline fields. Return None + emit err nếu missing."""
+        """Resolve joints (want='joints') or tcp_pose (want='tcp_pose') for
+        MoveJ/MoveL — from the target library if ins.target_name is set, otherwise
+        from inline fields. Returns None and emits err if missing."""
         if ins.target_name:
             tgt = self._targets.get(ins.target_name)
             if tgt is None:
@@ -151,9 +151,9 @@ class ProgramPlaybackMixin:
     def _play_program_loop(self) -> None:
         prog = self._program
         n = len(prog)
-        # Modal sim state (scale animation speed; modifiers chỉ là metadata).
+        # Modal sim state (scales animation speed; modifiers are metadata only).
         sim_vj_pct: float = 10.0
-        # ── Logic infra: interpreter có program counter + biến + nhãn/khối ──
+        # ── Logic infra: interpreter with program counter + variables + labels/blocks ──
         try:
             label_map = resolve_labels(prog)
             block_map = build_block_map(prog)
@@ -162,7 +162,7 @@ class ProgramPlaybackMixin:
             self._signals.program_done.emit()
             return
         store = VarStore()
-        sim_io = getattr(self, "_sim_io", {})        # IN# sim (mặc định OFF)
+        sim_io = getattr(self, "_sim_io", {})        # IN# sim (default OFF)
         def io_reader(idx: int) -> bool:
             return bool(sim_io.get(idx, False))
         if_state: dict[int, bool] = {}
@@ -174,7 +174,7 @@ class ProgramPlaybackMixin:
                 if guard > _LOOP_GUARD_MAX:
                     self._signals.status.emit(
                         f"Program: loop guard tripped (>{_LOOP_GUARD_MAX} "
-                        f"steps) — aborted (vòng lặp vô hạn?)", "err")
+                        f"steps) — aborted (infinite loop?)", "err")
                     return
                 if self._prog_stop.is_set():
                     self._signals.status.emit("Program: stopped", "warn"); return
@@ -185,7 +185,7 @@ class ProgramPlaybackMixin:
                 t = ins.type
                 self._signals.status.emit(
                     f"Step {pc+1}/{n}: {ins.describe()}", "info")
-                # ── Biến: SET/ADD/INC/... — mutate store, không chuyển động ──
+                # ── Variables: SET/ADD/INC/... — mutate store, no motion ──
                 if t == "SetVar":
                     try:
                         apply_setvar(ins.var_name, ins.var_op, ins.var_arg,
@@ -198,7 +198,7 @@ class ProgramPlaybackMixin:
                             f"Step {pc+1}: var error: {e}", "err"); return
                     pc += 1
                     continue
-                # ── Rẽ nhánh: Label/Jump/IfThen/.../EndWhile → next_pc thuần ──
+                # ── Branching: Label/Jump/IfThen/.../EndWhile → pure next_pc ──
                 if t in CONTROL_FLOW:
                     try:
                         pc = next_pc(prog, pc, store, io_reader,
@@ -207,8 +207,8 @@ class ProgramPlaybackMixin:
                         self._signals.status.emit(
                             f"Step {pc+1}: flow error: {e}", "err"); return
                     continue
-                i = pc                               # alias cho khối bên dưới
-                # Animation step count: VJ% nhỏ + sim_speed_mult thấp → chậm.
+                i = pc                               # alias for the block below
+                # Animation step count: low VJ% + low sim_speed_mult → slower.
                 base_steps = int(40 * 30.0 / max(5.0, sim_vj_pct))
                 steps = max(8, int(base_steps / max(0.1, self._sim_speed_mult)))
                 if t == "MoveJ":
@@ -219,7 +219,7 @@ class ProgramPlaybackMixin:
                                       pause_event=self._prog_pause)
                 elif t == "MoveL":
                     if ins.target_name:
-                        # Target stored joints — bypass IK, animate trực tiếp.
+                        # Target stored joints — bypass IK, animate directly.
                         joints = self._resolve_move_target(ins, "joints")
                         if joints is None: return
                         self._animate_to(joints, steps=steps, dt=0.025,
@@ -234,8 +234,8 @@ class ProgramPlaybackMixin:
                                           stop_event=self._prog_stop,
                                           pause_event=self._prog_pause)
                 elif t == "MoveC":
-                    # Sim đơn giản: chạy MoveL tới mid rồi end (không nội suy
-                    # circular thực — đủ để verify trình tự, .JBI vẫn MOVC).
+                    # Simplified sim: run MoveL to mid then end (no true circular
+                    # interpolation — sufficient to verify sequence, .JBI still MOVC).
                     for pose in (ins.tcp_pose_mid, ins.tcp_pose):
                         sol = self._solve_movel(pose)
                         if sol is None:
@@ -248,7 +248,7 @@ class ProgramPlaybackMixin:
                     self._signals.gripper.emit(bool(ins.gripper_close))
                     time.sleep(0.25 / max(0.1, self._sim_speed_mult))
                 elif t == "SetDO":
-                    # Generic digital output — sim không có IO thật, chỉ log.
+                    # Generic digital output — sim has no real IO, log only.
                     self._signals.status.emit(
                         f"Step {i+1}: (sim) DOUT OT#{ins.do_index} = "
                         f"{'ON' if ins.do_state else 'OFF'}", "info")
@@ -262,7 +262,7 @@ class ProgramPlaybackMixin:
                         if self._prog_stop.is_set(): return
                         time.sleep(0.05)
                 elif t == "WaitIO":
-                    # Sim không có IO thật → chỉ log + short delay.
+                    # Sim has no real IO → log only + short delay.
                     self._signals.status.emit(
                         f"Step {i+1}: (sim) WaitIO IN#{ins.io_index}="
                         f"{'ON' if ins.io_state else 'OFF'} → assumed satisfied",
@@ -275,14 +275,14 @@ class ProgramPlaybackMixin:
                         f"Step {i+1}: MSG \"{ins.message[:32]}\"", "info")
                     time.sleep(0.4 / max(0.1, self._sim_speed_mult))
                 elif t == "CallJob":
-                    # Sim không thực thi sub-job — chỉ log để xác nhận order.
+                    # Sim does not execute sub-jobs — log only to confirm order.
                     self._signals.status.emit(
                         f"Step {i+1}: (sim) CALL JOB:{ins.job_name} → skipped",
                         "warn")
                     time.sleep(0.2 / max(0.1, self._sim_speed_mult))
                 elif t == "SimEvent":
                     # Sim hook — emit signal + log. event_name 'reset'/'reset_objects'/
-                    # 'reset_scene' → đưa objects về vị trí ban đầu (cho demo lặp gắp).
+                    # 'reset_scene' → return objects to initial positions (for pick-loop demo).
                     ev = (ins.event_name or "").strip().lower()
                     pl = f" — {ins.event_payload}" if ins.event_payload else ""
                     if ev in ("reset", "reset_objects", "reset_scene"):
@@ -290,8 +290,8 @@ class ProgramPlaybackMixin:
                     self._signals.status.emit(
                         f"⚑ Step {i+1}: SimEvent '{ins.event_name}'{pl}", "info")
                     time.sleep(0.15 / max(0.1, self._sim_speed_mult))
-                # SetRounding / SetTool / SetRefFrame: pure metadata cho .JBI,
-                # sim không cần làm gì — đã hiện trong status.
+                # SetRounding / SetTool / SetRefFrame: pure metadata for .JBI,
+                # sim needs no action — already shown in status.
                 pc += 1
             self._signals.status.emit(
                 f"Program: done ({guard} steps executed)", "ok")
@@ -301,15 +301,15 @@ class ProgramPlaybackMixin:
             self._signals.program_done.emit()
 
     def _solve_movel(self, tcp_pose_6: list[float]) -> list[float] | None:
-        """Solve IK qua **Pieper analytical** + verify post-FK pose error.
+        """Solve IK via **Pieper analytical** + verify post-FK pose error.
 
         Strategy:
           1. Pieper closed-form (50-200µs) → all 3-8 solutions
           2. Pick solution nearest current pose (smoothest motion)
-          3. Post-FK verify (defensive; Pieper accuracy ~1e-12mm, không cần
-             nhưng giữ vì rẻ + bắt được edge case unreachable)
-          4. Fallback: DLS với analytical Jacobian nếu Pieper trả empty (vd
-             pose ngoài tầm — Pieper sẽ skip configs, DLS có thể trả best-effort)
+          3. Post-FK verify (defensive; Pieper accuracy ~1e-12mm, not strictly
+             needed but cheap + catches unreachable edge cases)
+          4. Fallback: DLS with analytical Jacobian if Pieper returns empty (e.g.
+             pose out of reach — Pieper will skip configs, DLS may return best-effort)
         """
         TOL_POS_MM = 0.5
         TOL_ROT_RAD = 1e-3

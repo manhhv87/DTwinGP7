@@ -1,18 +1,18 @@
 """
 dh_model.py
 ───────────
-Denavit-Hartenberg parameters cho Yaskawa GP7 + framework cho mọi 6R robot.
+Denavit-Hartenberg parameters for the Yaskawa GP7 + framework for any 6R robot.
 
-Quy ước MODIFIED DH (Yaskawa, Craig 1986):
+MODIFIED DH convention (Yaskawa, Craig 1986):
     For link i, transform from frame i-1 to frame i:
         T_i = Rot_x(alpha_{i-1}) · Trans_x(a_{i-1}) · Rot_z(theta_i) · Trans_z(d_i)
 
-⚠ DH parameters cho GP7 dưới đây là từ datasheet Yaskawa HW1474564. VERIFY lại
-với datasheet riêng của model variant bạn dùng (GP7, GP7L, GP8, ... có khác).
-Sai DH → forward kinematics lệch → predictive simulation vô dụng.
+⚠ DH parameters for the GP7 below are taken from Yaskawa datasheet HW1474564. VERIFY
+against the datasheet for your specific model variant (GP7, GP7L, GP8, ... may differ).
+Wrong DH → skewed forward kinematics → predictive simulation is useless.
 
 Joint convention Yaskawa: [S, L, U, R, B, T] (6-DOF revolute).
-Unit: mm cho length, radian cho góc (toàn module).
+Units: mm for length, radians for angles (entire module).
 """
 from __future__ import annotations
 
@@ -23,13 +23,13 @@ import numpy as np
 
 @dataclass(frozen=True)
 class DHLink:
-    """Modified DH parameters cho 1 link + joint limit.
+    """Modified DH parameters for one link + joint limits.
 
     Args:
-        a: Link length (mm) — distance giữa Z_{i-1} và Z_i theo X_{i-1}.
-        alpha: Link twist (rad) — góc giữa Z_{i-1} và Z_i.
-        d: Link offset (mm) — distance giữa O_{i-1} và Z_i theo Z_{i-1}.
-        theta_offset: Joint angle offset (rad) — hằng số cộng vào joint value.
+        a: Link length (mm) — distance between Z_{i-1} and Z_i along X_{i-1}.
+        alpha: Link twist (rad) — angle between Z_{i-1} and Z_i.
+        d: Link offset (mm) — distance between O_{i-1} and Z_i along Z_{i-1}.
+        theta_offset: Joint angle offset (rad) — constant added to the joint value.
         joint_min: Joint limit min (rad).
         joint_max: Joint limit max (rad).
     """
@@ -47,11 +47,11 @@ class RobotDHModel:
     """6-DOF serial robot DH model.
 
     Args:
-        name: Tên robot (vd "Yaskawa GP7").
-        links: List 6 DHLink, theo thứ tự S→L→U→R→B→T cho Yaskawa.
-        base_xyz_mm: Vị trí base frame trong world (mm).
-        base_rpy_rad: Rotation base frame (roll, pitch, yaw radian).
-        tool_offset_mm: TCP offset từ flange theo Z tool (mm).
+        name: Robot name (e.g. "Yaskawa GP7").
+        links: List of 6 DHLinks in order S→L→U→R→B→T for Yaskawa.
+        base_xyz_mm: Base frame position in world (mm).
+        base_rpy_rad: Base frame rotation (roll, pitch, yaw in radians).
+        tool_offset_mm: TCP offset from flange along tool Z (mm).
     """
 
     name: str
@@ -92,18 +92,18 @@ def gp7_default(
     | 5 |  π/2        |  0      |  0  |  0             |
     | 6 | -π/2        |  0      | d6  |  0             |
 
-    Verified bằng `scripts/13_verify_vs_robodk.py` vs RoboDK GP7 model — max
-    position diff < 5mm khi base_xyz match. (URDF chain trong `urdf_chain.py`
-    cho kết quả khớp chính xác hơn — 0.00mm — và là default dùng trong orchestrator.)
+    Verified via `scripts/13_verify_vs_robodk.py` vs the RoboDK GP7 model — max
+    position diff < 5mm when base_xyz matches. (The URDF chain in `urdf_chain.py`
+    gives a more exact match — 0.00mm — and is the default used in the orchestrator.)
     """
     deg = np.deg2rad
     # GP7 dimensions (mm)
     d1, a1, a2, d4, d6 = 330.0, 40.0, 445.0, 440.0, 80.0
 
-    # Joint limits đồng bộ với URDF chain (gp7_urdf trong urdf_chain.py) —
-    # đã verify khớp 1:1 RoboDK Yaskawa-GP7.robot. Trước đây DH dùng giá trị
-    # cũ (J2 ±[-90,155], J3 [-175,240], J4 ±180) → IK fail ở home pose vì
-    # J4=-181.93° rơi ngoài limit. Source-of-truth = URDF.
+    # Joint limits synced with the URDF chain (gp7_urdf in urdf_chain.py) —
+    # verified 1:1 against RoboDK Yaskawa-GP7.robot. The old DH used stale values
+    # (J2 ±[-90,155], J3 [-175,240], J4 ±180) → IK failed at home pose because
+    # J4=-181.93° fell outside the limit. Source-of-truth = URDF.
     links = (
         # S (J1): base rotation about world Z
         DHLink(a=0.0,    alpha=0.0,        d=d1,

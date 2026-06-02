@@ -24,15 +24,15 @@ from src.orchestrator.backends.inform_codegen import (
 
 class TestValidation:
     def test_empty_name_raises(self):
-        with pytest.raises(ValueError, match="1-32 ký tự"):
+        with pytest.raises(ValueError, match="1-32 characters"):
             InformJobBuilder(name="")
 
     def test_long_name_raises(self):
-        with pytest.raises(ValueError, match="1-32 ký tự"):
+        with pytest.raises(ValueError, match="1-32 characters"):
             InformJobBuilder(name="x" * 50)
 
     def test_name_with_special_chars_raises(self):
-        with pytest.raises(ValueError, match="chỉ chữ"):
+        with pytest.raises(ValueError, match="alphanumeric"):
             InformJobBuilder(name="bad name!")
 
     def test_name_with_underscore_allowed(self):
@@ -41,24 +41,24 @@ class TestValidation:
     def test_duplicate_position_raises(self):
         b = InformJobBuilder(name="J")
         b.add_position("p0", [0] * 6)
-        with pytest.raises(ValueError, match="đã tồn tại"):
+        with pytest.raises(ValueError, match="already exists"):
             b.add_position("p0", [1] * 6)
 
     def test_joint_count_mismatch_raises(self):
         b = InformJobBuilder(name="J")
-        with pytest.raises(ValueError, match="phải 6"):
+        with pytest.raises(ValueError, match="must have 6 elements"):
             b.add_position("p0", [0, 0, 0])
 
     def test_movj_unknown_position_raises(self):
         b = InformJobBuilder(name="J")
-        with pytest.raises(KeyError, match="chưa add"):
+        with pytest.raises(KeyError, match="not added"):
             b.movj("ghost")
 
     def test_too_many_positions_raises(self):
         b = InformJobBuilder(name="J")
         for i in range(MAX_POSITIONS_PER_JOB):
             b.add_position(f"p{i}", [0] * 6)
-        with pytest.raises(ValueError, match="giới hạn"):
+        with pytest.raises(ValueError, match="Reached limit"):
             b.add_position(f"p{MAX_POSITIONS_PER_JOB}", [0] * 6)
 
     def test_dout_index_out_of_range_raises(self):
@@ -71,10 +71,10 @@ class TestValidation:
 
     def test_render_empty_raises(self):
         b = InformJobBuilder(name="J")
-        with pytest.raises(ValueError, match="ít nhất 1 position"):
+        with pytest.raises(ValueError, match="at least 1 position"):
             b.render()
         b.add_position("p", [0] * 6)
-        with pytest.raises(ValueError, match="ít nhất 1 instruction"):
+        with pytest.raises(ValueError, match="at least 1 instruction"):
             b.render()
 
 
@@ -246,10 +246,10 @@ class TestLogicCodegen:
 
     def test_invalid_varname_raises(self):
         b = InformJobBuilder(name="J")
-        with pytest.raises(ValueError, match="biến"):
+        with pytest.raises(ValueError, match="Invalid variable name"):
             b.set_var("XX", "SET", 1)
 
     def test_invalid_condition_op_raises(self):
         b = InformJobBuilder(name="J")
-        with pytest.raises(ValueError, match="điều kiện"):
+        with pytest.raises(ValueError, match="Unsupported condition operator"):
             b.if_then(("B000", "==", "1"))
