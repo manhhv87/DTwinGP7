@@ -1,10 +1,10 @@
 """
-perception — Thị giác: camera D455 → YOLOv8-seg → pose 3D của vật.
+perception — Vision pipeline: D455 camera → YOLOv8-seg → 3D object pose.
 
 Public API:
     D455Camera, MockCamera
     ObjectDetector, MockDetector, Detection
-    PoseExtractor + các hàm postprocess
+    PoseExtractor + postprocess helpers
     PerceptionNode
 """
 from .camera import D455Camera, MockCamera

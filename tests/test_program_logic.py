@@ -75,7 +75,7 @@ class TestVarStore:
         assert s.get("I000") == 1000
 
     def test_invalid_name_raises(self):
-        with pytest.raises(ValueError, match="Tên biến"):
+        with pytest.raises(ValueError, match="Invalid variable name"):
             VarStore().get("X9")
         with pytest.raises(ValueError):
             VarStore().set("B9999", 1)             # 4 digits > 3
@@ -111,7 +111,7 @@ class TestCondition:
         assert eval_condition("IN#(2)", "=", "1", s, io) is False
 
     def test_bad_operator_raises(self):
-        with pytest.raises(ValueError, match="so sánh"):
+        with pytest.raises(ValueError, match="Unsupported comparison operator"):
             eval_condition("B000", "==", "1", VarStore())
 
 
@@ -153,7 +153,7 @@ class TestLabels:
     def test_duplicate_raises(self):
         prog = [Instruction(type="Label", label_name="A"),
                 Instruction(type="Label", label_name="A")]
-        with pytest.raises(ValueError, match="trùng"):
+        with pytest.raises(ValueError, match="Duplicate label"):
             resolve_labels(prog)
 
     def test_validate_missing_jump_target(self):
@@ -169,6 +169,40 @@ class TestLabels:
         prog = [Instruction(type="Label", label_name="L"),
                 Instruction(type="Jump", label_name="L",
                             cond_lhs="B000", cond_op="<", cond_rhs="3")]
+        assert validate_program(prog) == []
+
+    def test_validate_bad_cond_operand(self):
+        # Toán hạng rác trong điều kiện phải bị chặn (không lọt ra .JBI / Play).
+        for ins in (
+            Instruction(type="IfThen", cond_lhs="B0000", cond_op=">",
+                        cond_rhs="5"),                       # B#### 4 chữ số
+            Instruction(type="While", cond_lhs="FOO", cond_op="=",
+                        cond_rhs="1"),                       # không phải var/lit
+            Instruction(type="Jump", label_name="L", cond_lhs="I000",
+                        cond_op="=", cond_rhs="??"),         # rhs rác
+        ):
+            prog = [Instruction(type="Label", label_name="L"), ins]
+            assert validate_program(prog), f"phải báo lỗi: {ins.type}"
+
+    def test_validate_bad_setvar_operand(self):
+        errs = validate_program(
+            [Instruction(type="SetVar", var_name="I000", var_op="ADD",
+                         var_arg="xyz")])
+        assert errs
+
+    def test_validate_struct_missing_cond(self):
+        # IfThen/ElseIf/While bắt buộc có điều kiện.
+        for t in ("IfThen", "While"):
+            assert validate_program([Instruction(type=t)]), f"{t} thiếu cond"
+
+    def test_validate_accepts_in_and_var_operands(self):
+        prog = [
+            Instruction(type="While", cond_lhs="IN#(1)", cond_op="=",
+                        cond_rhs="1"),
+            Instruction(type="SetVar", var_name="I000", var_op="ADD",
+                        var_arg="B001"),
+            Instruction(type="EndWhile"),
+        ]
         assert validate_program(prog) == []
 
 
@@ -258,10 +292,10 @@ class TestInterpreterStructured:
         assert store.get("B003") == 99
 
     def test_unbalanced_block_raises(self):
-        with pytest.raises(ValueError, match="chưa đóng|thừa"):
+        with pytest.raises(ValueError, match="Unclosed block"):
             build_block_map([Instruction(type="IfThen", cond_lhs="B000",
                                          cond_op="=", cond_rhs="1")])
-        with pytest.raises(ValueError, match="thừa"):
+        with pytest.raises(ValueError, match="Extra ENDIF"):
             build_block_map([Instruction(type="EndIf")])
 
 

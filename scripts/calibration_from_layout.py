@@ -2,25 +2,25 @@
 """
 calibration_from_layout.py
 ──────────────────────────
-Sinh file calibration T_base_camera.npy TỪ cell_layout.yaml cho SIM mode.
+Generate calibration file T_base_camera.npy FROM cell_layout.yaml for SIM mode.
 
-Trong sim, ta BIẾT chính xác vị trí + hướng của camera ảo trong cell layout
-(camera.pose trong YAML). Không cần chạy ChArUco calibration thật.
+In sim, we KNOW exactly the position + orientation of the virtual camera in the
+cell layout (camera.pose in YAML). No need to run real ChArUco calibration.
 
-Script này:
-  1. Đọc camera.pose từ cell_layout.yaml
-  2. Tính T_BC = pose camera trong WORLD frame (mm + radian)
-  3. Lưu ra config/calibration/T_base_camera.npy
+This script:
+  1. Reads camera.pose from cell_layout.yaml
+  2. Computes T_BC = camera pose in WORLD frame (mm + radians)
+  3. Saves to config/calibration/T_base_camera.npy
 
-Tham chiếu:
-  - REAL mode → chạy scripts/02_run_calibration.py với ChArUco board.
-  - Orchestrator load file này qua coord_conv.load_calibration().
+References:
+  - REAL mode → run scripts/02_run_calibration.py with ChArUco board.
+  - Orchestrator loads this file via coord_conv.load_calibration().
 
 Convention:
-  - T_BC là 4x4 homogeneous matrix, đơn vị translation mm.
-  - p_world = T_BC @ p_camera (p_camera đơn vị mm từ postprocess.deproject_pixel).
-  - Robot's active reference frame phải = world (đã set ở cell_loader._load_robot
-    qua robot.setPoseFrame(WorldRef)) để MoveJ hiểu pose là world coords.
+  - T_BC is a 4x4 homogeneous matrix, translation units in mm.
+  - p_world = T_BC @ p_camera (p_camera in mm from postprocess.deproject_pixel).
+  - Robot's active reference frame must = world (set in cell_loader._load_robot
+    via robot.setPoseFrame(WorldRef)) so MoveJ interprets poses as world coords.
 
 Usage:
     python scripts/calibration_from_layout.py
@@ -51,18 +51,18 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--config",
         default="config/cell_layout.yaml",
-        help="Đường dẫn cell layout YAML (default: config/cell_layout.yaml)",
+        help="Path to cell layout YAML (default: config/cell_layout.yaml)",
     )
     p.add_argument(
         "--output",
         default="config/calibration/T_base_camera.npy",
-        help="Đường dẫn output .npy (default: config/calibration/T_base_camera.npy)",
+        help="Path to output .npy (default: config/calibration/T_base_camera.npy)",
     )
     return p.parse_args()
 
 
 def main() -> int:
-    # Console Windows mặc định cp1252 → ép UTF-8 để in ✓ + tiếng Việt.
+    # Windows console defaults to cp1252 → force UTF-8 to print ✓ correctly.
     for _stream in (sys.stdout, sys.stderr):
         try:
             _stream.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[union-attr]
@@ -82,7 +82,7 @@ def main() -> int:
     cfg = CellConfig.from_yaml(cfg_path)
     cam = cfg.camera
     if cam.pose is None:
-        print(f"✗ camera.pose không có trong {cfg_path}", file=sys.stderr)
+        print(f"✗ camera.pose not found in {cfg_path}", file=sys.stderr)
         return 1
 
     # T_BC = camera pose in world frame (mm + degrees → 4x4 mm).
@@ -94,7 +94,7 @@ def main() -> int:
     print(f"  Camera world position (mm): {T_BC[:3, 3].round(1).tolist()}")
     print(f"  Camera world rpy (deg):     {list(cam.pose.rpy_deg)}")
     print()
-    print("Sanity: điểm camera (0, 0, z_depth_mm) sẽ chuyển sang world:")
+    print("Sanity: camera point (0, 0, z_depth_mm) projected to world:")
     for z_mm in (0, 100, 700):
         p_cam = np.array([0, 0, z_mm, 1])
         p_world = T_BC @ p_cam

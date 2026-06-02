@@ -1,13 +1,13 @@
 """
 logger.py
 ─────────
-TrialLogger — ghi kết quả từng trial pick-and-place ra file CSV.
+TrialLogger — writes each pick-and-place trial's result to a CSV file.
 
-Mỗi dòng CSV là một trial; cuối thí nghiệm dùng scripts/04_analyze_results.py
-để phân tích thống kê. Có sẵn hàm summarize() build ma trận failure-mode
-(phục vụ Discussion section của paper — mục 9.3 tài liệu).
+Each CSV row is one trial; at the end of an experiment use
+scripts/04_analyze_results.py for statistical analysis. The summarize() helper
+builds a failure-mode matrix (for the paper's Discussion section — doc section 9.3).
 
-Pure stdlib (csv) → không phụ thuộc pandas, dùng được mọi nơi.
+Pure stdlib (csv) → no pandas dependency, usable anywhere.
 """
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-# Thứ tự cột trong CSV.
+# Column order in the CSV.
 FIELDNAMES = [
     "timestamp",
     "trial_id",
@@ -34,12 +34,12 @@ FIELDNAMES = [
 
 
 class TrialLogger:
-    """Ghi log trial ra CSV (append-mode, an toàn khi chạy nhiều phiên).
+    """Logs trials to CSV (append-mode, safe across multiple sessions).
 
     Args:
-        csv_path: Đường dẫn file CSV output.
-        extra_context: Dict các trường mô tả điều kiện thí nghiệm
-            (lighting, overlap, mode) — gắn vào mọi dòng.
+        csv_path: Path to the output CSV file.
+        extra_context: Dict of fields describing the experiment conditions
+            (lighting, overlap, mode) — attached to every row.
     """
 
     def __init__(
@@ -52,7 +52,7 @@ class TrialLogger:
         self.context = extra_context or {}
         self._rows: list[dict[str, Any]] = []
 
-        # Ghi header nếu file chưa tồn tại.
+        # Write the header if the file does not exist yet.
         if not self.csv_path.exists():
             with self.csv_path.open("w", newline="", encoding="utf-8") as f:
                 csv.DictWriter(f, fieldnames=FIELDNAMES).writeheader()
@@ -66,7 +66,7 @@ class TrialLogger:
         failure_reason: str = "",
         final_state: str = "",
     ) -> None:
-        """Ghi một dòng kết quả trial vào CSV."""
+        """Write one trial result row to the CSV."""
         import time
 
         row = {
@@ -89,7 +89,7 @@ class TrialLogger:
         logger.info("Trial %d logged: %s", trial_id, status)
 
     def summarize(self) -> dict[str, Any]:
-        """Tổng hợp kết quả phiên hiện tại (các trial đã log trong process này).
+        """Summarize the current session's results (trials logged in this process).
 
         Returns:
             Dict {total, successful, success_rate, failure_modes}.

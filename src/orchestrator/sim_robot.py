@@ -1,24 +1,24 @@
 """
 sim_robot.py
 ────────────
-SimRobot — robot giả lập thuần Python, KHÔNG cần RoboDK.
+SimRobot — pure-Python robot simulator, NO RoboDK required.
 
-Mục đích: validate toàn bộ logic orchestration (state machine, coord transform,
-perception → pose → grasp planning, trial logging) + SINH SỐ LIỆU ĐỊNH LƯỢNG
-mà KHÔNG tốn RoboDK Free API quota.
+Purpose: validate the full orchestration logic (state machine, coord transform,
+perception → pose → grasp planning, trial logging) + GENERATE QUANTITATIVE METRICS
+without consuming RoboDK Free API quota.
 
-So với RoboDK digital twin thật:
-  - CÓ: mô hình reachability hình học (GP7 reach envelope) → reject pose ngoài tầm
-  - CÓ: inject failure modes (grasp slip) theo xác suất → CSV phản ánh failure modes
-  - KHÔNG: collision check thật, kinematics chính xác, visualize
+Compared with the real RoboDK digital twin:
+  - HAS: geometric reachability model (GP7 reach envelope) → rejects out-of-reach poses
+  - HAS: failure-mode injection (grasp slip) by probability → CSV reflects failure modes
+  - NO: real collision check, accurate kinematics, visualization
 
-Dùng cho:
-  - Phát triển pipeline (chạy không giới hạn)
-  - Sinh thống kê success-rate / failure-mode cho luận văn (software-in-the-loop)
-  - CI/CD (không cần RoboDK GUI)
+Use for:
+  - Pipeline development (unlimited runs)
+  - Generating success-rate / failure-mode statistics for thesis (software-in-the-loop)
+  - CI/CD (no RoboDK GUI needed)
 
-RoboDK digital twin thật vẫn cần cho: chứng minh C2 (reachability/collision qua
-twin) với robot model chính xác, và visualize chuyển động.
+The real RoboDK digital twin is still needed for: proving C2 (reachability/collision via
+twin) with an accurate robot model, and for motion visualization.
 """
 from __future__ import annotations
 
@@ -32,25 +32,25 @@ logger = logging.getLogger(__name__)
 
 
 class SimRobot:
-    """Robot giả lập cho headless mode (không RoboDK).
+    """Robot simulator for headless mode (no RoboDK).
 
-    Interface khớp các method RoboDK Item mà Orchestrator gọi:
+    Interface matches the RoboDK Item methods called by Orchestrator:
         Joints, JointsHome, MoveJ, MoveL, MoveJ_Test, SolveIK,
         setDO, setSpeed, Parent, Valid.
 
     Args:
-        home_joints: Joints home (6 phần tử). Mặc định [0,0,0,0,0,0].
-        base_xyz: Vị trí J1 trong world (mm) — gốc tính reachability.
-            Mặc định (0, 0, 630) khớp cell_layout.yaml (robot trên pedestal).
-        reach_max_mm: Bán kính with-tới tối đa của GP7 (mm). Datasheet ~927.
-        reach_min_mm: Bán kính tối thiểu (vùng chết quanh base). ~150.
-        grasp_fail_rate: Xác suất grasp slip (0.0–1.0) → raise lúc GRASP move.
-        seed: Seed RNG để tái lập kết quả.
+        home_joints: Home joint angles (6 elements). Default [0,0,0,0,0,0].
+        base_xyz: J1 position in world frame (mm) — origin for reachability.
+            Default (0, 0, 630) matches cell_layout.yaml (robot on pedestal).
+        reach_max_mm: Maximum reach radius of GP7 (mm). Datasheet ~927.
+        reach_min_mm: Minimum reach radius (dead zone around base). ~150.
+        grasp_fail_rate: Grasp slip probability (0.0–1.0) → raised on GRASP move.
+        seed: RNG seed for reproducible results.
     """
 
-    # Class-level: SimRobot CÓ thể nhận 4x4 pose target — dùng DLS internal
-    # làm "fake YRC IK" để sim được YRC IK pipeline. Chỉ verify wiring +
-    # routing, KHÔNG verify được YRC's actual IK accuracy (cần controller thật).
+    # Class-level: SimRobot CAN accept a 4x4 pose target — uses DLS internally
+    # as "fake YRC IK" to simulate the YRC IK pipeline. Only verifies wiring +
+    # routing, does NOT verify YRC's actual IK accuracy (real controller required).
     supports_cartesian_pose: bool = True
 
     def __init__(
@@ -70,7 +70,7 @@ class SimRobot:
         self.grasp_fail_rate = grasp_fail_rate
         self._rng = random.Random(seed)
         self._move_count = 0
-        self._grasp_pending_check = False   # True ngay sau khi đóng gripper
+        self._grasp_pending_check = False   # True immediately after gripper closes
 
     # ─── Query ───
     def Joints(self) -> list[float]:
@@ -83,14 +83,14 @@ class SimRobot:
         return True
 
     def Parent(self) -> None:
-        # Không có parent frame → Orchestrator dùng identity world→base,
-        # nên mọi pose truyền vào SimRobot ở WORLD frame.
+        # No parent frame → Orchestrator uses identity world→base,
+        # so all poses passed to SimRobot are in WORLD frame.
         return None
 
     # ─── Reachability model ───
     @staticmethod
     def _extract_xyz(pose: Any) -> np.ndarray | None:
-        """Lấy translation (x, y, z) từ pose (RoboDK Mat hoặc numpy 4x4)."""
+        """Extract translation (x, y, z) from a pose (RoboDK Mat or numpy 4x4)."""
         # RoboDK Mat: .Pos() → [x, y, z]
         if hasattr(pose, "Pos") and callable(pose.Pos):
             try:
@@ -110,16 +110,16 @@ class SimRobot:
     def _reachable(self, pose: Any) -> bool:
         xyz = self._extract_xyz(pose)
         if xyz is None:
-            return True  # không xác định được → coi như với tới (an toàn cho test)
+            return True  # cannot determine → treat as reachable (safe for tests)
         dist = float(np.linalg.norm(xyz - self._base))
         return self.reach_min_mm <= dist <= self.reach_max_mm
 
     def MoveJ_Test(self, j1: Any, target: Any, *args: Any) -> int:
-        """RoboDK convention: 0 = OK, < 0 = ngoài tầm. Mô phỏng reach envelope."""
+        """RoboDK convention: 0 = OK, < 0 = out of reach. Simulates reach envelope."""
         return 0 if self._reachable(target) else -1
 
     def SolveIK(self, pose: Any, joints_approx: Any = None) -> list[float] | None:
-        """Trả joints placeholder nếu với tới, None nếu ngoài tầm."""
+        """Returns placeholder joints if reachable, None if out of reach."""
         if not self._reachable(pose):
             return None
         return list(self._joints)
@@ -130,8 +130,8 @@ class SimRobot:
 
     def MoveL(self, target: Any) -> None:
         self._apply_move(target, "MoveL")
-        # Grasp slip injection: kiểm tra MỘT lần ở move ngay sau khi đóng gripper
-        # (chính là LIFT — nhấc vật lên). Vật slip → raise → orchestrator log fail.
+        # Grasp slip injection: check ONCE on the move immediately after gripper closes
+        # (i.e. LIFT — lifting the object). Slip → raise → orchestrator logs fail.
         if self._grasp_pending_check:
             self._grasp_pending_check = False
             if self._rng.random() < self.grasp_fail_rate:
@@ -147,7 +147,7 @@ class SimRobot:
                 return
             except (TypeError, ValueError):
                 pass
-        # 4x4 pose — sim YRC IK path qua DLS internal
+        # 4x4 pose — simulate YRC IK path via DLS internal
         if self._is_pose_4x4(target):
             self._joints = self._fake_yrc_ik(target)
             logger.debug("%s #%d Cartesian (fake YRC IK)", kind, self._move_count)
@@ -156,7 +156,7 @@ class SimRobot:
 
     @staticmethod
     def _is_pose_4x4(target: Any) -> bool:
-        """Detect 4x4 numpy hoặc list-of-lists."""
+        """Detect 4x4 numpy array or list-of-lists."""
         if hasattr(target, "shape") and getattr(target, "shape", None) == (4, 4):
             return True
         if (isinstance(target, (list, tuple)) and len(target) == 4
@@ -165,10 +165,10 @@ class SimRobot:
         return False
 
     def _fake_yrc_ik(self, target_pose_base: Any) -> list[float]:
-        """Stand-in cho YRC's internal IK — dùng DLS pure Python.
+        """Stand-in for YRC's internal IK — uses DLS pure Python.
 
-        ⚠ Chỉ để sim test wiring/pipeline. KHÔNG reflect YRC's actual IK accuracy.
-        DH params trong kinematics module có thể chưa khớp robot thật.
+        Warning: For simulation wiring/pipeline tests only. Does NOT reflect YRC's actual IK accuracy.
+        DH params in the kinematics module may not match the real robot.
         """
         try:
             from .kinematics import inverse_kinematics
@@ -184,39 +184,39 @@ class SimRobot:
         q_init_rad = [np.deg2rad(q) for q in self._joints]
         sol_rad = inverse_kinematics(self._sim_dh_model, target_pose_base, q_init_rad)
         if sol_rad is None:
-            # IK fail trong sim → keep current joints (orchestrator sẽ log unreachable)
+            # IK failed in sim → keep current joints (orchestrator will log unreachable)
             return list(self._joints)
         return [float(np.rad2deg(q)) for q in sol_rad]
 
     # ─── Gripper / speed ───
     def setDO(self, index: int, value: int) -> None:
-        # value=1 → gripper đóng (giữ vật) → bật cờ để move kế (LIFT) check slip.
+        # value=1 → gripper closes (holds object) → set flag so next move (LIFT) checks slip.
         self._grasp_pending_check = bool(value)
         logger.debug("setDO(%s, %s)", index, value)
 
     def setSpeed(self, linear: float, joint: float = -1) -> None:
         logger.debug("setSpeed(linear=%s, joint=%s)", linear, joint)
 
-    # ─── PLC/CC-Link mock cho sim mode ───
+    # ─── PLC/CC-Link mock for sim mode ───
     def set_io(self, bit_addr: int, value: int) -> None:
-        """Sim mock — no-op. Track gripper close command qua bit pattern."""
-        # Bít clamp ON → set grasp pending check (sim grasp slip injection)
+        """Sim mock — no-op. Tracks gripper close command via bit pattern."""
+        # Clamp ON bit → set grasp pending check (sim grasp slip injection)
         self._grasp_pending_check = bool(value)
         logger.debug("SimRobot.set_io(bit=%d) = %d", bit_addr, value)
 
     def read_io(self, bit_addr: int) -> int:
-        """Sim mock — luôn trả "sensor confirmed" để pipeline pass-through.
+        """Sim mock — always returns "sensor confirmed" to let pipeline pass through.
 
-        Real mode dùng MotomanHSEBackend.read_io đọc CC-Link bit thật.
-        Sim: trả 1 ngay (gripper coi như đã đến position + có vật trong gripper).
+        Real mode uses MotomanHSEBackend.read_io to read actual CC-Link bits.
+        Sim: returns 1 immediately (gripper treated as at position + object present).
         """
         return 1
 
     # ─── DigitalTwinMirror compatibility ───
     def Stop(self) -> None:
-        """No-op cho sim (không có hardware để stop)."""
+        """No-op for sim (no hardware to stop)."""
         logger.debug("SimRobot.Stop() no-op")
 
     def disconnect(self) -> None:
-        """No-op cho sim — cho phép DigitalTwinMirror cleanup thống nhất."""
+        """No-op for sim — allows DigitalTwinMirror to clean up uniformly."""
         logger.debug("SimRobot.disconnect() no-op")

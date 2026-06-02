@@ -2,31 +2,31 @@
 """
 17_compare_fk_ik.py
 ───────────────────
-So sánh động học **FK** và **IK** giữa 6 phương án để chọn thuật toán cho thesis:
-  1. **Pieper** (analytical closed-form, GP7-specific) — Tier S, default cho app
-  2. **DLS** (Damped Least Squares, λ² cố định) — baseline numerical
-  3. **LM** (Levenberg-Marquardt, λ adaptive) — improved DLS
+Compare **FK** and **IK** across 6 solvers to select the algorithm for the thesis:
+  1. **Pieper** (analytical closed-form, GP7-specific) — Tier S, default for app
+  2. **DLS** (Damped Least Squares, fixed λ²) — baseline numerical
+  3. **LM** (Levenberg-Marquardt, adaptive λ) — improved DLS
   4. **SDLS** (Selectively Damped LS, SVD-based) — Buss & Kim 2005
   5. **BFGS** (Quasi-Newton, scipy L-BFGS-B) — second-order convergence
   6. **RoboDK** SolveFK/SolveIK — reference industrial implementation
 
-Nội dung:
-  • FK fidelity: so vị trí TCP (mm) + góc (°) giữa methods cho cùng joints
+Contents:
+  • FK fidelity: compare TCP position (mm) + angle (°) between methods for same joints
   • IK precision: round-trip FK(q_target) → T → IK(T, q_init) → q_sol;
-    đo sai số FK(q_sol) vs T (mm + rad) + thời gian (ms)
-  • Multi-solution: Pieper trả 3-8 configs/pose; others trả 1
-  • Distribution plot: histogram pos_err + time cho mỗi method
+    measure FK(q_sol) vs T error (mm + rad) + time (ms)
+  • Multi-solution: Pieper returns 3-8 configs/pose; others return 1
+  • Distribution plot: histogram pos_err + time per method
 
 Output:
-  • CSV per-row chi tiết: figures/compare_fk_ik_<ts>.csv
+  • CSV per-row detail: figures/compare_fk_ik_<ts>.csv
   • PNG plot grid 2×3: figures/compare_fk_ik_<ts>.png
 
 Usage:
     python scripts/17_compare_fk_ik.py                       # 8 fixed + 100 random
-    python scripts/17_compare_fk_ik.py --samples 500         # nhiều hơn
-    python scripts/17_compare_fk_ik.py --no-robodk           # bỏ RoboDK (Free quota)
-    python scripts/17_compare_fk_ik.py --methods Pieper,DLS,BFGS  # chỉ chọn subset
-    python scripts/17_compare_fk_ik.py --no-show             # không mở matplotlib window
+    python scripts/17_compare_fk_ik.py --samples 500         # more samples
+    python scripts/17_compare_fk_ik.py --no-robodk           # skip RoboDK (free quota)
+    python scripts/17_compare_fk_ik.py --methods Pieper,DLS,BFGS  # select subset only
+    python scripts/17_compare_fk_ik.py --no-show             # do not open matplotlib window
 """
 from __future__ import annotations
 
@@ -72,7 +72,7 @@ METHOD_COLORS = {
 
 DEFAULT_ROBOT_FILE = "C:/RoboDK/Library/Yaskawa-GP7.robot"
 
-# 8 cấu hình cố định — deterministic cho bảng. Reuse từ scripts/13_*.py.
+# 8 fixed configs — deterministic for the table. Reused from scripts/13_*.py.
 FIXED_CONFIGS_DEG = [
     ("zero",  [0, 0, 0, 0, 0, 0]),
     ("J1+30", [30, 0, 0, 0, 0, 0]),
@@ -92,26 +92,26 @@ def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--samples", type=int, default=100,
-                   help="Số pose ngẫu nhiên THÊM ngoài 8 fixed configs. Default 100.")
+                   help="Number of random poses to add on top of the 8 fixed configs. Default 100.")
     p.add_argument("--seed", type=int, default=42,
                    help="Seed RNG cho random samples. Default 42.")
     p.add_argument("--ik-perturb-deg", type=float, default=10.0,
-                   help="Lệch q_init khỏi q_target (deg) cho round-trip IK. Default 10°.")
+                   help="Perturb q_init away from q_target (deg) for round-trip IK. Default 10°.")
     p.add_argument("--robot-file", default=DEFAULT_ROBOT_FILE,
-                   help=f"Đường dẫn RoboDK .robot. Default {DEFAULT_ROBOT_FILE}.")
+                   help=f"Path to RoboDK .robot file. Default {DEFAULT_ROBOT_FILE}.")
     p.add_argument("--no-robodk", action="store_true",
-                   help="Bỏ RoboDK (khi không có RoboDK hoặc hết quota).")
+                   help="Skip RoboDK (when RoboDK is unavailable or quota is exhausted).")
     p.add_argument("--methods", default="Pieper,DLS,LM,SDLS,BFGS,RoboDK",
-                   help="Comma-separated subset của methods. Default: all 6.")
+                   help="Comma-separated subset of methods. Default: all 6.")
     p.add_argument("--fair", action="store_true",
-                   help="Fair mode: DLS dùng single-shot (no seeded retry), "
-                        "same max_iter cho tất cả → so sánh thuật toán thuần. "
-                        "Default OFF = production mode (DLS có seeded retry, "
+                   help="Fair mode: DLS uses single-shot (no seeded retry), "
+                        "same max_iter for all → pure algorithm comparison. "
+                        "Default OFF = production mode (DLS with seeded retry, "
                         "matching how app actually uses each).")
     p.add_argument("--no-plot", action="store_true",
-                   help="Không vẽ PNG histogram.")
+                   help="Do not generate PNG histogram.")
     p.add_argument("--no-show", action="store_true",
-                   help="Không mở matplotlib window, chỉ save PNG.")
+                   help="Do not open matplotlib window; save PNG only.")
     p.add_argument("--out-csv", default=None,
                    help="CSV output path. Default figures/compare_fk_ik_<ts>.csv")
     p.add_argument("--out-png", default=None,
@@ -123,7 +123,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def setup_robodk(robot_file: str, log):
-    """Connect RoboDK + load GP7 robot. Return robot item hoặc None nếu fail."""
+    """Connect RoboDK + load GP7 robot. Return robot item or None on failure."""
     try:
         from robodk.robolink import ITEM_TYPE_ROBOT, Robolink
         rdk = Robolink()
@@ -167,7 +167,7 @@ def rdk_sol_to_list(s) -> list[float]:
 
 
 def pose_diff(T_a: np.ndarray, T_b: np.ndarray) -> tuple[float, float]:
-    """Return (pos_err_mm, rot_err_rad) giữa 2 pose 4×4."""
+    """Return (pos_err_mm, rot_err_rad) between 2 poses 4×4."""
     pos = float(np.linalg.norm(T_a[:3, 3] - T_b[:3, 3]))
     R_err = T_a[:3, :3] @ T_b[:3, :3].T
     cos_t = float(np.clip((np.trace(R_err) - 1.0) * 0.5, -1.0, 1.0))
@@ -204,7 +204,7 @@ def run_ik_pieper(model, T_target: np.ndarray, q_init_deg: list[float]
 
 
 def _run_ik_numerical(fn, model, T_target, q_init_deg):
-    """Common runner cho DLS / LM / SDLS / BFGS (single solution methods)."""
+    """Common runner for DLS / LM / SDLS / BFGS (single solution methods)."""
     q_init_rad = np.deg2rad(q_init_deg)
     t0 = time.perf_counter()
     sol = fn(model, T_target, q_init_rad.tolist(),
@@ -328,7 +328,7 @@ def evaluate(
 
 
 def gen_random_configs(n: int, model, seed: int) -> list[tuple[str, list[float]]]:
-    """Generate n random configs trong joint limits."""
+    """Generate n random configs within joint limits."""
     rng = np.random.RandomState(seed)
     out: list[tuple[str, list[float]]] = []
     for i in range(n):
@@ -341,7 +341,7 @@ def gen_random_configs(n: int, model, seed: int) -> list[tuple[str, list[float]]
 
 
 def print_fixed_table(rows: list[dict], methods: list[str], log) -> None:
-    """In bảng cho 8 fixed configs với mỗi method 1 cột pos err."""
+    """Print table for 8 fixed configs with one pos err column per method."""
     log.info("=" * 130)
     log.info("FIXED CONFIGS — FK fidelity (vs RoboDK if loaded) + IK round-trip pos err (perturbed q_init)")
     log.info("=" * 130)
@@ -361,7 +361,7 @@ def print_fixed_table(rows: list[dict], methods: list[str], log) -> None:
 
 
 def print_distribution_summary(rows: list[dict], methods: list[str], log) -> None:
-    """In summary thống kê distribution cho tất cả rows (fixed + random)."""
+    """Print distribution statistics summary for all rows (fixed + random)."""
     log.info("")
     log.info("=" * 120)
     log.info(f"DISTRIBUTION SUMMARY (n={len(rows)} poses)")
@@ -407,7 +407,7 @@ def plot_distributions(rows: list[dict], methods: list[str], out_png: Path,
         if not show: matplotlib.use("Agg")
         import matplotlib.pyplot as plt
     except ImportError:
-        log.warning("matplotlib chưa cài — bỏ qua plot")
+        log.warning("matplotlib not installed — skipping plot")
         return
 
     fig, axes = plt.subplots(2, 3, figsize=(16, 9))
@@ -500,16 +500,16 @@ def main() -> int:
     requested = [m.strip() for m in args.methods.split(",") if m.strip()]
     invalid = [m for m in requested if m not in ALL_METHODS]
     if invalid:
-        log.error("Methods không hợp lệ: %s. Hợp lệ: %s", invalid, ALL_METHODS)
+        log.error("Invalid methods: %s. Valid: %s", invalid, ALL_METHODS)
         return 2
 
-    # RoboDK setup (chỉ khi RoboDK trong methods + chưa --no-robodk)
+    # RoboDK setup (only when RoboDK is in methods and --no-robodk is not set)
     rdk = None; robot = None; have_rdk = False
     if "RoboDK" in requested and not args.no_robodk:
         rdk, robot = setup_robodk(args.robot_file, log)
         have_rdk = robot is not None
         if not have_rdk:
-            log.warning("RoboDK requested nhưng không reachable — drop khỏi methods")
+            log.warning("RoboDK requested but not reachable — dropping from methods")
             requested = [m for m in requested if m != "RoboDK"]
     elif "RoboDK" in requested and args.no_robodk:
         requested = [m for m in requested if m != "RoboDK"]

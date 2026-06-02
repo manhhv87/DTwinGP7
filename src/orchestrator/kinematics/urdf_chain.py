@@ -1,23 +1,23 @@
 """
 urdf_chain.py
 ─────────────
-Forward kinematics theo URDF chain (translation + rotation) thay vì Modified DH.
+Forward kinematics via URDF chain (translation + rotation) instead of Modified DH.
 
-Lý do: URDF chain trực tiếp ánh xạ datasheet vật lý của robot (joint origins +
-axes), tránh sai sót khi convert sang DH convention. Match exactly với
+Rationale: The URDF chain directly maps the robot's physical datasheet (joint origins +
+axes), avoiding conversion errors to DH convention. Matches exactly with
 ros-industrial/motoman GP7 URDF + RoboDK GP7 model.
 
-Mỗi joint trong URDF có:
-  - origin xyz: vị trí joint axis trong PARENT link frame (mm)
-  - axis xyz:   hướng joint axis (đơn vị vector, có thể là negative ±1)
+Each joint in the URDF has:
+  - origin xyz: joint axis position in the PARENT link frame (mm)
+  - axis xyz:   joint axis direction (unit vector, may be negative ±1)
 
 FK chain:
     T = base
     For each joint i:
         T = T · Translate(origin_i) · Rotate(axis_i, q_i)
 
-`q_i` là joint angle theo Yaskawa convention (positive = theo axis direction
-trong URDF). Negative axis trong URDF (vd (-1,0,0) cho J4) đã include sign.
+`q_i` is the joint angle in Yaskawa convention (positive = along axis direction
+in the URDF). Negative axis in the URDF (e.g. (-1,0,0) for J4) already includes the sign.
 """
 from __future__ import annotations
 
@@ -29,27 +29,27 @@ import numpy as np
 
 @dataclass(frozen=True)
 class URDFJoint:
-    """1 joint trong URDF chain (revolute)."""
+    """One joint in the URDF chain (revolute)."""
 
     name: str
-    origin_mm: tuple[float, float, float]    # xyz trong parent frame
-    axis: tuple[float, float, float]         # unit vector (có dấu)
+    origin_mm: tuple[float, float, float]    # xyz in parent frame
+    axis: tuple[float, float, float]         # unit vector (signed)
     joint_min: float                         # radian
     joint_max: float                         # radian
 
 
 @dataclass(frozen=True)
 class URDFRobot:
-    """Robot model dùng URDF chain.
+    """Robot model using URDF chain.
 
     Args:
         joints: Joint chain (revolute only).
-        base_xyz_mm: Robot base position trong world frame (mm).
+        base_xyz_mm: Robot base position in the world frame (mm).
         base_rpy_rad: Robot base orientation (radian, XYZ-fixed).
-        tool_offset_mm: TCP offset từ flange theo Z (mm) — backwards compat.
-        flange_xyz_mm: Fixed offset từ joint_6 → flange link (URDF fixed joint).
+        tool_offset_mm: TCP offset from flange along Z (mm) — backwards compat.
+        flange_xyz_mm: Fixed offset from joint_6 → flange link (URDF fixed joint).
             GP7: (80, 0, 0).
-        tool0_rpy_rad: Tool0 frame rotation tương đối flange (URDF tool0 joint).
+        tool0_rpy_rad: Tool0 frame rotation relative to flange (URDF tool0 joint).
             GP7: (π, -π/2, 0).
     """
 
@@ -66,7 +66,7 @@ class URDFRobot:
 
 
 def _axis_angle_to_matrix(axis: tuple[float, float, float], q: float) -> np.ndarray:
-    """Rotation matrix 4x4 từ axis-angle (Rodrigues)."""
+    """4x4 rotation matrix from axis-angle (Rodrigues)."""
     x, y, z = axis
     norm = np.sqrt(x * x + y * y + z * z)
     if norm < 1e-12:
@@ -75,11 +75,11 @@ def _axis_angle_to_matrix(axis: tuple[float, float, float], q: float) -> np.ndar
 
 
 def _axis_angle_unit(axis_unit: tuple[float, float, float], q: float) -> np.ndarray:
-    """Rodrigues 4x4 từ axis ĐÃ chuẩn hoá (đơn vị) + góc q.
+    """Rodrigues 4x4 from a pre-normalized (unit) axis + angle q.
 
-    Tách khỏi `_axis_angle_to_matrix` để FK truyền sẵn axis đã normalize (cache
-    trong `_urdf_consts`) → khỏi tính `sqrt` + chia mỗi joint mỗi call. Với unit
-    axis, kết quả bit-identical với `_axis_angle_to_matrix(axis, q)`.
+    Split from `_axis_angle_to_matrix` so FK can pass pre-normalized axes (cached
+    in `_urdf_consts`) — avoids recomputing `sqrt` + division per joint per call.
+    With a unit axis, the result is bit-identical to `_axis_angle_to_matrix(axis, q)`.
     """
     x, y, z = axis_unit
     if x == 0.0 and y == 0.0 and z == 0.0:
@@ -96,12 +96,13 @@ def _axis_angle_unit(axis_unit: tuple[float, float, float], q: float) -> np.ndar
 
 @lru_cache(maxsize=None)
 def _urdf_consts(model: "URDFRobot"):
-    """Hằng số FK không phụ thuộc joint angle — cache 1 lần cho mỗi model.
+    """FK constants that do not depend on joint angle — cached once per model.
 
-    Gồm: base transform, axis ĐÃ normalize của từng joint, ma trận
-    `_translate(origin)` của từng joint (cố định), và các transform cuối
-    (flange/tool0/tool_offset) hoặc None nếu không áp dụng. Mọi giá trị y hệt
-    bản dựng-lại-mỗi-call cũ; chỉ khác là không tính lại nữa.
+    Includes: base transform, pre-normalized axis per joint, the constant
+    `_translate(origin)` matrix per joint, and the trailing transforms
+    (flange/tool0/tool_offset) or None if not applicable. All values are
+    identical to the previous per-call rebuild; the only difference is they
+    are no longer recomputed each call.
     """
     base = _base_transform(model)
     axes: list[tuple[float, float, float]] = []
@@ -128,7 +129,7 @@ def _translate(xyz: tuple[float, float, float]) -> np.ndarray:
 
 
 def _base_transform(model: URDFRobot) -> np.ndarray:
-    """Base frame transform từ base_xyz_mm + base_rpy_rad."""
+    """Base frame transform from base_xyz_mm + base_rpy_rad."""
     roll, pitch, yaw = model.base_rpy_rad
     cr, sr = np.cos(roll), np.sin(roll)
     cp, sp = np.cos(pitch), np.sin(pitch)
@@ -162,7 +163,7 @@ def forward_kinematics_urdf(
     model: URDFRobot,
     joints_rad: list[float] | tuple[float, ...] | np.ndarray,
 ) -> np.ndarray:
-    """FK theo URDF chain. Trả về 4x4 pose của tool0 frame."""
+    """FK via URDF chain. Returns the 4x4 pose of the tool0 frame."""
     joints = np.asarray(joints_rad, dtype=float).flatten()
     if len(joints) != model.num_joints():
         raise ValueError(
@@ -175,7 +176,7 @@ def forward_kinematics_urdf(
         T = T @ trans[i] @ _axis_angle_unit(axes[i], joints[i])
 
     # Fixed flange offset → tool0 rotation → backward-compat tool_offset (Z),
-    # giữ NGUYÊN thứ tự matmul cũ nên bit-identical.
+    # preserving the original matmul order so the result is bit-identical.
     if flange is not None:
         T = T @ flange
     if tool0 is not None:
@@ -189,7 +190,7 @@ def joint_positions_urdf(
     model: URDFRobot,
     joints_rad: list[float] | tuple[float, ...] | np.ndarray,
 ) -> list[np.ndarray]:
-    """List origin của từng joint trong world frame."""
+    """List of each joint's origin in the world frame."""
     joints = np.asarray(joints_rad, dtype=float).flatten()
     base, axes, trans, _flange, _tool0, tooloff = _urdf_consts(model)
     positions: list[np.ndarray] = []
@@ -211,12 +212,12 @@ def fk_with_joint_frames_urdf(
     joints_rad: list[float] | tuple[float, ...] | np.ndarray,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Compute FK + collect joint origin position + axis direction (WORLD frame)
-    cho analytical Jacobian.
+    for the analytical Jacobian.
 
     Returns:
         T_tcp:    (4,4) end-effector pose (tool0 frame) — same as forward_kinematics_urdf.
-        p_joints: (n, 3) world origin của mỗi joint AT THE MOMENT axis rotation applies.
-        z_joints: (n, 3) world-frame axis vector của mỗi joint (đã normalize).
+        p_joints: (n, 3) world origin of each joint AT THE MOMENT axis rotation applies.
+        z_joints: (n, 3) world-frame axis vector of each joint (pre-normalized).
 
     Analytical Jacobian column i cho revolute joint:
         J[:3, i] = z_joints[i] × (p_tcp - p_joints[i])
@@ -229,14 +230,14 @@ def fk_with_joint_frames_urdf(
     z_joints = np.zeros((n, 3))
     T = base
     for i in range(n):
-        # Apply translation tới joint i origin TRƯỚC khi rotate
+        # Apply translation to joint i origin BEFORE rotating
         T = T @ trans[i]
-        # Lúc này T[:3, 3] = joint i origin, T[:3, :3] = parent frame của axis_local
+        # At this point T[:3, 3] = joint i origin, T[:3, :3] = parent frame of axis_local
         p_joints[i] = T[:3, 3]
         z_joints[i] = T[:3, :3] @ np.asarray(axes[i])
         # Apply joint rotation
         T = T @ _axis_angle_unit(axes[i], joints[i])
-    # Apply flange + tool0 + tool_offset như forward_kinematics_urdf
+    # Apply flange + tool0 + tool_offset as in forward_kinematics_urdf
     if flange is not None:
         T = T @ flange
     if tool0 is not None:
@@ -250,8 +251,8 @@ def _axis_angle_unit_batch(axis_unit: tuple[float, float, float],
                             q_batch: np.ndarray) -> np.ndarray:
     """Batched Rodrigues: (N,) angles → (N, 4, 4) rotation matrices.
 
-    axis FIXED, q VARIES per batch — phù hợp với URDF joint i (cùng axis cho
-    mọi q_batch[k, i]). Tránh per-element Python loop.
+    axis FIXED, q VARIES per batch — suitable for URDF joint i (same axis for
+    all q_batch[k, i]). Avoids a per-element Python loop.
     """
     x, y, z = axis_unit
     if x == 0.0 and y == 0.0 and z == 0.0:
@@ -278,7 +279,7 @@ def _axis_angle_unit_batch(axis_unit: tuple[float, float, float],
 def fk_with_joint_frames_batch_urdf(
     model: URDFRobot, q_batch: np.ndarray,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Batched FK: solve N FK problems song song bằng numpy batched matmul.
+    """Batched FK: solve N FK problems in parallel via numpy batched matmul.
 
     Args:
         q_batch: (N, num_joints) joint angles.
@@ -288,12 +289,12 @@ def fk_with_joint_frames_batch_urdf(
         p_joints: (N, n, 3) joint origin in world frame.
         z_joints: (N, n, 3) joint axis in world frame.
 
-    Performance: 1 batched call cho N=30 problems ~150µs, vs 30 × 50µs sequential
-    = 1.5ms. Speedup ~10× cho N=30, scale linear với N.
+    Performance: 1 batched call for N=30 problems ~150µs, vs 30 × 50µs sequential
+    = 1.5ms. Speedup ~10× for N=30, scales linearly with N.
     """
     q_batch = np.asarray(q_batch, dtype=float)
     if q_batch.ndim != 2:
-        raise ValueError(f"q_batch phải 2D (N, n), got shape {q_batch.shape}")
+        raise ValueError(f"q_batch must be 2D (N, n), got shape {q_batch.shape}")
     N, n = q_batch.shape
     if n != model.num_joints():
         raise ValueError(f"Expected (N, {model.num_joints()}), got {q_batch.shape}")
@@ -305,10 +306,10 @@ def fk_with_joint_frames_batch_urdf(
     z_joints = np.zeros((N, n, 3))
 
     for i in range(n):
-        # Apply translation (constant cho mọi batch element)
+        # Apply translation (constant for all batch elements)
         T = T @ trans[i]                            # (N,4,4) @ (4,4) → (N,4,4)
         p_joints[:, i, :] = T[:, :3, 3]
-        # Axis ở world frame = T[:3, :3] @ axis_local
+        # Axis in world frame = T[:3, :3] @ axis_local
         z_joints[:, i, :] = T[:, :3, :3] @ np.asarray(axes[i])
         # Batched rotation by q_batch[:, i]
         Rot = _axis_angle_unit_batch(axes[i], q_batch[:, i])   # (N, 4, 4)
@@ -327,14 +328,14 @@ def link_frames_urdf(
     model: URDFRobot,
     joints_rad: list[float] | tuple[float, ...] | np.ndarray,
 ) -> list[tuple[str, np.ndarray]]:
-    """Frame world (4x4) của từng link theo URDF chain — cho viewport vẽ khối.
+    """World frame (4x4) of each link in the URDF chain — for viewport mesh rendering.
 
-    Trả về list (link_name, T_world) theo thứ tự:
+    Returns a list of (link_name, T_world) in order:
         base_link, link_S, link_L, link_U, link_R, link_B, link_T,
-        link_flange (nếu có flange offset), link_tool0 (nếu có tool0 rpy).
+        link_flange (if a flange offset exists), link_tool0 (if tool0 rpy exists).
 
-    T_world tính bằng mm (như origin_mm). Dùng chung công thức với
-    `forward_kinematics_urdf` nên frame tool0 trùng khớp tuyệt đối.
+    T_world is computed in mm (matching origin_mm). Uses the same formula as
+    `forward_kinematics_urdf`, so the tool0 frame matches exactly.
     """
     joints = np.asarray(joints_rad, dtype=float).flatten()
     if len(joints) != model.num_joints():
@@ -359,7 +360,7 @@ def link_frames_urdf(
     return frames
 
 
-# ───── GP7 chain từ ros-industrial/motoman noetic-devel ─────
+# ───── GP7 chain from ros-industrial/motoman noetic-devel ─────
 
 
 def gp7_urdf(
@@ -367,20 +368,21 @@ def gp7_urdf(
     base_rpy_rad: tuple[float, float, float] = (0.0, 0.0, 0.0),
     tool_offset_mm: float = 0.0,
 ) -> URDFRobot:
-    """Yaskawa GP7 chain trích từ ros-industrial/motoman gp7_macro.xacro.
+    """Yaskawa GP7 chain extracted from ros-industrial/motoman gp7_macro.xacro.
 
     Source: github.com/ros-industrial/motoman noetic-devel branch
             motoman_gp7_support/urdf/gp7_macro.xacro
     """
     deg = np.deg2rad
-    # NOTE: ROS URDF có joint_1_s origin (0, 0, 0.33) — base_link to J1 axis.
-    # RoboDK GP7 model coi "robot frame" = J1 axis (không phải base_link/floor).
-    # Để match RoboDK SolveFK, set origin J1 = (0,0,0). Caller dùng base_xyz_mm
-    # để position robot trong world (vd (0,0,630) cho pedestal).
+    # NOTE: ROS URDF has joint_1_s origin (0, 0, 0.33) — base_link to J1 axis.
+    # The RoboDK GP7 model treats "robot frame" = J1 axis (not base_link/floor).
+    # To match RoboDK SolveFK, set J1 origin = (0,0,0). The caller uses base_xyz_mm
+    # to position the robot in the world (e.g. (0,0,630) for a pedestal).
     #
-    # Joint limits = query trực tiếp từ RoboDK Yaskawa-GP7.robot (robot.JointLimits(),
-    # scripts/13_verify_vs_robodk.py) → khớp 1:1 controller thật. Trước đây R chỉ
-    # ±180° làm IK fail ở home (J4=-181.93°); L/U cũng lệch. Đã sửa cho khớp RoboDK.
+    # Joint limits queried directly from RoboDK Yaskawa-GP7.robot (robot.JointLimits(),
+    # scripts/13_verify_vs_robodk.py) → 1:1 match with the real controller. Previously R
+    # was only ±180°, causing IK failures at home (J4=-181.93°); L/U were also off. Fixed
+    # to match RoboDK.
     joints = (
         URDFJoint(name="S", origin_mm=(0.0, 0.0, 0.0),
                   axis=(0.0, 0.0, 1.0),
@@ -407,6 +409,6 @@ def gp7_urdf(
         base_xyz_mm=base_xyz_mm,
         base_rpy_rad=base_rpy_rad,
         tool_offset_mm=tool_offset_mm,
-        flange_xyz_mm=(80.0, 0.0, 0.0),                # URDF fixed joint 6t-flange
-        tool0_rpy_rad=(np.pi, -np.pi / 2, 0.0),         # URDF fixed joint flange-tool0
+        flange_xyz_mm=(80.0, 0.0, 0.0),                 # URDF fixed joint 6t-flange
+        tool0_rpy_rad=(np.pi, -np.pi / 2, 0.0),          # URDF fixed joint flange-tool0
     )

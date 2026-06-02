@@ -1,14 +1,14 @@
 """
 camera.py
 ─────────
-Wrapper cho camera Intel RealSense D455 + một MockCamera cho sim/test.
+Wrapper for Intel RealSense D455 camera + a MockCamera for sim/test.
 
-D455Camera lazy-import pyrealsense2 → module này import được trên máy không
-có RealSense SDK (chỉ MockCamera là dùng được khi đó).
+D455Camera lazy-imports pyrealsense2 → this module is importable on machines
+without the RealSense SDK (only MockCamera works in that case).
 
-Cả hai camera đều cung cấp cùng interface:
+Both cameras expose the same interface:
     .intrinsics  → dict {fx, fy, ppx, ppy, width, height}
-    .get_frame() → (rgb, depth_m) — depth_m đơn vị mét, hoặc (None, None)
+    .get_frame() → (rgb, depth_m) — depth_m in metres, or (None, None)
     .stop()
 """
 from __future__ import annotations
@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 
 
 class D455Camera:
-    """RealSense D455 với align depth→color + bộ lọc giảm nhiễu depth."""
+    """RealSense D455 with depth→color alignment and depth noise filters."""
 
     def __init__(
         self,
@@ -56,7 +56,7 @@ class D455Camera:
         logger.info("D455 started — intrinsics fx=%.1f fy=%.1f", intr.fx, intr.fy)
 
     def get_frame(self) -> tuple[np.ndarray | None, np.ndarray | None]:
-        """Lấy 1 cặp (rgb, depth_m). depth_m đơn vị mét, đã align + lọc."""
+        """Capture one (rgb, depth_m) pair. depth_m in metres, aligned and filtered."""
         frames = self.pipeline.wait_for_frames(timeout_ms=2000)
         aligned = self.align.process(frames)
         color_frame = aligned.get_color_frame()
@@ -73,18 +73,18 @@ class D455Camera:
         return rgb, depth
 
     def stop(self) -> None:
-        """Dừng pipeline RealSense."""
+        """Stop the RealSense pipeline."""
         self.pipeline.stop()
         logger.info("D455 stopped")
 
 
 class MockCamera:
-    """Camera giả lập — trả frame tổng hợp. Dùng cho test/sim không phần cứng.
+    """Simulated camera — returns synthetic frames. Use for test/sim without hardware.
 
     Args:
-        rgb_frames: List ảnh RGB lặp tuần hoàn. None → ảnh đen.
-        depth_frames: List ảnh depth (mét) tương ứng. None → mặt phẳng 0.8m.
-        intrinsics: Dict intrinsics. None → giá trị mặc định kiểu D455.
+        rgb_frames: List of RGB images cycled in order. None → black frame.
+        depth_frames: Corresponding list of depth images (metres). None → flat 0.8 m plane.
+        intrinsics: Intrinsics dict. None → D455-style defaults.
     """
 
     DEFAULT_INTRINSICS = {
@@ -105,11 +105,11 @@ class MockCamera:
         self._i = 0
 
     def get_frame(self) -> tuple[np.ndarray, np.ndarray]:
-        """Trả cặp frame kế tiếp (lặp vòng)."""
+        """Return the next frame pair (cyclic)."""
         rgb = self._rgb[self._i % len(self._rgb)]
         depth = self._depth[self._i % len(self._depth)]
         self._i += 1
         return rgb, depth
 
     def stop(self) -> None:
-        """No-op — giữ interface đồng nhất với D455Camera."""
+        """No-op — keeps the interface consistent with D455Camera."""

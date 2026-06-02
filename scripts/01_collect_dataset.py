@@ -2,19 +2,19 @@
 """
 01_collect_dataset.py
 ─────────────────────
-Hỗ trợ chụp dataset có hệ thống bằng RealSense D455.
+Systematic dataset capture tool using RealSense D455.
 
-Hiển thị live view; phím tắt đổi metadata cảnh, SPACE để chụp.
-File lưu: data/raw/{class}_{lighting}_{angle}_{overlap}_{bg}_{ts}_{NNNN}_rgb.png
-          + _depth.npy
+Displays a live view; hotkeys change scene metadata, SPACE captures a frame.
+Saves: data/raw/{class}_{lighting}_{angle}_{overlap}_{bg}_{ts}_{NNNN}_rgb.png
+       + _depth.npy
 
-Phím tắt:
-    SPACE      chụp 1 ảnh (RGB + depth)
+Hotkeys:
+    SPACE      capture 1 image (RGB + depth)
     1/2/3      class = bottle / cup / bolt
     b/m/d      lighting = bright / medium / dim
     n/l/o      overlap  = none / light / medium
     g/u/r      background = gray / blue / brown
-    q          thoát
+    q          quit
 
 Usage:
     python scripts/01_collect_dataset.py
@@ -35,7 +35,7 @@ from src.utils import ensure_dir, setup_logging, timestamp  # noqa: E402
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--output", default="data/raw", help="Thư mục lưu ảnh")
+    parser.add_argument("--output", default="data/raw", help="Output directory for saved images")
     parser.add_argument("--color-w", type=int, default=1280)
     parser.add_argument("--color-h", type=int, default=720)
     return parser.parse_args()
@@ -50,12 +50,12 @@ def main() -> int:
         import numpy as np
         import pyrealsense2 as rs
     except ImportError as e:
-        log.error("Thiếu dependency: %s. Cài: pip install opencv-python pyrealsense2", e)
+        log.error("Missing dependency: %s. Install: pip install opencv-python pyrealsense2", e)
         return 1
 
     out_dir = ensure_dir(PROJECT_ROOT / args.output)
 
-    # ─── Khởi tạo RealSense ───
+    # ─── Initialize RealSense ───
     pipeline = rs.pipeline()
     cfg = rs.config()
     cfg.enable_stream(rs.stream.color, args.color_w, args.color_h, rs.format.bgr8, 30)
@@ -94,7 +94,7 @@ def main() -> int:
                    f"| bg:{meta['bg']} | count:{counter}")
             cv2.putText(overlay, txt, (10, 30), cv2.FONT_HERSHEY_SIMPLEX,
                         0.6, (0, 255, 0), 2)
-            cv2.imshow("Capture (SPACE=chup, q=thoat)", overlay)
+            cv2.imshow("Capture (SPACE=capture, q=quit)", overlay)
 
             key = cv2.waitKey(1) & 0xFF
             if key == ord("q"):
@@ -113,7 +113,7 @@ def main() -> int:
     finally:
         pipeline.stop()
         cv2.destroyAllWindows()
-        log.info("Kết thúc. Tổng %d ảnh.", counter)
+        log.info("Done. Total %d image(s) captured.", counter)
 
     return 0
 

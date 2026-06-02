@@ -1,8 +1,8 @@
 """
-logging — Ghi log kết quả thí nghiệm pick-and-place.
+logging — Logs pick-and-place experiment results.
 
-Lưu ý: package này tên `logging` nhưng KHÔNG che khuất `logging` chuẩn của
-Python — các module khác `import logging` vẫn nhận stdlib (absolute import).
+Note: this package is named `logging` but does NOT shadow Python's standard
+`logging` — other modules doing `import logging` still get the stdlib (absolute import).
 
 Public API:
     TrialLogger, FIELDNAMES

@@ -3,8 +3,8 @@ trajectory.py
 ─────────────
 Joint trajectory interpolation + safety checks (joint limit, self-collision).
 
-Pure-numpy → predict offline trước khi gửi command thật cho robot. Tốc độ
-~10ms cho trajectory 100 sample → đủ cho per-trial online preview (UC2).
+Pure-numpy → predict offline before sending real commands to the robot. Runtime
+~10ms for a 100-sample trajectory → sufficient for per-trial online preview (UC2).
 """
 from __future__ import annotations
 
@@ -18,9 +18,9 @@ from .forward_kinematics import joint_positions, joint_positions_batch
 
 @dataclass
 class TrajectorySample:
-    """1 sample tại thời điểm `t`."""
+    """One sample at time `t`."""
 
-    t: float                          # giây từ start
+    t: float                          # seconds from start
     joints_rad: list[float]           # joint angles (radian)
 
 
@@ -29,23 +29,24 @@ def interpolate_joints(
     dt: float = 0.05,
     max_joint_speed_deg_s: float = 30.0,
 ) -> list[TrajectorySample]:
-    """Linear interpolate joint waypoints, sample mỗi `dt` giây.
+    """Linearly interpolate joint waypoints, sampled every `dt` seconds.
 
-    Time tự động tính từ max-joint-speed: segment dài (max joint movement) /
-    speed = duration. Đảm bảo speed cap → predict đúng motion robot thật.
+    Time is computed automatically from max-joint-speed: segment length
+    (max joint movement) / speed = duration. Enforces the speed cap so the
+    predicted motion matches the real robot.
 
     Args:
-        waypoints: List joint configs (mỗi cái = 6 float radian).
-        dt: Sample interval (giây). Default 50ms → 20Hz, đủ smooth.
-        max_joint_speed_deg_s: Tốc độ joint giả định để tính duration.
+        waypoints: List of joint configs (each = 6 floats in radians).
+        dt: Sample interval (seconds). Default 50ms → 20Hz, smooth enough.
+        max_joint_speed_deg_s: Assumed joint speed used to compute duration.
 
     Returns:
-        List TrajectorySample sắp xếp theo t tăng.
+        List of TrajectorySample sorted by increasing t.
     """
     if len(waypoints) < 2:
-        raise ValueError("Cần ít nhất 2 waypoints để interpolate")
+        raise ValueError("Need at least 2 waypoints to interpolate")
     if dt <= 0:
-        raise ValueError(f"dt phải > 0, got {dt}")
+        raise ValueError(f"dt must be > 0, got {dt}")
 
     speed_rad_s = np.deg2rad(max_joint_speed_deg_s)
     samples: list[TrajectorySample] = []
@@ -74,12 +75,12 @@ def check_joint_limits(
     model: RobotDHModel,
     samples: list[TrajectorySample],
 ) -> list[tuple[int, int, float]]:
-    """Verify mọi sample nằm trong joint limit của model.
+    """Verify that every sample lies within the model's joint limits.
 
     Returns:
-        List violations: (sample_idx, joint_idx, value_rad). Rỗng = OK.
+        List of violations: (sample_idx, joint_idx, value_rad). Empty = OK.
     """
-    # Polymorphic: URDFRobot dùng `.joints`, RobotDHModel dùng `.links`
+    # Polymorphic: URDFRobot uses `.joints`, RobotDHModel uses `.links`
     link_attr = getattr(model, "joints", None) or getattr(model, "links", None)
     violations: list[tuple[int, int, float]] = []
     for s_idx, sample in enumerate(samples):
@@ -89,9 +90,9 @@ def check_joint_limits(
     return violations
 
 
-# Sphere radii (mm) cho self-collision check. Mỗi joint là 1 sphere center;
-# radius xấp xỉ kích thước link tại vị trí đó. Conservative — over-estimate
-# hơn under-estimate. Tune nếu false positive nhiều.
+# Sphere radii (mm) for self-collision check. Each joint is one sphere center;
+# radius approximates the link size at that position. Conservative — over-estimate
+# rather than under-estimate. Tune if false positives are frequent.
 GP7_LINK_SPHERE_RADII_MM: tuple[float, ...] = (
     100.0,    # base
     120.0,    # J1 (shoulder mount)
@@ -110,33 +111,34 @@ def check_self_collision_spheres(
     radii_mm: tuple[float, ...] = GP7_LINK_SPHERE_RADII_MM,
     min_non_adjacent_gap: int = 3,
 ) -> list[tuple[int, int, int, float]]:
-    """Sphere-based self-collision check giữa joint sphere không adjacent.
+    """Sphere-based self-collision check between non-adjacent joint spheres.
 
-    Pattern phổ biến: mỗi joint origin = 1 sphere. Hai sphere không kề
-    (cách >= `min_non_adjacent_gap` link) overlap → coi như collision.
+    Common pattern: each joint origin = one sphere. Two non-adjacent spheres
+    (separated by >= `min_non_adjacent_gap` links) that overlap are flagged as a collision.
 
     Args:
         model: Robot DH model.
-        samples: Trajectory để check.
-        radii_mm: Sphere radius cho từng joint (kể cả base + TCP).
-        min_non_adjacent_gap: Tối thiểu cách bao nhiêu link để check. Default 3
-            (J1 vs J4, J2 vs J5, ...) — gap nhỏ luôn close vì link ngắn, false
-            positive cao. Tăng nếu DH có link rất ngắn (vd wrist GP7).
+        samples: Trajectory to check.
+        radii_mm: Sphere radius for each joint (including base + TCP).
+        min_non_adjacent_gap: Minimum link separation before checking. Default 3
+            (J1 vs J4, J2 vs J5, ...) — smaller gaps are always close due to short
+            links, causing high false-positive rates. Increase for DH models with
+            very short links (e.g. GP7 wrist).
 
     Returns:
-        List (sample_idx, joint_i, joint_j, distance_mm). Rỗng = OK.
+        List of (sample_idx, joint_i, joint_j, distance_mm). Empty = OK.
     """
     if not samples:
         return []
 
-    # Batch FK toàn bộ samples 1 lần (matmul vectorized) thay vì N call lẻ —
-    # positions[p] là array (N,3), bit-identical với joint_positions từng sample.
+    # Batch FK for all samples at once (vectorized matmul) instead of N separate calls —
+    # positions[p] is an array (N,3), bit-identical to joint_positions for each sample.
     joints_batch = np.array([s.joints_rad for s in samples], dtype=float)
     positions = joint_positions_batch(model, joints_batch)
     n = len(positions)
-    # Lấy radii khớp số position; nếu thiếu thì pad với last value.
+    # Match radii to position count; pad with the last value if too short.
     radii = list(radii_mm[:n]) + [radii_mm[-1]] * max(0, n - len(radii_mm))
-    # (N, n, 3): vị trí mọi joint cho mọi sample.
+    # (N, n, 3): positions of all joints for all samples.
     P = np.stack(positions, axis=1)
 
     violations: list[tuple[int, int, int, float]] = []
@@ -144,16 +146,16 @@ def check_self_collision_spheres(
         for j in range(i + min_non_adjacent_gap, n):
             thr = radii[i] + radii[j]
             diff = P[:, i, :] - P[:, j, :]
-            # Khoảng cách BÌNH PHƯƠNG vectorized làm bộ lọc thô (superset):
-            # ngưỡng nới rộng đảm bảo KHÔNG bỏ sót cặp nào < thr (sai số ULP).
+            # Vectorized SQUARED distance as a coarse filter (superset):
+            # threshold is widened to ensure NO pair with dist < thr is missed (ULP error).
             dist_sq = np.einsum("kc,kc->k", diff, diff)
             thr_sq_pad = (thr * (1.0 + 1e-9) + 1e-6) ** 2
             for k in np.nonzero(dist_sq < thr_sq_pad)[0]:
-                # Xác nhận bằng ĐÚNG công thức cũ (np.linalg.norm + so sánh <)
-                # → danh sách vi phạm + giá trị dist bit-identical với bản cũ.
+                # Confirm with the EXACT original formula (np.linalg.norm + < comparison)
+                # → violation list + dist values are bit-identical to the original.
                 dist = float(np.linalg.norm(P[k, i] - P[k, j]))
                 if dist < thr:
                     violations.append((int(k), i, j, dist))
-    # Sắp theo (sample, i, j) — khớp đúng thứ tự vòng lặp lồng của bản cũ.
+    # Sort by (sample, i, j) — matches the exact order of the original nested loop.
     violations.sort(key=lambda t: (t[0], t[1], t[2]))
     return violations

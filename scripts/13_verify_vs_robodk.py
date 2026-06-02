@@ -2,28 +2,28 @@
 """
 13_verify_vs_robodk.py
 ──────────────────────
-Kiểm chứng động học CLIENT-SIDE (`gp7_urdf` FK + DLS IK) so với RoboDK GP7.
+Validate CLIENT-SIDE kinematics (`gp7_urdf` FK + DLS IK) against RoboDK GP7.
 
-Nội dung:
-  1. FK FIDELITY  — FK(q) của ta vs RoboDK SolveFK(q): sai số vị trí (mm) + góc (°).
-     Đây là bằng chứng "mô hình của ta == mô hình RoboDK" (kỳ vọng 0.00mm).
-  2. IK PRECISION — round-trip: tạo pose từ SolveFK(q), giải IK lại, đo sai số
-     vị trí (mm) + góc (rad) + thời gian (ms) khi FK ngược. So RoboDK SolveIK
-     (giải tích) vs DLS của ta.
-  3. HISTOGRAM (optional) — khi --samples ≥ 100 hoặc --histogram, vẽ phân phối
-     sai số + thời gian dạng 2×2 grid → PNG figure cho thesis.
+Contents:
+  1. FK FIDELITY  — our FK(q) vs RoboDK SolveFK(q): position error (mm) + angle (°).
+     Proves "our model == RoboDK model" (expected 0.00 mm).
+  2. IK PRECISION — round-trip: generate pose from SolveFK(q), solve IK, measure
+     position (mm) + orientation (rad) + time (ms) via FK back-check.
+     RoboDK SolveIK (analytical) vs our DLS.
+  3. HISTOGRAM (optional) — when --samples ≥ 100 or --histogram, plot error and
+     timing distributions as a 2×2 grid → PNG figure for thesis.
 
 Usage:
-    python scripts/13_verify_vs_robodk.py                       # bộ config cố định (bảng)
-    python scripts/13_verify_vs_robodk.py --samples 20          # + 20 pose ngẫu nhiên
+    python scripts/13_verify_vs_robodk.py                       # fixed config set (table)
+    python scripts/13_verify_vs_robodk.py --samples 20          # + 20 random poses
     python scripts/13_verify_vs_robodk.py --samples 500 --histogram   # PNG figure
-    python scripts/13_verify_vs_robodk.py --no-robodk           # chỉ round-trip phía ta
+    python scripts/13_verify_vs_robodk.py --no-robodk           # client-side round-trip only
     python scripts/13_verify_vs_robodk.py --out figures/kin_verify.csv
 
-Yêu cầu RoboDK: file robot ở C:/RoboDK/Library/Yaskawa-GP7.robot (mặc định). Nếu
-RoboDK Free bật popup "API calls limited" giữa chừng → đóng hẳn RoboDK rồi chạy
-lại (phiên mới reset bộ đếm). Với --samples lớn (≥500) nên dùng --no-robodk
-(DLS-only) để khỏi đụng quota.
+RoboDK requirement: robot file at C:/RoboDK/Library/Yaskawa-GP7.robot (default). If
+RoboDK Free shows "API calls limited" mid-run → close RoboDK and restart (new session
+resets the counter). For large --samples (≥500) use --no-robodk (DLS-only) to avoid
+hitting the quota.
 """
 from __future__ import annotations
 
@@ -47,7 +47,7 @@ from src.utils import setup_logging, timestamp  # noqa: E402
 
 DEFAULT_ROBOT_FILE = "C:/RoboDK/Library/Yaskawa-GP7.robot"
 
-# Bộ config cố định (độ) — deterministic cho bảng thesis.
+# Fixed joint configs (degrees) — deterministic for thesis table.
 FIXED_CONFIGS_DEG = [
     ("zero",  [0, 0, 0, 0, 0, 0]),
     ("J1+30", [30, 0, 0, 0, 0, 0]),
@@ -64,28 +64,28 @@ def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--samples", type=int, default=0,
-                   help="Số pose ngẫu nhiên THÊM (mỗi pose +2 API call). Default 0.")
+                   help="Number of additional random poses (+2 API calls each). Default 0.")
     p.add_argument("--seed", type=int, default=42, help="Seed RNG cho --samples.")
     p.add_argument("--robot-file", default=DEFAULT_ROBOT_FILE,
-                   help="Đường dẫn .robot (default %s)." % DEFAULT_ROBOT_FILE)
+                   help="Path to .robot file (default %s)." % DEFAULT_ROBOT_FILE)
     p.add_argument("--ik-perturb-deg", type=float, default=10.0,
-                   help="Lệch q_init khỏi q_target cho round-trip IK (default 10°).")
+                   help="Perturb q_init away from q_target for round-trip IK (default 10°).")
     p.add_argument("--no-robodk", action="store_true",
-                   help="Bỏ RoboDK — chỉ chạy round-trip FK∘IK phía client.")
+                   help="Skip RoboDK — run client-side FK∘IK round-trip only.")
     p.add_argument("--out", default=None,
                    help="CSV output. Default figures/kin_verify_<ts>.csv")
     p.add_argument("--histogram", action="store_true",
-                   help="Vẽ histogram 2x2 (pos/rot/time + summary) ra PNG. "
-                        "Tự bật khi --samples ≥ 100.")
+                   help="Plot 2x2 histogram (pos/rot/time + summary) to PNG. "
+                        "Auto-enabled when --samples ≥ 100.")
     p.add_argument("--out-png", default=None,
                    help="PNG output cho histogram. Default figures/kin_verify_<ts>.png")
     p.add_argument("--no-show", action="store_true",
-                   help="Không mở matplotlib window (chỉ save PNG).")
+                   help="Do not open matplotlib window (save PNG only).")
     return p.parse_args()
 
 
 def mat_to_np(m) -> np.ndarray:
-    """RoboDK Mat 4x4 → numpy (dùng index [i,j], robust mọi version)."""
+    """RoboDK Mat 4x4 → numpy (using index [i,j], robust across all versions)."""
     return np.array([[m[i, j] for j in range(4)] for i in range(4)], dtype=float)
 
 
@@ -114,14 +114,14 @@ def build_configs(args) -> list[tuple[str, list[float]]]:
 
 
 def connect_robot(robot_file: str, log):
-    """Connect RoboDK + AddFile robot. Return robot item hoặc None."""
+    """Connect to RoboDK and load robot file. Return robot item or None."""
     try:
         from robodk.robolink import Robolink
     except Exception as e:                                  # noqa: BLE001
-        log.error("robodk package không import được: %s", e)
+        log.error("robodk package could not be imported: %s", e)
         return None
     if not Path(robot_file).exists():
-        log.error("Robot file không tồn tại: %s", robot_file)
+        log.error("Robot file not found: %s", robot_file)
         return None
     try:
         rdk = Robolink()
@@ -132,13 +132,13 @@ def connect_robot(robot_file: str, log):
                 pass
         robot = rdk.AddFile(robot_file)
         if not robot.Valid():
-            log.error("AddFile xong nhưng robot không Valid.")
+            log.error("AddFile succeeded but robot item is not Valid.")
             return None
         robot.setName("Yaskawa GP7")
         log.info("RoboDK robot loaded: %s", robot.Name())
         return robot
     except Exception as e:                                  # noqa: BLE001
-        log.error("Không kết nối/nạp RoboDK: %s", e)
+        log.error("Failed to connect/load RoboDK: %s", e)
         return None
 
 
@@ -154,7 +154,7 @@ def main() -> int:
     robot = None if args.no_robodk else connect_robot(args.robot_file, log)
     use_rdk = robot is not None
     if not use_rdk and not args.no_robodk:
-        log.warning("Không có RoboDK — chuyển sang chế độ round-trip phía client.")
+        log.warning("RoboDK unavailable — falling back to client-side round-trip mode.")
 
     rng = np.random.RandomState(args.seed)
     records: list[dict] = []
@@ -177,12 +177,12 @@ def main() -> int:
                 fk_pos.append(pe); fk_rot.append(re)
                 log.info("%-10s %14.4f %14.4f", name, pe, re)
             except Exception as e:                          # noqa: BLE001
-                log.warning("SolveFK lỗi (%s): %s", name, e)
+                log.warning("SolveFK failed (%s): %s", name, e)
         records.append(rec)
     if fk_pos:
         log.info("  → max pos diff=%.4f mm | max rot diff=%.4f deg | %s",
                  max(fk_pos), max(fk_rot),
-                 "KHỚP RoboDK" if max(fk_pos) < 0.01 else "LỆCH — cần kiểm tra model")
+                 "MATCHES RoboDK" if max(fk_pos) < 0.01 else "DIVERGES — check model")
 
     # ── 2. IK PRECISION (round-trip) ──────────────────────────────────────
     log.info("─" * 70)
@@ -216,7 +216,7 @@ def main() -> int:
                     rec["rdk_ik_mm"] = pos_err_mm(T_back_rdk, T_rdk_np)
                     rec["rdk_ik_rot_rad"] = np.deg2rad(rot_err_deg(T_back_rdk, T_rdk_np))
             except Exception as e:                          # noqa: BLE001
-                log.debug("SolveIK lỗi (%s): %s", name, e)
+                log.debug("SolveIK failed (%s): %s", name, e)
         log.info("%-10s %18s %18s", name,
                  "%.5f" % rec["rdk_ik_mm"] if not np.isnan(rec["rdk_ik_mm"]) else "-",
                  "%.5f" % rec["dls_ik_mm"] if not np.isnan(rec["dls_ik_mm"]) else "FAIL")
@@ -240,14 +240,14 @@ def main() -> int:
 
 
 def _plot_histogram(records, out_png, use_rdk, args, log, ts):
-    """Vẽ 2x2 grid: position/orientation error + compute time + summary."""
+    """Plot 2x2 grid: position/orientation error + compute time + summary."""
     try:
         import matplotlib
         if args.no_show:
             matplotlib.use("Agg")
         import matplotlib.pyplot as plt
     except ImportError:
-        log.warning("matplotlib không có — bỏ qua histogram (CSV vẫn ghi).")
+        log.warning("matplotlib not available — skipping histogram (CSV still written).")
         return
 
     dls_pos = np.array([r["dls_ik_mm"] for r in records])
@@ -257,7 +257,7 @@ def _plot_histogram(records, out_png, use_rdk, args, log, ts):
     dls_rot = dls_rot[~np.isnan(dls_rot)]
     dls_ms = dls_ms[~np.isnan(dls_ms)]
     if dls_pos.size == 0:
-        log.warning("Không có sample DLS hợp lệ — bỏ qua histogram.")
+        log.warning("No valid DLS samples — skipping histogram.")
         return
 
     rdk_pos = np.array([r["rdk_ik_mm"] for r in records])

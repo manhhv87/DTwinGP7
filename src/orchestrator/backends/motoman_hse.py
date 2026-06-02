@@ -1,27 +1,27 @@
 """
 motoman_hse.py
 ──────────────
-MotomanHSEBackend: nói chuyện thẳng với YRC1000 qua UDP HSE protocol.
+MotomanHSEBackend: communicates directly with YRC1000 via UDP HSE protocol.
 
-KHÔNG cần RoboDK driver (chỉ cần RoboDK Free để visualize), KHÔNG cần MotoCom32
-DLL, KHÔNG cần ROS 2 / MotoPlus flash. Chỉ cần:
-  - YRC1000 đã enable "High-Speed Ethernet Server function" (Maintenance mode)
-  - PC cùng subnet với YRC1000
+No RoboDK driver required (RoboDK Free is only needed for visualization), no MotoCom32
+DLL, no ROS 2 / MotoPlus flash. Only requires:
+  - YRC1000 with "High-Speed Ethernet Server function" enabled (Maintenance mode)
+  - PC on the same subnet as YRC1000
 
-Tính năng đã làm:
+Implemented features:
   - Connect / status / disconnect (M1)
-  - Joints() đọc joint angles real-time → mirror lên digital twin (M1)
-  - setDO(index, value) ghi network I/O (M2)
+  - Joints() reads joint angles real-time → mirrors to digital twin (M1)
+  - setDO(index, value) writes network I/O (M2)
 
-Còn thiếu (M3, follow-up):
-  - MoveJ/MoveL: cần generator INFORM (.JBI) → FTP upload → JOB_SELECT + START.
-    Khá phức tạp, viết riêng trong inform_codegen.py + sftp uploader.
-    Stub raise NotImplementedError với hướng dẫn.
+Pending (M3, follow-up):
+  - MoveJ/MoveL: requires INFORM (.JBI) generator → FTP upload → JOB_SELECT + START.
+    Non-trivial; implemented separately in inform_codegen.py + sftp uploader.
+    Stub raises NotImplementedError with instructions.
 
-Lưu ý an toàn:
-  - Setup chỉ nên test với robot trong REMOTE mode (key switch trên TP)
-  - Default safety: setSpeed gọi với max_speed_percent từ config
-  - Stop() gửi command HOLD_SERVO để dừng khẩn cấp (cũng có thể dùng E-stop vật lý)
+Safety notes:
+  - Setup should only be tested with robot in REMOTE mode (key switch on TP)
+  - Default safety: setSpeed called with max_speed_percent from config
+  - Stop() sends HOLD_SERVO command for emergency stop (physical E-stop also available)
 """
 from __future__ import annotations
 
@@ -50,33 +50,33 @@ from .inform_codegen import InformJobBuilder, gen_pvar_template_job
 
 logger = logging.getLogger(__name__)
 
-# Default UDP port theo Yaskawa HSE Server spec
+# Default UDP port per Yaskawa HSE Server spec
 HSE_PORT_ROBOT = 10040
 HSE_PORT_FILE = 10041
 
-# Network I/O range cho writable bits (YRC1000):
+# Network I/O range for writable bits (YRC1000):
 # 27010-27020 = general purpose network I/O (CIO ladder accessible).
-# Mục đích cho gripper: bind 1 bit ở đây tới Y-output vật lý qua CIO ladder
-# trên controller. Document trong setup guide.
+# Purpose for gripper: bind 1 bit here to a physical Y-output via CIO ladder
+# on the controller. Documented in setup guide.
 NETWORK_IO_BASE = 27010
 
 
 class MotomanHSEBackend:
-    """Backend YRC1000 qua UDP HSE protocol.
+    """YRC1000 backend via UDP HSE protocol.
 
-    Duck-type khớp RoboDK Item interface (Joints, MoveJ, setDO, ...) để
-    Orchestrator gọi nguyên văn.
+    Duck-typed to match RoboDK Item interface (Joints, MoveJ, setDO, ...)
+    so the Orchestrator can call it unchanged.
 
     Args:
-        ip: IP của YRC1000.
-        port: UDP port (default 10040 cho robot command).
-        timeout_s: Socket timeout cho mỗi request.
-        request_id_seed: Giá trị bắt đầu của request_id (auto-increment).
+        ip: IP address of the YRC1000.
+        port: UDP port (default 10040 for robot commands).
+        timeout_s: Socket timeout per request.
+        request_id_seed: Starting value of request_id (auto-incremented).
     """
 
-    # Class-level marker: backend support pose 4x4 input cho MoveJ/MoveL
-    # (YRC1000 tự IK). DigitalTwinMirror check flag này để distinguish với
-    # MagicMock / generic backends — tránh false-positive duck-type detection.
+    # Class-level marker: backend supports 4x4 pose input for MoveJ/MoveL
+    # (YRC1000 computes IK internally). DigitalTwinMirror checks this flag to
+    # distinguish from MagicMock / generic backends — avoids false-positive duck-type detection.
     supports_cartesian_pose: bool = True
 
     def __init__(
@@ -99,10 +99,10 @@ class MotomanHSEBackend:
         self.timeout_s = timeout_s
         self._sock: socket.socket | None = None
         self._request_id = request_id_seed % 256
-        self._lock = threading.Lock()       # request_id ++ phải atomic
-        # Cache cho JointsHome — set qua config từ orchestrator
+        self._lock = threading.Lock()       # request_id ++ must be atomic
+        # Cache for JointsHome — set via config from orchestrator
         self._home_joints: list[float] = [0.0] * 6
-        # FTP credentials cho job upload (YRC1000 mặc định "" / "")
+        # FTP credentials for job upload (YRC1000 defaults to "" / "")
         self.ftp_user = ftp_user
         self.ftp_pass = ftp_pass
         self.ftp_job_dir = ftp_job_dir
@@ -111,42 +111,42 @@ class MotomanHSEBackend:
         self.job_name_prefix = job_name_prefix
         self._job_counter = 0
         self.wait_completion_timeout_s = wait_completion_timeout_s
-        # Optional kinematic envelope cho MoveJ_Test client-side khi không có RoboDK item.
+        # Optional kinematic envelope for MoveJ_Test client-side when no RoboDK item.
         self.reach_envelope = reach_envelope
-        # TOOL coordinate number — phải khớp với TOOL01 đã setup trên teach pendant
-        # (TCP offset của gripper). Default = 1 (TOOL01).
+        # TOOL coordinate number — must match TOOL01 configured on teach pendant
+        # (TCP offset of gripper). Default = 1 (TOOL01).
         self.tool_no = int(tool_no)
-        # Batch state: None = non-batch (mỗi MoveJ = 1 INFORM upload). Active builder
-        # khi đang trong `with backend.batch():` — motion + IO calls gom vào đây.
+        # Batch state: None = non-batch (each MoveJ = 1 INFORM upload). Active builder
+        # while inside `with backend.batch():` — motion + IO calls accumulated here.
         self._batch_builder: InformJobBuilder | None = None
         self._batch_pos_counter = 0
         self._batch_name = ""
 
         # Ultra-fast P-var mode state (M3++)
         self._ultra_fast_mode = False
-        self._pvar_template_name = ""        # tên template đã upload
-        self._pvar_template_signature = ""   # signature trial structure ("MMMDMM" etc.)
-        # None = không trong batch. List = đang trong batch context (append ops).
+        self._pvar_template_name = ""        # name of the uploaded template
+        self._pvar_template_signature = ""   # trial structure signature ("MMMDMM" etc.)
+        # None = not in batch. List = inside batch context (append ops).
         # Record format: ("movj", joints), ("movl", joints), ("dout", value_int),
         # ("timer", seconds_float) — collected during batch context.
         self._pvar_batch_buffer: list[tuple[str, Any]] | None = None
 
     # ─── Lifecycle ───
     def connect(self) -> None:
-        """Mở UDP socket. KHÔNG verify với robot — gọi Joints() để verify."""
+        """Open UDP socket. Does NOT verify with robot — call Joints() to verify."""
         if self._sock is not None:
             logger.debug("HSE socket already open")
             return
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         sock.settimeout(self.timeout_s)
         self._sock = sock
-        logger.info("HSE UDP socket mở (%s:%d, timeout %.1fs)", self.ip, self.port, self.timeout_s)
+        logger.info("HSE UDP socket opened (%s:%d, timeout %.1fs)", self.ip, self.port, self.timeout_s)
 
     def disconnect(self) -> None:
         if self._sock is not None:
             self._sock.close()
             self._sock = None
-            logger.info("HSE UDP socket đóng")
+            logger.info("HSE UDP socket closed")
 
     def __del__(self) -> None:
         try:
@@ -163,20 +163,20 @@ class MotomanHSEBackend:
         service: int = Service.GET_ATTRIBUTE_ALL,
         payload: bytes = b"",
     ) -> HSEResponse:
-        """Gửi request, chờ response. Raise nếu timeout / decode lỗi / status != 0.
+        """Send request, wait for response. Raises on timeout / decode error / status != 0.
 
-        Thread-safe: toàn bộ sendto + recvfrom được wrap trong `self._lock` để
-        2 threads concurrent không thể swap responses. UDP không guarantee
-        ordering nên previously có thể happen: thread A send req_id=5, thread
-        B send req_id=6, response B về trước → A nhận response B với id mismatch.
+        Thread-safe: the entire sendto + recvfrom is wrapped in `self._lock` so
+        two concurrent threads cannot swap responses. UDP does not guarantee
+        ordering, so previously: thread A sends req_id=5, thread B sends req_id=6,
+        response B arrives first → A receives response B with id mismatch.
         """
         if self._sock is None:
-            raise RuntimeError("HSE socket chưa connect — gọi connect() trước")
+            raise RuntimeError("HSE socket not connected — call connect() first")
 
         with self._lock:
-            # Atomic: id increment + send + recv. UDP delivery vẫn có thể out-of-order
-            # với multi-packet bursts, nhưng vì 1 request → 1 response và lock chỉ
-            # release sau khi nhận, không có thread khác chen.
+            # Atomic: id increment + send + recv. UDP delivery may still be out-of-order
+            # with multi-packet bursts, but since 1 request → 1 response and the lock
+            # only releases after receiving, no other thread can interleave.
             self._request_id = (self._request_id + 1) % 256
             request_id = self._request_id
             req = HSERequest(
@@ -191,13 +191,13 @@ class MotomanHSEBackend:
             except socket.timeout as e:
                 raise TimeoutError(
                     f"HSE request 0x{command:02X} timeout {self.timeout_s}s — "
-                    f"YRC1000 không phản hồi. Check ping + HSE Server function."
+                    f"YRC1000 not responding. Check ping + HSE Server function."
                 ) from e
 
         try:
             resp = HSEResponse.decode(raw)
         except HSEDecodeError:
-            logger.error("HSE response decode lỗi, raw bytes: %s", raw.hex())
+            logger.error("HSE response decode error, raw bytes: %s", raw.hex())
             raise
 
         if resp.request_id != request_id:
@@ -210,7 +210,7 @@ class MotomanHSEBackend:
 
     # ─── RoboDK Item-like interface ───
     def Valid(self) -> bool:
-        """Heartbeat: thử ReadStatus. True nếu socket+controller alive."""
+        """Heartbeat: attempts ReadStatus. True if socket + controller alive."""
         try:
             self._send_request(Command.READ_STATUS, instance=1)
             return True
@@ -219,9 +219,9 @@ class MotomanHSEBackend:
             return False
 
     def Joints(self) -> list[float]:
-        """Đọc joint angles hiện tại từ YRC1000 (degrees).
+        """Read current joint angles from YRC1000 (degrees).
 
-        Dùng READ_POSITION (0x75) với data_type pulse, rồi convert sang độ.
+        Uses READ_POSITION (0x75) with data_type pulse, then converts to degrees.
         """
         resp = self._send_request(
             Command.READ_POSITION, instance=1,
@@ -231,35 +231,35 @@ class MotomanHSEBackend:
         return pulse_to_deg(parsed["joints_raw"])
 
     def JointsHome(self) -> list[float]:
-        """Home joints — set qua config từ Orchestrator (cell_layout.yaml)."""
+        """Home joints — set via config from Orchestrator (cell_layout.yaml)."""
         return list(self._home_joints)
 
     def set_home_joints(self, joints_deg: list[float]) -> None:
-        """Setter cho home — Orchestrator gọi sau init."""
+        """Setter for home — called by Orchestrator after init."""
         if len(joints_deg) != 6:
-            raise ValueError(f"Home phải 6 joints, nhận {len(joints_deg)}")
+            raise ValueError(f"Home requires 6 joints, got {len(joints_deg)}")
         self._home_joints = list(joints_deg)
 
     def Parent(self) -> Any:
-        """HSE không có concept frame parent (như RoboDK item)."""
+        """HSE has no concept of a parent frame (unlike RoboDK items)."""
         return None
 
     # ─── Job upload + execute (M3) ───
     def upload_job(self, job_text: str, job_name: str) -> None:
-        """Upload INFORM .JBI text lên YRC1000 qua FTP.
+        """Upload INFORM .JBI text to YRC1000 via FTP.
 
-        YRC1000 mặc định chạy FTP server trên port 21 (anonymous). File lưu
-        vào `ftp_job_dir` (mặc định /MPRAM1/JBI/) để JOB_SELECT thấy được.
+        YRC1000 runs an FTP server on port 21 (anonymous) by default. File is
+        stored in `ftp_job_dir` (default /MPRAM1/JBI/) so JOB_SELECT can find it.
 
         Args:
-            job_text: Nội dung INFORM (đã render từ InformJobBuilder).
-            job_name: Tên file (không cần .JBI suffix — tự thêm).
+            job_text: INFORM content (rendered from InformJobBuilder).
+            job_name: File name (.JBI suffix optional — added automatically).
         """
         filename = job_name if job_name.upper().endswith(".JBI") else f"{job_name}.JBI"
-        # Yaskawa INFORM dùng Shift-JIS encoding nhưng ASCII-only an toàn cho cả 2.
+        # Yaskawa INFORM uses Shift-JIS encoding but ASCII-only is safe for both.
         data = job_text.encode("ascii", errors="strict")
 
-        logger.info("FTP upload '%s' (%d bytes) lên %s%s",
+        logger.info("FTP upload '%s' (%d bytes) to %s%s",
                     filename, len(data), self.ip, self.ftp_job_dir)
         ftp = ftplib.FTP()
         try:
@@ -274,7 +274,7 @@ class MotomanHSEBackend:
                 pass
 
     def job_select(self, job_name: str) -> None:
-        """JOB_SELECT (0x87): chọn job đã upload làm current. Phải gọi trước START."""
+        """JOB_SELECT (0x87): selects the uploaded job as current. Must be called before START."""
         name = job_name.upper().removesuffix(".JBI").encode("ascii")
         # Payload: 32-byte job name (null-padded) + 4-byte line number (uint32 LE, 0=top)
         payload = name.ljust(32, b"\x00") + struct.pack("<I", 0)
@@ -285,7 +285,7 @@ class MotomanHSEBackend:
         logger.debug("JOB_SELECT '%s'", job_name)
 
     def job_start(self) -> None:
-        """START (0x86): execute current job. Robot phải đã servo on + REMOTE mode."""
+        """START (0x86): execute current job. Robot must have servo on + REMOTE mode."""
         self._send_request(
             Command.START, instance=1, attribute=1,
             service=Service.SET_ATTRIBUTE_SINGLE,
@@ -294,13 +294,13 @@ class MotomanHSEBackend:
         logger.debug("JOB_START")
 
     def read_status_running(self) -> bool:
-        """READ_STATUS (0x72): trả về True nếu robot đang chạy job."""
+        """READ_STATUS (0x72): returns True if robot is executing a job."""
         resp = self._send_request(
             Command.READ_STATUS, instance=1,
             service=Service.GET_ATTRIBUTE_ALL,
         )
-        # Status payload byte 0 chứa nhiều flag — bit 1 ("Running") là cái ta cần
-        # theo Yaskawa HSE spec. Nếu payload < 1 byte → coi như idle.
+        # Status payload byte 0 contains multiple flags — bit 1 ("Running") is needed
+        # per Yaskawa HSE spec. If payload < 1 byte → treat as idle.
         if not resp.payload:
             return False
         return bool(resp.payload[0] & 0x02)
@@ -310,29 +310,29 @@ class MotomanHSEBackend:
         self, p_index: int, joints_deg: list[float],
         tool_no: int = 0, user_frame: int = 0,
     ) -> None:
-        """Ghi P-variable (PULSE form) qua HSE — KHÔNG cần FTP upload.
+        """Write P-variable (PULSE form) via HSE — no FTP upload required.
 
-        P-variables (P000-P127) là position variables runtime-mutable. Workflow
-        ultra-fast: upload template INFORM dùng P-vars 1 lần, mỗi trial chỉ
-        WRITE_VAR (~10ms/call) + JOB_START → 0 FTP overhead/trial.
+        P-variables (P000-P127) are runtime-mutable position variables. Ultra-fast
+        workflow: upload INFORM template using P-vars once; each trial only calls
+        WRITE_VAR (~10ms/call) + JOB_START → zero FTP overhead per trial.
 
         Args:
             p_index: 0-127 — P-variable index.
-            joints_deg: 6 joint angles (degrees). Convert sang pulse qua
+            joints_deg: 6 joint angles (degrees). Converted to pulses via
                 GP7_PULSE_PER_DEG ratio.
-            tool_no: Tool number (mặc định 0).
-            user_frame: User frame number (mặc định 0).
+            tool_no: Tool number (default 0).
+            user_frame: User frame number (default 0).
         """
         if not (0 <= p_index <= 127):
             raise ValueError(f"P-variable index 0-127, got {p_index}")
         if len(joints_deg) != 6:
-            raise ValueError(f"Cần 6 joints, got {len(joints_deg)}")
+            raise ValueError(f"Expected 6 joints, got {len(joints_deg)}")
 
-        # Convert deg → pulse (cùng ratio như INFORM C-variable)
+        # Convert deg → pulse (same ratio as INFORM C-variable)
         from .hse_protocol import GP7_PULSE_PER_DEG
         pulses = [int(round(d * r)) for d, r in zip(joints_deg, GP7_PULSE_PER_DEG)]
 
-        # Payload format theo WRITE_POSITION_VAR spec:
+        # Payload format per WRITE_POSITION_VAR spec:
         #   [0-3]   data_type (0 = PULSE)
         #   [4-7]   form/figure (0 default)
         #   [8-11]  tool_no
@@ -365,17 +365,17 @@ class MotomanHSEBackend:
         form: int = 0,
         data_type: int = DataType.BASE,
     ) -> None:
-        """Ghi P-variable dạng Cartesian pose (BASE coordinate) qua HSE.
+        """Write P-variable as Cartesian pose (BASE coordinate) via HSE.
 
-        Path này cho phép YRC1000 tự tính IK (controller's own kinematics)
-        thay vì PC compute. Tránh sai DH params phía PC.
+        This path lets YRC1000 compute IK internally (controller's own kinematics)
+        instead of on the PC, avoiding DH parameter discrepancies.
 
         Args:
             p_index: 0-127 — P-variable index.
-            T_base: 4x4 pose trong robot BASE frame (mm). Orchestrator gọi
-                `world_to_robot_base()` để convert từ world frame trước.
-            tool_no: TCP tool number (1 = gripper TOOL01 đã setup trên TP).
-            user_frame: 0 cho BASE coordinate.
+            T_base: 4x4 pose in robot BASE frame (mm). Orchestrator calls
+                `world_to_robot_base()` to convert from world frame first.
+            tool_no: TCP tool number (1 = gripper TOOL01 configured on TP).
+            user_frame: 0 for BASE coordinate.
             form: IK config branch (0 = front + elbow up + no flip default).
             data_type: BASE/ROBOT/USER/TOOL (default BASE).
         """
@@ -402,17 +402,17 @@ class MotomanHSEBackend:
         )
 
     def read_alarm(self) -> tuple[int, int]:
-        """READ_ALARM (0x70): đọc alarm code hiện tại + sub-code.
+        """READ_ALARM (0x70): reads current alarm code + sub-code.
 
         Returns:
-            (code, sub_code). (0, 0) = không có alarm.
-            Use `alarm_codes.decode_alarm(code)` để dịch sang tên + recovery hint.
+            (code, sub_code). (0, 0) = no alarm.
+            Use `alarm_codes.decode_alarm(code)` to translate to name + recovery hint.
         """
         resp = self._send_request(
             Command.READ_ALARM, instance=1,
             service=Service.GET_ATTRIBUTE_ALL,
         )
-        # Alarm payload theo spec: [0-3] code (uint32 LE), [4-7] sub_code, [8-11] type, ...
+        # Alarm payload per spec: [0-3] code (uint32 LE), [4-7] sub_code, [8-11] type, ...
         if len(resp.payload) < 8:
             return (0, 0)
         code = struct.unpack("<I", resp.payload[0:4])[0]
@@ -420,17 +420,17 @@ class MotomanHSEBackend:
         return (int(code), int(sub_code))
 
     def _wait_idle(self, timeout_s: float | None = None) -> None:
-        """Poll READ_STATUS đến khi running flag tắt hoặc timeout."""
+        """Poll READ_STATUS until the running flag clears or timeout."""
         deadline = time.monotonic() + (timeout_s or self.wait_completion_timeout_s)
         while time.monotonic() < deadline:
             try:
                 if not self.read_status_running():
                     return
             except Exception as e:                  # noqa: BLE001
-                logger.warning("READ_STATUS lỗi khi poll: %s", e)
+                logger.warning("READ_STATUS error while polling: %s", e)
             time.sleep(0.1)
         raise TimeoutError(
-            f"Job không kết thúc trong {timeout_s or self.wait_completion_timeout_s}s — "
+            f"Job did not complete within {timeout_s or self.wait_completion_timeout_s}s — "
             f"check teach pendant / alarm."
         )
 
@@ -440,27 +440,27 @@ class MotomanHSEBackend:
 
     # ─── Ultra-fast P-var mode (M3++) ───
     def enable_ultra_fast(self, enabled: bool = True) -> None:
-        """Bật/tắt ultra-fast mode.
+        """Enable/disable ultra-fast mode.
 
-        Khi True, `batch()` sẽ dùng P-variables thay vì C-variables:
-          - Lần đầu: upload INFORM template + WRITE_POS_VAR + START
-          - Lần sau (template signature khớp): chỉ WRITE_POS_VAR + START
-            (0 FTP roundtrip → ~50ms/trial overhead)
+        When True, `batch()` uses P-variables instead of C-variables:
+          - First run: upload INFORM template + WRITE_POS_VAR + START
+          - Subsequent runs (matching template signature): only WRITE_POS_VAR + START
+            (0 FTP roundtrips → ~50ms/trial overhead)
 
-        Template signature = string đặc trưng trial structure ("MMDMM" = 5
-        movj instructions với DOUT ở giữa). Khi signature thay đổi (vd trial
-        không đối xứng) → upload template mới.
+        Template signature = string characterizing trial structure ("MMDMM" = 5
+        movj instructions with DOUT in the middle). When signature changes (e.g.
+        asymmetric trial) → upload new template.
         """
         self._ultra_fast_mode = bool(enabled)
         logger.info("Ultra-fast P-var mode: %s", "ON" if enabled else "OFF")
 
     def _build_trial_signature(self) -> tuple[str, list[str], int | None, int | None]:
-        """Phân tích buffer batch → signature + motion_kinds + gripper indices.
+        """Analyze batch buffer → signature + motion_kinds + gripper indices.
 
         Returns: (signature, motion_kinds, close_at, open_at)
-            signature: "MMMDMM..." (M=movj, L=movl, D=dout) cho compare template
-            motion_kinds: list movj/movl theo thứ tự P-variables
-            close_at, open_at: P-index để insert DOUT ON/OFF
+            signature: "MMMDMM..." (M=movj, L=movl, D=dout) for template comparison
+            motion_kinds: list of movj/movl in P-variable order
+            close_at, open_at: P-index at which to insert DOUT ON/OFF
         """
         signature = ""
         motion_kinds: list[str] = []
@@ -478,13 +478,13 @@ class MotomanHSEBackend:
                 pos_idx += 1
             elif op == "dout":
                 signature += "D" if value else "d"
-                # Index của motion KẾ tiếp (chưa add)
+                # Index of the NEXT motion (not yet added)
                 if value and close_at is None:
                     close_at = pos_idx
                 elif not value and open_at is None:
                     open_at = pos_idx
             elif op == "timer":
-                pass                                 # timer luôn theo dout, không tách
+                pass                                 # timer always follows dout, not separated
         return signature, motion_kinds, close_at, open_at
 
     def _execute_ultra_fast_batch(self) -> None:
@@ -495,7 +495,7 @@ class MotomanHSEBackend:
         signature, motion_kinds, close_at, open_at = self._build_trial_signature()
         num_pos = sum(1 for op, _ in self._pvar_batch_buffer if op in ("movj", "movl"))
 
-        # Upload template chỉ khi signature thay đổi (lần đầu hoặc structure khác).
+        # Upload template only when signature changes (first run or different structure).
         if (signature != self._pvar_template_signature
                 or not self._pvar_template_name):
             template_name = f"{self.job_name_prefix}TPL"
@@ -515,14 +515,14 @@ class MotomanHSEBackend:
                 template_name, signature, num_pos,
             )
 
-        # WRITE_POS_VAR cho từng joint waypoint
+        # WRITE_POS_VAR for each joint waypoint
         p_idx = 0
         for op, value in self._pvar_batch_buffer:
             if op in ("movj", "movl"):
-                # value là joints list[float] degrees
+                # value is joints list[float] degrees
                 self.write_position_var(p_idx, value)        # type: ignore[arg-type]
                 p_idx += 1
-            # dout + timer đã được encode trong template, skip ở đây
+            # dout + timer are already encoded in the template, skip here
 
         self.job_select(self._pvar_template_name)
         self.job_start()
@@ -531,15 +531,15 @@ class MotomanHSEBackend:
     # ─── Batch mode (M3 optimization) ───
     @contextlib.contextmanager
     def batch(self, job_name: str | None = None) -> Iterator[None]:
-        """Batch context: gom MoveJ/MoveL/setDO/timer vào 1 INFORM job.
+        """Batch context: accumulates MoveJ/MoveL/setDO/timer into one INFORM job.
 
-        Trong batch:
-          - Mọi MoveJ/MoveL/setDO/timer APPEND vào builder thay vì gửi ngay
-          - Khi exit context → render INFORM → FTP upload → JOB_SELECT → START → wait_idle
-          - Reduce overhead từ N FTP/JOB_START xuống **1 lần / trial**
+        Inside batch:
+          - All MoveJ/MoveL/setDO/timer calls APPEND to the builder instead of sending immediately
+          - On context exit → render INFORM → FTP upload → JOB_SELECT → START → wait_idle
+          - Reduces overhead from N FTP/JOB_START calls to **1 per trial**
 
-        Non-batch (default): mỗi MoveJ là 1 INFORM job độc lập (~200-300ms overhead).
-        Batch: cả pick-and-place trial ~200ms overhead total — speedup 5-10x.
+        Non-batch (default): each MoveJ is an independent INFORM job (~200-300ms overhead).
+        Batch: entire pick-and-place trial ~200ms overhead total — 5-10x speedup.
 
         Usage:
             with backend.batch():
@@ -548,13 +548,13 @@ class MotomanHSEBackend:
                 backend.setDO(1, 1)
                 backend.timer(0.3)
                 ...
-            # Auto-execute batch khi exit context
+            # Batch auto-executes on context exit
 
         Raises:
             RuntimeError: Nested batch.
         """
         if self._batch_builder is not None or self._pvar_batch_buffer is not None:
-            raise RuntimeError("Nested batch không hỗ trợ")
+            raise RuntimeError("Nested batch not supported")
 
         if self._ultra_fast_mode:
             # ─── Ultra-fast path: buffer ops, execute via P-vars ───
@@ -582,15 +582,15 @@ class MotomanHSEBackend:
         try:
             yield
         except Exception:
-            # Khi exception trong batch → drop builder, KHÔNG upload (an toàn)
+            # Exception inside batch → drop builder, do NOT upload (safe)
             self._batch_builder = None
             raise
 
-        # Snapshot + clear state TRƯỚC khi upload (an toàn nếu upload trigger
-        # re-entry vô tình)
+        # Snapshot + clear state BEFORE uploading (safe if upload accidentally
+        # triggers re-entry)
         builder = self._batch_builder
         self._batch_builder = None
-        # Nếu batch không có instruction nào ngoài comment → skip upload
+        # If batch has no instructions besides a comment → skip upload
         if not builder._positions:
             logger.debug("Batch '%s' empty (no motion), skip upload", name)
             return
@@ -602,7 +602,7 @@ class MotomanHSEBackend:
         self._wait_idle()
 
     def _batch_append_motion(self, target: Any, kind: str) -> None:
-        """Helper: queue MoveJ/MoveL vào batch builder."""
+        """Helper: queue MoveJ/MoveL into the batch builder."""
         joints = self._to_joint_list(target)
         pos_name = f"p{self._batch_pos_counter}"
         self._batch_pos_counter += 1
@@ -614,7 +614,7 @@ class MotomanHSEBackend:
 
     # ─── Motion (M3 — branched theo batch state) ───
     def _is_pose_4x4(self, target: Any) -> bool:
-        """Detect target là pose 4x4 (numpy/list-of-lists) không."""
+        """Detect whether target is a 4x4 pose (numpy/list-of-lists)."""
         try:
             arr = target if hasattr(target, "shape") else None
             if arr is not None and getattr(arr, "shape", None) == (4, 4):
@@ -628,16 +628,16 @@ class MotomanHSEBackend:
         return False
 
     def MoveJ(self, target: Any) -> None:
-        """Joint move tới target.
+        """Joint move to target.
 
-        Polymorphic — auto-detect target type:
-          - list/tuple 6 floats → joint angles (degrees) → P-variable PULSE
+        Polymorphic — auto-detects target type:
+          - list/tuple of 6 floats → joint angles (degrees) → P-variable PULSE
           - 4x4 matrix → Cartesian pose in BASE frame → P-variable BASE,
-            YRC1000 tự compute IK
+            YRC1000 computes IK internally
 
         Non-batch: 1 INFORM upload + JOB_START + wait (200-300ms overhead).
-        Batch (M3): append instruction vào batch builder (immediate return).
-        Ultra-fast batch (M3++): append vào pvar buffer.
+        Batch (M3): appends instruction to batch builder (immediate return).
+        Ultra-fast batch (M3++): appends to pvar buffer.
         """
         # Cartesian path (4x4 numpy/list-of-lists)
         if self._is_pose_4x4(target):
@@ -665,7 +665,7 @@ class MotomanHSEBackend:
         self._wait_idle()
 
     def MoveL(self, target: Any) -> None:
-        """Linear move — polymorphic giống MoveJ (joints hoặc 4x4 Cartesian)."""
+        """Linear move — polymorphic like MoveJ (joints or 4x4 Cartesian)."""
         if self._is_pose_4x4(target):
             return self._move_pose(target, kind="movl")
 
@@ -691,21 +691,21 @@ class MotomanHSEBackend:
         self._wait_idle()
 
     def _move_pose(self, T_base: Any, kind: str) -> None:
-        """Single-shot Cartesian move qua P-variable BASE + small INFORM job.
+        """Single-shot Cartesian move via P-variable BASE + small INFORM job.
 
         Workflow:
           1. WRITE_POS_VAR P000 ← Cartesian pose (data_type=BASE)
-          2. Upload tiny INFORM job tham chiếu P000 với MOVJ/MOVL
+          2. Upload tiny INFORM job referencing P000 with MOVJ/MOVL
           3. JOB_SELECT + START + wait_idle
 
-        Cùng pattern non-batch joint MoveJ nhưng dùng P-var thay vì C-var.
-        Trong batch mode hiện chỉ joint được support — Cartesian batch là
-        future work (cần INFORM template với BASE-typed P-vars).
+        Same pattern as non-batch joint MoveJ but uses P-var instead of C-var.
+        In batch mode only joint targets are currently supported — Cartesian batch
+        is future work (requires INFORM template with BASE-typed P-vars).
         """
         if self._batch_builder is not None or self._pvar_batch_buffer is not None:
             raise NotImplementedError(
-                "Cartesian MoveJ/MoveL trong batch context chưa hỗ trợ. "
-                "Gọi ngoài batch hoặc dùng joint path."
+                "Cartesian MoveJ/MoveL inside a batch context is not yet supported. "
+                "Call outside batch or use joint path."
             )
 
         from src.orchestrator.frame_convert import matrix_to_xyzrpy_yaskawa
@@ -721,7 +721,7 @@ class MotomanHSEBackend:
         # 2. Upload INFORM job that references P000 with MOVJ/MOVL
         x, y, z, rx, ry, rz = matrix_to_xyzrpy_yaskawa(T_base)
         job_name = self._next_job_name()
-        # Inline INFORM với P-variable + BASE position
+        # Inline INFORM with P-variable + BASE position
         instr = ("MOVJ P000" if kind == "movj" else "MOVL P000")
         if kind == "movj":
             instr += f" VJ={self.max_speed_pct:.2f}"
@@ -750,11 +750,11 @@ class MotomanHSEBackend:
         self._wait_idle()
 
     def timer(self, seconds: float) -> None:
-        """Pause `seconds`.
+        """Pause for `seconds`.
 
-        Non-batch: time.sleep — script thread chờ.
-        Batch (M3): append INFORM TIMER — robot tự chờ trong khi execute job.
-        Ultra-fast (M3++): TIMER baked vào template (sau DOUT), buffer chỉ track.
+        Non-batch: time.sleep — script thread waits.
+        Batch (M3): appends INFORM TIMER — robot waits during job execution.
+        Ultra-fast (M3++): TIMER baked into template (after DOUT), buffer only tracks.
         """
         if self._pvar_batch_buffer is not None:
             self._pvar_batch_buffer.append(("timer", float(seconds)))
@@ -766,43 +766,43 @@ class MotomanHSEBackend:
 
     @staticmethod
     def _to_joint_list(target: Any) -> list[float]:
-        """Convert MoveJ target sang list[float] 6 phần tử (degrees)."""
+        """Convert MoveJ target to list[float] of 6 elements (degrees)."""
         if isinstance(target, (list, tuple)) and len(target) >= 6:
             return [float(j) for j in target[:6]]
         raise NotImplementedError(
-            "HSE backend MoveJ chỉ nhận joints (list 6 phần tử) hiện tại. "
-            "Pose 4x4 cần IK solver client-side (ikfast/GP7 DH) — phase sau."
+            "HSE backend MoveJ currently only accepts joints (list of 6 elements). "
+            "4x4 pose requires a client-side IK solver (ikfast/GP7 DH) — planned for a later phase."
         )
 
     def MoveJ_Test(self, j_start: Any, target: Any, *args: Any) -> int:
-        """Reachability check qua sphere envelope (nếu provided), không call YRC1000.
+        """Reachability check via sphere envelope (if provided), does not call YRC1000.
 
         RoboDK convention: 0 = OK, < 0 = unreachable.
 
-        Nếu `reach_envelope` được set khi construct, dùng nó. Nếu không, permissive
-        return 0 — caller phải chịu trách nhiệm (vd via DigitalTwinMirror delegate
-        tới RoboDK robot item).
+        If `reach_envelope` is set at construction, uses it. Otherwise, returns
+        permissive 0 — caller is responsible (e.g. via DigitalTwinMirror delegating
+        to RoboDK robot item).
         """
         if self.reach_envelope is None:
             return 0
         return 0 if self.reach_envelope.can_reach(target) else -1
 
     def SolveIK(self, pose: Any, joints_approx: Any = None) -> Any:
-        """HSE không có IK solver. Phải tính client-side (ikfast / pyrobot)."""
+        """HSE has no IK solver. Must be computed client-side (ikfast / pyrobot)."""
         raise NotImplementedError(
-            "IK qua HSE: phải tính client-side. Xem ikfast / Yaskawa GP7 DH."
+            "IK via HSE: must be computed client-side. See ikfast / Yaskawa GP7 DH."
         )
 
     # ─── I/O ───
     def setDO(self, index: int, value: int) -> None:
-        """Ghi digital output để điều khiển gripper.
+        """Write digital output to control gripper.
 
-        Non-batch: WRITE_IO command qua HSE (set network I/O bit qua CIO ladder).
-        Batch: append DOUT instruction vào INFORM job (set Y-output trực tiếp
-        khi job execute đến đó).
+        Non-batch: WRITE_IO command via HSE (sets network I/O bit via CIO ladder).
+        Batch: appends DOUT instruction to INFORM job (sets Y-output directly
+        when job execution reaches that point).
 
-        Mapping non-batch: index → bit NETWORK_IO_BASE + (index-1). CIO ladder
-        trên YRC1000 phải route bit này tới Y-output vật lý.
+        Non-batch mapping: index → bit NETWORK_IO_BASE + (index-1). CIO ladder
+        on YRC1000 must route this bit to a physical Y-output.
         """
         if self._pvar_batch_buffer is not None:
             self._pvar_batch_buffer.append(("dout", int(bool(value))))
@@ -813,7 +813,7 @@ class MotomanHSEBackend:
 
         bit_addr = NETWORK_IO_BASE + (index - 1) * 1     # 1 bit/index
         # WRITE_IO command 0x78, service SET_ATTRIBUTE_SINGLE (0x10)
-        # Payload: 4-byte uint32 = value (0 hoặc 1)
+        # Payload: 4-byte uint32 = value (0 or 1)
         payload = struct.pack("<I", 1 if value else 0)
         self._send_request(
             Command.WRITE_IO, instance=bit_addr, attribute=1,
@@ -822,15 +822,15 @@ class MotomanHSEBackend:
         logger.debug("HSE setDO(index=%d → bit %d) = %d", index, bit_addr, value)
 
     def set_io(self, bit_addr: int, value: int) -> None:
-        """Ghi 1 bit network I/O qua HSE WRITE_IO ở ABSOLUTE bit address.
+        """Write 1 network I/O bit via HSE WRITE_IO at an ABSOLUTE bit address.
 
-        Khác với `setDO(index)` (relative tới NETWORK_IO_BASE), `set_io` dùng
-        absolute address — cần thiết cho CC-Link bits (range ~30010+) hoặc
-        các module I/O không gắn vào general network range 27010.
+        Unlike `setDO(index)` (relative to NETWORK_IO_BASE), `set_io` uses
+        an absolute address — required for CC-Link bits (range ~30010+) or
+        I/O modules not mapped to the general network range 27010.
 
         Args:
-            bit_addr: Absolute bit address (vd 30010 cho CC-Link output).
-            value: 0 hoặc 1.
+            bit_addr: Absolute bit address (e.g. 30010 for CC-Link output).
+            value: 0 or 1.
         """
         payload = struct.pack("<I", 1 if value else 0)
         self._send_request(
@@ -840,17 +840,17 @@ class MotomanHSEBackend:
         logger.debug("HSE set_io(bit=%d) = %d", bit_addr, value)
 
     def read_io(self, bit_addr: int) -> int:
-        """Đọc 1 bit network I/O qua HSE READ_IO (cmd 0x78).
+        """Read 1 network I/O bit via HSE READ_IO (cmd 0x78).
 
-        Dùng để đọc sensor feedback từ PLC qua CC-Link bridge:
+        Used to read sensor feedback from PLC via CC-Link bridge:
         - Gripper position sensors (X503 UnClamp, X504 Clamp)
         - Object detect sensor (X505 Carrier)
 
         Args:
-            bit_addr: Absolute bit address. Vd 30050 cho clamp sensor (CC-Link mapped).
+            bit_addr: Absolute bit address. E.g. 30050 for clamp sensor (CC-Link mapped).
 
         Returns:
-            0 hoặc 1. -1 nếu lỗi.
+            0 or 1. -1 on error.
         """
         try:
             resp = self._send_request(
@@ -863,21 +863,21 @@ class MotomanHSEBackend:
             value = struct.unpack("<I", resp.payload[:4])[0]
             return int(value & 0x01)
         except Exception as e:                              # noqa: BLE001
-            logger.warning("read_io(%d) lỗi: %s", bit_addr, e)
+            logger.warning("read_io(%d) error: %s", bit_addr, e)
             return -1
 
     def setSpeed(self, linear_mm_s: float, joint_deg_s: float = -1) -> None:
-        """No-op — HSE không control speed trực tiếp. Tốc độ set trong INFORM job."""
+        """No-op — HSE does not control speed directly. Speed is set inside the INFORM job."""
         logger.debug(
-            "setSpeed(linear=%.1f, joint=%.1f) - HSE no-op, set trong INFORM",
+            "setSpeed(linear=%.1f, joint=%.1f) - HSE no-op, set in INFORM",
             linear_mm_s, joint_deg_s,
         )
 
     def Stop(self) -> None:
-        """Emergency stop: tắt servo trên YRC1000.
+        """Emergency stop: turns off servo on YRC1000.
 
-        HOLD_SERVO (0x83) với value=0 → servo off. Robot dừng hoàn toàn.
-        Để chạy lại phải bật servo + reset alarm trên TP.
+        HOLD_SERVO (0x83) with value=0 → servo off. Robot stops completely.
+        To resume, servo must be re-enabled and alarm reset on TP.
         """
         try:
             import struct as _struct
@@ -886,6 +886,6 @@ class MotomanHSEBackend:
                 service=Service.SET_ATTRIBUTE_SINGLE,
                 payload=_struct.pack("<I", 0),    # servo off
             )
-            logger.warning("HSE Stop(): servo OFF gửi tới YRC1000")
+            logger.warning("HSE Stop(): servo OFF sent to YRC1000")
         except Exception as e:                    # noqa: BLE001
-            logger.error("HSE Stop() lỗi: %s — dùng E-stop vật lý!", e)
+            logger.error("HSE Stop() error: %s — use physical E-stop!", e)

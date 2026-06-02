@@ -1,14 +1,14 @@
 """
 render_doc_figures.py
 ─────────────────────
-Sinh ảnh minh hoạ scene 3D (offscreen, KHÔNG mở cửa sổ) cho tài liệu:
-robot GP7, cell đầy đủ, camera frustum, quỹ đạo pick-place. Render bằng
-pyvista off-screen — dùng đúng mesh + transform của app (`_GP7_MESH_MAP`,
-`link_frames_urdf`, scale mm→m). Tái tạo ảnh bất cứ lúc nào:
+Generate 3D scene figures (offscreen, NO window) for documentation:
+GP7 robot, full cell, camera frustum, pick-place trajectory. Rendered with
+pyvista off-screen — uses the same mesh + transforms as the app (`_GP7_MESH_MAP`,
+`link_frames_urdf`, scale mm→m). Regenerate figures at any time:
 
     python scripts/render_doc_figures.py            # → docs/figures/*.png
 
-Ảnh dùng trong README, GIOI_THIEU_PHAN_MEM.md, HUONG_DAN_GUI.md.
+Figures used in README, GIOI_THIEU_PHAN_MEM.md, HUONG_DAN_GUI.md.
 """
 from __future__ import annotations
 
@@ -44,11 +44,12 @@ _OBJ_COLORS = {"tray": "#b0b4ba", "bottle": "#2e9e5b",
 
 
 def _autotrim(path, bg_rgb=None, pad=12, thresh=30, min_ink=6):
-    """Cắt viền nền quanh ảnh dựa trên MẬT ĐỘ pixel theo hàng/cột.
+    """Auto-crop background border based on pixel DENSITY along rows/columns.
 
-    Dùng profile (bỏ qua viền/scrollbar mảnh chạy hết cạnh — thứ làm
-    `getbbox` thất bại). bg_rgb=None → lấy màu góc dưới-phải làm nền (panel
-    nền tối); (255,255,255) cho ảnh scene nền trắng.
+    Uses a row/column ink profile (ignores thin edge scrollbars that span the
+    full side — which cause `getbbox` to fail). bg_rgb=None → uses the
+    bottom-right corner color as background (dark panel); (255,255,255) for
+    white-background scene images.
     """
     img = Image.open(path).convert("RGB")
     arr = np.asarray(img, dtype=np.int16)
@@ -75,7 +76,7 @@ def _read(path: Path):
 
 
 def add_robot(pl, model, q_rad, color=None):
-    """Thêm 7 link mesh GP7 vào plotter ở tư thế q_rad (radian)."""
+    """Add all 7 GP7 link meshes to the plotter at joint pose q_rad (radians)."""
     frames = dict(link_frames_urdf(model, q_rad))
     for key, fname, off in _GP7_MESH_MAP:
         m = _read(MESH_DIR / fname)
@@ -103,7 +104,7 @@ def add_static(pl, mesh_rel, xyz_mm, rpy_deg, color, opacity=1.0):
 
 
 def add_cell(pl, cfg, with_objects=True):
-    """Thêm sàn/bàn/pedestal/giàn camera (+ vật) từ CellConfig."""
+    """Add floor/table/pedestal/camera rig (and objects) from CellConfig."""
     for attr, default_col in (("floor", [0.82, 0.82, 0.86]),
                               ("worktable", [0.52, 0.55, 0.58]),
                               ("robot_pedestal", [0.4, 0.4, 0.4]),
@@ -124,7 +125,7 @@ def add_cell(pl, cfg, with_objects=True):
 
 
 def add_frustum(pl, cam, table_top_mm=500.0):
-    """Vẽ frustum (nón nhìn) camera xuống mặt bàn — wireframe + mặt ảnh mờ."""
+    """Draw camera frustum (view cone) down to table surface — wireframe + translucent face."""
     if cam is None:
         return
     cx, cy, cz = cam.pose.xyz_mm
@@ -149,7 +150,7 @@ def add_frustum(pl, cam, table_top_mm=500.0):
 
 
 def tcp_path(model, q_waypoints_rad):
-    """Nội suy joint → FK → list điểm TCP (m) cho polyline quỹ đạo."""
+    """Interpolate joints → FK → list of TCP points (m) for trajectory polyline."""
     samples = interpolate_joints(q_waypoints_rad, dt=0.05,
                                  max_joint_speed_deg_s=60.0)
     pts = []
@@ -167,7 +168,7 @@ def _save(pl, name, cpos, zoom=1.0):
     pl.add_axes()
     pl.screenshot(str(OUT / name))
     pl.close()
-    _autotrim(OUT / name, bg_rgb=(255, 255, 255))     # cắt nền trắng
+    _autotrim(OUT / name, bg_rgb=(255, 255, 255))     # trim white background
     print("[ok]", name)
 
 
@@ -181,7 +182,7 @@ def main():
     iso = [(2.6, -2.6, 2.2), (0.5, 0.0, 0.45), (0, 0, 1)]
     cell_cam = [(2.9, -2.9, 2.4), (0.6, 0.0, 0.55), (0, 0, 1)]
 
-    # 1) Robot GP7 (home pose) — tập trung robot, VẪN GIỮ nền sàn
+    # 1) GP7 robot (home pose) — focused on robot, floor background kept
     pl = pv.Plotter(off_screen=True, window_size=WINDOW)
     add_robot(pl, model, home)
     add_static(pl, "models/floor.stl", cfg.floor.pose.xyz_mm,
@@ -189,21 +190,21 @@ def main():
     robot_cam = [(2.5, -2.5, 1.85), (0.15, 0.0, 0.62), (0, 0, 1)]
     _save(pl, "gp7_robot.png", robot_cam, zoom=1.12)
 
-    # 2) Cell đầy đủ (robot + bàn + pedestal + giàn camera + vật)
+    # 2) Full cell (robot + table + pedestal + camera rig + objects)
     pl = pv.Plotter(off_screen=True, window_size=WINDOW)
     add_robot(pl, model, home)
     add_cell(pl, cfg)
     _save(pl, "cell_overview.png", cell_cam)
 
-    # 3) Camera frustum trên cell
+    # 3) Camera frustum over cell
     pl = pv.Plotter(off_screen=True, window_size=WINDOW)
     add_robot(pl, model, home)
     add_cell(pl, cfg)
     add_frustum(pl, getattr(cfg, "camera", None))
     _save(pl, "camera_frustum.png", cell_cam)
 
-    # 4) Quỹ đạo pick-place (TCP path)
-    grasp = _xyz_rpy_to_matrix(700, -120, 560, 180, 0, 0)   # trên tray
+    # 4) Pick-place trajectory (TCP path)
+    grasp = _xyz_rpy_to_matrix(700, -120, 560, 180, 0, 0)   # above tray
     lift = _xyz_rpy_to_matrix(700, -120, 700, 180, 0, 0)
     place = _xyz_rpy_to_matrix(700, 120, 560, 180, 0, 0)
     place_lift = _xyz_rpy_to_matrix(700, 120, 700, 180, 0, 0)
@@ -214,7 +215,7 @@ def main():
         if q is not None:
             seq.append(list(q)); seed = q
     pl = pv.Plotter(off_screen=True, window_size=WINDOW)
-    add_robot(pl, model, seq[2] if len(seq) > 2 else home)   # tư thế grasp
+    add_robot(pl, model, seq[2] if len(seq) > 2 else home)   # grasp pose
     add_cell(pl, cfg)
     if len(seq) >= 2:
         path = tcp_path(model, seq)
@@ -227,11 +228,11 @@ def main():
 
 
 def capture_panels(out=OUT):
-    """Chụp panel GUI THẬT (menu/Cell/Program/Camera/Controls) bằng widget.grab().
+    """Capture REAL GUI panels (menu/Cell/Program/Camera/Controls) via widget.grab().
 
-    Mở app GP7AppQt trên màn hình vài giây (cần OpenGL desktop — không chạy
-    được trong sandbox headless). Viewport VTK không nằm trong widget.grab()
-    nên dùng các ảnh scene 3D ở main() cho phần viewport.
+    Opens GP7AppQt on screen for a few seconds (requires OpenGL desktop — does
+    not work in a headless sandbox). The VTK viewport is not captured by
+    widget.grab(); use the 3D scene images from main() for the viewport section.
     """
     import time
     from PyQt6.QtWidgets import QApplication
@@ -252,7 +253,7 @@ def capture_panels(out=OUT):
 
     pump(60)
     win.menuBar().grab().save(str(out / "panel_menubar.png"))
-    _autotrim(out / "panel_menubar.png")             # cắt khoảng trống bên phải
+    _autotrim(out / "panel_menubar.png")             # trim trailing whitespace on the right
     print("[ok] panel_menubar.png")
     for dock, nm in ((getattr(win, "_cell_tree_dock", None), "panel_cell.png"),
                      (getattr(win, "_program_dock", None), "panel_program.png"),
@@ -265,16 +266,16 @@ def capture_panels(out=OUT):
         except Exception:
             pass
         dock.grab().save(str(out / nm))
-        _autotrim(out / nm)                          # cắt nền trống dưới panel
+        _autotrim(out / nm)                          # trim empty background below panel
         print("[ok]", nm)
     app.quit()
 
 
 if __name__ == "__main__":
     import argparse
-    ap = argparse.ArgumentParser(description="Render ảnh minh hoạ cho tài liệu")
+    ap = argparse.ArgumentParser(description="Render illustration figures for documentation")
     ap.add_argument("--panels", action="store_true",
-                    help="Chụp panel GUI thật (mở app GP7AppQt — cần OpenGL desktop)")
+                    help="Capture real GUI panels (opens GP7AppQt — requires OpenGL desktop)")
     args = ap.parse_args()
     if args.panels:
         capture_panels()

@@ -3,7 +3,7 @@ mixin_about.py
 ──────────────
 AboutMixin: cell info + about dialog (info-only message boxes).
 
-Host class (GP7AppQt) phải cung cấp:
+Host class (GP7AppQt) must provide:
   attributes: _cell_config, _base_xyz, _home_joints, _ref_frames
   methods:    _set_status
 """
@@ -18,7 +18,7 @@ class AboutMixin:
     """Cell info + about dialog."""
 
     def _show_cell_info(self) -> None:
-        # Chưa load robot/cell → _cell_config còn None, không có gì để show.
+        # Robot/cell not yet loaded — _cell_config is None, nothing to show.
         if self._cell_config is None:
             self._set_status(
                 "No cell loaded — File → Load Robot GP7 / Load Cell from YAML",

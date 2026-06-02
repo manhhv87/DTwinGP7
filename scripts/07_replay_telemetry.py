@@ -2,13 +2,13 @@
 """
 07_replay_telemetry.py
 ──────────────────────
-UC4 — Replay CSV telemetry thành 3D animation hoặc figure.
+UC4 — Replay CSV telemetry as a 3D animation or figure.
 
-Đọc telemetry CSV (sinh bởi DigitalTwinMirror) → forward kinematics mỗi row
-→ animate skeleton + TCP path. Export MP4/PNG cho thesis defense.
+Read telemetry CSV (produced by DigitalTwinMirror) → forward kinematics each row
+→ animate skeleton + TCP path. Export MP4/PNG for thesis defense.
 
 Usage:
-    python scripts/07_replay_telemetry.py latest                 # animate màn hình
+    python scripts/07_replay_telemetry.py latest                 # animate on screen
     python scripts/07_replay_telemetry.py latest --mp4 out.mp4   # export MP4
     python scripts/07_replay_telemetry.py latest --png frame.png # 1 figure summary
     python scripts/07_replay_telemetry.py latest --speedup 5     # 5x faster playback
@@ -42,21 +42,21 @@ def parse_args() -> argparse.Namespace:
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument(
         "csv_path", nargs="?", default="latest",
-        help="Đường dẫn CSV hoặc 'latest'. Default: latest.",
+        help="Path to CSV or 'latest'. Default: latest.",
     )
     p.add_argument(
         "--cell-config", default="config/cell_layout.yaml",
         help="Cell config YAML cho base J1 pose.",
     )
-    p.add_argument("--mp4", default=None, help="Export MP4 path (cần ffmpeg).")
+    p.add_argument("--mp4", default=None, help="Export MP4 path (requires ffmpeg).")
     p.add_argument("--png", default=None, help="Export 1 PNG summary path.")
     p.add_argument(
         "--speedup", type=float, default=1.0,
-        help="Tốc độ playback (1.0 = realtime). Default 1.0.",
+        help="Playback speed multiplier (1.0 = realtime). Default 1.0.",
     )
     p.add_argument(
         "--max-frames", type=int, default=300,
-        help="Subsample xuống N frame max (tránh CSV cực dài). Default 300.",
+        help="Subsample to at most N frames (avoids very long CSVs). Default 300.",
     )
     return p.parse_args()
 
@@ -65,13 +65,13 @@ def resolve_csv_path(arg: str) -> Path:
     if arg == "latest":
         candidates = sorted((PROJECT_ROOT / "results").glob("telemetry_*.csv"))
         if not candidates:
-            raise FileNotFoundError("Không có telemetry_*.csv trong results/")
+            raise FileNotFoundError("No telemetry_*.csv found in results/")
         return candidates[-1]
     p = Path(arg)
     if not p.is_absolute():
         p = PROJECT_ROOT / p
     if not p.exists():
-        raise FileNotFoundError(f"Không tồn tại: {p}")
+        raise FileNotFoundError(f"File not found: {p}")
     return p
 
 
@@ -79,10 +79,10 @@ def load_and_subsample(csv_path: Path, max_frames: int) -> pd.DataFrame:
     df = pd.read_csv(csv_path)
     required = {"timestamp", *(f"j{i}" for i in range(1, 7))}
     if not required.issubset(df.columns):
-        raise ValueError(f"CSV thiếu cột: {required - set(df.columns)}")
+        raise ValueError(f"CSV missing columns: {required - set(df.columns)}")
     df = df.copy()
     df["time_rel"] = df["timestamp"] - df["timestamp"].iloc[0]
-    # Subsample uniform để tránh frame quá nhiều
+    # Uniform subsample to avoid excessive frames
     if len(df) > max_frames:
         idx = np.linspace(0, len(df) - 1, max_frames, dtype=int)
         df = df.iloc[idx].reset_index(drop=True)
@@ -90,7 +90,7 @@ def load_and_subsample(csv_path: Path, max_frames: int) -> pd.DataFrame:
 
 
 def make_skeleton_artists(ax, model, joints_rad):
-    """Tạo line + scatter artists cho 1 frame skeleton."""
+    """Create line + scatter artists for one skeleton frame."""
     positions = np.array(joint_positions(model, joints_rad))
     (line,) = ax.plot(positions[:, 0], positions[:, 1], positions[:, 2],
                       "o-", linewidth=2.5, color="#377eb8", markersize=6)
@@ -98,7 +98,7 @@ def make_skeleton_artists(ax, model, joints_rad):
 
 
 def compute_workspace_bounds(model, df) -> tuple[np.ndarray, np.ndarray]:
-    """Range bounds cho axis limits — visit toàn bộ trajectory + TCP."""
+    """Compute axis-limit bounds over the full trajectory + TCP."""
     all_xyz = []
     for _, row in df.iterrows():
         joints = [np.deg2rad(row[f"j{i}"]) for i in range(1, 7)]
@@ -155,7 +155,7 @@ def replay_animate(model, df, args) -> None:
         )
         return line, tcp_line, title
 
-    # Interval theo speedup
+    # Interval based on speedup
     if len(df) > 1:
         dt_mean = (df["time_rel"].iloc[-1] - df["time_rel"].iloc[0]) / (len(df) - 1)
     else:
@@ -174,9 +174,9 @@ def replay_animate(model, df, args) -> None:
             anim.save(str(out), writer="ffmpeg", fps=int(1000 / interval_ms))
             print(f"MP4 → {out}")
         except Exception as e:                      # noqa: BLE001
-            print(f"MP4 export lỗi (cần ffmpeg trong PATH): {e}")
+            print(f"MP4 export failed (ffmpeg must be in PATH): {e}")
     elif args.png:
-        # Render frame cuối làm summary PNG
+        # Render last frame as summary PNG
         update(len(df) - 1)
         out = Path(args.png)
         if not out.is_absolute():
@@ -201,7 +201,7 @@ def main() -> int:
     csv_path = resolve_csv_path(args.csv_path)
     print(f"Loading: {csv_path}")
     df = load_and_subsample(csv_path, args.max_frames)
-    print(f"Replay {len(df)} frames (subsampled từ telemetry CSV)")
+    print(f"Replay {len(df)} frames (subsampled from telemetry CSV)")
 
     base_xyz = (0.0, 0.0, 0.0)
     try:
@@ -211,7 +211,7 @@ def main() -> int:
         pass
 
     model = gp7_default(base_xyz_mm=base_xyz)
-    args.csv_path = csv_path                        # cập nhật cho title
+    args.csv_path = csv_path                        # update for title
     replay_animate(model, df, args)
     return 0
 

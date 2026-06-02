@@ -132,7 +132,7 @@ class TestInterpolate:
         assert samples[-1].t >= 5.5
 
     def test_one_waypoint_raises(self):
-        with pytest.raises(ValueError, match="ít nhất 2"):
+        with pytest.raises(ValueError, match="at least 2 waypoints"):
             interpolate_joints([[0] * 6])
 
     def test_zero_dt_raises(self):

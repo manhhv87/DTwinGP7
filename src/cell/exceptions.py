@@ -1,27 +1,27 @@
 """
 exceptions.py
 ─────────────
-Custom exceptions cho cell config module.
+Custom exceptions for the cell config module.
 """
 from __future__ import annotations
 
 
 class CellError(Exception):
-    """Base exception cho mọi lỗi cell config."""
+    """Base exception for all cell config errors."""
 
 
 class InvalidConfigError(CellError):
-    """File YAML config không hợp lệ.
+    """Invalid YAML config file.
 
-    Bao gồm:
+    Includes:
         - YAML syntax error
         - Schema validation failure (Pydantic)
-        - Logical inconsistency (vd parent_frame không tồn tại)
+        - Logical inconsistency (e.g. parent_frame does not exist)
     """
 
 
 class MissingMeshError(CellError):
-    """File mesh (STL/OBJ/...) được tham chiếu trong config nhưng không tồn tại."""
+    """Mesh file (STL/OBJ/...) referenced in config but not found on disk."""
 
     def __init__(self, mesh_path: str, item_name: str | None = None):
         msg = f"Mesh file not found: {mesh_path}"

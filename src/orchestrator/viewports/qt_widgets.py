@@ -1,7 +1,7 @@
 """
 qt_widgets.py
 ─────────────
-Custom Qt widgets dùng chung cho viewport — collapsible section + worker thread
+Custom Qt widgets shared across viewports — collapsible section + worker thread
 signal bridge.
 """
 from __future__ import annotations
@@ -11,11 +11,11 @@ from PyQt6.QtWidgets import QPushButton, QVBoxLayout, QWidget
 
 
 class CollapsibleSection(QWidget):
-    """Section có nút header xổ/gập content. Default expanded=True or False.
+    """Section with a header button that expands/collapses content. Default expanded=True or False.
 
-    Qt KHÔNG có collapsible widget built-in (QGroupBox.checkable chỉ disable
-    children, không hide). Custom: QPushButton header (text-align left,
-    ▼/▶ arrow) + QWidget content có thể toggle visible.
+    Qt has no built-in collapsible widget (QGroupBox.checkable only disables
+    children, does not hide them). Custom: QPushButton header (text-align left,
+    ▼/▶ arrow) + QWidget content that can be toggled visible.
     """
 
     def __init__(self, title: str, expanded: bool = True,
@@ -30,7 +30,7 @@ class CollapsibleSection(QWidget):
 
         self._toggle_btn = QPushButton()
         # Custom collapsible header — flat, full-width, accent border-bottom
-        # for active visual cue. Uses theme palette colors qua hard-coded
+        # for active visual cue. Uses theme palette colors via hard-coded
         # values (avoid circular import of qt_theme constants).
         self._toggle_btn.setStyleSheet(
             "QPushButton {"
@@ -77,8 +77,8 @@ class CollapsibleSection(QWidget):
 class WorkerSignals(QObject):
     """Bridge worker thread → main thread (PyQt6 thread-safe pattern).
 
-    Worker thread emit các signal này; QObject machinery của Qt tự queue về
-    main thread → slot chạy an toàn trên GUI thread.
+    Worker thread emits these signals; Qt's QObject machinery automatically
+    queues them to the main thread → slot runs safely on the GUI thread.
     """
 
     joints_update = pyqtSignal(list)        # joints_deg
@@ -86,6 +86,6 @@ class WorkerSignals(QObject):
     gripper       = pyqtSignal(bool)        # close
     program_done  = pyqtSignal()
     camera_result = pyqtSignal(object)      # dict {rgb, depth, objects, fps, source}
-    sim_reset     = pyqtSignal()            # SimEvent 'reset_objects' → objects về vị trí ban đầu
-    exp_progress  = pyqtSignal(int, object)  # (trial đã xong, stats dict) — Digital Twin experiment
-    exp_done      = pyqtSignal(object)       # stats dict — mirror/experiment kết thúc → re-enable UI
+    sim_reset     = pyqtSignal()            # SimEvent 'reset_objects' → objects return to initial positions
+    exp_progress  = pyqtSignal(int, object)  # (trials completed, stats dict) — Digital Twin experiment
+    exp_done      = pyqtSignal(object)       # stats dict — mirror/experiment finished → re-enable UI

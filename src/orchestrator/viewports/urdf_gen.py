@@ -1,19 +1,19 @@
 """
 urdf_gen.py
 ───────────
-Sinh URDF cho GP7 TỪ `kinematics.urdf_chain.gp7_urdf()` để load vào PyBullet.
+Generate URDF for GP7 from `kinematics.urdf_chain.gp7_urdf()` for loading into PyBullet.
 
-PyBullet chỉ đọc URDF. Module này build URDF text từ CHÍNH origins + axes trong
-`gp7_urdf()` — bộ tham số đã verified match RoboDK SolveFK 0.00mm/0.00° qua
-`scripts/13_verify_vs_robodk.py`. Nhờ vậy robot trong PyBullet di chuyển CHÍNH XÁC
-như joints mà orchestrator command (không lệch convention sign/offset).
+PyBullet reads URDF only. This module builds URDF text directly from the origins + axes in
+`gp7_urdf()` — parameters verified to match RoboDK SolveFK 0.00mm/0.00° via
+`scripts/13_verify_vs_robodk.py`. As a result the robot in PyBullet moves exactly
+as the joints commanded by the orchestrator (no sign/offset convention drift).
 
-v1: visual = hình khối primitive (box) bám theo vector giữa 2 joint origin liên
-tiếp → hình dáng cánh tay nhận ra được. Động học do <origin>/<axis> quyết định,
-KHÔNG phụ thuộc visual → sau này thay <box> bằng <mesh filename="...stl"> của
-ros-industrial/motoman mà không đổi gì về động học.
+v1: visual = primitive box geometry following the vector between consecutive joint origins
+→ recognizable arm shape. Kinematics are determined by <origin>/<axis>,
+NOT by visuals → later replace <box> with <mesh filename="...stl"> from
+ros-industrial/motoman without changing kinematics at all.
 
-Module PURE TEXT — không phụ thuộc pybullet. Test được bằng string.
+Module PURE TEXT — no pybullet dependency. Testable via string.
 """
 from __future__ import annotations
 
@@ -23,20 +23,20 @@ from ..kinematics.urdf_chain import URDFRobot, gp7_urdf
 
 _MM_TO_M = 0.001
 
-# Màu cho 6 link (RGBA) — chỉ thẩm mỹ.
+# Colors for 6 links (RGBA) — cosmetic only.
 _LINK_COLORS = [
-    (0.90, 0.55, 0.10, 1.0),   # S — cam
-    (0.20, 0.45, 0.85, 1.0),   # L — xanh dương
-    (0.20, 0.60, 0.30, 1.0),   # U — xanh lá
-    (0.85, 0.20, 0.20, 1.0),   # R — đỏ
-    (0.50, 0.35, 0.70, 1.0),   # B — tím
-    (0.95, 0.75, 0.10, 1.0),   # T — vàng
+    (0.90, 0.55, 0.10, 1.0),   # S — orange
+    (0.20, 0.45, 0.85, 1.0),   # L — blue
+    (0.20, 0.60, 0.30, 1.0),   # U — green
+    (0.85, 0.20, 0.20, 1.0),   # R — red
+    (0.50, 0.35, 0.70, 1.0),   # B — purple
+    (0.95, 0.75, 0.10, 1.0),   # T — yellow
 ]
 
 
 def _inertial(mass: float = 0.2) -> str:
-    """Inertial tối thiểu — đủ để URDF parser của PyBullet không cảnh báo.
-    Ta dùng resetJointState (kinematic) nên giá trị không ảnh hưởng hiển thị.
+    """Minimal inertial block — sufficient to suppress PyBullet URDF parser warnings.
+    We use resetJointState (kinematic mode) so values do not affect rendering.
     """
     return (
         '    <inertial>'
@@ -61,7 +61,7 @@ def _box_visual(size_m, center_m, rgba, matname: str) -> str:
 
 
 def _segment_box(dx: float, dy: float, dz: float, thick: float = 0.07):
-    """Box (kích thước, tâm) bao đoạn từ (0,0,0) → (dx,dy,dz) [m] trong link frame."""
+    """Box (size, center) enclosing the segment from (0,0,0) → (dx,dy,dz) [m] in link frame."""
     sx = abs(dx) + thick
     sy = abs(dy) + thick
     sz = abs(dz) + thick
@@ -69,15 +69,16 @@ def _segment_box(dx: float, dy: float, dz: float, thick: float = 0.07):
 
 
 def build_gp7_urdf_xml(model: URDFRobot | None = None) -> str:
-    """Build URDF text cho GP7 từ URDFRobot.
+    """Build URDF text for GP7 from URDFRobot.
 
-    Cấu trúc khớp đúng chain trong `forward_kinematics_urdf`:
+    Joint chain matches `forward_kinematics_urdf`:
         base_link → joint_S → link_S → joint_L → ... → link_T
                   → joint_flange (fixed) → link_flange
                   → joint_tool0 (fixed, rpy) → link_tool0 (gripper)
 
-    base_xyz_mm KHÔNG bake vào URDF — caller spawn body ở basePosition (PyBullet)
-    để robot đứng trên pedestal world. URDF mô tả robot ở gốc J1.
+    base_xyz_mm is NOT baked into the URDF — the caller spawns the body at
+    basePosition (PyBullet) so the robot stands on a pedestal in world space.
+    URDF describes the robot at the J1 origin.
     """
     model = model or gp7_urdf()
     joints = model.joints
@@ -85,7 +86,7 @@ def build_gp7_urdf_xml(model: URDFRobot | None = None) -> str:
 
     out: list[str] = ['<?xml version="1.0"?>', '<robot name="gp7_primitive">']
 
-    # ── base_link: khối đế + "stand" thả xuống 330mm (lấp khoảng pedestal→J1) ──
+    # ── base_link: base block + "stand" dropping 330mm (fills pedestal→J1 gap) ──
     out.append('  <link name="base_link">')
     out.append(_box_visual((0.16, 0.16, 0.12), (0, 0, 0.0),
                            (0.30, 0.30, 0.30, 1.0), "mat_base"))
@@ -111,7 +112,7 @@ def build_gp7_urdf_xml(model: URDFRobot | None = None) -> str:
         )
         out.append('  </joint>')
 
-        # Visual: đoạn từ link frame tới origin của joint kế (hoặc flange cho link cuối)
+        # Visual: segment from this link frame to the next joint origin (or flange for last link)
         nxt_mm = joints[i + 1].origin_mm if i < n - 1 else model.flange_xyz_mm
         dx, dy, dz = (v * _MM_TO_M for v in nxt_mm)
         size, ctr = _segment_box(dx, dy, dz)
@@ -135,7 +136,7 @@ def build_gp7_urdf_xml(model: URDFRobot | None = None) -> str:
     out.append(_inertial())
     out.append('  </link>')
 
-    # ── tool0 (fixed, có rpy) + gripper primitive bám theo tool0 +Z (~TCP 100mm) ──
+    # ── tool0 (fixed, with rpy) + gripper primitive attached to tool0 +Z (~TCP 100mm) ──
     rr, pp, yy = model.tool0_rpy_rad
     out.append('  <joint name="joint_tool0" type="fixed">')
     out.append('    <parent link="link_flange"/>')
@@ -153,9 +154,9 @@ def build_gp7_urdf_xml(model: URDFRobot | None = None) -> str:
 
 
 def ensure_gp7_urdf(project_root, model: URDFRobot | None = None) -> Path:
-    """Ghi URDF GP7 ra `models/gp7/gp7_primitive.urdf` và trả về path.
+    """Write GP7 URDF to `models/gp7/gp7_primitive.urdf` and return the path.
 
-    Luôn regenerate (rẻ) để URDF không bao giờ lệch với `urdf_chain.py`.
+    Always regenerates (cheap) so the URDF never drifts from `urdf_chain.py`.
     """
     out_path = Path(project_root) / "models" / "gp7" / "gp7_primitive.urdf"
     out_path.parent.mkdir(parents=True, exist_ok=True)

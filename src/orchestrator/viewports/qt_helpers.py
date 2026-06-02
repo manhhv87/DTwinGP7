@@ -1,9 +1,9 @@
 """
 qt_helpers.py
 ─────────────
-Hàm tiện ích cho Qt/VTK viewport — icon vẽ tay (QPainter) và converter
-numpy ↔ vtkMatrix4x4. Tách khỏi gp7_app_qt.py để file chính bớt cồng kềnh
-và các module Qt khác trong dự án tái dùng được.
+Utility functions for Qt/VTK viewport — hand-drawn icons (QPainter) and
+numpy ↔ vtkMatrix4x4 converter. Split from gp7_app_qt.py to keep the main
+file lean and allow reuse by other Qt modules in the project.
 """
 from __future__ import annotations
 
@@ -14,11 +14,11 @@ from PyQt6.QtGui import QColor, QIcon, QPainter, QPen, QPixmap
 
 
 def numpy_to_vtk_matrix(T: np.ndarray) -> vtk.vtkMatrix4x4:
-    """numpy 4x4 → vtkMatrix4x4 (cho actor.SetUserMatrix).
+    """numpy 4x4 → vtkMatrix4x4 (for actor.SetUserMatrix).
 
-    Fast path: DeepCopy với flat sequence (1 C-level memcpy) thay vì nested
-    16-call SetElement Python loop. Fallback unrolled SetElement nếu DeepCopy
-    không accept input type.
+    Fast path: DeepCopy with a flat sequence (1 C-level memcpy) instead of a
+    nested 16-call SetElement Python loop. Falls back to unrolled SetElement
+    if DeepCopy does not accept the input type.
     """
     m = vtk.vtkMatrix4x4()
     try:
@@ -33,9 +33,9 @@ def numpy_to_vtk_matrix(T: np.ndarray) -> vtk.vtkMatrix4x4:
 
 
 def draw_copy_icon(color: str = "#cccccc", mask: str = "#2d2d30") -> QIcon:
-    """Copy icon — 2 tờ giấy chồng nhau.
+    """Copy icon — 2 overlapping sheets of paper.
 
-    Glyph ⎘ (U+2398) không render trong Segoe UI → vẽ shape thay thế.
+    Glyph ⎘ (U+2398) does not render in Segoe UI → draw shape instead.
     """
     pix = QPixmap(16, 16)
     pix.fill(QColor(0, 0, 0, 0))
@@ -52,9 +52,9 @@ def draw_copy_icon(color: str = "#cccccc", mask: str = "#2d2d30") -> QIcon:
 
 
 def draw_paste_icon(color: str = "#cccccc") -> QIcon:
-    """Paste icon — clipboard (thân + kẹp trên).
+    """Paste icon — clipboard (body + top clip).
 
-    Glyph 📋 (U+1F4CB) render thành emoji/ô trống → vẽ shape thay thế.
+    Glyph 📋 (U+1F4CB) renders as emoji/empty box → draw shape instead.
     """
     pix = QPixmap(16, 16)
     pix.fill(QColor(0, 0, 0, 0))
@@ -71,7 +71,7 @@ def draw_paste_icon(color: str = "#cccccc") -> QIcon:
 
 
 def draw_menu_icon(color: str = "#cccccc") -> QIcon:
-    """Hamburger menu (≡) — 3 đường ngang."""
+    """Hamburger menu (≡) — 3 horizontal lines."""
     pix = QPixmap(16, 16)
     pix.fill(QColor(0, 0, 0, 0))
     p = QPainter(pix)
@@ -85,8 +85,8 @@ def draw_menu_icon(color: str = "#cccccc") -> QIcon:
 
 
 def draw_plus_icon(color: str = "#cccccc") -> QIcon:
-    """Dấu cộng (Add) — 2 nét chéo nhau. Glyph '+' render được nhưng vẽ tay
-    để đồng bộ với các icon job khác (rename/trash không render glyph)."""
+    """Plus sign (Add) — 2 crossing strokes. Glyph '+' renders fine but drawn
+    manually to stay consistent with other job icons (rename/trash don't render glyphs)."""
     pix = QPixmap(16, 16)
     pix.fill(QColor(0, 0, 0, 0))
     p = QPainter(pix)
@@ -101,9 +101,9 @@ def draw_plus_icon(color: str = "#cccccc") -> QIcon:
 
 
 def draw_rename_icon(color: str = "#cccccc") -> QIcon:
-    """Bút chì (Rename/Edit) — thân parallelogram chéo + đầu nhọn graphite.
+    """Pencil (Rename/Edit) — diagonal parallelogram body + graphite tip.
 
-    Glyph ⟲ (U+27F2) không render trong Segoe UI → vẽ shape thay thế.
+    Glyph ⟲ (U+27F2) does not render in Segoe UI → draw shape instead.
     """
     pix = QPixmap(16, 16)
     pix.fill(QColor(0, 0, 0, 0))
@@ -112,12 +112,12 @@ def draw_rename_icon(color: str = "#cccccc") -> QIcon:
     pen = QPen(QColor(color)); pen.setWidthF(1.3)
     pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
     p.setPen(pen)
-    # Thân bút (parallelogram): eraser end top-right → tip base bottom-left
-    p.drawLine(9, 3, 13, 7)     # cạnh trên (eraser cap)
-    p.drawLine(9, 3, 3, 9)      # cạnh trái thân
-    p.drawLine(13, 7, 7, 13)    # cạnh phải thân
-    p.drawLine(3, 9, 7, 13)     # đáy thân (tip base)
-    # Đầu nhọn graphite (tip) hội tụ về 1 điểm dưới-trái
+    # Pencil body (parallelogram): eraser end top-right → tip base bottom-left
+    p.drawLine(9, 3, 13, 7)     # top edge (eraser cap)
+    p.drawLine(9, 3, 3, 9)      # left edge of body
+    p.drawLine(13, 7, 7, 13)    # right edge of body
+    p.drawLine(3, 9, 7, 13)     # bottom edge (tip base)
+    # Graphite tip converging to a single point at bottom-left
     p.drawLine(3, 9, 2, 14)
     p.drawLine(7, 13, 2, 14)
     p.end()
@@ -125,9 +125,9 @@ def draw_rename_icon(color: str = "#cccccc") -> QIcon:
 
 
 def draw_trash_icon(color: str = "#cccccc") -> QIcon:
-    """Thùng rác (Delete) — nắp + quai + thân hơi côn + 3 gân dọc.
+    """Trash can (Delete) — lid + handle + slightly tapered body + 3 vertical ribs.
 
-    Glyph ✕ (U+2715) không render trong Segoe UI → vẽ shape thay thế.
+    Glyph ✕ (U+2715) does not render in Segoe UI → draw shape instead.
     """
     pix = QPixmap(16, 16)
     pix.fill(QColor(0, 0, 0, 0))
@@ -136,15 +136,15 @@ def draw_trash_icon(color: str = "#cccccc") -> QIcon:
     pen = QPen(QColor(color)); pen.setWidthF(1.3)
     pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
     p.setPen(pen)
-    # Nắp
+    # Lid
     p.drawLine(3, 5, 13, 5)
-    # Quai
+    # Handle
     p.drawLine(6, 5, 6, 3); p.drawLine(6, 3, 10, 3); p.drawLine(10, 3, 10, 5)
-    # Thân (hơi côn vào)
+    # Body (slightly tapered inward)
     p.drawLine(4, 5, 5, 13)
     p.drawLine(12, 5, 11, 13)
     p.drawLine(5, 13, 11, 13)
-    # 3 gân dọc
+    # 3 vertical ribs
     p.drawLine(6, 7, 6, 11)
     p.drawLine(8, 7, 8, 11)
     p.drawLine(10, 7, 10, 11)
@@ -153,7 +153,7 @@ def draw_trash_icon(color: str = "#cccccc") -> QIcon:
 
 
 def draw_arrow_up_icon(color: str = "#cccccc") -> QIcon:
-    """Mũi tên lên (Move up) — chevron + shaft. Vẽ tay cho đồng bộ + chắc render."""
+    """Arrow up (Move up) — chevron + shaft. Hand-drawn for consistency and reliable rendering."""
     pix = QPixmap(16, 16)
     pix.fill(QColor(0, 0, 0, 0))
     p = QPainter(pix)
@@ -161,15 +161,15 @@ def draw_arrow_up_icon(color: str = "#cccccc") -> QIcon:
     pen = QPen(QColor(color)); pen.setWidthF(1.7)
     pen.setCapStyle(Qt.PenCapStyle.RoundCap); pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
     p.setPen(pen)
-    p.drawLine(4, 9, 8, 5)      # chevron trái
-    p.drawLine(8, 5, 12, 9)     # chevron phải
+    p.drawLine(4, 9, 8, 5)      # left chevron
+    p.drawLine(8, 5, 12, 9)     # right chevron
     p.drawLine(8, 5, 8, 12)     # shaft
     p.end()
     return QIcon(pix)
 
 
 def draw_arrow_down_icon(color: str = "#cccccc") -> QIcon:
-    """Mũi tên xuống (Move down) — chevron + shaft."""
+    """Arrow down (Move down) — chevron + shaft."""
     pix = QPixmap(16, 16)
     pix.fill(QColor(0, 0, 0, 0))
     p = QPainter(pix)
@@ -177,15 +177,15 @@ def draw_arrow_down_icon(color: str = "#cccccc") -> QIcon:
     pen = QPen(QColor(color)); pen.setWidthF(1.7)
     pen.setCapStyle(Qt.PenCapStyle.RoundCap); pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
     p.setPen(pen)
-    p.drawLine(4, 7, 8, 11)     # chevron trái
-    p.drawLine(8, 11, 12, 7)    # chevron phải
+    p.drawLine(4, 7, 8, 11)     # left chevron
+    p.drawLine(8, 11, 12, 7)    # right chevron
     p.drawLine(8, 4, 8, 11)     # shaft
     p.end()
     return QIcon(pix)
 
 
 def draw_x_icon(color: str = "#cccccc") -> QIcon:
-    """Dấu X (Delete/close) — 2 nét chéo. Glyph ✕ (U+2715) không render Segoe UI."""
+    """X mark (Delete/close) — 2 diagonal strokes. Glyph ✕ (U+2715) does not render in Segoe UI."""
     pix = QPixmap(16, 16)
     pix.fill(QColor(0, 0, 0, 0))
     p = QPainter(pix)

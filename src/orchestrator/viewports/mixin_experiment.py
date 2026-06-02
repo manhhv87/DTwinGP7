@@ -1,24 +1,24 @@
 """
 mixin_experiment.py
 ───────────────────
-ExperimentMixin — Digital Twin cho ROBOT THẬT trong app GP7AppQt.
+ExperimentMixin — Digital Twin for the REAL ROBOT in GP7AppQt.
 
-  • Phase 1 — **Live mirror**: poll joints THẬT từ YRC1000 qua HSE @telemetry_hz,
-    vẽ vào viewport @mirror_hz (~2Hz), ghi telemetry CSV. Robot KHÔNG nhận lệnh
-    (chỉ đọc) → an toàn. Render 76ms << 500ms (2Hz) nên mượt.
-  • Phase 2 — **Run experiment**: chạy pick-place tự động trên robot THẬT qua
-    Orchestrator + perception (D455+YOLO thật, hoặc Mock dry-run) — đúng cách
-    `scripts/03_run_experiment.py --mode real` ghép, nhưng vòng trial NGẮT ĐƯỢC
-    (gọi `run_one_cycle` từng trial trong worker thay vì `run_n_trials` blocking).
+  • Phase 1 — **Live mirror**: poll REAL joints from YRC1000 via HSE @telemetry_hz,
+    render into the viewport @mirror_hz (~2 Hz), log telemetry CSV. Robot receives NO
+    commands (read-only) → safe. Render 76 ms << 500 ms (2 Hz) so smooth.
+  • Phase 2 — **Run experiment**: run autonomous pick-place on the REAL robot via
+    Orchestrator + perception (real D455+YOLO, or Mock dry-run) — mirrors
+    `scripts/03_run_experiment.py --mode real` but the trial loop is INTERRUPTIBLE
+    (calls `run_one_cycle` per trial in the worker instead of blocking `run_n_trials`).
 
-Tái dùng nguyên: `MotomanHSEBackend` + `DigitalTwinMirror` + `TelemetryLogger` +
-`Orchestrator` + `PerceptionNode`. Worker thread CHỈ emit signal
-(`joints_update`/`status`/`gripper`/`sim_reset`/`exp_progress`/`exp_done`) — không
-đụng VTK/widget; main thread vẽ (an toàn, đúng mẫu `_play_program_loop`).
+Reused as-is: `MotomanHSEBackend` + `DigitalTwinMirror` + `TelemetryLogger` +
+`Orchestrator` + `PerceptionNode`. Worker thread ONLY emits signals
+(`joints_update`/`status`/`gripper`/`sim_reset`/`exp_progress`/`exp_done`) — does not
+touch VTK/widget; main thread renders (thread-safe, follows `_play_program_loop` pattern).
 
-Host (GP7AppQt) cung cấp: `_signals`, `_hse_ip`, `_hse_tool_no`, `_pp_max_speed_pct`,
+Host (GP7AppQt) provides: `_signals`, `_hse_ip`, `_hse_tool_no`, `_pp_max_speed_pct`,
 `_model`, `_home_joints`, `_base_xyz`, `_cell_config`, `_project_root`, `_set_status`,
-`_open_dock_tab`, `_toggle_gripper` (qua signal gripper), `_on_reset_scene` (sim_reset).
+`_open_dock_tab`, `_toggle_gripper` (via gripper signal), `_on_reset_scene` (sim_reset).
 """
 from __future__ import annotations
 
@@ -32,22 +32,22 @@ from PyQt6.QtWidgets import (
 
 
 class ExperimentMixin:
-    """Digital Twin (robot THẬT): live mirror + experiment runner."""
+    """Digital Twin (real robot): live mirror + experiment runner."""
 
-    # ── State (gọi 1 lần trong _build_experiment_dock) ───────────────────
+    # ── State (called once in _build_experiment_dock) ────────────────────
     def _init_experiment_state(self) -> None:
         if hasattr(self, "_exp_stop"):
             return
         self._exp_thread: threading.Thread | None = None
         self._exp_stop = threading.Event()
-        self._twin = None                       # DigitalTwinMirror đang chạy
+        self._twin = None                       # DigitalTwinMirror currently running
         self._exp_running = False
-        self._exp_is_experiment = False         # True = runner (robot chuyển động)
+        self._exp_is_experiment = False         # True = runner (robot is moving)
         # Seam test headless: factory(ip, tool_no, max_speed_pct) -> backend.
-        # None = dùng MotomanHSEBackend thật.
+        # None = use real MotomanHSEBackend.
         self._exp_backend_factory = None
         # Seam test headless: factory(config, queue, choice, n) -> (node, threaded).
-        # None = dùng _build_experiment_perception (D455+YOLO / Mock).
+        # None = use _build_experiment_perception (D455+YOLO / Mock).
         self._exp_perception_factory = None
 
     # ── Dock UI ──────────────────────────────────────────────────────────
@@ -63,7 +63,7 @@ class ExperimentMixin:
         lay.setContentsMargins(10, 10, 10, 10)
         lay.setSpacing(8)
 
-        # ── Tần số mirror/telemetry (dùng chung 2 chế độ) ─────────────────
+        # ── Mirror/telemetry rates (shared by both modes) ─────────────────
         gb = QGroupBox("Digital Twin — real robot (HSE)")
         form = QFormLayout(gb)
         self._exp_mirror_hz = QDoubleSpinBox()
@@ -78,7 +78,7 @@ class ExperimentMixin:
         form.addRow("Telemetry Hz (CSV):", self._exp_tele_hz)
         lay.addWidget(gb)
 
-        # ── Tham số experiment (dùng cho nút Start experiment) ────────────
+        # ── Experiment parameters (used by the Start experiment button) ───
         self._exp_group = QGroupBox("Experiment parameters (autonomous pick-place)")
         eform = QFormLayout(self._exp_group)
         self._exp_trials = QSpinBox()
@@ -96,7 +96,7 @@ class ExperimentMixin:
         eform.addRow(self._exp_ultra)
         lay.addWidget(self._exp_group)
 
-        # ── Action buttons (gộp từ menu vào panel) ────────────────────────
+        # ── Action buttons (consolidated from menu into panel) ────────────
         row1 = QHBoxLayout()
         self._exp_mirror_btn = QPushButton("▶  Start live mirror")
         self._exp_mirror_btn.setToolTip(
@@ -136,17 +136,18 @@ class ExperimentMixin:
             self.tabifyDockWidget(self._jog_dock, dock)
         dock.setVisible(False)
 
-    # ── Viewport bridge: mirror thread gọi → marshal về main thread ──────
+    # ── Viewport bridge: mirror thread calls → marshalled to main thread ─
     def _exp_viewport_callback(self, joints) -> None:
-        """DigitalTwinMirror gọi @mirror_hz từ MIRROR THREAD. Chỉ emit signal —
-        Qt tự queue về main thread `_apply_joints_main` (vẽ). KHÔNG đụng VTK ở đây."""
+        """Called by DigitalTwinMirror @mirror_hz from the MIRROR THREAD. Only emits a
+        signal — Qt auto-queues it to the main thread `_apply_joints_main` (render).
+        Do NOT touch VTK here."""
         try:
             self._signals.joints_update.emit([float(j) for j in joints])
         except Exception:                                       # noqa: BLE001
             pass
 
-    # ── Viewport-visual hooks: Orchestrator (worker thread) gọi qua twin ──
-    # attach/detach/reset_scene → emit signal → main thread gắp/thả/reset vật.
+    # ── Viewport-visual hooks: Orchestrator (worker thread) calls via twin ─
+    # attach/detach/reset_scene → emit signal → main thread grabs/releases/resets object.
     def _exp_grasp_cb(self, class_name=None) -> None:
         try:
             self._signals.gripper.emit(True)
@@ -166,7 +167,7 @@ class ExperimentMixin:
             pass
 
     def _validate_dt_common(self) -> str | None:
-        """Kiểm tra điều kiện chung (model + IP). Trả message lỗi hoặc None."""
+        """Check common preconditions (model + IP). Returns an error message or None."""
         if self._exp_running:
             return "Digital Twin is already running"
         if getattr(self, "_model", None) is None:
@@ -175,7 +176,7 @@ class ExperimentMixin:
             return "No YRC1000 IP — Robot → Connection settings…"
         return None
 
-    # ── Start: live mirror (Phase 1) ─────────────────────────────────────
+    # ── Start: live mirror (Phase 1) ──────────────────────────────────────
     def _on_start_live_mirror(self) -> None:
         err = self._validate_dt_common()
         if err:
@@ -207,7 +208,7 @@ class ExperimentMixin:
                   float(self._exp_tele_hz.value())),
             status=f"Digital Twin: connecting to {ip}…")
 
-    # ── Start: experiment runner (Phase 2) ───────────────────────────────
+    # ── Start: experiment runner (Phase 2) ────────────────────────────────
     def _on_start_experiment(self) -> None:
         err = self._validate_dt_common()
         if err:
@@ -222,7 +223,7 @@ class ExperimentMixin:
 
         from pathlib import Path
         root = Path(self._project_root)
-        # Orchestrator load calib khi __init__ → bắt buộc có T_base_camera.npy.
+        # Orchestrator loads calibration on __init__ → T_base_camera.npy is required.
         calib = root / "config" / "calibration" / "T_base_camera.npy"
         if not calib.exists():
             QMessageBox.warning(
@@ -237,7 +238,7 @@ class ExperimentMixin:
         n = int(self._exp_trials.value())
         ultra = bool(self._exp_ultra.isChecked())
 
-        # Perception thật cần YOLO weights — cảnh báo nếu thiếu.
+        # Real perception requires YOLO weights — warn if missing.
         if perc_choice == "real":
             cfg = self._assemble_experiment_config_real(ik_source)
             mp = cfg.get("model_path", "models/yolov8s-seg_best.pt")
@@ -281,7 +282,7 @@ class ExperimentMixin:
             status=f"Digital Twin experiment: connecting to {ip}…")
 
     def _begin_worker(self, target, args, status: str) -> None:
-        """Chung cho mirror/experiment: reset stop flag, khoá UI, spawn worker."""
+        """Shared for mirror/experiment: reset stop flag, lock UI, spawn worker."""
         self._exp_stop.clear()
         self._exp_running = True
         self._exp_mirror_btn.setEnabled(False)
@@ -294,8 +295,8 @@ class ExperimentMixin:
 
     def _on_stop_experiment(self) -> None:
         self._exp_stop.set()
-        # Experiment: robot đang chuyển động → servo OFF NGAY (mirror chỉ đọc nên
-        # không Stop để tránh dừng job robot đang tự chạy).
+        # Experiment: robot is moving → servo OFF immediately (mirror is read-only so
+        # do not Stop to avoid interrupting a robot job running autonomously).
         if getattr(self, "_exp_is_experiment", False):
             twin = getattr(self, "_twin", None)
             if twin is not None and hasattr(twin, "Stop"):
@@ -305,7 +306,7 @@ class ExperimentMixin:
                     pass
         self._set_status("Digital Twin: stopping…", level="warn")
 
-    # ── Worker: live mirror only (Phase 1) ───────────────────────────────
+    # ── Worker: live mirror only (Phase 1) ────────────────────────────────
     def _live_mirror_worker(self, ip, mirror_hz, telemetry_hz) -> None:
         backend = None
         twin = None
@@ -315,7 +316,7 @@ class ExperimentMixin:
             from ...utils import timestamp
             from pathlib import Path
 
-            backend = self._build_backend(ip)   # MotomanHSEBackend (hoặc seam test)
+            backend = self._build_backend(ip)   # MotomanHSEBackend (or seam-test stub)
             backend.connect()
             if not backend.Valid():
                 self._signals.status.emit(
@@ -336,7 +337,7 @@ class ExperimentMixin:
                 f"Digital Twin: mirror ON @{mirror_hz:.1f} Hz → {csv_path.name}",
                 "ok")
 
-            # Giữ worker sống; mirror thread (trong twin) tự poll + emit.
+            # Keep the worker alive; the mirror thread (inside twin) polls + emits.
             while not self._exp_stop.is_set():
                 self._exp_stop.wait(0.2)
         except Exception as e:                                  # noqa: BLE001
@@ -344,7 +345,7 @@ class ExperimentMixin:
         finally:
             self._teardown(twin, backend)
 
-    # ── Worker: experiment runner (Phase 2) ──────────────────────────────
+    # ── Worker: experiment runner (Phase 2) ───────────────────────────────
     def _experiment_worker(self, n, ik_source, ultra_fast, perc_choice) -> None:
         backend = None
         twin = None
@@ -439,7 +440,7 @@ class ExperimentMixin:
                     perception.stop()
             except Exception:                                   # noqa: BLE001
                 pass
-            # Servo OFF sau khi xong / dừng (robot đã chuyển động).
+            # Servo OFF after completion / stop (robot was moving).
             try:
                 if twin is not None and hasattr(twin, "Stop"):
                     twin.Stop()
@@ -448,9 +449,9 @@ class ExperimentMixin:
             self._teardown(twin, backend,
                            stats=dict(orch.stats) if orch is not None else {})
 
-    # ── Helpers chung ────────────────────────────────────────────────────
+    # ── Common helpers ────────────────────────────────────────────────────
     def _build_backend(self, ip):
-        """Tạo motion backend (HSE thật, hoặc fake qua seam test)."""
+        """Create the motion backend (real HSE, or a fake via seam test)."""
         factory = getattr(self, "_exp_backend_factory", None)
         if factory is not None:
             backend = factory(ip, getattr(self, "_hse_tool_no", 1),
@@ -465,7 +466,7 @@ class ExperimentMixin:
         return backend
 
     def _teardown(self, twin, backend, stats=None) -> None:
-        """Stop mirror + disconnect + reset state + emit exp_done (main thread)."""
+        """Stop mirror + disconnect + reset state + emit exp_done (on main thread)."""
         try:
             if twin is not None:
                 twin.stop_mirror()
@@ -481,11 +482,11 @@ class ExperimentMixin:
         self._signals.exp_done.emit(stats if stats is not None else {})
 
     def _assemble_experiment_config_real(self, ik_source: str = "yrc") -> dict:
-        """Config cho experiment ROBOT THẬT (khớp `03_run_experiment.py --mode real`).
+        """Build config for a REAL-ROBOT experiment (matches `03_run_experiment.py --mode real`).
 
-        Nền experiment.yaml (model_path/conf/place…) + override real-mode flags +
-        base/home/tool từ cell config. Trả dict OVERRIDE; Orchestrator tự merge
-        với `_DEFAULT_CONFIG`.
+        Base from experiment.yaml (model_path/conf/place…) + real-mode flag overrides +
+        base/home/tool from cell config. Returns an OVERRIDE dict; Orchestrator merges it
+        with `_DEFAULT_CONFIG`.
         """
         from pathlib import Path
         cfg: dict = {}
@@ -499,7 +500,7 @@ class ExperimentMixin:
         except Exception:                                       # noqa: BLE001
             cfg = {}
 
-        # Real-mode safety flags (giống 03 --mode real).
+        # Real-mode safety flags (matching 03 --mode real).
         cfg["is_real_mode"] = True
         cfg["skip_reachability_check"] = False
         cfg["predictive_safety_enabled"] = True
@@ -515,7 +516,7 @@ class ExperimentMixin:
                 "require_detect_on_close": True,
             }
 
-        # base / home / tool — ưu tiên cell config, fallback attr app.
+        # base / home / tool — cell config takes priority, falls back to app attrs.
         cc = getattr(self, "_cell_config", None)
         if cc is not None:
             try:
@@ -536,7 +537,7 @@ class ExperimentMixin:
             cfg["robot_base_xyz_mm"] = tuple(getattr(self, "_base_xyz",
                                                      (0.0, 0.0, 0.0)))
 
-        # IK source (mặc định yrc cho HSE real).
+        # IK source (default yrc for real HSE).
         if ik_source == "client":
             cfg["use_client_ik"] = True
         else:
@@ -544,11 +545,11 @@ class ExperimentMixin:
         return cfg
 
     def _build_experiment_perception(self, config, det_queue, choice, n):
-        """Tạo PerceptionNode. Trả (node, threaded).
+        """Create a PerceptionNode. Returns (node, threaded).
 
         • choice == "real": D455 + YOLO → threaded=True (perception.start()).
-        • choice == "mock": MockCamera + MockDetector (1 kịch bản lặp vòng) →
-          threaded=False (worker gọi process_once() từng trial, deterministic).
+        • choice == "mock": MockCamera + MockDetector (one scenario, looped) →
+          threaded=False (worker calls process_once() per trial, deterministic).
         """
         from ...perception import PerceptionNode
         if choice == "mock":
@@ -572,9 +573,9 @@ class ExperimentMixin:
             conf=config.get("conf_threshold", 0.5))
         return PerceptionNode(camera, detector, det_queue), True
 
-    # ── Main-thread slots cho exp signals ────────────────────────────────
+    # ── Main-thread slots for exp signals ────────────────────────────────
     def _on_exp_progress(self, completed: int, stats) -> None:
-        """Cập nhật số trial + thống kê live (chạy trên main thread)."""
+        """Update trial count + live statistics (runs on main thread)."""
         if hasattr(self, "_exp_status_lbl"):
             try:
                 s = stats or {}
@@ -588,7 +589,7 @@ class ExperimentMixin:
                 pass
 
     def _on_exp_done(self, stats) -> None:
-        """Mirror/experiment kết thúc → re-enable UI (chạy trên main thread)."""
+        """Mirror/experiment finished → re-enable UI (runs on main thread)."""
         self._exp_running = False
         self._exp_is_experiment = False
         if hasattr(self, "_exp_mirror_btn"):

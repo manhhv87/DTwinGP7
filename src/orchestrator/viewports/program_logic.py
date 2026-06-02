@@ -1,19 +1,19 @@
 """
 program_logic.py
 ────────────────
-Lõi logic INFORM (flow control + biến) — PURE, KHÔNG Qt/OpenGL/IK. Tách khỏi
-playback mixin để unit-test 100% headless.
+INFORM logic core (flow control + variables) — PURE, NO Qt/OpenGL/IK. Decoupled
+from the playback mixin for 100% headless unit-testing.
 
-Cung cấp cho interpreter (`mixin_program_playback._play_program_loop`):
-  • VarStore        — biến B (byte 0–255 wrap) / I (integer).
-  • eval_condition  — so sánh 'lhs op rhs' (toán hạng = biến | literal | IN#(n)).
+Provides for the interpreter (`mixin_program_playback._play_program_loop`):
+  • VarStore        — B variables (byte 0–255 wrap) / I (integer).
+  • eval_condition  — evaluate 'lhs op rhs' (operand = variable | literal | IN#(n)).
   • apply_setvar    — SET/ADD/SUB/MUL/DIV/INC/DEC.
-  • resolve_labels  — map *LABEL → index (raise nếu trùng).
-  • build_block_map — match IFTHEN/ELSEIF/ELSE/ENDIF + WHILE/ENDWHILE (raise lệch).
-  • validate_program— gom lỗi (nhãn/khối/biến) cho UI guard (KHÔNG raise).
-  • next_pc         — PC kế tiếp cho MỌI lệnh control-flow (thuần, testable).
+  • resolve_labels  — map *LABEL → index (raise on duplicate).
+  • build_block_map — match IFTHEN/ELSEIF/ELSE/ENDIF + WHILE/ENDWHILE (raise on mismatch).
+  • validate_program— collect errors (labels/blocks/variables) for UI guard (NO raise).
+  • next_pc         — next PC for ALL control-flow instructions (pure, testable).
 
-Hằng `CONTROL_FLOW` = tập type mà interpreter route qua `next_pc`.
+Constant `CONTROL_FLOW` = set of types that the interpreter routes through `next_pc`.
 """
 from __future__ import annotations
 
@@ -48,7 +48,7 @@ def _no_io(_idx: int) -> bool:
 
 
 class VarStore:
-    """Kho biến INFORM B/I. B wrap 0–255 (byte), I là integer thường."""
+    """INFORM B/I variable store. B wraps 0–255 (byte), I is a plain integer."""
 
     def __init__(self) -> None:
         self._v: dict[str, int] = {}
@@ -58,7 +58,7 @@ class VarStore:
         name = name.strip().upper()
         if not _RE_VAR.match(name):
             raise ValueError(
-                f"Tên biến không hợp lệ: '{name}' (cần B### hoặc I###, vd B000)")
+                f"Invalid variable name: '{name}' (expected B### or I###, e.g. B000)")
         return name
 
     def get(self, name: str) -> int:
@@ -75,8 +75,27 @@ class VarStore:
         return dict(self._v)
 
 
+def is_valid_operand(tok: str) -> bool:
+    """Is the token a valid operand? = B/I variable | IN#(n) | literal int.
+
+    Used by validate_program to block Play/Export for programs with bad operands
+    (e.g. 'B0000' 4 digits, 'FOO', '??') — prevents malformed .JBI syntax from
+    slipping through.
+    """
+    up = tok.strip().upper()
+    if not up:
+        return False
+    if _RE_VAR.match(up) or _RE_IN.match(up):
+        return True
+    try:
+        int(up)
+        return True
+    except ValueError:
+        return False
+
+
 def resolve_operand(tok: str, store: VarStore, io_reader: IoReader) -> int:
-    """Token → giá trị int. Token = biến B/I | IN#(n) | literal int."""
+    """Token → int value. Token = B/I variable | IN#(n) | literal int."""
     tok = tok.strip()
     up = tok.upper()
     if _RE_VAR.match(up):
@@ -87,7 +106,7 @@ def resolve_operand(tok: str, store: VarStore, io_reader: IoReader) -> int:
     try:
         return int(tok)
     except ValueError as e:
-        raise ValueError(f"Toán hạng không hợp lệ: '{tok}'") from e
+        raise ValueError(f"Invalid operand: '{tok}'") from e
 
 
 def eval_condition(
@@ -96,7 +115,7 @@ def eval_condition(
 ) -> bool:
     cmp = _CMP.get(op)
     if cmp is None:
-        raise ValueError(f"Toán tử so sánh không hỗ trợ: '{op}'")
+        raise ValueError(f"Unsupported comparison operator: '{op}'")
     a = resolve_operand(lhs, store, io_reader)
     b = resolve_operand(rhs, store, io_reader)
     return bool(cmp(a, b))
@@ -124,7 +143,7 @@ def apply_setvar(
     elif op == "DIV":
         res = cur // operand if operand != 0 else cur     # guard div-by-zero
     else:
-        raise ValueError(f"Phép gán biến không hỗ trợ: '{op}'")
+        raise ValueError(f"Unsupported variable assignment operator: '{op}'")
     store.set(name, res)
 
 
@@ -136,16 +155,16 @@ def resolve_labels(program: list[Instruction]) -> dict[str, int]:
     for i, ins in enumerate(program):
         if ins.type == "Label":
             if ins.label_name in m:
-                raise ValueError(f"Nhãn trùng: *{ins.label_name}")
+                raise ValueError(f"Duplicate label: *{ins.label_name}")
             m[ins.label_name] = i
     return m
 
 
 def build_block_map(program: list[Instruction]) -> dict[int, dict]:
-    """Pre-pass khớp khối IF/WHILE → bm[index] = {jnext,jend|jstart}.
+    """Pre-pass matching IF/WHILE blocks → bm[index] = {jnext,jend|jstart}.
 
-    Raise ValueError nếu khối lệch (ELSEIF/ELSE ngoài IF, ENDIF/ENDWHILE thừa,
-    khối chưa đóng).
+    Raises ValueError if blocks are mismatched (ELSEIF/ELSE outside IF,
+    extra ENDIF/ENDWHILE, unclosed block).
     """
     bm: dict[int, dict] = {}
     stack: list[dict] = []
@@ -155,11 +174,11 @@ def build_block_map(program: list[Instruction]) -> dict[int, dict]:
             stack.append({"kind": "if", "clauses": [i]})
         elif t in ("ElseIf", "Else"):
             if not stack or stack[-1]["kind"] != "if":
-                raise ValueError(f"{t.upper()} không nằm trong IFTHEN (dòng {i+1})")
+                raise ValueError(f"{t.upper()} not inside IFTHEN (line {i+1})")
             stack[-1]["clauses"].append(i)
         elif t == "EndIf":
             if not stack or stack[-1]["kind"] != "if":
-                raise ValueError(f"ENDIF thừa (dòng {i+1})")
+                raise ValueError(f"Extra ENDIF (line {i+1})")
             clauses = stack.pop()["clauses"]
             for k, ci in enumerate(clauses):
                 nxt = clauses[k + 1] if k + 1 < len(clauses) else i
@@ -171,21 +190,21 @@ def build_block_map(program: list[Instruction]) -> dict[int, dict]:
             stack.append({"kind": "while", "start": i})
         elif t == "EndWhile":
             if not stack or stack[-1]["kind"] != "while":
-                raise ValueError(f"ENDWHILE thừa (dòng {i+1})")
+                raise ValueError(f"Extra ENDWHILE (line {i+1})")
             s = stack.pop()["start"]
             bm.setdefault(s, {})["jend"] = i
             bm.setdefault(i, {})["jstart"] = s
     if stack:
         kinds = ", ".join(b["kind"].upper() for b in stack)
-        raise ValueError(f"Khối chưa đóng: {kinds}")
+        raise ValueError(f"Unclosed block(s): {kinds}")
     return bm
 
 
 def validate_program(program: list[Instruction]) -> list[str]:
-    """Gom mọi lỗi tĩnh (KHÔNG raise) — dùng chặn Play/Export.
+    """Collect all static errors (NO raise) — used to block Play/Export.
 
-    Kiểm: nhãn trùng, JUMP tới nhãn không tồn tại, khối IF/WHILE cân bằng, tên
-    biến + toán tử điều kiện hợp lệ.
+    Checks: duplicate labels, JUMP to undefined label, balanced IF/WHILE blocks,
+    valid variable names, and valid condition operators.
     """
     errors: list[str] = []
     try:
@@ -199,18 +218,33 @@ def validate_program(program: list[Instruction]) -> list[str]:
     for i, ins in enumerate(program):
         t = ins.type
         if t == "Jump" and ins.label_name not in labels:
-            errors.append(f"Dòng {i+1}: JUMP tới nhãn không tồn tại *{ins.label_name}")
+            errors.append(f"Line {i+1}: JUMP to undefined label *{ins.label_name}")
         if t == "SetVar":
             try:
                 VarStore.validate(ins.var_name)
             except ValueError as e:
-                errors.append(f"Dòng {i+1}: {e}")
-            if ins.var_op.upper() not in (
-                    "SET", "ADD", "SUB", "MUL", "DIV", "INC", "DEC"):
-                errors.append(f"Dòng {i+1}: phép gán không hợp lệ '{ins.var_op}'")
-        if (t in ("Jump", "IfThen", "ElseIf", "While") and ins.cond_op
-                and ins.cond_op not in _CMP):
-            errors.append(f"Dòng {i+1}: toán tử điều kiện không hỗ trợ '{ins.cond_op}'")
+                errors.append(f"Line {i+1}: {e}")
+            op = ins.var_op.upper()
+            if op not in ("SET", "ADD", "SUB", "MUL", "DIV", "INC", "DEC"):
+                errors.append(f"Line {i+1}: invalid assignment operator '{ins.var_op}'")
+            elif op not in ("INC", "DEC") and not is_valid_operand(ins.var_arg):
+                errors.append(
+                    f"Line {i+1}: invalid operand '{ins.var_arg}' "
+                    f"(expected B###/I###, IN#(n), or integer)")
+        if t in ("Jump", "IfThen", "ElseIf", "While"):
+            # IfThen/ElseIf/While REQUIRE a condition; Jump without op = unconditional.
+            if not ins.cond_op:
+                if t != "Jump":
+                    errors.append(f"Line {i+1}: {t.upper()} missing condition")
+            elif ins.cond_op not in _CMP:
+                errors.append(
+                    f"Line {i+1}: unsupported condition operator '{ins.cond_op}'")
+            else:
+                for side, val in (("left", ins.cond_lhs), ("right", ins.cond_rhs)):
+                    if not is_valid_operand(val):
+                        errors.append(
+                            f"Line {i+1}: invalid {side} operand '{val}' "
+                            f"(expected B###/I###, IN#(n), or integer)")
     return errors
 
 
@@ -223,8 +257,8 @@ def next_pc(
     label_map: dict[str, int],
     state: dict[int, bool],
 ) -> int:
-    """PC kế tiếp cho lệnh control-flow tại `pc`. THUẦN (trừ cập nhật `state` cho
-    IF — dùng để biết nhánh nào đã chạy, key = index ENDIF tương ứng)."""
+    """Next PC for the control-flow instruction at `pc`. PURE (except updating `state`
+    for IF — used to track which branch has already executed, key = ENDIF index)."""
     ins = program[pc]
     t = ins.type
 
@@ -238,13 +272,13 @@ def next_pc(
                                   store, io_reader)
         if take:
             if ins.label_name not in label_map:
-                raise ValueError(f"JUMP tới nhãn không tồn tại: *{ins.label_name}")
+                raise ValueError(f"JUMP to undefined label: *{ins.label_name}")
             return label_map[ins.label_name]
         return pc + 1
 
     if t == "IfThen":
         endif = block_map[pc]["jend"]
-        state[endif] = False                       # reset mỗi lần vào IF
+        state[endif] = False                       # reset each time IF is entered
         if eval_condition(ins.cond_lhs, ins.cond_op, ins.cond_rhs,
                           store, io_reader):
             state[endif] = True
@@ -253,7 +287,7 @@ def next_pc(
 
     if t == "ElseIf":
         endif = block_map[pc]["jend"]
-        if state.get(endif):                       # đã có nhánh chạy → bỏ tới ENDIF
+        if state.get(endif):                       # a branch already ran → skip to ENDIF
             return endif
         if eval_condition(ins.cond_lhs, ins.cond_op, ins.cond_rhs,
                           store, io_reader):
@@ -274,9 +308,9 @@ def next_pc(
         if eval_condition(ins.cond_lhs, ins.cond_op, ins.cond_rhs,
                           store, io_reader):
             return pc + 1
-        return block_map[pc]["jend"] + 1           # thoát loop (sau ENDWHILE)
+        return block_map[pc]["jend"] + 1           # exit loop (past ENDWHILE)
 
     if t == "EndWhile":
-        return block_map[pc]["jstart"]             # quay lại WHILE đánh giá lại
+        return block_map[pc]["jstart"]             # loop back to WHILE for re-evaluation
 
     return pc + 1

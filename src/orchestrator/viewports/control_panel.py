@@ -1,24 +1,24 @@
 """
 control_panel.py
 ────────────────
-GUI Control Panel cho GP7 — style RoboDK, chạy SONG SONG với O3DGuiSimRobot.
+GUI Control Panel for GP7 — RoboDK style, runs IN PARALLEL with O3DGuiSimRobot.
 
-Mở 1 cửa sổ phụ trên cùng `gui.Application` với viewport — không đụng vào
-O3DVisualizer hiện tại. Bao gồm:
+Opens a secondary window on the same `gui.Application` as the viewport — does not
+touch the existing O3DVisualizer. Includes:
 
-  * Joint axis jog        — 6 slider θ1..θ6 ± min/max của model + Home
+  * Joint axis jog        — 6 sliders θ1..θ6 ± min/max of model + Home
   * TCP pose readout       — Tool/Reference/Tool-w.r.t.-Ref (X,Y,Z mm + RPY°)
-  * Tool / Reference combo — load từ cell_config (gripper, frames)
-  * Cartesian jog          — nút ± X/Y/Z translate / rotate theo frame chọn
-  * Step size adjustable   — mm và deg
-  * Other configurations   — tìm IK branch khác cho TCP hiện tại
-  * Gripper Open / Close   — gọi setDO(1, ·) (kích hoạt grasp/release sim)
+  * Tool / Reference combo — loaded from cell_config (gripper, frames)
+  * Cartesian jog          — ± X/Y/Z translate / rotate buttons in selected frame
+  * Step size adjustable   — mm and deg
+  * Other configurations   — find alternate IK branches for the current TCP
+  * Gripper Open / Close   — calls setDO(1, ·) (triggers grasp/release in sim)
 
-**Sim-only**: callback chỉ ghi `robot._joints` + `robot._apply_frames(...)`. Không
-gửi MoveJ tới robot thật.
+**Sim-only**: callbacks only write `robot._joints` + `robot._apply_frames(...)`.
+No MoveJ sent to the real robot.
 
-Kinematics dùng URDFRobot (FK match RoboDK 0.00mm) cho cả FK lẫn IK — đảm bảo
-TCP hiển thị panel khớp viewport.
+Kinematics use URDFRobot (FK matches RoboDK 0.00mm) for both FK and IK — ensures
+TCP shown in panel matches the viewport.
 """
 from __future__ import annotations
 
@@ -76,7 +76,7 @@ def _xyz_rpy_to_matrix(
 
 
 def _rotation_about_axis_3x3(axis_world: np.ndarray, theta_rad: float) -> np.ndarray:
-    """Rodrigues 3x3 quay quanh axis (vector world, sẽ tự normalize)."""
+    """Rodrigues 3x3 rotation about axis (world vector, auto-normalized)."""
     n = float(np.linalg.norm(axis_world))
     if n < 1e-12:
         return np.eye(3)
@@ -91,7 +91,7 @@ def _rotation_about_axis_3x3(axis_world: np.ndarray, theta_rad: float) -> np.nda
 
 
 # ──────────────────────────────────────────────────────────────────────────
-# Frame loaders từ cell_config
+# Frame loaders from cell_config
 # ──────────────────────────────────────────────────────────────────────────
 
 def _build_tool_frames(cell_config) -> list[tuple[str, np.ndarray]]:
@@ -127,10 +127,10 @@ def _build_ref_frames(cell_config) -> list[tuple[str, np.ndarray]]:
 # ──────────────────────────────────────────────────────────────────────────
 
 class ControlPanel:
-    """Cửa sổ điều khiển GP7 dạng RoboDK panel — sim only.
+    """GP7 control window in RoboDK panel style — sim only.
 
-    Khởi tạo SAU `O3DGuiSimRobot(...)` và TRƯỚC `robot.run_gui()` để cả hai
-    cửa sổ cùng được Application quản lý:
+    Instantiate AFTER `O3DGuiSimRobot(...)` and BEFORE `robot.run_gui()` so
+    both windows are managed by the same Application:
 
         robot = O3DGuiSimRobot(base_xyz=..., cell_config=..., project_root=...)
         panel = ControlPanel(robot, robot._model, cell_config=cell_config)
@@ -165,7 +165,7 @@ class ControlPanel:
 
         self._tool_frames = _build_tool_frames(cell_config)
         self._ref_frames = _build_ref_frames(cell_config)
-        # Default selections: nếu có gripper thì chọn nó; ref = base.
+        # Default selections: prefer gripper if present; ref = base.
         self._tool_idx = len(self._tool_frames) - 1 if len(self._tool_frames) > 1 else 0
         self._ref_idx = 0
         self._jog_frame_idx = 0                            # Tool Frame default
@@ -173,15 +173,16 @@ class ControlPanel:
         self._jog_step_deg = 5.0
         self._alternates: list[list[float]] = []
 
-        # Đặt position explicit (x, y) để panel KHÔNG bị viewport che ở giữa
-        # màn hình. Open3D create_window mặc định (-1,-1) auto-position; trên
-        # Windows multi-window thường stack — panel có thể nằm dưới viewport.
+        # Set explicit (x, y) position so the panel is NOT hidden behind the
+        # viewport in the middle of the screen. Open3D create_window defaults
+        # to (-1,-1) auto-position; on Windows multi-window tends to stack —
+        # the panel may end up beneath the viewport.
         self._window = gui.Application.instance.create_window(
             "GP7 Control Panel — RoboDK style",
             window_size[0], window_size[1],
             window_pos[0], window_pos[1],
         )
-        logger.info("Control Panel window mở tại (%d, %d) size=%dx%d",
+        logger.info("Control Panel window opened at (%d, %d) size=%dx%d",
                     window_pos[0], window_pos[1], window_size[0], window_size[1])
 
         em = self._window.theme.font_size
@@ -208,7 +209,7 @@ class ControlPanel:
         try:
             self._window.show(True)                    # belt-and-suspenders
         except Exception as e:                         # noqa: BLE001
-            logger.debug("window.show(True) lỗi: %s", e)
+            logger.debug("window.show(True) error: %s", e)
         self._refresh_pose_readout()
 
     # ──────────────────────────────────────────────────────────────────
@@ -348,14 +349,14 @@ class ControlPanel:
             "Other configurations", 0.25 * em,
             gui.Margins(0.3 * em, 0.2 * em, 0, 0))
         hdr = gui.Horiz(0.3 * em)
-        hdr.add_child(gui.Label("Tìm IK branch khác cho TCP hiện tại:"))
+        hdr.add_child(gui.Label("Find alternate IK branches for current TCP:"))
         hdr.add_stretch()
         find_btn = gui.Button("Find")
         find_btn.set_on_clicked(self._on_find_alternates)
         hdr.add_child(find_btn)
         box.add_child(hdr)
         self._alt_combo = gui.Combobox()
-        self._alt_combo.add_item("(chưa tìm)")
+        self._alt_combo.add_item("(not searched yet)")
         self._alt_combo.set_on_selection_changed(self._on_alternate_selected)
         box.add_child(self._alt_combo)
         return box
@@ -437,13 +438,13 @@ class ControlPanel:
         except AttributeError:                              # Open3D <0.17 fallback
             pass
         if not self._alternates:
-            self._alt_combo.add_item("(no IK branch khác)")
-            self._set_status("Không tìm thấy branch khác")
+            self._alt_combo.add_item("(no alternate IK branches)")
+            self._set_status("No alternate branches found")
             return
         for sol in self._alternates:
             label = "[" + ", ".join(f"{q:+7.1f}°" for q in sol) + "]"
             self._alt_combo.add_item(label)
-        self._set_status(f"Tìm thấy {len(self._alternates)} branch khác")
+        self._set_status(f"Found {len(self._alternates)} alternate branch(es)")
 
     def _on_alternate_selected(self, _text: str, idx: int) -> None:
         i = int(idx)
@@ -455,16 +456,16 @@ class ControlPanel:
             self._robot.setDO(1, 1 if close else 0)
             self._set_status(f"Gripper {'CLOSE' if close else 'OPEN'}")
         except Exception as e:                              # noqa: BLE001
-            self._set_status(f"Gripper lỗi: {e}")
+            self._set_status(f"Gripper error: {e}")
 
     # ──────────────────────────────────────────────────────────────────
     # Internal helpers
     # ──────────────────────────────────────────────────────────────────
 
     def _set_joints(self, joints_deg, source: str = "") -> None:
-        """Cập nhật state robot + viewport (main thread)."""
+        """Update robot state + viewport (main thread)."""
         joints_deg = [float(v) for v in joints_deg]
-        # Clamp vào joint limits của model (an toàn nếu IK trả ngoài biên).
+        # Clamp to model joint limits (safe guard if IK returns out-of-range values).
         for i, joint in enumerate(self._model.joints):
             lo = math.degrees(joint.joint_min)
             hi = math.degrees(joint.joint_max)
@@ -473,7 +474,7 @@ class ControlPanel:
         try:
             self._robot._apply_frames(joints_deg, threadsafe=False)
         except Exception as e:                              # noqa: BLE001
-            logger.debug("apply_frames lỗi: %s", e)
+            logger.debug("apply_frames error: %s", e)
         self._refresh_joint_sliders()
         self._refresh_pose_readout()
         if source:
@@ -507,19 +508,19 @@ class ControlPanel:
         self._status.text = msg
 
     def _current_tool_world(self) -> np.ndarray | None:
-        """T_world_tool = FK_URDF(joints) @ T_flange_tool (tool offset đang chọn)."""
+        """T_world_tool = FK_URDF(joints) @ T_flange_tool (currently selected tool offset)."""
         try:
             q_rad = [math.radians(q) for q in self._robot._joints]
             T_world_tool0 = forward_kinematics_urdf(self._model, q_rad)
             return T_world_tool0 @ self._tool_frames[self._tool_idx][1]
         except Exception as e:                              # noqa: BLE001
-            self._set_status(f"FK lỗi: {e}")
+            self._set_status(f"FK error: {e}")
             return None
 
     def _jog_axis_world(
         self, axis_idx: int, T_world_tool: np.ndarray,
     ) -> np.ndarray:
-        """Vector axis trong WORLD theo jog frame (Tool / Reference / Base)."""
+        """Axis vector in WORLD coordinates for the selected jog frame (Tool / Reference / Base)."""
         unit = self._AXIS_VEC[axis_idx]
         frame = self.JOG_FRAMES[self._jog_frame_idx]
         if frame == "Tool Frame":
@@ -550,7 +551,7 @@ class ControlPanel:
     def _find_alternate_solutions(
         self, T_world_tool_target: np.ndarray,
     ) -> list[list[float]]:
-        """Sinh seeds đa dạng → IK → collect ≤8 nghiệm cách nhau >5° mỗi joint."""
+        """Generate diverse seeds → IK → collect ≤8 solutions differing >5° per joint."""
         T_flange_tool = self._tool_frames[self._tool_idx][1]
         T_world_tool0_target = T_world_tool_target @ np.linalg.inv(T_flange_tool)
         rng = np.random.RandomState(0)

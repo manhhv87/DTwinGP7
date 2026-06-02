@@ -3,19 +3,19 @@ gp7_app_qt.py
 ─────────────
 GP7 Digital Twin app — PyQt6 + pyvistaqt (VTK) industrial-standard stack.
 
-Tách lớp triệt để:
-  • Kinematics math (FK/IK/collision/trajectory) — REUSE NGUYÊN từ
-    `src/orchestrator/kinematics/` (đã verify khớp RoboDK 0.00mm).
-  • 3D rendering — VTK qua `pyvistaqt.QtInteractor` (cùng stack ROS RViz,
+Clean layer separation:
+  • Kinematics math (FK/IK/collision/trajectory) — fully reused from
+    `src/orchestrator/kinematics/` (verified to match RoboDK 0.00mm).
+  • 3D rendering — VTK via `pyvistaqt.QtInteractor` (same stack as ROS RViz,
     MoveIt). Camera arcball/pan/zoom built-in.
   • GUI shell — PyQt6 native widgets (QMenuBar, QToolBar, QDockWidget,
-    QFormLayout, QSlider, QPushButton). Stylesheet QSS có thể tùy biến.
+    QFormLayout, QSlider, QPushButton). QSS stylesheet customizable.
 
-Tại sao chọn stack này (so với Open3D gui hiện tại):
-  • Industrial standard — VTK + Qt là chuẩn de-facto của robotics 3D apps.
-  • UI polish — QFormLayout auto align label+widget, QDockWidget hide/show
-    panel kiểu VSCode, QToolBar có icons + accelerators.
-  • Math độc lập viewport — FK/IK/JBI export 100% giữ nguyên độ chính xác.
+Why this stack (vs. current Open3D gui):
+  • Industrial standard — VTK + Qt are the de-facto standard for robotics 3D apps.
+  • UI polish — QFormLayout auto-aligns label+widget, QDockWidget hide/show
+    panels VSCode-style, QToolBar with icons + accelerators.
+  • Math independent of viewport — FK/IK/JBI export accuracy 100% preserved.
 
 Launcher: `python scripts/16_app_qt.py`.
 """
@@ -134,21 +134,21 @@ from .script_api import ScriptProgramAPI as _ScriptProgramAPI
 
 logger = logging.getLogger(__name__)
 
-# Preferred dock widths (px). Jog + Cell + Program docks tabified chung vùng
-# trái → Qt buộc chúng cùng width. Khi 1 tab được kích hoạt, resize vùng về
-# preferred width của tab đó (jog rộng cho 3-col layout, cell hẹp cho tree,
-# program vừa cho playback bar). minimumWidth của jog/program hạ xuống = cell
-# để vùng co được khi cell active (tab ẩn sau có QScrollArea nên không vấn đề).
+# Preferred dock widths (px). Jog + Cell + Program docks tabified in the left
+# area → Qt forces them to the same width. When a tab is activated, resize the area
+# to the preferred width of that tab (jog wide for 3-col layout, cell narrow for tree,
+# program medium for playback bar). minimumWidth of jog/program lowered to cell width
+# so the area can shrink when cell tab is active (hidden tabs have QScrollArea, no issue).
 _JOG_DOCK_W = 580
 _CELL_DOCK_W = 180
-# Rộng đủ chứa HẾT content program dock không cần cuộn ngang: hàng rộng nhất
-# (Modal "Speed": VJ + V spinbox + nút 138px) min ~449px + vbox margin + thanh
-# cuộn dọc ~480px; +dư cho font Windows thật → 540.
+# Wide enough to fit all program dock content without horizontal scroll: widest row
+# (Modal "Speed": VJ + V spinbox + button 138px) min ~449px + vbox margin + scrollbar
+# ~480px; extra margin for real Windows fonts → 540.
 _PROG_DOCK_W = 540
 
-# Chiều sâu nón frustum camera: mặc định kéo theo trục quang tới khi chạm sàn
-# (Z=0) → đúng vùng quan sát thực. Nếu camera không hướng xuống thì dùng far
-# mặc định này (m). Clamp trong khoảng tầm hữu dụng của D455 (~0.4–6 m).
+# Camera frustum depth: by default follows the optical axis until hitting the floor
+# (Z=0) — the real observation area. If the camera is not pointing down, use this
+# default far value (m). Clamped to the useful range of the D455 (~0.4–6 m).
 _CAM_FRUSTUM_FAR_M = 1.5
 _CAM_FRUSTUM_MIN_M = 0.15
 _CAM_FRUSTUM_MAX_M = 6.0
@@ -177,8 +177,8 @@ class GP7AppQt(
                                     tuple[float, float, float],
                                     tuple[float, float, float]]] = {
         # name: (eye, center, up) in meters. Center = robot workspace mid.
-        # Eye scaled ~1.5× từ center cho khoảng cách thoải mái khi startup
-        # (trước scene to do camera gần). Đủ 6 góc chuẩn như RoboDK + Iso.
+        # Eye scaled ~1.5× from center for comfortable viewing distance at startup
+        # (scene was too close before). Covers 6 standard views like RoboDK + Iso.
         "Iso":   (( 3.05, -2.25, 1.93), (0.35, 0.0, 0.50), (0.0, 0.0, 1.0)),
         "Front": (( 3.65,  0.00, 0.95), (0.35, 0.0, 0.50), (0.0, 0.0, 1.0)),
         "Back":  ((-2.95,  0.00, 0.95), (0.35, 0.0, 0.50), (0.0, 0.0, 1.0)),
@@ -187,9 +187,9 @@ class GP7AppQt(
         "Top":   (( 0.36,  0.02, 5.00), (0.35, 0.0, 0.50), (1.0, 0.0, 0.0)),
     }
 
-    # GP7 reach radii (m) — approximation. Real envelope is toroidal nhưng
-    # sphere centered at J1 đủ visualize cho most use case.
-    _REACH_FLANGE = 0.927          # max flange reach từ J1
+    # GP7 reach radii (m) — approximation. Real envelope is toroidal but
+    # a sphere centered at J1 is sufficient to visualize for most use cases.
+    _REACH_FLANGE = 0.927          # max flange reach from J1
     _REACH_WRIST  = 0.847          # = flange − 80mm tool0/flange offset
     _REACH_TOOL_EXTRA = 0.10       # tool offset typical ~100mm
 
@@ -210,25 +210,25 @@ class GP7AppQt(
             | QMainWindow.DockOption.AllowNestedDocks
             | QMainWindow.DockOption.AllowTabbedDocks)
 
-        # Cell config có thể None khi cold start — robot/cell load deferred qua
+        # Cell config may be None on cold start — robot/cell load deferred via
         # menu File → Load Robot GP7 / Load Cell from YAML.
         self._cell_config = cell_config
         self._project_root = Path(project_root)
-        # Optional: auto-load program (.json) lúc khởi động (--program). Load
-        # sau khi robot sẵn sàng trong _post_show_setup.
+        # Optional: auto-load a program (.json) at startup (--program). Loaded
+        # after the robot is ready in _post_show_setup.
         self._startup_program_path = (Path(program_path) if program_path
                                        else None)
 
-        # Robot model + state — KHỞI TẠO RỖNG. Sẽ được fill khi _load_robot_gp7
-        # chạy (từ menu hoặc auto-trigger trong _post_show_setup nếu cell_config
-        # đã có sẵn).
+        # Robot model + state — INITIALIZED EMPTY. Will be filled when _load_robot_gp7
+        # runs (from menu or auto-triggered in _post_show_setup if cell_config
+        # is already available).
         self._base_xyz: tuple[float, float, float] = (0.0, 0.0, 0.0)
         self._model = None
         self._home_joints: list[float] = [0.0] * 6
         self._joints: list[float] = [0.0] * 6
 
-        # Frames — defaults trống (1 entry trung tính). _build_tool_frames /
-        # _build_ref_frames đã handle cell_config=None.
+        # Frames — empty defaults (1 neutral entry). _build_tool_frames /
+        # _build_ref_frames already handle cell_config=None.
         self._tool_frames = _build_tool_frames(cell_config)
         self._ref_frames = _build_ref_frames(cell_config)
         self._tool_idx = len(self._tool_frames) - 1 if len(self._tool_frames) > 1 else 0
@@ -253,7 +253,7 @@ class GP7AppQt(
         # Fullscreen toggle state
         self._fullscreen = False
 
-        # (Text-prefix toggle — không cần icon cache)
+        # (Text-prefix toggle — no icon cache needed)
         # Press-hold continuous jog timer
         self._jog_timer = QTimer(self)
         self._jog_timer.setInterval(120)
@@ -264,36 +264,36 @@ class GP7AppQt(
         self._prog_thread: threading.Thread | None = None
         self._prog_stop = threading.Event()
         self._prog_pause = threading.Event()        # set = pause (held)
-        # Sim digital inputs cho điều kiện IN#(n) trong JUMP/IF/WHILE. Sim không
-        # có IO thật → mặc định OFF (False); user/script có thể set qua đây.
+        # Simulated digital inputs for IN#(n) conditions in JUMP/IF/WHILE. Sim has
+        # no real IO → default OFF (False); user/script can set them here.
         self._sim_io: dict[int, bool] = {}
-        # Multi-job project. Một dock chứa nhiều job; chỉ 1 job active tại
-        # 1 thời điểm (combo box). self._program (property) trỏ vào job đang
-        # active. Targets là project-global (RoboDK convention).
+        # Multi-job project. One dock holds multiple jobs; only 1 job active at
+        # a time (combo box). self._program (property) points to the active job.
+        # Targets are project-global (RoboDK convention).
         self._jobs: dict[str, list[Instruction]] = {"MAIN": []}
         self._active_job: str = "MAIN"
         # Target library: name → {"joints": [..6 deg..], "tcp_pose": [..6..]}
         self._targets: dict[str, dict] = {}
-        # Dirty-check baseline: signature của project tại lần Save/Load gần nhất.
-        # closeEvent so sánh để cảnh báo "thay đổi chưa lưu". App rỗng lúc mở =
-        # clean (không hỏi nếu user chưa add gì).
+        # Dirty-check baseline: project signature at the last Save/Load.
+        # closeEvent compares it to warn about unsaved changes. Empty app on open =
+        # clean (won't prompt if the user hasn't added anything).
         self._saved_signature: str = self._project_signature()
-        # Sim speed multiplier (1.0 = nominal). Tăng → animate faster.
+        # Sim speed multiplier (1.0 = nominal). Higher → animate faster.
         self._sim_speed_mult: float = 1.0
         # Post-processor settings (INFORM .JBI generation tuning).
-        # max_speed_pct = safety cap cho VJ. default_vj/v = initial modal state.
+        # max_speed_pct = safety cap for VJ. default_vj/v = initial modal state.
         self._pp_max_speed_pct: float = 30.0
         self._pp_default_vj: float = 10.0
         self._pp_default_v_mms: float = 100.0
-        # Teach-on-surface mode (click 3D scene → create target on picked cell).
+        # Teach-on-surface mode (click 3D scene → create target on picked surface).
         self._surface_pick_mode: bool = False
         # Cache: id(vtkDataSet) → (mesh_with_normals, cell_normals_array).
-        # mesh.compute_normals() là O(N_cells) — expensive; cache để re-pick
-        # cùng mesh không recompute.
+        # mesh.compute_normals() is O(N_cells) — expensive; cache so re-picking
+        # the same mesh avoids recomputation.
         self._normal_cache: dict[int, tuple] = {}
 
-        # HSE robot connection state — populated qua "Connection settings…" dialog.
-        # Default lấy từ cell_config.robot_connection nếu có, không thì để trống.
+        # HSE robot connection state — populated via "Connection settings…" dialog.
+        # Defaults taken from cell_config.robot_connection if available, otherwise empty.
         rc = getattr(cell_config, "robot_connection", None)
         self._hse_ip: str = (getattr(rc, "ip", "") or "")
         self._hse_tool_no: int = int(getattr(rc, "tool_no", 1) or 1)
@@ -304,7 +304,7 @@ class GP7AppQt(
         self._hse_thread: threading.Thread | None = None
         self._hse_stop = threading.Event()
 
-        # Camera (D455) state — thu ảnh live + vision-guided control (CameraMixin).
+        # Camera (D455) state — live capture + vision-guided control (CameraMixin).
         self._cam_thread: threading.Thread | None = None
         self._cam_stop = threading.Event()
         self._cam_running: bool = False
@@ -315,13 +315,13 @@ class GP7AppQt(
         self._last_camera_objects: list[dict] = []
         self._last_depth = None
         self._last_rgb = None
-        self._last_display = None            # ảnh RGB đã xử lý (worker dựng)
+        self._last_display = None            # processed RGB image (built by worker)
         self._last_fps: float = 0.0
         self._last_intrinsics = None
         self._last_source = None
         self._cam_frame_pending: bool = False  # backpressure worker→UI
-        self._cam_closing: bool = False        # chặn slot chạm widget khi đóng app
-        self._cam_capture_seq: int = 0         # counter tên file capture
+        self._cam_closing: bool = False        # block slots from touching widgets on app close
+        self._cam_capture_seq: int = 0         # capture filename counter
         self._cam_show_depth: bool = False
         self._cam_show_overlay: bool = True
         self._last_grasp_target: str | None = None
@@ -350,30 +350,30 @@ class GP7AppQt(
         self._build_status_bar()
 
         # Defer scene load (STL parse + VTK actor creation ~1-2s) — window
-        # pop ra ngay, scene load sau khi event loop start → startup mượt.
+        # pops up immediately, scene loads after event loop starts → smooth startup.
         from PyQt6.QtCore import QTimer as _QT
         _QT.singleShot(0, self._post_show_setup)
 
     def _post_show_setup(self) -> None:
-        """Chạy sau khi window đã show() — init scene base. Robot/cell sẽ load
-        deferred qua menu File. Nếu cell_config đã được truyền lúc khởi tạo
-        (backward compat với `python scripts/16_app_qt.py --config ...`),
-        tự động load luôn để giữ behavior cũ.
+        """Runs after the window has been shown — initialise the base scene. Robot/cell
+        will be loaded deferred via the File menu. If cell_config was passed to __init__
+        (backward compat with `python scripts/16_app_qt.py --config ...`),
+        auto-load it immediately to preserve legacy behaviour.
         """
         self._set_status("Initializing…", level="info")
-        # Scene base: axes + lighting. KHÔNG add floor — floor mặc định tắt,
-        # user tự bật qua View → Visibility → Floor.
+        # Scene base: axes + lighting. Floor NOT added — it is off by default;
+        # user enables it via View → Visibility → Floor.
         self._add_world_axes_triad()
         self._setup_lighting()
         self._set_camera_preset("Iso")
 
-        # Backward compat: nếu cell_config được pass trong ctor thì auto-load
-        # cả robot lẫn cell mesh.
+        # Backward compat: if cell_config was passed in the constructor, auto-load
+        # both the robot and cell meshes.
         if self._cell_config is not None:
             self._load_robot_gp7()
             self._load_cell_assets()
         elif self._startup_program_path is not None:
-            # --program: cần robot để play sim → auto-load GP7 default.
+            # --program: robot needed for sim playback → auto-load GP7 default.
             self._load_robot_gp7()
         else:
             # Empty state: disable robot-dependent UI; status hint.
@@ -382,7 +382,7 @@ class GP7AppQt(
                 "Robot not loaded — File → Load Robot GP7 to begin",
                 level="info")
 
-        # Auto-load program file (--program) — sau khi robot sẵn sàng.
+        # Auto-load the program file (--program) — after the robot is ready.
         if self._startup_program_path is not None:
             self._load_program_file(self._startup_program_path)
             self._program_dock.setVisible(True)
@@ -393,9 +393,9 @@ class GP7AppQt(
     # ══════════════════════════════════════════════════════════════════
 
     def _build_viewport(self) -> None:
-        """3D viewport bằng pyvistaqt.QtInteractor (VTK).
+        """3D viewport using pyvistaqt.QtInteractor (VTK).
 
-        Camera arcball/pan/zoom built-in. Background gradient set qua
+        Camera arcball/pan/zoom built-in. Background gradient set via
         `set_background(color, top=color_top)`.
         """
         self._plotter = QtInteractor(self)
@@ -405,21 +405,21 @@ class GP7AppQt(
             self._plotter.enable_anti_aliasing()
         except Exception:                                  # noqa: BLE001
             pass
-        # World axes widget ở góc trên-trái viewport
+        # World axes widget in the top-left corner of the viewport
         self._plotter.add_axes(line_width=3, labels_off=False)
         self.setCentralWidget(self._plotter.interactor)
 
     # ── Toggle action: Qt native checkable + custom indicator QSS ──
-    # Indicator column reserve cùng width cho TẤT CẢ items trong menu
-    # (checkable + plain) → text căn lề pixel-perfect. ✓ render qua
-    # generated check.png referenced từ QSS (xem qt_theme.py).
+    # Indicator column reserved at the same width for ALL menu items
+    # (checkable + plain) → text aligned pixel-perfectly. ✓ rendered via
+    # generated check.png referenced from QSS (see qt_theme.py).
 
     def _make_toggle(self, base_text: str, initial: bool = False,
                        callback=None) -> QAction:
-        """QAction Word/VSCode-style — ✓ ở indicator column native, text căn
-        lề perfect (đồng nhất giữa checked / unchecked / plain items).
+        """QAction Word/VSCode-style — ✓ in the native indicator column, text
+        aligned perfectly (uniform across checked / unchecked / plain items).
 
-        callback(new_state: bool) — fire khi user click. Có thể None.
+        callback(new_state: bool) — fired when the user clicks. May be None.
         """
         act = QAction(base_text, self)
         act.setCheckable(True)
@@ -429,7 +429,7 @@ class GP7AppQt(
         return act
 
     def _set_toggle(self, act: QAction, state: bool) -> None:
-        """External setter: cập nhật state mà KHÔNG fire toggled signal."""
+        """External setter: update state WITHOUT firing the toggled signal."""
         act.blockSignals(True)
         act.setChecked(bool(state))
         act.blockSignals(False)
@@ -437,15 +437,15 @@ class GP7AppQt(
     def _build_menu_bar(self) -> None:
         """Menu bar — File / Edit / View / Robot / Program / Help.
 
-        Mọi toggle action dùng custom prefix "✓  " (visible) hoặc "      "
-        (6 spaces, ~ width của "✓  "). Không native checkable → không box.
+        All toggle actions use a custom "✓  " prefix (visible) or "      "
+        (6 spaces, approx width of "✓  "). Not natively checkable → no box.
 
-        Tổ chức:
+        Structure:
           • File:    cell I/O + program file I/O + cell info + exit
-          • Edit:    add components (cùng action với cell tree context menu)
+          • Edit:    add components (same actions as cell tree context menu)
           • View:    Camera ▶ / Visibility ▶ / Window ▶ + Reset scene
           • Robot:   Home/Zero + Demo motion + Parameters + Teach surface
-                     + Connection settings (có Test button trong dialog)
+                     + Connection settings (Test button inside the dialog)
           • Program: Play / Pause / Stop / Run on Robot + Clear + PP/Script
           • Help:    About
         """
@@ -453,7 +453,7 @@ class GP7AppQt(
 
         # ── FILE ── Cell + Program file I/O + Cell info + Exit
         m_file = mb.addMenu("&File")
-        # Robot/Cell load — deferred (cold start: app trống, user pick từ menu)
+        # Robot/Cell load — deferred (cold start: app empty, user picks from menu)
         act_load_robot = QAction("Load Robot &GP7", self)
         act_load_robot.triggered.connect(self._on_action_load_robot_gp7)
         m_file.addAction(act_load_robot)
@@ -489,7 +489,7 @@ class GP7AppQt(
         m_file.addAction(act_exit)
 
         # ── EDIT ── Cell design: Add components (Robot/Object/Frame/...)
-        # Cùng các action với context menu trên Cell tree — discoverable hơn.
+        # Same actions as the Cell tree context menu — more discoverable.
         m_edit = mb.addMenu("&Edit")
         act_add_robot = QAction("Add &Robot…", self)
         act_add_robot.triggered.connect(self._show_add_robot_dlg)
@@ -520,10 +520,10 @@ class GP7AppQt(
         # ── VIEW ── Camera ▶ / Visibility ▶ / Window ▶ + Reset scene
         m_view = mb.addMenu("&View")
 
-        # Camera submenu: presets (Iso + 5 chính diện, RoboDK convention)
+        # Camera submenu: presets (Iso + 5 orthogonal views, RoboDK convention)
         # + camera ops (Fit all, Perspective).
-        # Camera presets — radio-style (exclusive) qua manual click handler.
-        # KHÔNG dùng QActionGroup vì cần plain QAction (no checkable).
+        # Camera presets — radio-style (exclusive) via manual click handler.
+        # NOT using QActionGroup since plain QActions are needed (not checkable).
         cam_menu = m_view.addMenu("&Camera")
         self._cam_actions: dict[str, QAction] = {}
         for name, key in (("Iso", "1"), ("Top", "2"), ("Front", "3"),
@@ -535,7 +535,7 @@ class GP7AppQt(
             cam_menu.addAction(act)
             self._cam_actions[name] = act
         cam_menu.addSeparator()
-        # Camera ops: Fit + Perspective toggle (gộp vào Camera submenu)
+        # Camera ops: Fit + Perspective toggle (merged into Camera submenu)
         act_fit = QAction("&Fit all (reset camera)", self)
         act_fit.setShortcut("Alt+7")                       # RoboDK: Alt+7
         act_fit.triggered.connect(self._on_fit_all)
@@ -546,7 +546,7 @@ class GP7AppQt(
         cam_menu.addAction(self._act_perspective)
 
         # Visibility submenu — Floor / Axes + triad size adjust.
-        # (Background gradient là DEFAULT cố định, KHÔNG có toggle.)
+        # (Background gradient is a FIXED default, NO toggle.)
         vis_menu = m_view.addMenu("&Visibility")
         self._act_floor = self._make_toggle(
             "Floor", initial=False,
@@ -556,15 +556,15 @@ class GP7AppQt(
             "World axes triad", initial=True,
             callback=lambda c: self._toggle_actor("__world_axes", c))
         vis_menu.addAction(self._act_axes)
-        # Camera frustum (nón nhìn của cell `camera`) — RoboDK-style camera viz.
+        # Camera frustum (viewing cone of cell `camera`) — RoboDK-style camera viz.
         self._act_cam_frustum = self._make_toggle(
             "Camera frustum", initial=True,
             callback=lambda c: self._toggle_camera_frustum(c))
         vis_menu.addAction(self._act_cam_frustum)
-        # (Removed: Reference frames +/- — niche, +/- shortcuts có thể conflict
-        # với jog. Default triad size set qua self._frame_triad_size init.)
+        # (Removed: Reference frames +/- — niche; +/- shortcuts could conflict
+        # with jog. Default triad size set via self._frame_triad_size init.)
 
-        # Window submenu — Fullscreen + 3 dock toggles (gom 1 chỗ).
+        # Window submenu — Fullscreen + dock toggles (grouped in one place).
         win_menu = m_view.addMenu("&Window")
         self._act_fullscreen = self._make_toggle(
             "Fullscreen", initial=False,
@@ -572,33 +572,33 @@ class GP7AppQt(
         self._act_fullscreen.setShortcut("F11")
         win_menu.addAction(self._act_fullscreen)
         win_menu.addSeparator()
-        # Controls panel (HIDDEN by default — user bật khi cần jog).
+        # Controls panel (HIDDEN by default — user enables it when jogging).
         self._act_jog_dock = self._make_toggle(
             "Controls panel", initial=False,
             callback=lambda c: self._open_dock_tab(self._jog_dock, c))
         win_menu.addAction(self._act_jog_dock)
-        # Cell tree dock (visible by default — editor chính).
+        # Cell tree dock (visible by default — main editor).
         self._act_cell_dock = self._make_toggle(
             "Cell components", initial=True,
             callback=lambda c: self._open_dock_tab(self._cell_tree_dock, c))
         self._act_cell_dock.setShortcut("Ctrl+Shift+C")
         win_menu.addAction(self._act_cell_dock)
-        # Program dock (HIDDEN by default) — gom cùng View → Window thay vì
-        # tản mác trong menu Program.
+        # Program dock (HIDDEN by default) — grouped under View → Window instead
+        # of scattered in the Program menu.
         self._act_prog_dock = self._make_toggle(
             "Program panel", initial=False,
             callback=lambda c: self._open_dock_tab(self._program_dock, c))
         win_menu.addAction(self._act_prog_dock)
         # Camera dock (HIDDEN by default) — live D455 + vision-guided control.
-        # (visibilityChanged sync nối trong _build_camera_dock — dock dựng sau menu.)
+        # (visibilityChanged sync wired in _build_camera_dock — dock built after menu.)
         self._act_camera_dock = self._make_toggle(
             "Camera (D455)", initial=False,
             callback=lambda c: self._open_dock_tab(self._camera_dock, c))
         win_menu.addAction(self._act_camera_dock)
 
         m_view.addSeparator()
-        # Reset scene — restore object positions sau khi đã move/grasp.
-        # Đặt ở View (scene op) thay vì Run menu riêng (đã bỏ).
+        # Reset scene — restore object positions after move/grasp.
+        # Placed under View (scene op) rather than a separate Run menu (removed).
         act_reset = QAction("&Reset scene (restore objects)", self)
         act_reset.triggered.connect(self._on_reset_scene)
         m_view.addAction(act_reset)
@@ -609,43 +609,43 @@ class GP7AppQt(
             act = QAction(label, self); act.triggered.connect(cb)
             m_robot.addAction(act)
         m_robot.addSeparator()
-        # (Removed: Demo motion — dev-test 4-pose hard-coded loop, thay thế
-        # bằng Program → Play với user-defined sequence đầy đủ hơn.)
+        # (Removed: Demo motion — dev-test 4-pose hard-coded loop, replaced
+        # by Program → Play with a fully user-defined sequence.)
         act_params = QAction("&Parameters (URDF/DH)...", self)
         act_params.triggered.connect(self._show_parameters_dlg)
         m_robot.addAction(act_params)
         m_robot.addSeparator()
-        # Teach on surface — toggle mode để pick scene 3D tạo target
+        # Teach on surface — toggle mode to pick the 3D scene to create a target
         self._act_surface_pick = self._make_toggle(
             "Teach on surface (Ctrl+Shift+T)", initial=False,
             callback=self._on_toggle_surface_pick)
         self._act_surface_pick.setShortcut("Ctrl+Shift+T")
         m_robot.addAction(self._act_surface_pick)
         m_robot.addSeparator()
-        # HSE connection — dialog có nút Test bên trong (đã merge từ menu
-        # entry "Test connection" cũ → bớt 1 mục, hợp UX).
+        # HSE connection — dialog has a Test button inside (merged from the old
+        # "Test connection" menu entry → one fewer item, better UX).
         act_conn = QAction("&Connection settings... (HSE IP)", self)
         act_conn.triggered.connect(self._on_show_connection_settings)
         m_robot.addAction(act_conn)
 
         # ── PROGRAM ── Play / Pause / Stop / Run on Robot + ops
-        # Program panel đã chuyển sang View → Window submenu.
+        # Program panel moved to View → Window submenu.
         m_prog = mb.addMenu("&Program")
         act_play = QAction("P&lay", self)
         act_play.triggered.connect(self._on_prog_play)
         m_prog.addAction(act_play)
-        # Pause — bù dock playback bar cho keyboard-only user.
+        # Pause — supplements the dock playback bar for keyboard-only users.
         act_pause = QAction("Pa&use / Resume", self)
         act_pause.triggered.connect(self._on_prog_toggle_pause)
         m_prog.addAction(act_pause)
         act_stop = QAction("&Stop", self)
         # Stop callback = _on_stop_all (dual-purpose: sim playback + servo OFF
-        # robot). Trùng behavior với nút ⏹ Stop trong dock — tránh bug user
-        # nghĩ menu Stop = full stop nhưng thực ra chỉ stop sim.
+        # robot). Same behaviour as the ⏹ Stop button in the dock — avoids the bug
+        # where the user thinks menu Stop = full stop but it only stops sim.
         act_stop.triggered.connect(self._on_stop_all)
         m_prog.addAction(act_stop)
         m_prog.addSeparator()
-        # Run on Robot — bù dock playback bar cho keyboard-only user.
+        # Run on Robot — supplements the dock playback bar for keyboard-only users.
         act_run_robot = QAction("&Run on Robot…", self)
         act_run_robot.triggered.connect(self._on_run_on_robot)
         m_prog.addAction(act_run_robot)
@@ -660,8 +660,8 @@ class GP7AppQt(
         act_script.triggered.connect(self._on_show_script_editor)
         m_prog.addAction(act_script)
 
-        # ── DIGITAL TWIN (robot thật) ──
-        # Start/Stop nằm dưới dạng nút trong panel Digital Twin → menu chỉ mở panel.
+        # ── DIGITAL TWIN (real robot) ──
+        # Start/Stop are buttons inside the Digital Twin panel → menu only opens the panel.
         m_dtwin = mb.addMenu("&Digital Twin")
         act_dt_panel = QAction("Show Digital &Twin panel", self)
         act_dt_panel.triggered.connect(
@@ -695,7 +695,7 @@ class GP7AppQt(
             "color: #969696; padding: 0 8px;")
         sb.addPermanentWidget(self._status_right_lbl)
 
-    # ── Jog dock (left) — RoboDK-style: Cartesian TRÊN, Joint DƯỚI ────
+    # ── Jog dock (left) — RoboDK-style: Cartesian TOP, Joint BOTTOM ────
     def _build_jog_dock(self) -> None:
         """Left dock — RoboDK panel layout:
           1. Cartesian Jog (Tool combo, Ref combo, 3 pose rows color-coded,
@@ -704,8 +704,8 @@ class GP7AppQt(
           3. Other configurations (alternative IK solutions dropdown)
         """
         dock = QDockWidget("Yaskawa GP7 panel", self)
-        # FIXED ở Left — không Floatable / Movable (Qt 6 bug khi re-dock from
-        # floating). User chỉ show/hide qua menu hoặc ✕ button.
+        # FIXED to Left — not Floatable / Movable (Qt 6 bug when re-docking from
+        # floating). User shows/hides only via menu or the ✕ button.
         dock.setAllowedAreas(Qt.DockWidgetArea.LeftDockWidgetArea)
         dock.setFeatures(QDockWidget.DockWidgetFeature.DockWidgetClosable)
         self._jog_dock = dock
@@ -727,9 +727,9 @@ class GP7AppQt(
         cv.setContentsMargins(2, 2, 2, 2)
         cv.setSpacing(3)
 
-        # ── Tool + Ref combos + Step (mm/°) trên CÙNG 1 ROW ──
-        # Tool/Ref combo co giãn (stretch); Step spinbox fixed width nhỏ gọn ở
-        # cuối row. Gom mọi "thiết lập jog" vào 1 dòng → tiết kiệm chiều cao.
+        # ── Tool + Ref combos + Step (mm/°) all on ONE ROW ──
+        # Tool/Ref combos stretch; Step spinbox is fixed-width and compact at
+        # the end of the row. All "jog settings" packed into one line → saves height.
         tr_row = QHBoxLayout(); tr_row.setSpacing(4)
         l_tool = QLabel("Tool"); l_tool.setStyleSheet("font-size: 9pt;")
         tr_row.addWidget(l_tool)
@@ -745,7 +745,7 @@ class GP7AppQt(
         self._ref_combo.setCurrentIndex(self._ref_idx)
         self._ref_combo.currentIndexChanged.connect(self._on_ref_changed)
         tr_row.addWidget(self._ref_combo, 1)
-        # Step (increment jog) — cùng row, fixed width
+        # Step (jog increment) — same row, fixed width
         ls = QLabel("Step"); ls.setStyleSheet("font-size: 9pt; color: #969696;")
         tr_row.addWidget(ls)
         self._step_mm_spin = QDoubleSpinBox()
@@ -766,9 +766,9 @@ class GP7AppQt(
         tr_row.addWidget(self._step_deg_spin)
         cv.addLayout(tr_row)
 
-        # ── TCP pose — pose row trực tiếp, không cần label header ──
-        # Pose row đã color-coded X/Y/Z/Rx/Ry/Rz và combo "Tool / Ref" ở trên
-        # đã chỉ rõ context → bỏ label "Tool / Reference (live TCP pose)" cho gọn.
+        # ── TCP pose — pose row directly, no label header needed ──
+        # Pose row is already color-coded X/Y/Z/Rx/Ry/Rz and the "Tool / Ref" combo
+        # above already clarifies context → drop the "Tool / Reference (live TCP pose)" label.
         self._tcp_pose_lbls = self._make_colored_pose_row(cv)
 
         # ── Frame poses (Tool/Flange + Ref/Base) — collapsed, advanced ──
@@ -780,12 +780,12 @@ class GP7AppQt(
         cv.addWidget(adv_sec)
 
         # ── 3-column layout (RoboDK-style): jog control | WorkSpace | Show Frames ──
-        # Column 1 = "Jog control" group: gom TẤT CẢ thiết lập jog vào 1 chỗ —
+        # Column 1 = "Jog control" group: ALL jog settings in one place —
         #   frame combo + axis grid (X/Y/Z × Trans/Rot radio) + Step (mm/°) + dial.
-        # Step là BƯỚC NHẢY của jog nên đặt cùng nhóm (trước đây đứng riêng,
-        # label "Step" cách spinbox quá xa do addStretch — khó quan sát).
-        # RADIO: 6 radio (Trans X/Y/Z + Rot X/Y/Z) chung 1 QButtonGroup exclusive
-        # → user chọn 1 → dial điều khiển đúng selection đó.
+        # Step is the JOG INCREMENT so it belongs in the same group (previously it
+        # stood alone; the "Step" label was too far from the spinbox due to addStretch).
+        # RADIO: 6 radios (Trans X/Y/Z + Rot X/Y/Z) share one exclusive QButtonGroup
+        # → user selects one → dial drives that selection.
         cols_row = QHBoxLayout()
         cols_row.setSpacing(6)
 
@@ -809,13 +809,13 @@ class GP7AppQt(
         l_rt = QLabel("Rotation"); l_rt.setStyleSheet("font-size: 9pt;")
         mode_grid.addWidget(l_rt, 2, 0)
 
-        # SINGLE shared group cho cả 6 radio — exclusive across BOTH rows.
+        # SINGLE shared group for all 6 radios — exclusive across BOTH rows.
         # Button id encoding: 0/1/2 = Trans X/Y/Z, 3/4/5 = Rot X/Y/Z.
         self._jog_axis_group = QButtonGroup(self)
 
         def _radio_cell(rb: QRadioButton) -> QWidget:
-            # Wrapper QWidget để căn giữa radio. Cần transparent — nếu không,
-            # rule global QWidget{bg:#1e1e1e} tạo ô đen sau radio trên nền group.
+            # Wrapper QWidget to center the radio. Must be transparent — otherwise
+            # global QWidget{bg:#1e1e1e} creates a black box behind the radio on the group background.
             cell = QWidget()
             cell.setStyleSheet("background-color: transparent;")
             ch = QHBoxLayout(cell)
@@ -835,16 +835,16 @@ class GP7AppQt(
         left_col.addLayout(mode_grid)
 
         # Jog Dial — ROTARY ENCODER style:
-        # • Mỗi notch xoay qua = 1 step jog (axis + sign theo radio đã chọn).
-        # • Thả chuột ra → dial GIỮ NGUYÊN vị trí (không snap về 0).
-        # • Tiếp tục xoay → tiếp tục jog. Wrap=True để xoay không giới hạn.
-        # Cách track: lưu `_last_dial_value`, mỗi valueChanged tính delta (có
-        # xử lý wrap-around 360°→0°), accumulate, mỗi STEP_THRESHOLD = 1 step.
+        # • Each notch turned = 1 jog step (axis + sign per selected radio).
+        # • Releasing the mouse → dial STAYS in position (no snap to 0).
+        # • Continue turning → continue jogging. Wrap=True for unlimited rotation.
+        # Tracking: store `_last_dial_value`, each valueChanged computes delta (with
+        # wrap-around 360°→0° handling), accumulate, every STEP_THRESHOLD = 1 step.
         self._jog_dial = QDial()
         self._jog_dial.setRange(0, 359)
         self._jog_dial.setValue(0)
         self._jog_dial.setNotchesVisible(True)
-        self._jog_dial.setWrapping(True)                  # xoay không giới hạn
+        self._jog_dial.setWrapping(True)                  # unlimited rotation
         self._jog_dial.setFixedSize(64, 64)
         self._jog_dial.setToolTip(
             "Turn the dial (like a rotary encoder) → jog one step per notch for the selected radio.\n"
@@ -882,9 +882,9 @@ class GP7AppQt(
         grid.setHorizontalSpacing(8); grid.setVerticalSpacing(4)
         self._joint_sliders: list[QSlider] = []
         self._joint_value_lbls: list[QLabel] = []
-        # Khi build jog dock, robot có thể CHƯA load (deferred). Dùng GP7
-        # datasheet limits làm placeholder; sau khi _load_robot_gp7 chạy thì
-        # sliders sẽ áp value đúng (range KHÔNG đổi vì cùng GP7 thực).
+        # When building the jog dock, the robot may NOT yet be loaded (deferred).
+        # Use GP7 datasheet limits as placeholders; after _load_robot_gp7 runs,
+        # sliders will apply the correct values (range UNCHANGED since it is the same GP7).
         _GP7_LIMITS_DEG = [(-170, 170), (-65, 145), (-116, 255),
                            (-190, 190), (-135, 135), (-360, 360)]
         if self._model is not None:
@@ -951,34 +951,34 @@ class GP7AppQt(
 
         vbox.addStretch()
 
-        # Wrap inner trong QScrollArea — panel rất dài (Cartesian + WorkSpace +
-        # Show Frames + Joints + Other configs), không scroll thì content bị
-        # cắt mất phần dưới.
+        # Wrap inner in QScrollArea — panel is very tall (Cartesian + WorkSpace +
+        # Show Frames + Joints + Other configs); without scroll, content is
+        # clipped at the bottom.
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setWidget(inner)
-        # Cho phép horizontal scroll khi width hẹp — content overflow vẫn xem được.
+        # Allow horizontal scroll when width is narrow — content overflow remains viewable.
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         dock.setWidget(scroll)
         self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, dock)
-        # minimumWidth = _CELL_DOCK_W (KHÔNG phải 580) để vùng tab chung co được
-        # về cell width khi cell tab active. Khi jog tab active, _sync_jog_dock_check
-        # resize vùng về _JOG_DOCK_W (580) → 3-col layout đủ rộng, không scroll.
-        # Content có QScrollArea (ScrollBarAsNeeded) nên lúc bị ép hẹp (ẩn sau
-        # tab) vẫn an toàn.
+        # minimumWidth = _CELL_DOCK_W (NOT 580) so the shared tab area can shrink
+        # to cell width when the cell tab is active. When the jog tab is active,
+        # _sync_jog_dock_check resizes the area to _JOG_DOCK_W (580) → 3-col layout
+        # wide enough, no scroll. Content has QScrollArea (ScrollBarAsNeeded) so
+        # it is safe when squished (hidden behind a tab).
         dock.setMinimumWidth(_CELL_DOCK_W)
-        # ẨN MẶC ĐỊNH — user vào menu View > Controls panel để bật.
+        # HIDDEN BY DEFAULT — user enables via menu View > Controls panel.
         dock.setVisible(False)
         dock.visibilityChanged.connect(self._sync_jog_dock_check)
-        # Set initial width — resizeDocks chỉ work sau khi window show().
+        # Set initial width — resizeDocks only works after window show().
         QTimer.singleShot(0, lambda: self.resizeDocks(
             [dock], [_JOG_DOCK_W], Qt.Orientation.Horizontal))
 
     # ── WorkSpace + Show Frames groupboxes (used INSIDE Cartesian Jog) ──
     def _build_workspace_group(self) -> QGroupBox:
         grp = QGroupBox("WorkSpace")
-        # title bg = #252526 (SURFACE của group cha Cartesian Jog) để KHÔNG
-        # tạo ô tối #1e1e1e sau chữ. Group lồng nhau cần match nền cha.
+        # title bg = #252526 (SURFACE of the parent Cartesian Jog group) to AVOID
+        # creating a dark #1e1e1e box behind the text. Nested groups must match the parent background.
         grp.setStyleSheet(
             "QGroupBox { margin-top: 9px; padding: 4px 4px 2px 4px; }"
             "QGroupBox::title { background-color: #252526; }")
@@ -1014,11 +1014,11 @@ class GP7AppQt(
             cb = QCheckBox(text)
             cb.setStyleSheet("font-size: 9pt;")
             return cb
-        # Layout giống ảnh tham chiếu RoboDK:
+        # Layout matches the RoboDK reference image:
         #   row0: All/None  | Base (0)
         #   row1: Tool Frame | Robot Flange
         #   row2: Ref. Frame
-        #   row3: 1 2 3   row4: 4 5 6   (J1..J6 dạng 3 cột)
+        #   row3: 1 2 3   row4: 4 5 6   (J1..J6 as 3 columns)
         cb_all = _mk("All/None")
         cb_all.stateChanged.connect(self._on_show_frames_all)
         g.addWidget(cb_all, 0, 0, 1, 2)
@@ -1053,20 +1053,20 @@ class GP7AppQt(
                     "#a8e8e8", "#f0a8f0", "#f0f0a8")
     AXIS_NAMES_FULL = ("X", "Y", "Z", "Rx", "Ry", "Rz")
 
-    # Header text mô tả format pose (RoboDK style). GP7 = Yaskawa Motoman →
-    # convention Motoman. Đặt sẵn để dùng chung cho 3 pose row.
+    # Header text describing pose format (RoboDK style). GP7 = Yaskawa Motoman →
+    # Motoman convention. Pre-defined and shared by all 3 pose rows.
     _POSE_FMT_HEADER = "[X,Y,Z] mm  |  Rot[X,Y,Z] deg  ·  Motoman"
 
     def _make_colored_pose_row(self, parent_layout) -> list[QLabel]:
-        """Bố trí như RoboDK:
-          • Header: label format "[X,Y,Z]mm | Rot[X,Y,Z]deg · Motoman"
-            + 3 nút (copy / paste / menu ≡) căn phải
-          • Value row: 6 cells color-coded, giá trị căn PHẢI (RoboDK convention)
+        """Layout like RoboDK:
+          • Header: format label "[X,Y,Z]mm | Rot[X,Y,Z]deg · Motoman"
+            + 3 buttons (copy / paste / menu ≡) right-aligned
+          • Value row: 6 color-coded cells, values RIGHT-aligned (RoboDK convention)
         """
         container = QVBoxLayout()
         container.setSpacing(2)
 
-        # ── Header row: format label (trái) + copy/paste/menu (phải) ──
+        # ── Header row: format label (left) + copy/paste/menu (right) ──
         hdr = QHBoxLayout(); hdr.setSpacing(3)
         fmt_lbl = QLabel(self._POSE_FMT_HEADER)
         fmt_lbl.setStyleSheet(
@@ -1089,7 +1089,7 @@ class GP7AppQt(
         hdr.addWidget(cpy); hdr.addWidget(pst); hdr.addWidget(mnu)
         container.addLayout(hdr)
 
-        # ── Value row: 6 colored cells, giá trị căn phải ──
+        # ── Value row: 6 colored cells, values right-aligned ──
         row = QHBoxLayout()
         row.setSpacing(1)
         labels = []
@@ -1116,7 +1116,7 @@ class GP7AppQt(
 
     def _show_pose_menu(self, anchor: QPushButton,
                          labels: list[QLabel]) -> None:
-        """Popup menu (≡) — copy/paste + export pose dạng list / JSON."""
+        """Popup menu (≡) — copy/paste + export pose as list / JSON."""
         m = QMenu(self)
         m.addAction("Copy values",
                     lambda: self._copy_pose_to_clipboard(labels))
@@ -1129,7 +1129,7 @@ class GP7AppQt(
         m.exec(anchor.mapToGlobal(anchor.rect().bottomLeft()))
 
     def _copy_pose_as(self, labels: list[QLabel], fmt: str) -> None:
-        """Export 6 pose values theo format `py` (list) hoặc `json`."""
+        """Export 6 pose values in `py` (list) or `json` format."""
         vals = []
         for lbl in labels:
             try:
@@ -1145,7 +1145,7 @@ class GP7AppQt(
         self._set_status(f"Pose copied ({fmt})", level="ok")
 
     def _copy_pose_to_clipboard(self, labels: list[QLabel]) -> None:
-        """Copy 6 raw values từ labels (no axis prefix) ra clipboard."""
+        """Copy 6 raw values from labels (no axis prefix) to clipboard."""
         vals = []
         for lbl in labels:
             try:
@@ -1157,8 +1157,8 @@ class GP7AppQt(
         self._set_status(f"Pose copied: [{s}]", level="ok")
 
     def _paste_pose_from_clipboard(self) -> None:
-        """Đọc 'X,Y,Z,Rx,Ry,Rz' từ clipboard → IK → set TCP target.
-        Interpretation: pose là Tool / Reference (giống pose row dưới cùng).
+        """Read 'X,Y,Z,Rx,Ry,Rz' from clipboard → IK → set TCP target.
+        Interpretation: pose is Tool / Reference (same as the bottom pose row).
         """
         text = QApplication.clipboard().text().strip()
         parts = [p.strip() for p in text.replace(";", ",").split(",")]
@@ -1178,16 +1178,16 @@ class GP7AppQt(
         T_world_tool = T_world_ref @ T_ref_tool
         self._apply_cartesian_target(T_world_tool, "Paste pose")
 
-    # ── Program dock (left, tabified với Jog + Cell) ──────────────────
+    # ── Program dock (left, tabified with Jog + Cell) ──────────────────
     def _build_program_dock(self) -> None:
         """Layout: program list (top, primary) → edit toolbar → Targets group →
         Add tabs (Motion / Logic / Modal) → Playback bar → File bar.
         Workflow top-down: Teach targets → Add instructions → Run → Save.
 
-        Dock nằm CÙNG vùng trái, tabified với Jog + Cell (1 tab group) thay vì
-        tách riêng bên phải."""
+        Dock is in the SAME left area, tabified with Jog + Cell (1 tab group)
+        instead of a separate right panel."""
         dock = QDockWidget("Program", self)
-        # FIXED ở Left — tabified với jog/cell, non-floatable, predictable layout.
+        # FIXED to Left — tabified with jog/cell, non-floatable, predictable layout.
         dock.setAllowedAreas(Qt.DockWidgetArea.LeftDockWidgetArea)
         dock.setFeatures(QDockWidget.DockWidgetFeature.DockWidgetClosable)
         self._program_dock = dock
@@ -1204,8 +1204,8 @@ class GP7AppQt(
         self._job_combo.setMinimumWidth(120)
         self._job_combo.currentTextChanged.connect(self._on_job_changed)
         job_row.addWidget(self._job_combo, 1)
-        # Icon vẽ tay (QPainter) — glyph ⟲/✕ không render trong Segoe UI nên
-        # trước đây nút trống trơn. Đồng bộ với copy/paste/menu icons.
+        # Hand-drawn icons (QPainter) — ⟲/✕ glyphs don't render in Segoe UI so
+        # buttons were previously blank. Consistent with copy/paste/menu icons.
         for icon, cb, tip in (
             (_draw_plus_icon(),   self._on_job_add,    "Add new job"),
             (_draw_rename_icon(), self._on_job_rename, "Rename current job"),
@@ -1222,8 +1222,8 @@ class GP7AppQt(
         self._prog_list.setMinimumHeight(180)
         vbox.addWidget(self._prog_list, 3)
 
-        # ── 1b. Edit toolbar — icon vẽ tay (↑↓✕ glyph không render Segoe UI),
-        # "Edit" giữ text cho rõ nghĩa. Tooltip đầy đủ cho mọi nút.
+        # ── 1b. Edit toolbar — hand-drawn icons (↑↓✕ glyphs don't render in Segoe UI),
+        # "Edit" keeps text for clarity. Full tooltips on all buttons.
         edit_row = QHBoxLayout(); edit_row.setSpacing(4)
         for icon, cb, tip in (
             (_draw_arrow_up_icon(),   self._on_prog_move_up,   "Move selected instruction up"),
@@ -1269,8 +1269,8 @@ class GP7AppQt(
         tname_row.addWidget(b_teach)
         tnw = QWidget(); tnw.setLayout(tname_row)
         tgt_lay.addWidget(tnw)
-        # Manage row: Modify / Delete / Go to / Config (4 nút đều nhau, full-width).
-        # (+ MoveJ→/MoveL→ chuyển sang tab Motion để gom mọi "tạo move" 1 chỗ.)
+        # Manage row: Modify / Delete / Go to / Config (4 equal buttons, full-width).
+        # (+ MoveJ→/MoveL→ moved to Motion tab to group all "create move" actions in one place.)
         tact_row = QHBoxLayout(); tact_row.setSpacing(4)
         b_mod = QPushButton("Modify"); b_mod.setShortcut("F3")
         b_mod.setToolTip("F3 — replace selected target with current pose")
@@ -1290,20 +1290,20 @@ class GP7AppQt(
         vbox.addWidget(tgt_grp)
 
         # ══ 3. ADD INSTRUCTION (Motion / I-O & Flow / Modal) ═════════
-        # Mọi row dùng grid 3-cột [label | inputs(stretch) | + button(fixed)]
-        # → các nút "+ Add" thẳng hàng dọc, gọn & pro. Helper bên dưới.
-        _BTN_W = 138        # đủ rộng cho nhãn dài nhất (+ WaitIO / + SetVar) — không cắt chữ
+        # Every row uses a 3-column grid [label | inputs(stretch) | + button(fixed)]
+        # → "+ Add" buttons align vertically, clean & professional. Helper below.
+        _BTN_W = 138        # wide enough for the longest label (+ WaitIO / + SetVar) — no clipping
         tabs = QTabWidget()
         tabs.setDocumentMode(True)
-        # Maximum vertical policy → tabs widget chỉ cao = content, KHÔNG nở ra
-        # lấp đầy. Space thừa dồn cho program list (stretch=3, primary) thay vì
-        # để trống dưới Motion tab. (Trước đây tabs nở → khoảng trống lớn.)
+        # Maximum vertical policy → tabs widget height = content only, does NOT expand
+        # to fill. Extra space goes to the program list (stretch=3, primary) instead
+        # of blank space below the Motion tab. (Previously tabs expanded → large gap.)
         tabs.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
 
         def _hwrap(*widgets, fill=False):
-            """Gom input nhỏ vào 1 widget. fill=True: widget CUỐI giãn lấp đầy
-            col (bỏ khoảng trống giữa input và nút). fill=False: stretch đẩy
-            input về trái."""
+            """Pack small inputs into one widget. fill=True: LAST widget stretches to fill
+            the column (no gap between input and button). fill=False: stretch pushes
+            inputs to the left."""
             w = QWidget(); h = QHBoxLayout(w)
             h.setContentsMargins(0, 0, 0, 0); h.setSpacing(3)
             last = len(widgets) - 1
@@ -1314,17 +1314,17 @@ class GP7AppQt(
             return w
 
         def _btn_fill_row(*btns):
-            """Hàng nút giãn đều lấp hết bề rộng (mỗi nút stretch=1) — không dồn
-            trái chừa khoảng trống bên phải."""
+            """Row of buttons that stretch evenly to fill the full width (each button stretch=1)
+            — no packing left with empty space on the right."""
             w = QWidget(); h = QHBoxLayout(w)
             h.setContentsMargins(0, 0, 0, 0); h.setSpacing(4)
             for b in btns:
                 h.addWidget(b, 1)
             return w
 
-        # Label col cố định (căn nhãn thẳng), input col STRETCH lấp hết bề
-        # rộng còn lại → KHÔNG trống rìa phải ở mọi dock width; inputs fill
-        # col1 (fill=True) nên cũng không gap. Button col fixed → +Add căn cột.
+        # Label col fixed (aligns labels), input col STRETCH fills remaining
+        # width → NO empty right margin at any dock width; inputs fill
+        # col1 (fill=True) so also no gap. Button col fixed → +Add aligned in column.
         _LABEL_W = 52
 
         def _grid_row(grid, r, label, mid, btn):
@@ -1369,15 +1369,15 @@ class GP7AppQt(
         # ─ Tab: I/O & Flow (DOUT / WaitIO / Wait / MSG / Call / SimEvent) ─
         log_w = QWidget()
         log_lay = QGridLayout(log_w); log_lay.setSpacing(4)
-        # col1 (input) stretch → lấp hết width, không trống rìa phải.
+        # col1 (input) stretch → fills full width, no empty right margin.
         log_lay.setColumnStretch(1, 1)
         r = 0
-        # DOUT — generic digital output (THAY cho gripper-specific). Phần mềm
-        # tổng quát: control bất kỳ output bit nào (gripper/valve/clamp…).
+        # DOUT — generic digital output (REPLACING gripper-specific). General-purpose
+        # software: control any output bit (gripper/valve/clamp…).
         self._prog_do_idx = QSpinBox(); self._prog_do_idx.setRange(1, 1024)
         self._prog_do_idx.setValue(1); self._prog_do_idx.setFixedWidth(64)
         self._prog_do_state = QComboBox(); self._prog_do_state.addItems(["ON", "OFF"])
-        self._prog_do_state.setMinimumWidth(64)   # đủ rộng cho "OFF" + arrow
+        self._prog_do_state.setMinimumWidth(64)   # wide enough for "OFF" + arrow
         b_do = QPushButton("+ DOUT")
         b_do.setToolTip("Set digital output bit (DOUT OT#n = ON/OFF)")
         b_do.clicked.connect(self._on_prog_add_setdo)
@@ -1388,21 +1388,21 @@ class GP7AppQt(
         self._prog_io_idx = QSpinBox(); self._prog_io_idx.setRange(1, 1024)
         self._prog_io_idx.setValue(1); self._prog_io_idx.setFixedWidth(64)
         self._prog_io_state = QComboBox(); self._prog_io_state.addItems(["ON", "OFF"])
-        self._prog_io_state.setMinimumWidth(64)   # đủ rộng cho "OFF" + arrow
+        self._prog_io_state.setMinimumWidth(64)   # wide enough for "OFF" + arrow
         self._prog_io_tout = QDoubleSpinBox()
         self._prog_io_tout.setRange(0.0, 600.0); self._prog_io_tout.setValue(0.0)
         self._prog_io_tout.setSuffix("s"); self._prog_io_tout.setMinimumWidth(64)
         self._prog_io_tout.setToolTip("0 = block forever")
         b_wio = QPushButton("+ WaitIO"); b_wio.clicked.connect(self._on_prog_add_waitio)
         b_wio.setToolTip("Wait until input IN#n = ON/OFF (timeout 0 = block forever)")
-        # idx/=/state pack trái; addStretch đẩy nhóm "T + timeout" sang phải →
-        # tạo khoảng trống rõ ràng bên trái label "T" (thay vì T dính sát combo).
+        # idx/=/state packed left; addStretch pushes the "T + timeout" group right →
+        # creates a clear gap to the left of the "T" label (instead of T touching the combo).
         _io_mid = QWidget(); _io_h = QHBoxLayout(_io_mid)
         _io_h.setContentsMargins(0, 0, 0, 0); _io_h.setSpacing(3)
         _io_h.addWidget(self._prog_io_idx)
         _io_h.addWidget(QLabel("="))
         _io_h.addWidget(self._prog_io_state)
-        _io_h.addStretch(1)                            # gap bên trái "T"
+        _io_h.addStretch(1)                            # gap to the left of "T"
         _io_h.addWidget(QLabel("T"))
         _io_h.addWidget(self._prog_io_tout)
         _grid_row(log_lay, r, "IN#", _io_mid, b_wio); r += 1
@@ -1441,13 +1441,13 @@ class GP7AppQt(
         # ─ Tab: Modal (Speed / Rounding / Tool / RefFrame) ─
         mod_w = QWidget()
         mod_lay = QGridLayout(mod_w); mod_lay.setSpacing(4)
-        # Cùng cấu hình cột như I/O & Flow tab: col1 (input) stretch lấp hết.
+        # Same column config as the I/O & Flow tab: col1 (input) stretch fills all.
         mod_lay.setColumnStretch(1, 1)
         r = 0
-        # Speed row có 2 input (VJ% joint + V mm/s linear). Cả 2 spinbox giữ
-        # width tự nhiên (no stretch); chỉ addStretch(1) giữa VJ và "V" hấp thụ
-        # space dư → toàn bộ khoảng trống dồn về bên trái label "V" (gap to,
-        # tách rõ 2 nhóm thị giác) thay vì để V spinbox giãn rộng.
+        # Speed row has 2 inputs (VJ% joint + V mm/s linear). Both spinboxes keep
+        # natural width (no stretch); only addStretch(1) between VJ and "V" absorbs
+        # extra space → all the gap goes to the left of the "V" label (large gap,
+        # clearly separating the two visual groups) instead of stretching the V spinbox.
         self._prog_spd_vj = QDoubleSpinBox()
         self._prog_spd_vj.setRange(1.0, 30.0); self._prog_spd_vj.setValue(10.0)
         self._prog_spd_vj.setDecimals(2); self._prog_spd_vj.setSuffix(" %")
@@ -1460,9 +1460,9 @@ class GP7AppQt(
         _spd_h.setContentsMargins(0, 0, 0, 0); _spd_h.setSpacing(4)
         _spd_h.addWidget(QLabel("VJ"))
         _spd_h.addWidget(self._prog_spd_vj)            # no stretch → ~100px
-        _spd_h.addStretch(1)                            # gap giữa VJ và "V"
+        _spd_h.addStretch(1)                            # gap between VJ and "V"
         _spd_h.addWidget(QLabel("V"))
-        _spd_h.addWidget(self._prog_spd_v)             # width tự nhiên; gap nằm bên trái "V"
+        _spd_h.addWidget(self._prog_spd_v)             # natural width; gap is to the left of "V"
         b_spd = QPushButton("+ Speed"); b_spd.clicked.connect(self._on_prog_add_setspeed)
         b_spd.setToolTip("Set speed VJ% (joint) + V mm/s (linear) for following moves")
         _grid_row(mod_lay, r, "Speed", _spd_mid, b_spd); r += 1
@@ -1489,7 +1489,7 @@ class GP7AppQt(
         lgc_lay = QGridLayout(lgc_w); lgc_lay.setSpacing(4)
         lgc_lay.setColumnStretch(1, 1)
         r = 0
-        # Label (*LABEL) — đích nhảy
+        # Label (*LABEL) — jump target
         self._prog_lbl_edit = QLineEdit(); self._prog_lbl_edit.setMaxLength(32)
         self._prog_lbl_edit.setPlaceholderText("label name (e.g. LOOP)")
         b_lbl = QPushButton("+ Label")
@@ -1503,7 +1503,7 @@ class GP7AppQt(
         b_jmp.setToolTip("JUMP *LABEL — optionally only IF the condition below holds")
         b_jmp.clicked.connect(self._on_prog_add_jump)
         _grid_row(lgc_lay, r, "Jump *", _hwrap(self._prog_jmp_edit, fill=True), b_jmp); r += 1
-        # Condition row (áp cho Jump phía trên). "(uncond)" = nhảy vô điều kiện.
+        # Condition row (applied to the Jump above). "(uncond)" = unconditional jump.
         self._prog_jc_lhs = QLineEdit(); self._prog_jc_lhs.setPlaceholderText("B000 / IN#(1)")
         self._prog_jc_lhs.setMinimumWidth(78)
         self._prog_jc_op = QComboBox()
@@ -1536,7 +1536,7 @@ class GP7AppQt(
         _sep.setFrameShadow(QFrame.Shadow.Sunken)
         lgc_lay.addWidget(_sep, r, 0, 1, 3); r += 1
         lgc_lay.addWidget(QLabel("Structured blocks:"), r, 0, 1, 3); r += 1
-        # Shared condition cho IfThen / ElseIf / While (luôn có điều kiện).
+        # Shared condition for IfThen / ElseIf / While (always requires a condition).
         self._prog_sc_lhs = QLineEdit(); self._prog_sc_lhs.setPlaceholderText("B000 / IN#(1)")
         self._prog_sc_lhs.setMinimumWidth(78)
         self._prog_sc_op = QComboBox()
@@ -1549,15 +1549,15 @@ class GP7AppQt(
             _hwrap(self._prog_sc_lhs, self._prog_sc_op, self._prog_sc_rhs, fill=True),
             r, 1, 1, 2)
         r += 1
-        # Row: các nút cần điều kiện (đọc Cond ở trên).
+        # Row: buttons that require a condition (reads Cond above).
         b_if = QPushButton("+ IfThen"); b_if.clicked.connect(self._on_prog_add_ifthen)
-        b_if.setToolTip("IFTHEN <cond> … (đóng bằng ENDIF)")
+        b_if.setToolTip("IFTHEN <cond> … (closed by ENDIF)")
         b_elif = QPushButton("+ ElseIf"); b_elif.clicked.connect(self._on_prog_add_elseif)
-        b_elif.setToolTip("ELSEIF <cond> — nhánh điều kiện kế (trong IFTHEN)")
+        b_elif.setToolTip("ELSEIF <cond> — next conditional branch (inside IFTHEN)")
         b_while = QPushButton("+ While"); b_while.clicked.connect(self._on_prog_add_while)
-        b_while.setToolTip("WHILE <cond> … (đóng bằng ENDWHILE)")
+        b_while.setToolTip("WHILE <cond> … (closed by ENDWHILE)")
         lgc_lay.addWidget(_btn_fill_row(b_if, b_elif, b_while), r, 0, 1, 3); r += 1
-        # Row: các nút đóng/không điều kiện.
+        # Row: closing/unconditioned buttons.
         b_else = QPushButton("+ Else"); b_else.clicked.connect(self._on_prog_add_else)
         b_endif = QPushButton("+ EndIf"); b_endif.clicked.connect(self._on_prog_add_endif)
         b_endw = QPushButton("+ EndWhile"); b_endw.clicked.connect(self._on_prog_add_endwhile)
@@ -1569,26 +1569,26 @@ class GP7AppQt(
         lgc_lay.setRowStretch(r, 1)
         tabs.addTab(lgc_w, "Logic")
 
-        # Căn giữa giá trị trong mọi spinbox — vì input fill hết col1 (rộng),
-        # số canh giữa trông cân đối thay vì lệch trái để trống bên phải.
+        # Center values in all spinboxes — because inputs fill col1 (wide),
+        # centering looks balanced instead of left-aligned with empty space on the right.
         for _sp in (self._prog_do_idx, self._prog_io_idx, self._prog_io_tout,
                     self._prog_wait_spin, self._prog_spd_vj, self._prog_spd_v,
                     self._prog_pl, self._prog_tool_no, self._prog_uf_no):
             _sp.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
-        # Tab area co theo content của tab ĐANG chọn (không cao bằng tab cao
-        # nhất) → bỏ khoảng trống khi đang ở tab ngắn (vd Motion). Page ẩn set
-        # Ignored policy để không đẩy sizeHint của QTabWidget lên = max.
+        # Tab area shrinks to the content of the CURRENT tab (not as tall as the
+        # tallest tab) → no blank space when on a short tab (e.g. Motion). Hidden
+        # pages use Ignored policy so they don't push the QTabWidget sizeHint up to max.
         self._prog_tabs = tabs
         tabs.currentChanged.connect(self._on_prog_tab_changed)
         self._on_prog_tab_changed(tabs.currentIndex())
 
         vbox.addWidget(tabs)
 
-        # ══ 4. PLAYBACK bar — 2 hàng tách Sim ↔ Real robot ══════════════
-        # Hàng 1 = điều khiển SIMULATION (an toàn): Run Sim / Pause / Stop +
-        # tốc độ. Hàng 2 = REAL ROBOT (nguy hiểm, tách riêng cho chủ đích):
-        # Run on Robot full-width. Mọi nút có tên đầy đủ + tooltip.
+        # ══ 4. PLAYBACK bar — 2 rows separating Sim ↔ Real robot ══════════════
+        # Row 1 = SIMULATION controls (safe): Run Sim / Pause / Stop +
+        # speed. Row 2 = REAL ROBOT (dangerous, intentionally separated):
+        # Run on Robot full-width. All buttons have full labels + tooltips.
         _GREEN = ("QPushButton { background-color: #2da44e; color: white; "
                   "font-weight: bold; border-radius: 4px; padding: 4px 8px; }"
                   "QPushButton:hover { background-color: #2c974b; }")
@@ -1599,7 +1599,7 @@ class GP7AppQt(
                    "font-weight: bold; border-radius: 4px; padding: 6px 8px; }"
                    "QPushButton:hover { background-color: #d96e00; }")
 
-        # ─ Hàng 1: Sim controls ─
+        # ─ Row 1: Sim controls ─
         sim_row = QHBoxLayout(); sim_row.setSpacing(6)
         b_play = QPushButton("▶  Run Sim")
         b_play.setMinimumHeight(34); b_play.setStyleSheet(_GREEN)
@@ -1630,7 +1630,7 @@ class GP7AppQt(
         simw = QWidget(); simw.setLayout(sim_row)
         vbox.addWidget(simw)
 
-        # ─ Hàng 2: Real robot (tách riêng — deliberate) ─
+        # ─ Row 2: Real robot (intentionally separated) ─
         robot_row = QHBoxLayout(); robot_row.setSpacing(6)
         b_run_robot = QPushButton("⚙  Run on Robot  (real — HSE)")
         b_run_robot.setMinimumHeight(34); b_run_robot.setStyleSheet(_ORANGE)
@@ -1658,18 +1658,18 @@ class GP7AppQt(
         # Populate job combo from initial _jobs dict.
         self._refresh_job_combo()
 
-        # Wrap trong QScrollArea để dock width nhỏ vẫn không cắt content.
+        # Wrap in QScrollArea so narrow dock width still shows all content.
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setWidget(root)
         dock.setWidget(scroll)
-        # minimumWidth = _CELL_DOCK_W để vùng tab chung co được về cell width
-        # khi cell active. Khi program tab active, _sync_prog_dock_check resize
-        # vùng về _PROG_DOCK_W. Content có QScrollArea nên lúc ẩn sau tab vẫn ổn.
+        # minimumWidth = _CELL_DOCK_W so the shared tab area can shrink to cell
+        # width when cell is active. When program tab is active, _sync_prog_dock_check
+        # resizes to _PROG_DOCK_W. Content has QScrollArea so it is fine when hidden.
         dock.setMinimumWidth(_CELL_DOCK_W)
         self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, dock)
-        # Tabify vào group trái (jog + cell). jog/cell đã build trước (order:
-        # jog → cell → program trong __init__).
+        # Tabify into the left group (jog + cell). jog/cell built first (order:
+        # jog → cell → program in __init__).
         if hasattr(self, "_jog_dock"):
             self.tabifyDockWidget(self._jog_dock, dock)
         dock.setVisible(False)
@@ -1680,16 +1680,16 @@ class GP7AppQt(
     # ══════════════════════════════════════════════════════════════════
 
     def _load_scene(self) -> None:
-        """Load tất cả mesh + lights vào pyvista plotter (legacy — bằng việc
-        gọi _load_robot_gp7 + _load_cell_assets sau khi đã init base scene).
-        Floor KHÔNG load mặc định (toggle qua menu)."""
+        """Load all meshes + lights into the pyvista plotter (legacy — by calling
+        _load_robot_gp7 + _load_cell_assets after the base scene is initialised).
+        Floor NOT loaded by default (toggle via menu)."""
         self._add_world_axes_triad()
         self._setup_lighting()
         self._load_robot_assets()
         self._load_cell_assets()
 
     # ══════════════════════════════════════════════════════════════════
-    # Deferred robot/cell loaders (menu-triggered hoặc auto từ ctor)
+    # Deferred robot/cell loaders (menu-triggered or auto from ctor)
     # ══════════════════════════════════════════════════════════════════
 
     def _load_robot_gp7(self,
@@ -1697,12 +1697,12 @@ class GP7AppQt(
                           home_joints_deg: list[float] | None = None,
                           ) -> None:
         """Build GP7 URDF model + STL meshes + enable robot-dependent UI.
-        Idempotent — nếu đã load thì chỉ báo status.
+        Idempotent — if already loaded, just reports status.
 
         Priority for base_xyz / home_joints:
-          1. Caller-provided params (vd từ Add Robot dialog).
-          2. cell_config.robot nếu đã có.
-          3. Defaults: (0, 0, 630) mm và [0]*6 deg.
+          1. Caller-provided params (e.g. from Add Robot dialog).
+          2. cell_config.robot if available.
+          3. Defaults: (0, 0, 630) mm and [0]*6 deg.
         """
         if self._model is not None:
             self._set_status("Robot GP7 already loaded", level="info")
@@ -1713,8 +1713,8 @@ class GP7AppQt(
         elif cc is not None and getattr(cc, "robot", None) is not None:
             self._base_xyz = tuple(cc.robot.pose.xyz_mm)
         else:
-            # Default Z=330: stand built-in của GP7 (330mm) chạm sàn (Z=0).
-            # Nếu user thêm pedestal 300mm sau, đổi Z lên 630 trong Edit dialog.
+            # Default Z=330: GP7 built-in stand (330mm) sits on the floor (Z=0).
+            # If the user adds a 300mm pedestal later, change Z to 630 in the Edit dialog.
             self._base_xyz = (0.0, 0.0, 330.0)
         if home_joints_deg is not None:
             self._home_joints = list(home_joints_deg)
@@ -1729,28 +1729,28 @@ class GP7AppQt(
         self._load_robot_assets()
         self._apply_joints_main(self._joints)
         self._refresh_pose_readout()
-        # Re-build jog dock sliders với joint limits từ model (cần model live)
+        # Re-build jog dock sliders with joint limits from the model (needs live model)
         self._rebuild_jog_sliders_if_needed()
         self._set_robot_dependent_enabled(True)
-        # Auto-fit camera để toàn robot lọt khung — tránh user phải cuộn
-        # chuột để zoom out sau khi load. Sau đó set Iso preset cho góc
-        # nhìn nhất quán.
+        # Auto-fit camera so the whole robot fits in frame — avoids the user
+        # having to scroll/zoom out after loading. Then set Iso preset for
+        # a consistent viewing angle.
         try:
             self._plotter.reset_camera()
             self._set_camera_preset("Iso")
         except Exception:                                  # noqa: BLE001
             pass
-        # Đảm bảo có _cell_config tối thiểu để user add components ngay
-        # vào tree mà không cần Load Cell trước.
+        # Ensure there is a minimal _cell_config so the user can add components
+        # directly to the tree without needing to Load Cell first.
         self._ensure_cell_config()
-        # Sync robot pose/home vào _cell_config để Save Cell nhận đúng giá trị
-        # vừa load (đặc biệt khi user gọi Add Robot với custom params).
+        # Sync robot pose/home into _cell_config so Save Cell picks up the correct
+        # values just loaded (especially when the user calls Add Robot with custom params).
         self._cell_config.robot.pose = PoseConfig(
             xyz_mm=self._base_xyz, rpy_deg=(0.0, 0.0, 0.0))
         self._cell_config.robot.home_joints_deg = list(self._home_joints)
         self._refresh_cell_tree()
-        # Auto-show triads Base + Tool (RoboDK convention): user thấy ngay
-        # XYZ axes ở base + end-effector mà không cần manual toggle.
+        # Auto-show Base + Tool triads (RoboDK convention): user immediately sees
+        # XYZ axes at the base + end-effector without a manual toggle.
         if hasattr(self, "_frame_checks"):
             for key in ("base", "tool"):
                 cb = self._frame_checks.get(key)
@@ -1759,9 +1759,9 @@ class GP7AppQt(
         self._set_status("Robot GP7 loaded", level="ok")
 
     def _load_cell_from_yaml(self, path: str | Path) -> None:
-        """Load cell config từ YAML file, áp vào scene. Cell config bao gồm
-        cả robot pose + home joints, nên đồng thời **auto-load robot GP7**
-        (nếu chưa load) — user thường không muốn cell mà thiếu robot."""
+        """Load cell config from a YAML file and apply it to the scene. Cell config
+        includes robot pose + home joints, so it also **auto-loads robot GP7**
+        (if not yet loaded) — the user usually does not want a cell without a robot."""
         path = Path(path)
         try:
             cfg = CellConfig.from_yaml(path)
@@ -1769,10 +1769,10 @@ class GP7AppQt(
             self._set_status(f"Error loading cell '{path.name}': {e}", level="err")
             return
         self._cell_config = cfg
-        # Auto-load robot GP7 trước (nếu chưa) để base_xyz + home joints lấy
-        # từ cfg.robot, và STL meshes hiện cùng cell. Nếu robot đã load mà
-        # base_xyz lệch với cfg.robot.pose, rebuild model + apply home joints
-        # để robot đúng vị trí cell yêu cầu.
+        # Auto-load robot GP7 first (if not yet) so base_xyz + home joints are
+        # taken from cfg.robot, and STL meshes appear with the cell. If robot is
+        # already loaded but base_xyz differs from cfg.robot.pose, rebuild model
+        # + apply home joints so the robot is at the correct cell position.
         if self._model is None:
             self._load_robot_gp7()
         else:
@@ -1786,46 +1786,46 @@ class GP7AppQt(
                 else self._home_joints
             self._joints = list(self._home_joints)
             self._apply_joints_main(self._joints)
-        # Re-build tool/ref frames để jog/IK dùng đúng config
+        # Re-build tool/ref frames so jog/IK use the correct config
         self._tool_frames = _build_tool_frames(cfg)
         self._ref_frames = _build_ref_frames(cfg)
         self._tool_idx = (len(self._tool_frames) - 1
                           if len(self._tool_frames) > 1 else 0)
         self._ref_idx = 0
-        # Refresh combo UI nếu có (tool/ref combos)
+        # Refresh combo UI if present (tool/ref combos)
         self._refresh_tool_ref_combos_if_present()
         # Load cell meshes (worktable, pedestal, objects)
         self._load_cell_assets()
-        # Refresh Cell tree để hiện structure mới
+        # Refresh Cell tree to show the new structure
         self._refresh_cell_tree()
-        # HSE connection update nếu config có
+        # HSE connection update if config has it
         rc = getattr(cfg, "robot_connection", None)
         if rc is not None:
             self._hse_ip = getattr(rc, "ip", "") or ""
             self._hse_tool_no = int(getattr(rc, "tool_no", 1) or 1)
-        # Auto-fit camera bao gồm cell meshes mới
+        # Auto-fit camera including the new cell meshes
         try:
             self._plotter.reset_camera()
             self._set_camera_preset("Iso")
         except Exception:                                  # noqa: BLE001
             pass
-        # Restore visibility state nếu có trong metadata (B8 persistence)
+        # Restore visibility state from metadata if present (B8 persistence)
         vis = getattr(cfg.metadata, "visibility_state", None) if cfg else None
         if vis:
             self._component_visibility = dict(vis)
-            # Apply saved Hide states sau khi mesh đã load
+            # Apply saved Hide states after meshes are loaded
             self._reapply_visibility_state()
         if self._model is not None:
             self._plotter.render()
         self._set_status(f"Cell loaded: {path.name}", level="ok")
 
     def _save_cell_to_yaml(self, path: str | Path) -> None:
-        """Dump CellConfig hiện tại sang YAML file. Cũng save visibility
-        state (Show/Hide từ cell tree) vào metadata cho persistence."""
+        """Dump the current CellConfig to a YAML file. Also saves the visibility
+        state (Show/Hide from the cell tree) into metadata for persistence."""
         if self._cell_config is None:
             self._set_status("No cell config to save", level="warn")
             return
-        # Snapshot visibility state vào metadata trước khi dump
+        # Snapshot visibility state into metadata before dumping
         vis = getattr(self, "_component_visibility", {})
         if vis:
             self._cell_config.metadata.visibility_state = dict(vis)
@@ -1836,15 +1836,15 @@ class GP7AppQt(
             self._set_status(f"Error saving cell: {e}", level="err")
 
     def _set_robot_dependent_enabled(self, enabled: bool) -> None:
-        """Bật/tắt mọi widget phụ thuộc model. Khi enabled=False, jog dock
-        + actions kinematics đều disabled (tooltip hint user phải load robot
-        trước)."""
-        # Jog dock: chỉ disable NỘI DUNG (scroll area + controls bên trong),
-        # KHÔNG disable cả dock — vì disable dock sẽ xám luôn thanh tiêu đề +
-        # nút ✕ ⇒ không đóng panel được. Title bar phải luôn enabled.
+        """Enable/disable all widgets that depend on the robot model. When enabled=False,
+        the jog dock + kinematics actions are all disabled (tooltip hints the user
+        to load the robot first)."""
+        # Jog dock: only disable the CONTENT (scroll area + controls inside),
+        # NOT the whole dock — disabling the dock greys out the title bar +
+        # ✕ button ⇒ the panel cannot be closed. Title bar must always be enabled.
         if hasattr(self, "_jog_dock") and self._jog_dock.widget() is not None:
             self._jog_dock.widget().setEnabled(enabled)
-        # Status console vẫn enabled để hiện hint
+        # Status console stays enabled to show hints
         # Robot-dependent menu actions (config dialog, params, IK)
         for attr in ("_act_configurations", "_act_robot_params",
                      "_act_find_alts", "_act_move_home", "_act_surface_pick"):
@@ -1853,19 +1853,19 @@ class GP7AppQt(
                 act.setEnabled(enabled)
 
     def _rebuild_jog_sliders_if_needed(self) -> None:
-        """Sau khi load robot, joint sliders cần range từ joint limits của
-        model. Nếu jog_dock được build với model=None thì sliders đã có range
-        mặc định ±180° — không sao, slider value vẫn đúng physical. Method
-        này placeholder cho future refinement (nếu cần)."""
-        # Placeholder: hiện tại _build_jog_dock đã đọc self._model trong loop
-        # tạo slider. Khi load robot late, sliders sẽ giữ range cũ. Để giữ
-        # commit nhỏ gọn ta KHÔNG rebuild jog dock — chỉ cần update value khi
-        # _apply_joints_main chạy.
+        """After loading the robot, joint sliders need range from the model's
+        joint limits. If the jog_dock was built with model=None, sliders already
+        have default ±180° range — that is fine, slider values are still physically
+        correct. This method is a placeholder for future refinement (if needed)."""
+        # Placeholder: currently _build_jog_dock reads self._model in the slider
+        # creation loop. When robot loads late, sliders keep the old range. To keep
+        # commits small we do NOT rebuild the jog dock — just update values when
+        # _apply_joints_main runs.
         return
 
     def _refresh_tool_ref_combos_if_present(self) -> None:
-        """Update tool/ref combo nếu các attribute combo tồn tại sau load
-        cell. _build_jog_dock thường tạo các combo này — nếu có thì refresh."""
+        """Update tool/ref combos if the combo attributes exist after loading
+        the cell. _build_jog_dock usually creates these combos — refresh if present."""
         for attr, items_attr in (("_tool_combo", "_tool_frames"),
                                    ("_ref_combo", "_ref_frames")):
             combo = getattr(self, attr, None)
@@ -1895,9 +1895,9 @@ class GP7AppQt(
             self._load_cell_from_yaml(path)
 
     def _on_action_save_cell(self) -> None:
-        # Tự động lấy CellConfig hiện tại từ tree (bao gồm cả thành phần
-        # user add interactively); _cell_config được _refresh_cell_tree giữ
-        # đồng bộ.
+        # Automatically takes the current CellConfig from the tree (including
+        # components added interactively by the user); _cell_config is kept
+        # in sync by _refresh_cell_tree.
         if self._cell_config is None:
             self._ensure_cell_config()
         path, _ = QFileDialog.getSaveFileName(
@@ -1910,13 +1910,13 @@ class GP7AppQt(
     # ══════════════════════════════════════════════════════════════════
     # Cell Editor — interactive cell design (RoboDK Station Tree style)
     # ══════════════════════════════════════════════════════════════════
-    # Tree dock hiển thị structure cell hiện tại. User add/edit/delete qua
-    # context menu (right-click). Mọi mutation update self._cell_config
-    # ⇒ Save Cell tự dump đầy đủ thiết kế gồm các thành phần mới thêm.
+    # Tree dock shows the current cell structure. User adds/edits/deletes via
+    # context menu (right-click). All mutations update self._cell_config
+    # ⇒ Save Cell automatically dumps the full design including newly added components.
 
     def _build_cell_tree_dock(self) -> None:
-        """Cell Tree dock (left, tab cùng Jog). Hẹp ~180px (≈½ chiều rộng cũ)
-        — dock chính chiếm ít không gian, viewport rộng hơn."""
+        """Cell Tree dock (left, tabbed with Jog). Narrow ~180px (≈½ the old width)
+        — the main dock uses less space, giving the viewport more room."""
         dock = QDockWidget("Cell", self)
         dock.setAllowedAreas(Qt.DockWidgetArea.LeftDockWidgetArea
                              | Qt.DockWidgetArea.RightDockWidgetArea)
@@ -1931,28 +1931,28 @@ class GP7AppQt(
         self._cell_tree.itemDoubleClicked.connect(
             self._on_cell_tree_double_click)
         dock.setWidget(self._cell_tree)
-        # Width policy: prefer 180px, min 140px, không cho stretch
+        # Width policy: prefer 180px, min 140px, no stretching
         dock.setMinimumWidth(140)
         self._cell_tree.setMinimumWidth(140)
         dock.resize(_CELL_DOCK_W, dock.height())
         self._cell_tree_dock = dock
-        # Tab cùng Jog (cùng panel trái); Cell tree visible by default
-        # (Jog dock initial=False trong _build_jog_dock).
+        # Tabbed with Jog (same left panel); Cell tree visible by default
+        # (Jog dock starts hidden in _build_jog_dock).
         self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, dock)
         if hasattr(self, "_jog_dock"):
             self.tabifyDockWidget(self._jog_dock, dock)
             dock.raise_()
-        # Force width sau khi dock đã add vào main window (Qt cần
-        # resizeDocks để actual width có hiệu lực, KHÔNG đủ dock.resize).
+        # Force width after the dock is added to the main window (Qt requires
+        # resizeDocks for actual width to take effect, dock.resize alone is NOT enough).
         QTimer.singleShot(0, lambda: self.resizeDocks(
             [dock], [_CELL_DOCK_W], Qt.Orientation.Horizontal))
-        # Sync menu tick khi user đóng dock bằng nút X title bar
+        # Sync menu tick when user closes the dock with the title bar X button
         dock.visibilityChanged.connect(self._sync_cell_dock_check)
         self._refresh_cell_tree()
 
     def _ensure_cell_config(self) -> None:
-        """Tạo CellConfig tối thiểu (chỉ robot) nếu None. Worktable/camera/
-        gripper/floor/pedestal/camera_mount đều None — user add qua UI."""
+        """Create a minimal CellConfig (robot only) if None. Worktable/camera/
+        gripper/floor/pedestal/camera_mount are all None — user adds via UI."""
         if self._cell_config is not None:
             return
         from ...cell.cell_models import MetadataConfig, RobotConfig
@@ -1968,9 +1968,9 @@ class GP7AppQt(
         )
 
     def _refresh_cell_tree(self) -> None:
-        """Re-build tree từ self._cell_config. RoboDK-style: chỉ hiển thị item
-        ĐÃ TỒN TẠI (không có placeholder "(none) — Add"). Add components qua
-        context menu trên root node hoặc menu Edit (top-level)."""
+        """Re-build the tree from self._cell_config. RoboDK-style: only shows
+        items that EXIST (no "(none) — Add" placeholder). Add components via
+        context menu on the root node or the top-level Edit menu."""
         if not hasattr(self, "_cell_tree"):
             return
         self._cell_tree.clear()
@@ -1981,7 +1981,7 @@ class GP7AppQt(
             it.setData(0, Qt.ItemDataRole.UserRole, (kind, ref))
             return it
 
-        # Đếm items để hiện ở root như RoboDK ("Cell (12)")
+        # Count items to show at root like RoboDK ("Cell (12)")
         def _count(c):
             if c is None: return 0
             n = sum(1 for v in (getattr(c, k, None) for k in
@@ -1989,7 +1989,7 @@ class GP7AppQt(
                      "camera_mount")) if v is not None)
             n += len(c.frames or []) + len(c.objects or [])
             n += 1 if (c.robot is not None and self._model is not None) else 0
-            # Count gripper chỉ khi có mesh (default empty không count)
+            # Count gripper only if it has a mesh (default empty does not count)
             g = getattr(c, "gripper", None) if c else None
             if g is not None and getattr(g, "mesh", None):
                 n += 1
@@ -2003,7 +2003,7 @@ class GP7AppQt(
             root.setExpanded(True)
             return
 
-        # ── Robot (root level) — Gripper nested dưới robot ──
+        # ── Robot (root level) — Gripper nested under robot ──
         if cfg.robot is not None and self._model is not None:
             rob_node = _add(root, cfg.robot.name, "robot", cfg.robot)
             g = getattr(cfg, "gripper", None)
@@ -2011,7 +2011,7 @@ class GP7AppQt(
                 _add(rob_node, f"{g.name} (TCP)", "gripper", g)
             rob_node.setExpanded(True)
 
-        # (World/Base/Tool triads toggle qua right-click Robot → Triads submenu)
+        # (World/Base/Tool triads toggled via right-click Robot → Triads submenu)
 
         # ── Cell items group (Worktable/Pedestal/Floor/Camera/Camera Mount) ──
         cell_items = []
@@ -2063,14 +2063,14 @@ class GP7AppQt(
         kind, ref = (item.data(0, Qt.ItemDataRole.UserRole)
                      if item is not None else (None, None))
         menu = QMenu(self)
-        # Nếu move widget đang active ⇒ hiện Commit/Cancel ở đầu menu
+        # If move widget is active ⇒ show Commit/Cancel at the top of the menu
         if getattr(self, "_move_widget", None) is not None:
             menu.addAction("Commit move",
                            lambda: self._stop_move_widget(commit=True))
             menu.addAction("Cancel move",
                            lambda: self._stop_move_widget(commit=False))
             menu.addSeparator()
-        # Show/Hide ở đầu cho mọi leaf (component thực) — checkable toggle.
+        # Show/Hide at the top for every leaf (real component) — checkable toggle.
         if kind in ("robot", "gripper", "worktable", "robot_pedestal",
                      "floor", "camera", "camera_mount", "frame", "object"):
             vis = self._is_component_visible(kind, ref)
@@ -2078,7 +2078,7 @@ class GP7AppQt(
             act_vis.triggered.connect(
                 lambda _checked=False, k=kind, r=ref: self._toggle_component_visibility(k, r))
             menu.addSeparator()
-        # (world_axes branch đã bỏ — toggle qua robot → Triads submenu)
+        # (world_axes branch removed — toggle via robot → Triads submenu)
         # Leaf nodes — Edit/Delete/Move
         if kind == "frame":
             menu.addAction("Edit…", lambda: self._show_edit_frame_dlg(ref))
@@ -2092,7 +2092,7 @@ class GP7AppQt(
                       "camera_mount", "camera"):
             menu.addAction("Edit…",
                            lambda k=kind, r=ref: self._show_edit_single_dlg(k, r))
-            if kind != "camera":  # camera không có actor riêng để drag
+            if kind != "camera":  # camera has no dedicated actor to drag
                 menu.addAction("Move (drag in viewport)",
                                lambda k=kind, r=ref: self._start_move_widget(k, r))
             if kind in ("robot_pedestal", "floor", "camera_mount", "worktable"):
@@ -2101,12 +2101,12 @@ class GP7AppQt(
         elif kind == "robot":
             menu.addAction("Edit base pose…",
                            lambda: self._show_edit_robot_dlg(ref))
-            # Sub-actions: add/edit gripper trực tiếp từ robot item
+            # Sub-actions: add/edit gripper directly from the robot item
             g = (self._cell_config.gripper
                  if self._cell_config is not None else None)
             if g is None or not getattr(g, "mesh", None):
                 menu.addAction("Add Gripper…", self._show_add_gripper_dlg)
-            # Triads submenu — World/Base/Tool toggle ngay trên robot item
+            # Triads submenu — World/Base/Tool toggle directly on the robot item
             self._add_triads_submenu(menu)
         elif kind == "gripper":
             menu.addAction("Edit…", lambda: self._show_edit_gripper_dlg(ref))
@@ -2132,17 +2132,17 @@ class GP7AppQt(
             if cfg is None or cfg.camera is None:
                 menu.addAction("Add Camera…", self._show_add_camera_dlg)
         elif kind == "world_axes":
-            pass            # Show/Hide actions đã add ở block trên
+            pass            # Show/Hide actions already added in the block above
         else:
-            # Root, background, hoặc unknown → menu "Add ..." như RoboDK.
+            # Root, background, or unknown → "Add ..." menu like RoboDK.
             cfg = self._cell_config
             self._add_cell_menu_actions(menu, cfg)
         if menu.actions():
             menu.exec(self._cell_tree.viewport().mapToGlobal(pos))
 
     def _add_cell_menu_actions(self, menu: QMenu, cfg) -> None:
-        """Populate menu với các Add action phù hợp. Items đã tồn tại không
-        liệt kê lại — giữ menu sạch như RoboDK."""
+        """Populate the menu with appropriate Add actions. Existing items are
+        not listed again — keeps the menu clean like RoboDK."""
         if self._model is None:
             menu.addAction("Add Robot…", self._show_add_robot_dlg)
             menu.addSeparator()
@@ -2163,8 +2163,8 @@ class GP7AppQt(
                            lambda: self._show_add_single_dlg("camera_mount"))
         if cfg is None or cfg.camera is None:
             menu.addAction("Add Camera…", self._show_add_camera_dlg)
-        # Gripper: chỉ show khi robot đã load (vì gripper attach vào flange)
-        # và chưa có gripper.
+        # Gripper: only shown when robot is loaded (gripper attaches to flange)
+        # and no gripper exists yet.
         if (self._model is not None and (cfg is None
                 or cfg.gripper is None
                 or not getattr(cfg.gripper, "mesh", None))):
@@ -2189,8 +2189,8 @@ class GP7AppQt(
 
     def _make_pose_form(self, xyz=(0.0, 0.0, 0.0),
                          rpy=(0.0, 0.0, 0.0)) -> tuple[QFormLayout, dict]:
-        """Build form gồm 3 spinbox xyz_mm + 3 spinbox rpy_deg. Trả
-        (layout, widgets_dict) để caller wrap vào QDialog."""
+        """Build a form with 3 xyz_mm spinboxes + 3 rpy_deg spinboxes. Returns
+        (layout, widgets_dict) for the caller to wrap in a QDialog."""
         form = QFormLayout()
         widgets = {}
         def _spin(val, lo, hi, suffix, dec=1):
@@ -2217,8 +2217,8 @@ class GP7AppQt(
     # ── Add Object / Frame dialogs ────────────────────────────────────
 
     def _show_add_robot_dlg(self) -> None:
-        """Add Robot — pop-up dialog với variant combo, base pose, home joints.
-        Hiện tại chỉ support GP7 (single variant); design vẫn extensible."""
+        """Add Robot — pop-up dialog with variant combo, base pose, home joints.
+        Currently only supports GP7 (single variant); design remains extensible."""
         if self._model is not None:
             QMessageBox.information(self, "Add Robot",
                 "Robot already loaded. To change pose/home, use Edit "
@@ -2227,15 +2227,15 @@ class GP7AppQt(
         dlg = QDialog(self); dlg.setWindowTitle("Add Robot")
         dlg.setMinimumWidth(560)
         v = QVBoxLayout(dlg)
-        # Variant combo (full-width, trên cùng)
+        # Variant combo (full-width, at the top)
         form = QFormLayout()
         variant_combo = QComboBox()
         variant_combo.addItem("Yaskawa GP7 (6-DOF)", "gp7")
         form.addRow("Robot variant:", variant_combo)
         v.addLayout(form)
-        # Middle row: [base pose fields | robot preview]. Preview lấp đúng vùng
-        # trống bên phải ô pose (trước đây bỏ trống). Z=330mm: stand GP7 chạm
-        # sàn (no pedestal); thêm pedestal 300mm thì sửa Z lên 630.
+        # Middle row: [base pose fields | robot preview]. Preview fills the
+        # empty area to the right of the pose fields (previously blank). Z=330mm:
+        # GP7 stand sits on the floor (no pedestal); add a 300mm pedestal and change Z to 630.
         mid = QHBoxLayout()
         pose_col = QVBoxLayout()
         pose_col.addWidget(QLabel("<b>Base pose (world frame):</b>"))
@@ -2246,7 +2246,7 @@ class GP7AppQt(
         preview = self._make_preview_label((300, 300))
         mid.addWidget(preview, 1)
         v.addLayout(mid)
-        # Home joints (6 spinboxes, full-width dưới)
+        # Home joints (6 spinboxes, full-width at the bottom)
         v.addWidget(QLabel("<b>Home joints (S, L, U, R, B, T) °:</b>"))
         home_grid = QHBoxLayout()
         home_spins: list[QDoubleSpinBox] = []
@@ -2268,7 +2268,7 @@ class GP7AppQt(
                 QMessageBox.warning(dlg, "Add Robot",
                     "Robot base currently supports xyz only (rpy=0). RPY field ignored.")
             home = [sp.value() for sp in home_spins]
-            # variant lookup — tương lai có thể switch _load_robot_*()
+            # variant lookup — future: could switch _load_robot_*()
             variant = variant_combo.currentData()
             if variant != "gp7":
                 QMessageBox.warning(dlg, "Add Robot",
@@ -2288,9 +2288,9 @@ class GP7AppQt(
         dlg.exec()
 
     def _show_add_gripper_dlg(self) -> None:
-        """Add Gripper — gắn vào flange (link_tool0) của robot. Khác với
-        Add Object: gripper có TCP offset (không phải base offset), và mesh
-        actor tự follow flange qua _render_scene_frame."""
+        """Add Gripper — attaches to the robot flange (link_tool0). Unlike
+        Add Object: gripper has a TCP offset (not a base offset), and the mesh
+        actor automatically follows the flange via _render_scene_frame."""
         self._ensure_cell_config()
         dlg = QDialog(self); dlg.setWindowTitle("Add Gripper")
         dlg.setMinimumWidth(440)
@@ -2341,7 +2341,7 @@ class GP7AppQt(
             except Exception as e:                          # noqa: BLE001
                 QMessageBox.warning(dlg, "Add Gripper", f"Invalid: {e}")
                 return
-            # Reload gripper actor + tool frames để jog/IK dùng đúng TCP
+            # Reload gripper actor + tool frames so jog/IK use the correct TCP
             self._reload_gripper_actor()
             self._tool_frames = _build_tool_frames(self._cell_config)
             self._tool_idx = len(self._tool_frames) - 1
@@ -2417,9 +2417,9 @@ class GP7AppQt(
             f"Delete gripper '{g.name}'?",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
         if ret != QMessageBox.StandardButton.Yes: return
-        # Schema giờ Optional → set None gọn gàng
+        # Schema is now Optional → set None cleanly
         self._cell_config.gripper = None
-        # Xoá actor mesh + revert tool frames về Flange
+        # Remove mesh actor + revert tool frames to Flange
         try:
             self._plotter.remove_actor("gripper")
         except Exception: pass                              # noqa: BLE001
@@ -2438,8 +2438,8 @@ class GP7AppQt(
     # ── Triads submenu (right-click robot → toggle World/Base/Tool) ──
 
     def _add_triads_submenu(self, parent_menu: QMenu) -> None:
-        """Submenu Triads để toggle World/Base/Tool triads + labels từ
-        robot's context menu. Checkable items sync với jog dock checkboxes."""
+        """Triads submenu to toggle World/Base/Tool triads + labels from the
+        robot context menu. Checkable items sync with jog dock checkboxes."""
         parent_menu.addSeparator()
         sub = parent_menu.addMenu("Triads")
         # World axes
@@ -2465,7 +2465,7 @@ class GP7AppQt(
         a_tool.setChecked("tool" in self._frame_actors)
         a_tool.triggered.connect(
             lambda _checked=False: self._toggle_frame_triad_from_menu("tool"))
-        # Flange (optional, ít dùng)
+        # Flange (optional, rarely used)
         a_fl = sub.addAction("Flange triad")
         a_fl.setCheckable(True)
         a_fl.setChecked("flange" in self._frame_actors)
@@ -2473,21 +2473,21 @@ class GP7AppQt(
             lambda _checked=False: self._toggle_frame_triad_from_menu("flange"))
 
     def _toggle_frame_triad_from_menu(self, key: str) -> None:
-        """Toggle frame triad (base/tool/flange/ref/joint_N). Sync với
-        checkbox tương ứng trong jog dock 'Show Frames' group."""
+        """Toggle frame triad (base/tool/flange/ref/joint_N). Sync with
+        the corresponding checkbox in the jog dock 'Show Frames' group."""
         currently_on = key in self._frame_actors
         new_state = not currently_on
-        # Sync checkbox UI (sẽ tự fire _on_toggle_frame)
+        # Sync checkbox UI (will auto-fire _on_toggle_frame)
         cb = self._frame_checks.get(key) if hasattr(self, "_frame_checks") else None
         if cb is not None:
             cb.setChecked(new_state)
         else:
-            # Không có checkbox (vd jog dock chưa build) → toggle trực tiếp
+            # No checkbox (e.g. jog dock not yet built) → toggle directly
             self._on_toggle_frame(key, new_state)
         self._set_status(
             f"{'Showed' if new_state else 'Hid'} {key} triad", level="ok")
 
-    # ── World axes visibility (axes + labels riêng biệt) ──────────────
+    # ── World axes visibility (axes + labels separately) ──────────────
 
     def _is_world_axes_visible(self) -> bool:
         actor = getattr(self, "_world_axes_actor", None)
@@ -2499,7 +2499,7 @@ class GP7AppQt(
         actor = getattr(self, "_world_axes_actor", None)
         if actor is None: return False
         try:
-            # Label "visible" = có text (text rỗng ⇒ không render)
+            # Label "visible" = has text (empty text ⇒ not rendered)
             return bool(actor.GetXAxisLabelText())
         except Exception:                                  # noqa: BLE001
             return False
@@ -2509,7 +2509,7 @@ class GP7AppQt(
         if actor is None: return
         new = not bool(actor.GetVisibility())
         actor.SetVisibility(new)
-        # Sync View menu tick nếu có
+        # Sync View menu tick if present
         if hasattr(self, "_act_axes"):
             self._set_toggle(self._act_axes, new)
         self._plotter.render()
@@ -2526,7 +2526,7 @@ class GP7AppQt(
             actor.SetYAxisLabelText("")
             actor.SetZAxisLabelText("")
         else:
-            # Show: restore "X","Y","Z" + force size nhỏ via caption width
+            # Show: restore "X","Y","Z" + force small size via caption width
             actor.SetXAxisLabelText("X")
             actor.SetYAxisLabelText("Y")
             actor.SetZAxisLabelText("Z")
@@ -2541,10 +2541,10 @@ class GP7AppQt(
             f"{'Showed' if not visible else 'Hid'} world axes labels",
             level="ok")
 
-    # ── Component visibility (Show/Hide từ tree context menu) ─────────
+    # ── Component visibility (Show/Hide from tree context menu) ─────────
 
     def _component_visibility_key(self, kind: str, ref) -> str:
-        """Unique key per visible component để track state."""
+        """Unique key per visible component for state tracking."""
         if kind == "frame":
             return f"frame::{getattr(ref, 'name', '')}"
         if kind == "object":
@@ -2554,9 +2554,9 @@ class GP7AppQt(
         return kind                                          # robot/worktable/etc.
 
     def _component_actor_names(self, kind: str, ref) -> list[str]:
-        """Tên các actor cần toggle visibility cho 1 component."""
+        """Names of the actors whose visibility should be toggled for a component."""
         if kind == "robot":
-            # Tất cả 7 link actors GP7
+            # All 7 GP7 link actors
             return [k for k, _f, _o in _GP7_MESH_MAP]
         if kind == "gripper":
             return ["gripper"]
@@ -2568,30 +2568,30 @@ class GP7AppQt(
         return []
 
     def _is_component_visible(self, kind: str, ref) -> bool:
-        """Đọc visibility từ tracking dict (mặc định visible nếu chưa set)."""
+        """Read visibility from the tracking dict (default visible if not set)."""
         if not hasattr(self, "_component_visibility"):
             self._component_visibility: dict[str, bool] = {}
         if kind == "frame":
-            # Frame triad: trạng thái từ _frame_checks (jog dock)
+            # Frame triad: state from _frame_checks (jog dock)
             name = getattr(ref, "name", "")
-            # frames trong cell config không có checkbox riêng — track riêng
+            # frames in the cell config have no dedicated checkbox — tracked separately
             key = self._component_visibility_key(kind, ref)
             return self._component_visibility.get(key, False)
         key = self._component_visibility_key(kind, ref)
         return self._component_visibility.get(key, True)
 
     def _set_component_visibility(self, kind: str, ref, visible: bool) -> None:
-        """Toggle mesh actors. Frame thì add/remove triad qua _frame_actors."""
+        """Toggle mesh actors. For frames, add/remove the triad via _frame_actors."""
         if not hasattr(self, "_component_visibility"):
             self._component_visibility: dict[str, bool] = {}
         key = self._component_visibility_key(kind, ref)
         self._component_visibility[key] = visible
         if kind == "frame":
-            # Frame triad: dùng add/remove triad qua _frame_world_matrix
+            # Frame triad: add/remove triad via _frame_world_matrix
             name = getattr(ref, "name", "")
             triad_key = f"frame::{name}"
             if visible:
-                # Compute world matrix từ frame pose (mm → m)
+                # Compute world matrix from frame pose (mm → m)
                 xyz = ref.pose.xyz_mm; rpy = ref.pose.rpy_deg
                 T = _xyz_rpy_to_matrix(xyz[0], xyz[1], xyz[2],
                                          rpy[0], rpy[1], rpy[2])
@@ -2608,9 +2608,9 @@ class GP7AppQt(
         self._plotter.render()
 
     def _reapply_visibility_state(self) -> None:
-        """Sau khi load cell, áp visibility từ _component_visibility dict
-        (đã restore từ metadata.visibility_state). Iterate config items,
-        set hide cho keys = False."""
+        """After loading the cell, apply visibility from _component_visibility dict
+        (restored from metadata.visibility_state). Iterate config items,
+        set hidden for keys = False."""
         if not hasattr(self, "_component_visibility"):
             return
         cfg = self._cell_config
@@ -2641,14 +2641,13 @@ class GP7AppQt(
     def _toggle_component_visibility(self, kind: str, ref) -> None:
         cur = self._is_component_visible(kind, ref)
         self._set_component_visibility(kind, ref, not cur)
-        # Hiển thị status feedback + cập nhật tree (icon eye nếu có)
+        # Show status feedback + update tree (eye icon if present)
         label = (getattr(ref, "name", kind) if ref is not None else kind)
         self._set_status(
             f"{'Hidden' if cur else 'Shown'}: {label}", level="ok")
 
     def _find_actor(self, name: str):
-        """Tìm actor theo name trong viewport (renderer actors hoặc
-        _link_actors)."""
+        """Find an actor by name in the viewport (renderer actors or _link_actors)."""
         actor = self._link_actors.get(name)
         if actor is not None:
             return actor
@@ -2658,12 +2657,12 @@ class GP7AppQt(
             return None
 
     def _start_move_widget(self, kind: str, ref) -> None:
-        """Bật drag gizmo (vtkBoxWidget) bao quanh actor.
+        """Enable the drag gizmo (vtkBoxWidget) around the actor.
 
-        Tránh dùng SetProp3D vì nó override UserMatrix làm actor nhảy về
-        identity. Thay vào đó, place widget tại world bounds của actor + cache
-        T_initial; mỗi InteractionEvent ta đọc widget transform LOCAL rồi
-        compose vào T_initial → SetUserMatrix actor.
+        Avoid SetProp3D — it overrides UserMatrix and snaps the actor to
+        identity. Instead, place the widget at the actor world bounds + cache
+        T_initial; each InteractionEvent reads the widget LOCAL transform and
+        composes it with T_initial → SetUserMatrix actor.
         """
         if getattr(self, "_move_widget", None) is not None:
             self._stop_move_widget(commit=False)
@@ -2682,11 +2681,11 @@ class GP7AppQt(
         widget.SetRotationEnabled(True)
         widget.SetTranslationEnabled(True)
         widget.SetScalingEnabled(False)
-        widget.SetHandleSize(0.015)                      # handles to hơn để grab dễ
+        widget.SetHandleSize(0.015)                      # larger handles for easier grabbing
         widget.SetPlaceFactor(1.2)
-        # Place box tại world bounds của actor. Với object nhỏ (vd bolt 50mm)
-        # bounds tiny ⇒ handles bị che/khó grab. Mở rộng ra min 200mm/axis
-        # để có vùng tương tác đủ rộng.
+        # Place box at the actor's world bounds. For small objects (e.g. bolt 50mm)
+        # bounds are tiny ⇒ handles are hidden/hard to grab. Expand to min 200mm/axis
+        # for a sufficiently large interaction area.
         b = list(actor.GetBounds())                       # [xmin,xmax,ymin,ymax,zmin,zmax]
         min_size = 0.20                                   # 200mm
         for i in (0, 2, 4):
@@ -2698,7 +2697,7 @@ class GP7AppQt(
         self._move_widget = widget
         self._move_target = (kind, ref, actor_name)
         self._move_initial_xform = self._get_actor_world_matrix(actor)
-        # Wire callbacks AFTER PlaceWidget để không fire ngay
+        # Wire callbacks AFTER PlaceWidget so they don't fire immediately
         widget.AddObserver(
             "InteractionEvent",
             lambda obj, evt: self._on_move_interact(actor))
@@ -2713,8 +2712,8 @@ class GP7AppQt(
             level="info")
 
     def _on_move_interact(self, actor) -> None:
-        """Mỗi tick interaction: đọc widget transform → compose với T_initial
-        → SetUserMatrix actor (preview real-time)."""
+        """Each interaction tick: read widget transform → compose with T_initial
+        → SetUserMatrix actor (real-time preview)."""
         w = getattr(self, "_move_widget", None)
         if w is None or actor is None: return
         t = vtk.vtkTransform()
@@ -2724,11 +2723,11 @@ class GP7AppQt(
                               for i in range(4)])
         T_new = T_widget @ self._move_initial_xform
         actor.SetUserMatrix(_numpy_to_vtk_matrix(T_new))
-        # Render đã được Qt event loop trigger qua interactor
+        # Render is triggered by the Qt event loop via the interactor
 
     def _stop_move_widget(self, commit: bool = True) -> None:
-        """Tắt widget. commit=True ⇒ ghi pose vào _cell_config; False ⇒
-        revert actor về transform ban đầu. Cleanup observers tránh memory
+        """Turn off the widget. commit=True ⇒ write pose to _cell_config; False ⇒
+        revert actor to its initial transform. Clean up observers to avoid memory
         leak (B4 fix)."""
         w = getattr(self, "_move_widget", None)
         if w is None:
@@ -2745,7 +2744,7 @@ class GP7AppQt(
                     actor.SetUserMatrix(_numpy_to_vtk_matrix(t))
         w.Off()
         # Cleanup: remove all observers (lambda closures capture self ⇒
-        # circular ref nếu không cleanup; rapid toggle accumulates).
+        # circular ref if not cleaned up; rapid toggling accumulates them).
         try: w.RemoveAllObservers()
         except Exception: pass                              # noqa: BLE001
         self._move_widget = None
@@ -2755,8 +2754,8 @@ class GP7AppQt(
 
     @staticmethod
     def _get_actor_world_matrix(actor) -> np.ndarray:
-        """Lấy 4x4 numpy từ actor's UserMatrix (mặc định identity nếu chưa
-        SetUserMatrix). Đơn vị: meters (toàn viewport scale)."""
+        """Get 4x4 numpy from actor UserMatrix (defaults to identity if
+        SetUserMatrix was never called). Units: meters (viewport scale)."""
         m = actor.GetUserMatrix()
         if m is None:
             return np.eye(4)
@@ -2764,25 +2763,25 @@ class GP7AppQt(
                           for i in range(4)])
 
     def _on_move_end_event(self, obj, event) -> None:
-        """EndInteractionEvent từ vtkBoxWidget — chỉ update _cell_config khi
-        user gọi commit. Đây chỉ là hook nếu cần auto-commit on each release.
-        Hiện chúng ta defer commit tới _stop_move_widget(commit=True)."""
-        # No-op: giữ widget mở để user xem trước, commit/cancel thủ công.
+        """EndInteractionEvent from vtkBoxWidget — only updates _cell_config when
+        the user calls commit. This is just a hook for optional auto-commit on release.
+        Currently we defer commit to _stop_move_widget(commit=True)."""
+        # No-op: keep widget open for preview; commit/cancel is manual.
         pass
 
     def _commit_move_pose(self) -> None:
-        """Đọc transform hiện tại từ actor → convert sang pose mm/deg →
-        ghi vào _cell_config. Object có parent_frame: convert world→relative."""
+        """Read the current transform from the actor → convert to pose mm/deg →
+        write to _cell_config. Objects with a parent_frame: convert world→relative."""
         if self._move_target is None: return
         kind, ref, name = self._move_target
         actor = self._find_actor(name)
         if actor is None: return
         T_world_m = self._get_actor_world_matrix(actor)   # meters
-        # Convert sang mm (config dùng mm)
+        # Convert to mm (config uses mm)
         T_world_mm = T_world_m.copy()
         T_world_mm[:3, 3] *= 1000.0
 
-        # Object với parent_frame ⇒ chuyển world → parent-relative
+        # Object with parent_frame ⇒ convert world → parent-relative
         if kind == "object" and getattr(ref, "parent_frame", None):
             parent_name = ref.parent_frame
             parent_T = None
@@ -2803,7 +2802,7 @@ class GP7AppQt(
             xyz = (x, y, z); rpy = (rx, ry, rz)
 
         ref.pose = PoseConfig(xyz_mm=tuple(xyz), rpy_deg=tuple(rpy))
-        # Refresh _objects dict (object có world_T cache cho follow gripper)
+        # Refresh _objects dict (object has a world_T cache for gripper follow)
         if kind == "object" and name in self._objects:
             self._objects[name]["world_T"] = T_world_m.copy()
         self._refresh_cell_tree()
@@ -2812,26 +2811,26 @@ class GP7AppQt(
             f"{xyz[2]:.1f}) mm", level="ok")
 
     def _reload_gripper_actor(self) -> None:
-        """Idempotent reload: xoá actor "gripper" cũ (nếu có) rồi gọi
-        _load_gripper() để add lại theo config mới."""
+        """Idempotent reload: remove old "gripper" actor (if any) then call
+        _load_gripper() to re-add it with the new config."""
         try:
             self._plotter.remove_actor("gripper")
         except Exception: pass                              # noqa: BLE001
         self._link_actors.pop("gripper", None)
         self._load_gripper()
-        # Apply joints để mesh nhảy về đúng flange ngay
+        # Apply joints so the mesh immediately snaps to the correct flange position
         if self._model is not None:
             self._apply_joints_main(self._joints)
 
     def _show_add_object_dlg(self) -> None:
         self._ensure_cell_config()
-        # Tính default pose thông minh — tránh đè robot stand (Z=0..330)
-        # và tránh đè object cũ (scatter theo Y cứ mỗi object thêm 100mm).
+        # Smart default pose — avoids overlapping the robot stand (Z=0..330)
+        # and previous objects (scatter along Y by 100mm per added object).
         frames = self._cell_config.frames or []
         wt = self._cell_config.worktable
         existing = self._cell_config.objects or []
         n = len(existing)
-        # Scatter Y: object 0..6 đặt ở Y = -300, -200, ..., +300 mm
+        # Scatter Y: objects 0..6 placed at Y = -300, -200, ..., +300 mm
         scatter_y = ((n % 7) - 3) * 100.0
         if frames:
             default_parent = frames[0].name
@@ -2905,9 +2904,9 @@ class GP7AppQt(
             if not mesh:
                 QMessageBox.warning(dlg, "Add Object", "Mesh path is required")
                 return
-            # Heuristic: nếu user add object tên/path "gripper", suggest
-            # đúng workflow (Add Gripper) thay vì Add Object — gripper khác
-            # về schema (TCP offset, follow flange).
+            # Heuristic: if the user adds an object named/pathed "gripper", suggest
+            # the correct workflow (Add Gripper) instead of Add Object — gripper differs
+            # in schema (TCP offset, follows flange).
             if "gripper" in name.lower() or "gripper" in mesh.lower():
                 ret = QMessageBox.question(dlg, "Is this a gripper?",
                     "The name/path contains 'gripper'. Grippers have a separate "
@@ -2930,7 +2929,7 @@ class GP7AppQt(
             self._cell_config.objects.append(new_obj)
             self._refresh_cell_tree()
             self._load_cell_assets()
-            # Tính world coord cho status (giúp user định vị trong viewport)
+            # Compute world coords for status (helps user locate in viewport)
             parent_xyz = (0.0, 0.0, 0.0)
             if new_obj.parent_frame:
                 for fr in (self._cell_config.frames or []):
@@ -2957,8 +2956,8 @@ class GP7AppQt(
 
     def _show_add_frame_dlg(self) -> None:
         self._ensure_cell_config()
-        # Default pose: trên đỉnh worktable nếu có (vị trí teach phổ biến)
-        # else (500, 0, 500) world coords (phía trước robot)
+        # Default pose: on top of the worktable if present (common teach position)
+        # else (500, 0, 500) world coords (in front of the robot)
         wt = self._cell_config.worktable
         if wt is not None:
             h = self._mesh_height_mm(wt.mesh) or 500.0
@@ -3001,7 +3000,7 @@ class GP7AppQt(
             if self._cell_config.frames is None:
                 self._cell_config.frames = []
             self._cell_config.frames.append(new_fr)
-            # Update jog/IK tool/ref frames (ref_frames đọc từ cell.frames)
+            # Update jog/IK tool/ref frames (ref_frames read from cell.frames)
             self._ref_frames = _build_ref_frames(self._cell_config)
             self._refresh_tool_ref_combos_if_present()
             self._refresh_cell_tree()
@@ -3091,7 +3090,7 @@ class GP7AppQt(
             xyz, rpy = self._read_pose(pw)
             rob.pose = PoseConfig(xyz_mm=xyz, rpy_deg=rpy)
             self._base_xyz = tuple(xyz)
-            # Rebuild URDF model với base mới
+            # Rebuild URDF model with new base
             if self._model is not None:
                 self._model = gp7_urdf(base_xyz_mm=self._base_xyz)
                 self._apply_joints_main(self._joints)
@@ -3113,7 +3112,7 @@ class GP7AppQt(
         dlg.setMinimumWidth(420)
         v = QVBoxLayout(dlg)
         form = QFormLayout()
-        # Mesh (camera không có mesh)
+        # Mesh (camera has no mesh)
         mesh_edit = None
         if kind != "camera":
             mesh_edit = QLineEdit(getattr(ref, "mesh", "") or "")
@@ -3133,7 +3132,7 @@ class GP7AppQt(
             btn_pick.clicked.connect(_pick)
             mesh_row.addWidget(btn_pick)
             form.addRow("Mesh:", mesh_row)
-        # Camera: type/model/mount + intrinsics (fov + size). Camera không mesh.
+        # Camera: type/model/mount + intrinsics (fov + size). Camera has no mesh.
         cam_w: dict = {}
         if kind == "camera":
             cam_w["type"] = QComboBox(); cam_w["type"].addItems(["virtual", "real"])
@@ -3172,8 +3171,8 @@ class GP7AppQt(
                 ref.model = cam_w["model"].text().strip() or None
                 ref.mount = cam_w["mount"].currentText()
                 old = getattr(ref, "intrinsics", None)
-                # Giữ intrinsics pixel thật (fx/fy/cx/cy) nếu có — chỉ cập nhật
-                # fov + size từ form (real intrinsics ưu tiên khi vẽ frustum).
+                # Preserve real pixel intrinsics (fx/fy/cx/cy) if present — only update
+                # fov + size from the form (real intrinsics take priority when drawing the frustum).
                 ref.intrinsics = CameraIntrinsics(
                     fov_deg=cam_w["fov"].value(),
                     size_px=(cam_w["w"].value(), cam_w["h"].value()),
@@ -3189,10 +3188,10 @@ class GP7AppQt(
         dlg.exec()
 
     def _show_add_camera_dlg(self) -> None:
-        """Add Camera (CameraConfig) — node camera thống nhất kiểu RoboDK:
-        type/model/mount + pose (extrinsics) + intrinsics (FOV + size). Vẽ
-        frustum trong scene. Intrinsics pixel thật điền sau qua dock D455 →
-        'Đồng bộ Camera → Cell'."""
+        """Add Camera (CameraConfig) — unified RoboDK-style camera node:
+        type/model/mount + pose (extrinsics) + intrinsics (FOV + size). Draws
+        frustum in the scene. Real pixel intrinsics filled later via D455 dock →
+        'Sync Camera → Cell'."""
         self._ensure_cell_config()
         if self._cell_config.camera is not None:
             QMessageBox.information(
@@ -3218,7 +3217,7 @@ class GP7AppQt(
         form.addRow("Height (px):", sp_h)
         v.addLayout(form)
         v.addWidget(QLabel("<b>Pose (world frame):</b>"))
-        # Default: 700mm trên bàn nhìn xuống (sweet spot D455, khớp YAML mẫu).
+        # Default: 700mm above table looking down (D455 sweet spot, matches sample YAML).
         pose_form, pw = self._make_pose_form(
             xyz=(700.0, 0.0, 1200.0), rpy=(180.0, 0.0, 0.0))
         v.addLayout(pose_form)
@@ -3251,11 +3250,11 @@ class GP7AppQt(
     def _show_add_single_dlg(self, kind: str) -> None:
         """Add single-instance item (worktable/pedestal/floor/camera_mount)."""
         self._ensure_cell_config()
-        # Defaults theo loại — tránh đặt mọi thứ ở (0,0,0) (đè robot)
-        # Worktable: 700mm trước robot, xoay 90° (long side dọc Y)
-        # Pedestal: dưới robot (Z=0)
-        # Floor: dưới cả cell (Z=0)
-        # Camera mount: trên bàn (Z=500mm)
+        # Defaults by kind — avoid placing everything at (0,0,0) (overlaps robot)
+        # Worktable: 700mm in front of robot, rotated 90° (long side along Y)
+        # Pedestal: below robot (Z=0)
+        # Floor: below the entire cell (Z=0)
+        # Camera mount: above table (Z=500mm)
         defaults = {
             "worktable":     ((700.0, 0.0,   0.0), (0.0, 0.0, 90.0),
                               "models/worktable.stl"),
@@ -3324,8 +3323,8 @@ class GP7AppQt(
             self._refresh_cell_tree()
             self._load_cell_assets()
             self._set_status(f"Added {label}", level="ok")
-            # Auto-detect: thêm Pedestal mà robot đã load ⇒ offer lift robot
-            # lên top pedestal cho stand chạm đỉnh (sit-on relationship).
+            # Auto-detect: Pedestal added while robot is loaded ⇒ offer to lift robot
+            # to pedestal top so the stand rests on the pedestal (sit-on relationship).
             if kind == "robot_pedestal" and self._model is not None:
                 self._offer_lift_robot_onto_pedestal(obj)
             dlg.accept()
@@ -3345,7 +3344,7 @@ class GP7AppQt(
 
     def _delete_frame(self, fr: FrameConfig) -> None:
         if fr is None: return
-        # Orphan check: object nào tham chiếu frame này?
+        # Orphan check: which objects reference this frame?
         orphans = [o.name for o in (self._cell_config.objects or [])
                    if o.parent_frame == fr.name]
         msg = f"Delete frame '{fr.name}'?"
@@ -3358,7 +3357,7 @@ class GP7AppQt(
         if ret != QMessageBox.StandardButton.Yes: return
         self._cell_config.frames = [f for f in self._cell_config.frames
                                      if f.name != fr.name]
-        # Reset parent_frame của orphan objects → None
+        # Reset parent_frame of orphan objects → None
         for o in (self._cell_config.objects or []):
             if o.parent_frame == fr.name:
                 o.parent_frame = None
@@ -3389,14 +3388,14 @@ class GP7AppQt(
         if ret != QMessageBox.StandardButton.Yes: return
         prev_ref = getattr(self._cell_config, kind, None)
         setattr(self._cell_config, kind, None)
-        # Remove actor khỏi viewport
+        # Remove actor from the viewport
         try: self._plotter.remove_actor(kind)
         except Exception: pass                              # noqa: BLE001
         self._refresh_cell_tree()
         self._plotter.render()
         self._set_status(f"Deleted {label}", level="ok")
-        # Symmetric auto-detect: delete Pedestal mà robot vẫn cao Z>~330
-        # ⇒ offer lower về Z=330 (stand chạm sàn) hoặc tự tính từ delta.
+        # Symmetric auto-detect: Pedestal deleted while robot base Z>~330
+        # ⇒ offer to lower robot to Z=330 (stand touching floor).
         if (kind == "robot_pedestal" and self._model is not None
                 and prev_ref is not None):
             self._offer_lower_robot_off_pedestal(prev_ref)
@@ -3405,14 +3404,14 @@ class GP7AppQt(
     _PREVIEW_BG = [0.12, 0.12, 0.15]
 
     def _np_to_pixmap(self, img) -> QPixmap:
-        """numpy RGB (H,W,3) uint8 → QPixmap (copy buffer để an toàn lifetime)."""
+        """numpy RGB (H,W,3) uint8 → QPixmap (copy buffer for safe lifetime)."""
         img = np.ascontiguousarray(img[:, :, :3])
         h, w = img.shape[:2]
         qimg = QImage(img.data, w, h, 3 * w, QImage.Format.Format_RGB888)
         return QPixmap.fromImage(qimg.copy())
 
     def _make_preview_label(self, size=(300, 300)) -> QLabel:
-        """QLabel khung preview (style chung) — đặt ở bất kỳ layout nào."""
+        """QLabel preview frame (shared style) — place in any layout."""
         lbl = QLabel("Generating preview…")
         lbl.setMinimumSize(size[0], size[1])
         lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -3421,7 +3420,7 @@ class GP7AppQt(
         return lbl
 
     def _attach_preview(self, dlg, content_layout, size=(300, 300)):
-        """Bọc content (trái) + QLabel preview (phải) vào dlg. Trả QLabel."""
+        """Wrap content (left) + QLabel preview (right) into dlg. Returns QLabel."""
         outer = QHBoxLayout(dlg)
         left = QWidget(); left.setLayout(content_layout)
         outer.addWidget(left, 0)
@@ -3430,10 +3429,10 @@ class GP7AppQt(
         return lbl
 
     def _set_preview(self, lbl, render_fn) -> None:
-        """Hoãn render qua QTimer để dialog paint trước, rồi fill thumbnail.
+        """Defer render via QTimer so the dialog paints first, then fill the thumbnail.
 
-        render_fn nhận (w, h) = kích thước THẬT của label tại thời điểm render
-        → render off-screen đúng tỷ lệ khung, tránh letterbox (dải đen trống)."""
+        render_fn receives (w, h) = actual label size at render time
+        → render off-screen at the correct aspect ratio, avoiding letterboxing (black bars)."""
         lbl.setText("Generating preview…")
 
         def _do():
@@ -3441,7 +3440,7 @@ class GP7AppQt(
             try:
                 pm = render_fn(size)
             except Exception as e:                          # noqa: BLE001
-                logger.debug("preview render lỗi: %s", e); pm = None
+                logger.debug("preview render error: %s", e); pm = None
             if pm is not None:
                 lbl.setPixmap(pm.scaled(
                     lbl.size(), Qt.AspectRatioMode.KeepAspectRatio,
@@ -3451,9 +3450,9 @@ class GP7AppQt(
         QTimer.singleShot(0, _do)
 
     def _render_mesh_thumbnail(self, mesh_rel, color, size=(300, 300), zoom=1.05):
-        """Render 1 STL off-screen → QPixmap. None nếu thiếu/lỗi file.
+        """Render one STL off-screen → QPixmap. None if file missing/error.
 
-        zoom<1 thêm đệm quanh mesh (cho component to/phẳng như floor, tray)."""
+        zoom<1 adds padding around the mesh (for large/flat components like floor, tray)."""
         if not mesh_rel:
             return None
         path = Path(mesh_rel)
@@ -3466,7 +3465,7 @@ class GP7AppQt(
             p.set_background(self._PREVIEW_BG)
             p.add_mesh(pv.read(str(path)), color=color, smooth_shading=True)
             p.view_isometric()
-            # zoom nhẹ thôi: view_isometric đã auto-fit, zoom cao sẽ cắt mất mesh.
+            # Zoom gently: view_isometric already auto-fits; high zoom would clip the mesh.
             p.camera.zoom(zoom)
             img = p.screenshot(return_img=True)
         finally:
@@ -3474,7 +3473,7 @@ class GP7AppQt(
         return self._np_to_pixmap(img)
 
     def _render_robot_thumbnail(self, home_joints, size=(300, 300)):
-        """Ghép 7 link GP7 tại home pose (base ở gốc) off-screen → QPixmap."""
+        """Assemble 7 GP7 links at home pose (base at origin) off-screen → QPixmap."""
         mesh_dir = self._project_root / "models" / "gp7_links"
         if not mesh_dir.exists():
             return None
@@ -3501,8 +3500,8 @@ class GP7AppQt(
             if added == 0:
                 return None
             p.view_isometric()
-            # KHÔNG zoom thêm: view_isometric đã auto-fit toàn robot vào khung.
-            # zoom>1 sẽ cắt mất cánh tay phía trên (robot cao ở home pose).
+            # Do NOT zoom further: view_isometric already auto-fits the full robot.
+            # zoom>1 would clip the upper arm (robot is tall at home pose).
             p.camera.zoom(1.05)
             img = p.screenshot(return_img=True)
         finally:
@@ -3515,8 +3514,8 @@ class GP7AppQt(
     _GP7_STAND_MM = 330.0
 
     def _mesh_height_mm(self, mesh_rel: str) -> float | None:
-        """Đọc mesh STL → tính height (Z range) trong mm. Return None nếu
-        không đọc được. Cache nhẹ qua dict instance để tránh re-parse."""
+        """Read STL mesh → compute height (Z range) in mm. Return None if
+        unreadable. Lightweight cache via instance dict to avoid re-parsing."""
         if not hasattr(self, "_mesh_height_cache"):
             self._mesh_height_cache: dict[str, float] = {}
         if mesh_rel in self._mesh_height_cache:
@@ -3528,8 +3527,8 @@ class GP7AppQt(
             if not path.exists():
                 return None
             m = pv.read(str(path))
-            # bounds = [xmin, xmax, ymin, ymax, zmin, zmax] đơn vị mesh native.
-            # Mesh STL conventionally mm; sau pv.read points vẫn mm.
+            # bounds = [xmin, xmax, ymin, ymax, zmin, zmax] in native mesh units.
+            # STL meshes are conventionally in mm; after pv.read points remain mm.
             h = float(m.bounds[5] - m.bounds[4])
             self._mesh_height_cache[mesh_rel] = h
             return h
@@ -3537,8 +3536,8 @@ class GP7AppQt(
             return None
 
     def _offer_lift_robot_onto_pedestal(self, pedestal_cfg) -> None:
-        """Add Pedestal sau robot ⇒ HỎI user có muốn nâng robot lên đỉnh
-        pedestal (Yes/No). User muốn được xác nhận thay vì tự đổi base pose.
+        """Pedestal added after robot ⇒ ASK user whether to lift robot onto the
+        pedestal top (Yes/No). User wants confirmation rather than an automatic base pose change.
         """
         ped_top = pedestal_cfg.pose.xyz_mm[2]
         h = self._mesh_height_mm(pedestal_cfg.mesh)
@@ -3546,7 +3545,7 @@ class GP7AppQt(
             ped_top += h
         target_z = ped_top + self._GP7_STAND_MM
         current_z = self._cell_config.robot.pose.xyz_mm[2]
-        if abs(target_z - current_z) < 1.0:                # đã đúng vị trí
+        if abs(target_z - current_z) < 1.0:                # already in position
             return
         r = QMessageBox.question(
             self, "Lift robot onto pedestal",
@@ -3563,8 +3562,8 @@ class GP7AppQt(
             f"(stand on pedestal top)", level="ok")
 
     def _offer_lower_robot_off_pedestal(self, prev_pedestal_cfg) -> None:
-        """Delete Pedestal ⇒ AUTO-LOWER robot về Z=330 (stand chạm sàn).
-        Same UX rationale như _offer_lift_robot_onto_pedestal."""
+        """Pedestal deleted ⇒ AUTO-LOWER robot to Z=330 (stand touching floor).
+        Same UX rationale as _offer_lift_robot_onto_pedestal."""
         target_z = self._GP7_STAND_MM
         current_z = self._cell_config.robot.pose.xyz_mm[2]
         if abs(target_z - current_z) < 1.0:
@@ -3586,22 +3585,22 @@ class GP7AppQt(
         self._refresh_cell_tree()
 
     def _load_robot_assets(self) -> None:
-        """STL meshes của robot (không phụ thuộc cell). Idempotent — chỉ load
-        nếu chưa load."""
+        """Robot STL meshes (independent of cell). Idempotent — only loads
+        if not already loaded."""
         if any(k in self._link_actors for k in ("base_link", "link_s")):
             return
         self._load_robot_links()
         self._load_gripper()
 
     def _load_cell_assets(self) -> None:
-        """Meshes của cell (worktable, pedestal, objects) — phụ thuộc
-        cell_config. Idempotent — clear cell actors cũ trước khi add.
-        Fix B5: cũng pop stale entries khỏi _link_actors (nếu có) để
-        tránh _render_scene_frame access dangling actor refs."""
+        """Cell meshes (worktable, pedestal, objects) — depends on
+        cell_config. Idempotent — clears old cell actors before adding.
+        Fix B5: also pops stale entries from _link_actors (if any) to
+        prevent _render_scene_frame from accessing dangling actor refs."""
         if self._cell_config is None:
             return
-        # Datasets cũ bị remove/replace → invalidate normal cache (key theo
-        # id(dataset) có thể bị tái dùng cho mesh khác → stale normal).
+        # Old datasets removed/replaced → invalidate normal cache (key by
+        # id(dataset) may be reused for a different mesh → stale normals).
         self._normal_cache.clear()
         cell_names = ("worktable", "robot_pedestal", "camera_mount", "floor")
         for name in cell_names:
@@ -3617,31 +3616,31 @@ class GP7AppQt(
                 pass
             self._objects.pop(name, None)
             self._link_actors.pop(name, None)
-        for name in self._CAM_VIZ_ACTORS:                   # frustum camera cũ
+        for name in self._CAM_VIZ_ACTORS:                   # old camera frustum
             try:
                 self._plotter.remove_actor(name)
             except Exception:                               # noqa: BLE001
                 pass
         self._add_cell_meshes()
         self._add_camera_frustum()
-        # Tôn trọng toggle View → Visibility → Camera frustum (nếu đã tắt).
+        # Respect View → Visibility → Camera frustum toggle (if disabled).
         if hasattr(self, "_act_cam_frustum") and not self._act_cam_frustum.isChecked():
             self._toggle_camera_frustum(False)
-        # add_mesh() trong _add_cell_meshes dùng render=False (tránh render lại
-        # sau MỖI mesh → hiện dần từng cái). Render 1 lần ở đây ⇒ toàn bộ cell
-        # mesh xuất hiện cùng lúc. Reset clipping range trước: mesh lớn (floor/
-        # bàn) mở rộng bounds → tránh bị cắt thành "hình chữ nhật" tới khi di chuột.
+        # add_mesh() in _add_cell_meshes uses render=False (avoids re-rendering
+        # after EACH mesh → appearing one-by-one). Single render here ⇒ all cell
+        # meshes appear at once. Reset clipping range first: large meshes (floor/
+        # table) expand bounds → prevents being clipped to a "rectangle" until mouse move.
         self._plotter.reset_camera_clipping_range()
         self._plotter.render()
-        # Cell mới có thể có object_classes khác → cập nhật combo Class dock.
+        # New cell may have different object_classes → update Class dock combo.
         if hasattr(self, "_refresh_class_combo"):
             self._refresh_class_combo()
 
     def _add_floor(self) -> None:
-        """Reference floor procedural (toggle qua View → Visibility → Floor).
-        Plane phẳng 6×6m, single solid color (no grid edges) — industrial
-        finish look. Cho mặt phẳng tham chiếu khi chưa có FloorConfig.mesh
-        (đó là sàn STL thật, load qua Edit → Add Floor).
+        """Procedural reference floor (toggled via View → Visibility → Floor).
+        Flat 6×6m plane, single solid color (no grid edges) — industrial
+        finish look. Used as a reference plane when no FloorConfig.mesh exists
+        (that is the real STL floor, loaded via Edit → Add Floor).
         """
         try:
             plane = pv.Plane(center=(0.0, 0.0, 0.0), direction=(0, 0, 1),
@@ -3653,59 +3652,59 @@ class GP7AppQt(
                 show_edges=False,                  # NO grid (clean finish)
                 name="__floor",
                 lighting=True,
-                ambient=0.3,                       # ít specular reflection
+                ambient=0.3,                       # low specular reflection
                 diffuse=0.7,
                 specular=0.1,
-                render=False)                      # toggle/loader render 1 lần
+                render=False)                      # toggle/loader renders once
         except Exception as e:                              # noqa: BLE001
-            logger.debug("Floor lỗi: %s", e)
+            logger.debug("Floor error: %s", e)
 
     def _add_world_axes_triad(self) -> None:
-        """Triad ngay trong scene để align với robot base. RoboDK-style:
-        arrows RGB với cylinder shaft + cone tip. Labels XYZ MẶC ĐỊNH TẮT.
+        """Triad in-scene to align with robot base. RoboDK-style:
+        RGB arrows with cylinder shaft + cone tip. XYZ labels OFF by default.
 
-        FIX: SetVisibility(False) trên CaptionActor2D không ngăn vtkAxesActor
-        render label trong nhiều phiên bản VTK. Cách chắc chắn: xoá text bằng
-        SetXAxisLabelText(""). Không có text ⇒ không có render. User bật lại
-        qua right-click → Show labels (chữ trở lại "X","Y","Z").
+        FIX: SetVisibility(False) on CaptionActor2D does not suppress vtkAxesActor
+        label rendering in many VTK versions. The reliable approach: clear text with
+        SetXAxisLabelText(""). No text ⇒ no render. User re-enables via
+        right-click → Show labels (text reverts to "X","Y","Z").
         """
         try:
             actor = vtk.vtkAxesActor()
-            # World ở floor như RoboDK: nhỏ (120mm) không lấn át robot.
-            # Length đã giảm ~tip portion (cone 20% mặc định) so với version
-            # trước; cylinder + cone bigger ratio cho stocky look.
+            # World at floor level like RoboDK: small (120mm) to not overpower the robot.
+            # Length reduced ~tip portion (cone 20% default) vs previous version;
+            # larger cylinder + cone ratio for a stocky look.
             actor.SetTotalLength(0.12, 0.12, 0.12)
             actor.SetShaftType(0)                          # cylinder
             actor.SetCylinderRadius(0.035)
             actor.SetConeRadius(0.55)
             actor.SetConeResolution(24)
-            # Force labels OFF bằng cách clear text
+            # Force labels OFF by clearing text
             actor.SetXAxisLabelText("")
             actor.SetYAxisLabelText("")
             actor.SetZAxisLabelText("")
             self._plotter.add_actor(actor, name="__world_axes")
             self._world_axes_actor = actor
         except Exception as e:                              # noqa: BLE001
-            logger.debug("World axes lỗi: %s", e)
+            logger.debug("World axes error: %s", e)
 
     def _setup_lighting(self) -> None:
-        # pyvista default lighting đủ tốt; có thể thêm light tùy chỉnh nếu cần.
+        # pyvista default lighting is sufficient; custom lights can be added if needed.
         try:
-            self._plotter.enable_shadows = False            # tắt shadow cho perf
+            self._plotter.enable_shadows = False            # disable shadows for perf
         except Exception:                                   # noqa: BLE001
             pass
 
     def _load_robot_links(self) -> bool:
-        """Load 7 STL ros-industrial → add vào plotter, lưu actor để animate.
+        """Load 7 ros-industrial STL files → add to plotter, save actors for animation.
 
-        NOTE: thử ThreadPoolExecutor cho STL parse — chậm hơn 13% do GIL +
-        per-file work nhỏ (~10ms). pv.read mặc dù gọi C code nhưng Python-side
-        dataset wrapping vẫn hold GIL. STL load tổng ~65ms (SSD warm cache),
-        không đáng parallelize.
+        NOTE: tried ThreadPoolExecutor for STL parsing — 13% slower due to GIL +
+        small per-file work (~10ms). pv.read calls C code but Python-side
+        dataset wrapping still holds the GIL. Total STL load ~65ms (SSD warm cache),
+        not worth parallelizing.
         """
         mesh_dir = self._project_root / "models" / "gp7_links"
         if not mesh_dir.exists():
-            logger.warning("Robot mesh dir không có: %s", mesh_dir)
+            logger.warning("Robot mesh dir not found: %s", mesh_dir)
             return False
         loaded = 0
         for key, fname, off in _GP7_MESH_MAP:
@@ -3722,16 +3721,16 @@ class GP7AppQt(
                 self._link_actors[key] = actor
                 loaded += 1
             except Exception as e:                          # noqa: BLE001
-                logger.debug("Lỗi load mesh %s: %s", path, e)
+                logger.debug("Error loading mesh %s: %s", path, e)
         logger.info("GP7AppQt: %d/%d GP7 link mesh", loaded, len(_GP7_MESH_MAP))
         return loaded > 0
 
     def _load_gripper(self) -> None:
-        """Load gripper mesh từ cell_config.gripper, attach vào link_tool0.
+        """Load gripper mesh from cell_config.gripper, attach to link_tool0.
 
-        Mesh local frame = flange (link_tool0). tcp_offset_xyz_mm dịch mesh
-        sao cho TCP (đầu tool) align với offset đó từ flange. Khi animate,
-        _render_scene_frame map actor name "gripper" → frame "link_tool0".
+        Mesh local frame = flange (link_tool0). tcp_offset_xyz_mm shifts the mesh
+        so that the TCP (tool tip) aligns with that offset from the flange. During animation,
+        _render_scene_frame maps actor name "gripper" → frame "link_tool0".
         """
         cfg = getattr(self._cell_config, "gripper", None)
         if cfg is None or not getattr(cfg, "mesh", None):
@@ -3740,13 +3739,13 @@ class GP7AppQt(
         if not path.is_absolute():
             path = self._project_root / path
         if not path.exists():
-            logger.warning("Gripper mesh không tồn tại: %s", path)
+            logger.warning("Gripper mesh not found: %s", path)
             return
         try:
             mesh = pv.read(str(path))
             mesh.points *= 0.001                            # mm → m
-            # Dịch mesh theo tcp_offset (mm → m). User chỉnh offset qua Edit
-            # Gripper → tcp_offset_xyz_mm cập nhật → reload thấy ngay.
+            # Translate mesh by tcp_offset (mm → m). User edits offset via Edit
+            # Gripper → tcp_offset_xyz_mm updates → reload shows immediately.
             off = cfg.tcp_offset_xyz_mm
             mesh.translate([off[0] / 1000.0, off[1] / 1000.0,
                              off[2] / 1000.0], inplace=True)
@@ -3755,17 +3754,17 @@ class GP7AppQt(
                 smooth_shading=True, render=False)
             self._link_actors["gripper"] = actor
         except Exception as e:                              # noqa: BLE001
-            logger.debug("Gripper lỗi: %s", e)
+            logger.debug("Gripper error: %s", e)
 
     def _add_cell_meshes(self) -> None:
         cfg = self._cell_config
-        # Thêm floor vào loop — trước đây bị bỏ sót, Add Floor không load
-        # được mesh STL vào viewport.
-        # Bảng màu chuẩn công nghiệp (RAL/vật liệu thực):
-        #   worktable     RAL 7035 light grey (vỏ máy/bàn thao tác phổ biến)
-        #   robot_pedestal RAL 7016 anthracite (chân đế/khung máy)
-        #   camera_mount  anodized aluminium (nhôm định hình 80/20)
-        #   floor         bê tông/epoxy xám trung tính (không trắng)
+        # Include floor in the loop — previously omitted, Add Floor did not load
+        # STL mesh into the viewport.
+        # Standard industrial color palette (RAL/real materials):
+        #   worktable     RAL 7035 light grey (machine/workbench finish)
+        #   robot_pedestal RAL 7016 anthracite (base/frame)
+        #   camera_mount  anodized aluminium (80/20 extrusion)
+        #   floor         neutral grey concrete/epoxy (not white)
         for attr, drgb in (("worktable", [0.66, 0.67, 0.66]),
                             ("robot_pedestal", [0.28, 0.29, 0.31]),
                             ("camera_mount", [0.68, 0.69, 0.71]),
@@ -3784,8 +3783,8 @@ class GP7AppQt(
                 if getattr(obj, "parent_frame", None) in frames else [0, 0, 0]
             off = list(obj.pose.xyz_mm) if getattr(obj, "pose", None) else [0, 0, 0]
             world_xyz_mm = [pxyz[k] + off[k] for k in range(3)]
-            # Vật gắp (bolt/part) = thép/kẽm đánh bóng (metallic xám sáng),
-            # thay màu vàng hổ phách "đèn" cũ → chuẩn chi tiết gia công.
+            # Graspable object (bolt/part) = polished steel/zinc (light metallic grey),
+            # replacing the old amber "lamp" color → standard machined-part finish.
             self._register_object(obj.name, obj.mesh, world_xyz_mm,
                                    rgb=[0.74, 0.76, 0.78])
 
@@ -3793,10 +3792,10 @@ class GP7AppQt(
     _CAM_VIZ_ACTORS = ("__camera_frustum", "__camera_plane", "__camera_axes")
 
     def _add_camera_frustum(self) -> None:
-        """Vẽ nón nhìn (frustum) + trục cho cell `camera` tại pose của nó.
+        """Draw view frustum + axes for the cell `camera` at its pose.
 
-        Một camera-item kiểu RoboDK: extrinsics = camera.pose (world/base),
-        kích thước nón theo FOV (từ intrinsics). Optical axis = +Z local."""
+        RoboDK-style camera item: extrinsics = camera.pose (world/base),
+        frustum size from FOV (intrinsics). Optical axis = +Z local."""
         cfg = self._cell_config
         cam = getattr(cfg, "camera", None) if cfg is not None else None
         if cam is None:
@@ -3804,18 +3803,18 @@ class GP7AppQt(
         try:
             intr = getattr(cam, "intrinsics", None)
             hfov, vfov = intr.hfov_vfov_deg() if intr is not None else (87.0, 56.0)
-            # Pose: xyz_mm+rpy_deg → 4×4, translation mm→m, áp qua UserMatrix.
+            # Pose: xyz_mm+rpy_deg → 4×4, translation mm→m, applied via UserMatrix.
             T = _xyz_rpy_to_matrix(
                 cam.pose.xyz_mm[0], cam.pose.xyz_mm[1], cam.pose.xyz_mm[2],
                 cam.pose.rpy_deg[0], cam.pose.rpy_deg[1], cam.pose.rpy_deg[2])
             T[:3, 3] /= 1000.0
-            # Chiều sâu nón = quãng đường theo trục quang (+Z local) tới khi
-            # chạm SÀN (Z=0 world) → nón kéo "tận đất", đúng vùng quan sát thực.
-            # Camera không hướng xuống ⇒ dùng far mặc định. Clamp tầm D455.
+            # Frustum depth = distance along the optical axis (+Z local) until
+            # hitting the FLOOR (Z=0 world) → frustum extends "to the ground", matching real FOV.
+            # Camera not pointing down ⇒ use default far. Clamp to D455 range.
             optical = T[:3, :3] @ np.array([0.0, 0.0, 1.0])
             pz = float(T[2, 3])
             if optical[2] < -1e-3 and pz > 0.0:
-                d = -pz / float(optical[2])                 # giao trục quang với sàn
+                d = -pz / float(optical[2])                 # intersection of optical axis with floor
             else:
                 d = _CAM_FRUSTUM_FAR_M
             d = float(np.clip(d, _CAM_FRUSTUM_MIN_M, _CAM_FRUSTUM_MAX_M))
@@ -3823,11 +3822,11 @@ class GP7AppQt(
             hh = d * math.tan(math.radians(vfov) / 2.0)
             corners = np.array([[-hw, -hh, d], [hw, -hh, d],
                                 [hw, hh, d], [-hw, hh, d]], dtype=float)
-            pts = np.vstack([[0.0, 0.0, 0.0], corners])     # apex + 4 góc
+            pts = np.vstack([[0.0, 0.0, 0.0], corners])     # apex + 4 corners
             frustum = pv.PolyData(pts)
             frustum.lines = np.array([
-                2, 0, 1, 2, 0, 2, 2, 0, 3, 2, 0, 4,         # apex→4 góc
-                2, 1, 2, 2, 2, 3, 2, 3, 4, 2, 4, 1,         # khung chữ nhật
+                2, 0, 1, 2, 0, 2, 2, 0, 3, 2, 0, 4,         # apex→4 corners
+                2, 1, 2, 2, 2, 3, 2, 3, 4, 2, 4, 1,         # rectangular base
             ])
             vtk_T = _numpy_to_vtk_matrix(T)
             actor = self._plotter.add_mesh(
@@ -3835,13 +3834,13 @@ class GP7AppQt(
                 line_width=2, opacity=0.9, lighting=False,
                 name="__camera_frustum", render=False)
             actor.SetUserMatrix(vtk_T)
-            # Mặt phẳng ảnh (mờ) ở đáy nón — gợi cảm giác sensor plane.
+            # Image plane (translucent) at frustum base — evokes sensor plane.
             plane = pv.PolyData(corners, np.array([4, 0, 1, 2, 3]))
             pactor = self._plotter.add_mesh(
                 plane, color=[0.30, 0.55, 0.85], opacity=0.16,
                 lighting=False, name="__camera_plane", render=False)
             pactor.SetUserMatrix(vtk_T)
-            # Trục camera (RGB triad) tại pose — tái dùng vtkAxesActor.
+            # Camera axes (RGB triad) at pose — reuse vtkAxesActor.
             ax = vtk.vtkAxesActor()
             ax.SetTotalLength(0.08, 0.08, 0.08)
             ax.SetShaftType(0); ax.SetCylinderRadius(0.04)
@@ -3852,10 +3851,10 @@ class GP7AppQt(
             ax.SetUserTransform(tf)
             self._plotter.add_actor(ax, name="__camera_axes")
         except Exception as e:                              # noqa: BLE001
-            logger.debug("Camera frustum lỗi: %s", e)
+            logger.debug("Camera frustum error: %s", e)
 
     def _toggle_camera_frustum(self, visible: bool) -> None:
-        """Ẩn/hiện cả frustum + mặt phẳng ảnh + trục camera."""
+        """Hide/show the frustum + image plane + camera axes."""
         for n in self._CAM_VIZ_ACTORS:
             actor = self._plotter.renderer.actors.get(n)
             if actor is not None:
@@ -3863,12 +3862,12 @@ class GP7AppQt(
         self._plotter.render()
 
     def _add_static_mesh(self, name, mesh_rel, xyz_mm, rpy_deg, rgb) -> None:
-        """Add 1 mesh tĩnh (worktable/pedestal/floor/camera_mount/etc.).
+        """Add one static mesh (worktable/pedestal/floor/camera_mount/etc.).
 
-        Mesh geometry giữ TẠI GỐC (identity); pose áp qua SetUserMatrix.
-        Cách này cho phép vtkBoxWidget drag-to-move hoạt động — widget
-        modify UserMatrix mà không đụng vào mesh geometry. Trước đây bake
-        transform vào mesh.points làm widget "double-transform".
+        Mesh geometry stays AT ORIGIN (identity); pose applied via SetUserMatrix.
+        This allows vtkBoxWidget drag-to-move to work — the widget
+        modifies UserMatrix without touching mesh geometry. Previously baking
+        the transform into mesh.points caused a "double-transform" bug.
         """
         try:
             path = Path(mesh_rel)
@@ -3886,7 +3885,7 @@ class GP7AppQt(
             T[:3, 3] /= 1000.0
             actor.SetUserMatrix(_numpy_to_vtk_matrix(T))
         except Exception as e:                              # noqa: BLE001
-            logger.debug("Static mesh '%s' lỗi: %s", mesh_rel, e)
+            logger.debug("Static mesh '%s' error: %s", mesh_rel, e)
 
     def _register_object(self, name, mesh_rel, world_xyz_mm, rgb) -> None:
         try:
@@ -3908,13 +3907,13 @@ class GP7AppQt(
                 "initial_world_T": world_T.copy(),
             }
         except Exception as e:                              # noqa: BLE001
-            logger.debug("Object '%s' lỗi: %s", name, e)
+            logger.debug("Object '%s' error: %s", name, e)
 
     def _set_camera_preset(self, name: str) -> None:
-        """Switch camera tới preset + auto adjust projection theo CAD convention:
-          • **Iso** → Perspective (cảm giác 3D natural cho navigation/demo)
+        """Switch camera to preset + auto-adjust projection per CAD convention:
+          • **Iso** → Perspective (natural 3D feel for navigation/demo)
           • **Top/Front/Back/Right/Left** → Orthographic (engineering view —
-            đo lường chính xác, không bị perspective distortion)
+            accurate measurement, no perspective distortion)
         """
         eye, ctr, up = self._CAM_PRESETS.get(name, self._CAM_PRESETS["Iso"])
         try:
@@ -3923,13 +3922,13 @@ class GP7AppQt(
             is_perspective = (name == "Iso")
             self._plotter.camera.SetParallelProjection(not is_perspective)
             self._plotter.render()
-            # Sync Perspective view menu toggle (KHÔNG fire toggled signal để
-            # tránh infinite recursion qua _on_toggle_perspective).
+            # Sync Perspective view menu toggle (do NOT fire toggled signal to
+            # avoid infinite recursion via _on_toggle_perspective).
             if hasattr(self, "_act_perspective"):
                 self._set_toggle(self._act_perspective, is_perspective)
         except Exception as e:                              # noqa: BLE001
-            logger.debug("camera preset lỗi: %s", e)
-        # Sync menu visual: exclusive — chỉ `name` checked, others unchecked.
+            logger.debug("camera preset error: %s", e)
+        # Sync menu visual: exclusive — only `name` checked, others unchecked.
         if hasattr(self, "_cam_actions"):
             for n, a in self._cam_actions.items():
                 self._set_toggle(a, n == name)
@@ -3942,29 +3941,29 @@ class GP7AppQt(
             actor.SetVisibility(bool(visible))
             self._plotter.render()
         except Exception as e:                              # noqa: BLE001
-            logger.debug("Toggle %s lỗi: %s", name, e)
+            logger.debug("Toggle %s error: %s", name, e)
 
     def _toggle_floor(self, visible: bool) -> None:
-        """Floor lazy-loaded: lần đầu bật thì _add_floor() build mesh, lần sau
-        chỉ SetVisibility."""
+        """Floor lazy-loaded: first enable calls _add_floor() to build the mesh,
+        subsequent calls only SetVisibility."""
         try:
             actor = self._plotter.renderer.actors.get("__floor")
             if actor is None:
                 if not visible:
                     return
-                self._add_floor()                          # tạo mesh lần đầu
+                self._add_floor()                          # build mesh on first enable
             else:
                 actor.SetVisibility(bool(visible))
-            # Floor 6×6m mở rộng bounds scene → camera clipping range cũ cắt
-            # mất mesh ⇒ trông như "hình chữ nhật" tới khi di chuột (mouse mới
-            # trigger ResetCameraClippingRange). Reset ngay để floor hiện đủ.
+            # The 6×6m floor expands scene bounds → old camera clipping range
+            # clips the mesh → looks like a "rectangle" until mouse move (which
+            # triggers ResetCameraClippingRange). Reset now so floor shows fully.
             self._plotter.reset_camera_clipping_range()
             self._plotter.render()
         except Exception as e:                              # noqa: BLE001
-            logger.debug("Toggle floor lỗi: %s", e)
+            logger.debug("Toggle floor error: %s", e)
 
     def _toggle_background(self, gradient_on: bool) -> None:
-        """Toggle background giữa gradient navy/purple ↔ solid dark gray."""
+        """Toggle background between navy/purple gradient ↔ solid dark gray."""
         try:
             if gradient_on:
                 self._plotter.set_background(
@@ -3974,14 +3973,14 @@ class GP7AppQt(
                 self._plotter.set_background([0.10, 0.10, 0.13])
             self._plotter.render()
         except Exception as e:                              # noqa: BLE001
-            logger.debug("Toggle background lỗi: %s", e)
+            logger.debug("Toggle background error: %s", e)
 
     # ══════════════════════════════════════════════════════════════════
     # View ops: Fit all / Perspective / Fullscreen / Close panels / Resize
     # ══════════════════════════════════════════════════════════════════
     def _on_fit_all(self) -> None:
-        """Reset camera để fit toàn scene (như RoboDK 'Fit all' Alt+7).
-        Sau Fit all → camera không match preset → uncheck tất cả preset.
+        """Reset camera to fit the full scene (like RoboDK 'Fit all' Alt+7).
+        After Fit all → camera no longer matches any preset → uncheck all presets.
         """
         try:
             self._plotter.reset_camera()
@@ -4005,7 +4004,7 @@ class GP7AppQt(
             self._set_status(f"Projection toggle error: {e}", level="err")
 
     def _on_toggle_fullscreen(self, fullscreen_on: bool) -> None:
-        """Toggle window fullscreen (F11). Bỏ menu + dock + status."""
+        """Toggle window fullscreen (F11). Hides menu + dock + status."""
         self._fullscreen = bool(fullscreen_on)
         if self._fullscreen:
             self.showFullScreen()
@@ -4013,15 +4012,15 @@ class GP7AppQt(
             self.showNormal()
 
     # ══════════════════════════════════════════════════════════════════
-    # Menu checkbox sync — đồng bộ khi user thay đổi qua route khác
-    # (vd. close dock bằng X title bar, hoặc thoát fullscreen bằng Esc)
+    # Menu checkbox sync — sync when user changes state via another route
+    # (e.g. close dock via X title bar, or exit fullscreen via Esc)
     # ══════════════════════════════════════════════════════════════════
-    # ── Cụm tab trái: giữ thứ tự tab Cell | Control | Program | Camera ──
-    # Khi bật 1 panel, sắp lại tab các panel ĐANG MỞ theo thứ tự chuẩn này
-    # ⇒ panel mở sau nằm tab bên PHẢI. CHỈ dùng tabifyDockWidget (không
-    # splitDockWidget/resizeDocks nên KHÔNG vỡ layout/viewport).
+    # ── Left tab group: maintain tab order Cell | Control | Program | Camera ──
+    # When enabling a panel, re-order tabs of all OPEN panels per the standard order
+    # ⇒ newly opened panel's tab is to the RIGHT. ONLY uses tabifyDockWidget (no
+    # splitDockWidget/resizeDocks so layout/viewport is NOT broken).
     def _group_docks_ordered(self) -> list:
-        """Các dock cụm trái theo thứ tự tab chuẩn (trái→phải), bỏ None."""
+        """Left dock group in standard tab order (left→right), excluding None."""
         return [d for d in (getattr(self, "_cell_tree_dock", None),
                             getattr(self, "_jog_dock", None),
                             getattr(self, "_program_dock", None),
@@ -4030,15 +4029,15 @@ class GP7AppQt(
                 if d is not None]
 
     def _open_dock_tab(self, dock, show: bool) -> None:
-        """Bật/tắt 1 panel cụm trái. Khi BẬT: sắp tab các panel đang mở theo
-        thứ tự chuẩn (Cell|Control|Program|Camera) rồi raise panel vừa bật ⇒
-        tab của nó nằm bên phải các panel mở trước. Khi TẮT: ẩn panel."""
+        """Enable/disable a left dock panel. When ENABLING: re-order tabs of open panels
+        per standard order (Cell|Control|Program|Camera) then raise the just-enabled panel ⇒
+        its tab sits to the right of previously open panels. When DISABLING: hide the panel."""
         if not show:
             dock.setVisible(False)
             return
         dock.setVisible(True)
-        # Sắp lại tab: tabify lần lượt theo thứ tự chuẩn các panel đang mở
-        # (không floating). tabifyDockWidget(a, b) đặt b ngay phải a.
+        # Re-order tabs: tabify sequentially in standard order for open panels
+        # (not floating). tabifyDockWidget(a, b) places b immediately right of a.
         ordered = [d for d in self._group_docks_ordered()
                    if d.isVisible() and not d.isFloating()]
         for prev, cur in zip(ordered, ordered[1:]):
@@ -4046,18 +4045,18 @@ class GP7AppQt(
         dock.raise_()
 
     def _connect_group_dock_redock(self) -> None:
-        """Nối topLevelChanged cho mọi panel cụm trái: khi panel THÔI NỔI
-        (kéo cửa sổ nổi thả về dock area), tự gộp lại vào tab group cũ —
-        Qt mặc định dock nó ra khu riêng, không quay về group."""
+        """Connect topLevelChanged for all left dock panels: when a panel STOPS FLOATING
+        (dragged floating window dropped back into dock area), auto-merge it back into the tab group —
+        Qt by default docks it to a separate area, not returning to the group."""
         for d in self._group_docks_ordered():
             d.topLevelChanged.connect(
                 lambda floating, dock=d: self._on_group_dock_floated(
                     dock, floating))
 
     def _on_group_dock_floated(self, dock, floating: bool) -> None:
-        """floating=False ⇒ panel vừa được thả về dock area → tabify lại vào
-        group. Defer qua singleShot để Qt hoàn tất drop trước khi mình sắp tab
-        (re-tabify ngay trong handler dễ gây trạng thái layout lỗi)."""
+        """floating=False ⇒ panel just dropped back into dock area → re-tabify into
+        group. Deferred via singleShot so Qt completes the drop before re-ordering tabs
+        (re-tabifying immediately in the handler can cause layout state errors)."""
         if floating:
             return
         QTimer.singleShot(0, lambda: (
@@ -4065,9 +4064,9 @@ class GP7AppQt(
             if dock.isVisible() and not dock.isFloating() else None))
 
     def _apply_active_dock_min(self, active_dock, pref_w: int) -> None:
-        """Min-width ĐỘNG cho nhóm tab trái (jog/cell/program/camera): dock đang
-        active có min = pref_w (không kéo nhỏ hơn, chỉ kéo to ra); các dock còn
-        lại về floor _CELL_DOCK_W để KHÔNG ép vùng rộng khi chúng không active."""
+        """DYNAMIC min-width for the left tab group (jog/cell/program/camera): the active
+        dock gets min = pref_w (cannot shrink below it, only expand); all other docks
+        get floor _CELL_DOCK_W to NOT force a wide region when they are not active."""
         for d in (getattr(self, "_jog_dock", None),
                   getattr(self, "_cell_tree_dock", None),
                   getattr(self, "_program_dock", None),
@@ -4076,8 +4075,8 @@ class GP7AppQt(
                 d.setMinimumWidth(pref_w if d is active_dock else _CELL_DOCK_W)
 
     def _sync_jog_dock_check(self, visible: bool) -> None:
-        """Khi controls panel ẩn/hiện hoặc được raise lên (tab switch) → sync
-        menu tick + min động _JOG_DOCK_W (active không kéo nhỏ) + resize vùng."""
+        """When controls panel is shown/hidden or raised (tab switch) → sync
+        menu tick + dynamic min _JOG_DOCK_W (active cannot shrink) + resize region."""
         if hasattr(self, "_act_jog_dock"):
             self._set_toggle(self._act_jog_dock, bool(visible))
         if visible and hasattr(self, "_jog_dock"):
@@ -4086,8 +4085,8 @@ class GP7AppQt(
                 [self._jog_dock], [_JOG_DOCK_W], Qt.Orientation.Horizontal))
 
     def _sync_prog_dock_check(self, visible: bool) -> None:
-        """Tương tự cho program panel — sync menu tick + min động _PROG_DOCK_W
-        + resize vùng khi program thành active tab (tabified với jog/cell)."""
+        """Same as above for the program panel — sync menu tick + dynamic min _PROG_DOCK_W
+        + resize region when program becomes the active tab (tabified with jog/cell)."""
         if hasattr(self, "_act_prog_dock"):
             self._set_toggle(self._act_prog_dock, bool(visible))
         if visible and hasattr(self, "_program_dock"):
@@ -4096,12 +4095,12 @@ class GP7AppQt(
                 [self._program_dock], [_PROG_DOCK_W], Qt.Orientation.Horizontal))
 
     def _on_prog_tab_changed(self, index: int) -> None:
-        """Co tab area (Add Instruction) theo content của tab đang chọn.
+        """Shrink the tab area (Add Instruction) to the content of the current tab.
 
-        QTabWidget mặc định cao = tab CAO NHẤT (QStackedWidget lấy max sizeHint
-        mọi page) → tab ngắn (vd Motion) thừa khoảng trống dưới. Ép maximumHeight
-        của QTabWidget = sizeHint của page hiện tại + tab bar → vùng co/giãn
-        khớp đúng tab đang xem, space thừa dồn cho program list (stretch=3).
+        QTabWidget defaults to the height of the TALLEST tab (QStackedWidget uses max sizeHint
+        of all pages) → short tabs (e.g. Motion) have excess space below. Set maximumHeight
+        of QTabWidget = current page sizeHint + tab bar → area shrinks/expands
+        to match the viewed tab; spare space goes to the program list (stretch=3).
         """
         tabs = getattr(self, "_prog_tabs", None)
         if tabs is None:
@@ -4109,16 +4108,16 @@ class GP7AppQt(
         cur = tabs.widget(index)
         if cur is None:
             return
-        # page content + tab bar + frame padding (+12 đệm tránh cắt row cuối)
+        # page content + tab bar + frame padding (+12 to avoid clipping the last row)
         h = (cur.sizeHint().height()
              + tabs.tabBar().sizeHint().height() + 12)
         tabs.setMaximumHeight(h)
         tabs.updateGeometry()
 
     def _sync_cell_dock_check(self, visible: bool) -> None:
-        """Tương tự cho Cell components. Cũng force lại width 180px
-        khi dock được show lại — Qt mặc định stretch dock back to fill area
-        sau khi setVisible(True), không restore size cũ."""
+        """Same as above for the Cell components dock. Also forces width back to 180px
+        when the dock is shown again — Qt by default stretches the dock to fill the area
+        after setVisible(True), not restoring the previous size."""
         if hasattr(self, "_act_cell_dock"):
             self._set_toggle(self._act_cell_dock, bool(visible))
         if visible and hasattr(self, "_cell_tree_dock"):
@@ -4127,7 +4126,7 @@ class GP7AppQt(
                 [self._cell_tree_dock], [_CELL_DOCK_W], Qt.Orientation.Horizontal))
 
     def changeEvent(self, event) -> None:
-        """Bắt window state change (Esc thoát fullscreen, maximize, v.v.) →
+        """Catch window state changes (Esc exits fullscreen, maximize, etc.) →
         sync menu Fullscreen tick state.
         """
         super().changeEvent(event)
@@ -4144,8 +4143,8 @@ class GP7AppQt(
     # ══════════════════════════════════════════════════════════════════
 
     def _apply_joints_main(self, joints_deg: list[float]) -> None:
-        """Main-thread slot: cập nhật joint state + actor transforms + readouts.
-        Robot phải đã load — nếu None thì skip im lặng (no-op)."""
+        """Main-thread slot: update joint state + actor transforms + readouts.
+        Robot must be loaded — if None, skip silently (no-op)."""
         if self._model is None:
             return
         self._joints = list(joints_deg)
@@ -4154,20 +4153,20 @@ class GP7AppQt(
         self._refresh_pose_readout()
 
     def _render_scene_frame(self, joints_deg: list[float]) -> None:
-        """Compute FK qua link_frames_urdf → SetUserMatrix mỗi link actor.
+        """Compute FK via link_frames_urdf → SetUserMatrix on each link actor.
 
-        Perf: cache FK result vào self._cached_frames để _update_dynamic_frames
-        reuse (tránh 2-3 lần link_frames_urdf/frame). Cache invalidate qua
-        tuple key joints (immutable hash).
-        Bug fix B2: nếu move_widget đang active trên actor nào, skip update
-        actor đó (widget cần own UserMatrix).
+        Perf: cache FK result in self._cached_frames for _update_dynamic_frames
+        to reuse (avoids 2-3 repeated link_frames_urdf/frame calls). Cache invalidated by
+        joints tuple key (immutable hash).
+        Bug fix B2: if move_widget is active on any actor, skip updating
+        that actor (widget needs to own UserMatrix).
         """
         if self._model is None:
             return
-        # FK cache key BAO GỒM id(model) — nếu model rebuild (vd auto-lift
-        # robot khi add pedestal, _set_robot_base_z rebuild gp7_urdf), key
-        # khác ⇒ cache miss ⇒ recompute với base mới. KHÔNG có id(model)
-        # thì cache trả frames cũ ⇒ mesh render ở vị trí lệch.
+        # FK cache key INCLUDES id(model) — if model is rebuilt (e.g. auto-lift
+        # robot when adding pedestal, _set_robot_base_z rebuilds gp7_urdf), key
+        # differs ⇒ cache miss ⇒ recompute with new base. WITHOUT id(model)
+        # the cache returns stale frames ⇒ mesh renders at wrong position.
         jk = (id(self._model), tuple(round(q, 4) for q in joints_deg))
         cached = getattr(self, "_cached_fk", None)
         if cached is not None and cached[0] == jk:
@@ -4177,14 +4176,14 @@ class GP7AppQt(
                 self._model, [math.radians(q) for q in joints_deg]))
             self._cached_fk = (jk, frames)
         self._cached_frames = frames
-        # Actor đang được move widget control — skip FK override
+        # Actor currently controlled by move widget — skip FK override
         move_target_name = (self._move_target[2]
                             if getattr(self, "_move_target", None)
                             else None)
         for link_key, actor in self._link_actors.items():
             if link_key == move_target_name:
                 continue
-            # gripper bám link_tool0
+            # gripper follows link_tool0
             frame_key = "link_tool0" if link_key == "gripper" else link_key
             T = frames.get(frame_key)
             if T is None:
@@ -4194,7 +4193,7 @@ class GP7AppQt(
             try:
                 actor.SetUserMatrix(_numpy_to_vtk_matrix(Tm))
             except Exception as e:                          # noqa: BLE001
-                logger.debug("SetUserMatrix lỗi (%s): %s", link_key, e)
+                logger.debug("SetUserMatrix error (%s): %s", link_key, e)
         # Object follow gripper
         T_tool0_mm = frames.get("link_tool0")
         if T_tool0_mm is not None:
@@ -4210,13 +4209,13 @@ class GP7AppQt(
                     obj["actor"].SetUserMatrix(
                         _numpy_to_vtk_matrix(obj["world_T"]))
                 except Exception as e:                      # noqa: BLE001
-                    logger.debug("Object SetUserMatrix lỗi (%s): %s", name, e)
+                    logger.debug("Object SetUserMatrix error (%s): %s", name, e)
         # Update visible frame triads (joint_N, tool, flange — these depend on joints)
         self._update_dynamic_frames()
         self._plotter.render()
 
-    # Throttle animation render rate. 30Hz đủ smooth (mắt nhận ~24Hz là phim),
-    # ít hơn render() invocation 25% so với 40Hz.
+    # Throttle animation render rate. 30Hz is smooth enough (eye perceives ~24Hz as film),
+    # 25% fewer render() invocations than 40Hz.
     _ANIM_MAX_FPS: float = 30.0
 
     def _animate_to(self, end_deg: list[float], steps: int = 36, dt: float = 0.02,
@@ -4224,8 +4223,8 @@ class GP7AppQt(
                      pause_event: threading.Event | None = None) -> None:
         """Worker-thread slerp animation: emit joints_update per frame.
 
-        Honors stop_event (abort) và pause_event (block while set).
-        Throttle: skip emit nếu chưa đủ 1/_ANIM_MAX_FPS từ frame trước → giảm
+        Honors stop_event (abort) and pause_event (block while set).
+        Throttle: skip emit if less than 1/_ANIM_MAX_FPS since last frame → reduces
         Qt event queue + VTK render() load.
         """
         start = list(self._joints)
@@ -4242,8 +4241,8 @@ class GP7AppQt(
                     time.sleep(0.05)
             t = s / steps
             frame = [start[k] + (end_deg[k] - start[k]) * t for k in range(n)]
-            # Emit chỉ khi đủ throttle interval HOẶC final frame (đảm bảo
-            # arrive exactly at target).
+            # Emit only when throttle interval elapsed OR final frame (ensures
+            # arrival exactly at target).
             now = time.monotonic()
             is_final = (s == steps)
             if is_final or (now - last_emit_t) >= min_emit_dt:
@@ -4256,8 +4255,8 @@ class GP7AppQt(
     # ══════════════════════════════════════════════════════════════════
 
     def _refresh_joint_sliders(self) -> None:
-        # Perf P7: skip nếu value không đổi (tránh blockSignals + setValue
-        # round-trip cho mỗi tick animation, mỗi joint).
+        # Perf P7: skip if value unchanged (avoids blockSignals + setValue
+        # round-trip for every animation tick, every joint).
         for i, slider in enumerate(self._joint_sliders):
             new_val = int(self._joints[i] * 100)
             if slider.value() != new_val:
@@ -4269,20 +4268,20 @@ class GP7AppQt(
                 self._joint_value_lbls[i].setText(new_text)
 
     def _fill_pose_row(self, labels: list[QLabel], T: np.ndarray) -> None:
-        """Cập nhật 6 colored labels (X/Y/Z/Rx/Ry/Rz) từ matrix 4x4.
-        Format CHỈ giá trị (không "X:" prefix) — narrow cells."""
+        """Update 6 colored labels (X/Y/Z/Rx/Ry/Rz) from a 4x4 matrix.
+        Format: value ONLY (no "X:" prefix) — narrow cells."""
         x, y, z, rx, ry, rz = _matrix_to_xyz_rpy_deg(T)
         for lbl, v in zip(labels, (x, y, z, rx, ry, rz)):
             lbl.setText(f"{v:.3f}")
 
     def _refresh_pose_readout(self) -> None:
-        # Tool / Flange (static — chỉ đổi khi đổi Tool combo)
+        # Tool / Flange (static — only changes when Tool combo changes)
         T_flange_tool = self._tool_frames[self._tool_idx][1]
         self._fill_pose_row(self._tool_pose_lbls, T_flange_tool)
-        # Reference / Base (static — chỉ đổi khi đổi Ref combo)
+        # Reference / Base (static — only changes when Ref combo changes)
         T_base_ref = self._ref_frames[self._ref_idx][1]
         self._fill_pose_row(self._ref_pose_lbls, T_base_ref)
-        # Tool / Reference (live — phụ thuộc joint state)
+        # Tool / Reference (live — depends on joint state)
         T_world_tool = self._current_tool_world()
         if T_world_tool is not None:
             T_world_base = np.eye(4); T_world_base[:3, 3] = self._base_xyz
@@ -4292,12 +4291,12 @@ class GP7AppQt(
 
     # ── Other configurations (IK branches) ────────────────────────────
     def _compute_configurations(self) -> list[dict]:
-        """8 robot configs (Pieper analytical, gắn nhãn posture flags) cho TCP
-        pose hiện tại. Trả về list dict. Empty nếu unreachable.
+        """8 robot configs (Pieper analytical, labelled with posture flags) for the
+        current TCP pose. Returns list of dicts. Empty if unreachable.
 
-        Perf P8: cache result theo TCP pose tuple — nếu pose chưa đổi, reuse
-        cache thay vì gọi lại Pieper IK (~20-50ms). Invalidate khi tool_idx
-        đổi hoặc joints đổi (T derived).
+        Perf P8: cache result by TCP pose tuple — if pose unchanged, reuse
+        cache instead of calling Pieper IK again (~20-50ms). Invalidate when tool_idx
+        changes or joints change (T is derived).
         """
         T = self._current_tool_world()
         if T is None:
@@ -4305,7 +4304,7 @@ class GP7AppQt(
         T_flange_tool = self._tool_frames[self._tool_idx][1]
         T_target_tool0 = T @ np.linalg.inv(T_flange_tool)
         # Cache key: round T_target_tool0 elements + tool_idx
-        # (rounded để hash stable, tránh float-equality flakiness)
+        # (rounded for stable hash, avoids float-equality flakiness)
         key = (tuple(round(v, 4) for v in T_target_tool0.ravel()),
                self._tool_idx)
         cached = getattr(self, "_pieper_cache", None)
@@ -4330,8 +4329,8 @@ class GP7AppQt(
         )
 
     def _on_find_alternates(self) -> None:
-        """List 8 robot configurations cho TCP pose hiện tại (Pieper analytical).
-        Mỗi entry gắn nhãn posture flags (Front/Rear · Up/Down · Flip/Non-Flip).
+        """List 8 robot configurations for the current TCP pose (Pieper analytical).
+        Each entry labelled with posture flags (Front/Rear · Up/Down · Flip/Non-Flip).
         """
         cfgs = self._compute_configurations()
         self._alt_solutions = [c["joints_deg"] for c in cfgs]
@@ -4356,10 +4355,10 @@ class GP7AppQt(
             self._set_status(f"Switched to configuration #{i+1}", level="ok")
 
     def _show_configurations_dlg(self) -> None:
-        """Dialog 'Robot Configurations' giống RoboDK — bảng config + bộ lọc
+        """'Robot Configurations' dialog like RoboDK — config table + filters
         Front/Rear · Elbow Up/Down · Flip/Non-Flip + Show all / Recommended /
-        Config.id. Cờ hiển thị bằng chấm xanh(primary)/xám(other) như RoboDK.
-        Double-click / Ok → áp dụng config.
+        Config.id. Flags shown as green(primary)/grey(other) dots like RoboDK.
+        Double-click / Ok → apply config.
         """
         cfgs = self._compute_configurations()
         if not cfgs:
@@ -4376,7 +4375,7 @@ class GP7AppQt(
         dlg.setMinimumWidth(620)
         v = QVBoxLayout(dlg)
 
-        # ── Top: 3 filter groups (trái) + Show all/Recommended/Config.id (phải) ──
+        # ── Top: 3 filter groups (left) + Show all/Recommended/Config.id (right) ──
         top = QHBoxLayout()
         groups = {
             "fr": ("Front/Rear",
@@ -4391,9 +4390,9 @@ class GP7AppQt(
 
         def _on_posture_change(key: str, val):
             self._cfg_filter[key] = val
-            # Đổi radio → reset id filter về joined (đại diện cho "tất cả id
-            # khớp posture"). Nếu giữ id cũ, user click "Both" sẽ tưởng mở rộng
-            # nhưng table vẫn dính id cũ → confusing.
+            # Radio changed → reset id filter to joined (representing "all ids
+            # matching posture"). Keeping the old id would make clicking "Both" seem to
+            # broaden the filter but the table still pins the old id → confusing.
             self._cfg_filter["id"] = None
             _rebuild_id_combo()
             _refill()
@@ -4418,10 +4417,10 @@ class GP7AppQt(
         rcol.addWidget(btn_all); rcol.addWidget(btn_rec)
         idrow = QHBoxLayout()
         idrow.addWidget(QLabel("Config. id"))
-        # Read-only combo (dẫn xuất từ posture giống RoboDK). userData là
-        # frozenset[int] các id thoả posture; user chỉ có thể chọn 1 id trong
-        # tập đó để thu hẹp thêm — KHÔNG gõ tay. Nội dung sẽ được
-        # `_rebuild_id_combo()` cập nhật mỗi khi F/R · U/D · F/N đổi.
+        # Read-only combo (derived from posture like RoboDK). userData is
+        # frozenset[int] of ids satisfying posture; user can only pick 1 id from
+        # that set to narrow further — NOT editable. Content is updated by
+        # `_rebuild_id_combo()` each time F/R · U/D · F/N changes.
         id_combo = QComboBox(); id_combo.setEditable(False)
         idrow.addWidget(id_combo, 1)
         rcol.addLayout(idrow)
@@ -4446,12 +4445,12 @@ class GP7AppQt(
             hh.setSectionResizeMode(c, QHeaderView.ResizeMode.ResizeToContents)
         v.addWidget(table)
 
-        # Font lớn cho chấm trạng thái — dễ phân biệt xanh/xám hơn ký tự ●
-        # mặc định (gần với UX của bảng config trong RoboDK).
+        # Large font for status dots — easier to distinguish green/grey than default ●
+        # character (closer to RoboDK config table UX).
         _dot_font = QFont(); _dot_font.setPointSize(18); _dot_font.setBold(True)
 
         def _dot(on: bool) -> QTableWidgetItem:
-            # Xanh = trạng thái primary (Front/Up/NoFlip), xám = ngược lại.
+            # Green = primary state (Front/Up/NoFlip), grey = opposite.
             it = QTableWidgetItem("●")
             it.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             it.setForeground(QColor("#2da44e") if on else QColor("#5a5a5a"))
@@ -4483,7 +4482,7 @@ class GP7AppQt(
                 table.selectRow(0)
         _refill()
 
-        # ── Show all: reset HẾT (3 radios về Both + id về joined) ──
+        # ── Show all: reset EVERYTHING (3 radios → Both + id → joined) ──
         def _show_all():
             for k in ("fr", "ud", "fn"):
                 self._cfg_filter[k] = None
@@ -4493,16 +4492,16 @@ class GP7AppQt(
             _refill()
         btn_all.clicked.connect(_show_all)
 
-        # ── Recommended: chọn config có thời gian di chuyển ngắn nhất ──
-        # (giống RoboDK): các trục chạy song song nên T_move = max_i(|Δθᵢ|/v_maxᵢ).
-        # v_max theo Yaskawa GP7 datasheet (deg/s) — trục lớn chậm hơn nên có
-        # "weight" cao hơn (1/v_max lớn hơn).
+        # ── Recommended: pick config with the shortest move time ──
+        # (like RoboDK): axes run in parallel so T_move = max_i(|Δθᵢ|/v_maxᵢ).
+        # v_max per Yaskawa GP7 datasheet (deg/s) — larger axes are slower so have
+        # higher "weight" (1/v_max is larger).
         _v_max_dps = (220.0, 200.0, 220.0, 410.0, 410.0, 610.0)  # J1..J6
 
         def _recommend():
-            # Pick từ TOÀN BỘ cfgs (không phụ thuộc filter hiện tại) — kể cả
-            # khi radios đang lọc ra table rỗng, Recommended vẫn tìm được
-            # config tốt nhất và auto-snap UI về config đó.
+            # Pick from ALL cfgs (independent of current filter) — even
+            # when radios filter to an empty table, Recommended still finds
+            # the best config and auto-snaps the UI to it.
             if not cfgs:
                 return
             cur = self._joints
@@ -4510,10 +4509,10 @@ class GP7AppQt(
                 cfgs,
                 key=lambda c: max(abs(a - b) / v for a, b, v in
                                   zip(c["joints_deg"], cur, _v_max_dps)))
-            # Sync combo+radios sang id của best (tương đương user pick id):
-            # setCurrentIndex fire _on_id_index ⇒ auto-link radios + refilter.
+            # Sync combo+radios to best id (equivalent to user picking the id):
+            # setCurrentIndex fires _on_id_index ⇒ auto-link radios + refilter.
             id_combo.setCurrentIndex(1 + best_cfg["id"])
-            # Sau refilter, tìm lại đúng dòng (J6 turn variant) và select.
+            # After refilter, find the correct row (J6 turn variant) and select.
             new_shown = getattr(table, "_shown", [])
             for r, c in enumerate(new_shown):
                 if c["joints_deg"] == best_cfg["joints_deg"]:
@@ -4521,13 +4520,13 @@ class GP7AppQt(
                     break
         btn_rec.clicked.connect(_recommend)
 
-        # Combo gồm 9 items:
-        #   • item 0 = "joined" — danh sách id implied bởi posture (text varies
-        #     theo radios, vd Rear+Both+Both ⇒ "4,5,6,7"). Đây là Config.id
-        #     "tương ứng" với trạng thái radio hiện tại.
-        #   • item 1..8 = 0..7 cố định — user luôn có thể pick 1 id bất kỳ;
-        #     auto-link sẽ snap radios theo bit của id.
-        # Bidirectional binding: radio đổi → joined text + selection refresh;
+        # Combo has 9 items:
+        #   • item 0 = "joined" — list of ids implied by posture (text varies
+        #     with radios, e.g. Rear+Both+Both ⇒ "4,5,6,7"). This is the Config.id
+        #     "corresponding" to the current radio state.
+        #   • item 1..8 = 0..7 fixed — user can always pick any id;
+        #     auto-link will snap radios to the id's bits.
+        # Bidirectional binding: radio changes → joined text + selection refresh;
         # combo pick → radios snap.
         def _rebuild_id_combo():
             f = self._cfg_filter
@@ -4553,10 +4552,10 @@ class GP7AppQt(
             id_combo.blockSignals(False)
             self._cfg_filter["id"] = id_combo.currentData()
 
-        # User chỉ chọn từ dropdown — userData là frozenset[int]. Khi pick 1
-        # id cụ thể (frozenset có 1 phần tử) thì **auto-link** posture radios
-        # theo bit của id (giống RoboDK): id=7 (bits 111) ⇒ Rear/Down/Flip.
-        # Picking item "joined set" (vd "0,1,2,3,4,5,6,7") thì không đụng radios.
+        # User selects from dropdown only — userData is frozenset[int]. Picking a specific
+        # id (frozenset with 1 element) **auto-links** posture radios
+        # to the id's bits (like RoboDK): id=7 (bits 111) ⇒ Rear/Down/Flip.
+        # Picking the "joined set" item (e.g. "0,1,2,3,4,5,6,7") leaves radios unchanged.
         def _set_radio(key: str, target_val):
             bg = self._cfg_radio_groups[key]
             btn_idx = 0 if target_val is True else (1 if target_val is False else 2)
@@ -4580,14 +4579,14 @@ class GP7AppQt(
                 _set_radio("fn", new_fn)
                 auto_linked = True
             self._cfg_filter["id"] = data
-            # Sau auto-link, combo cần rebuild theo posture mới (vd Rear/Down/Flip
-            # ⇒ chỉ còn id=7). _rebuild_id_combo block tín hiệu nên không recurse.
+            # After auto-link, combo must rebuild for the new posture (e.g. Rear/Down/Flip
+            # ⇒ only id=7 remains). _rebuild_id_combo blocks signals so no recursion.
             if auto_linked:
                 _rebuild_id_combo()
             _refill()
         id_combo.currentIndexChanged.connect(_on_id_index)
 
-        # Lần đầu mở dialog: dựng combo từ tập đầy đủ (chưa có posture filter).
+        # First open: build combo from full set (no posture filter yet).
         _rebuild_id_combo()
 
         def _apply_selected():
@@ -4659,9 +4658,9 @@ class GP7AppQt(
     # ══════════════════════════════════════════════════════════════════
     def _compute_reach_envelope_mesh(self, mode: str):
         """Compute reach envelope:
-          • Outer = convex hull của wrist 2D positions, revolve quanh J1
-                    Z axis qua J1 range [-170°, +170°] (slit phía sau).
-          • Inner = simple sphere tại elbow position khi J2 = +145° URDF
+          • Outer = convex hull of wrist 2D positions, revolved around J1
+                    Z axis over J1 range [-170°, +170°] (slit at the rear).
+          • Inner = simple sphere at elbow position when J2 = +145° URDF
                     (Yaskawa "deep negative"), centered on J1 axis at
                     elbow Z height.
         """
@@ -4759,8 +4758,8 @@ class GP7AppQt(
 
         # ── INNER: REACHABLE zone cho specific IK configuration.
         # Forum: "inner sphere = dead zone for robot in specific config"
-        # ⇒ Implement: boundary của REGION reachable với 1 config (vd id=0:
-        # Front+Up+NoFlip). Region nhỏ → inner sphere nhỏ → match SDK.png.
+        # ⇒ Implement: boundary of the REGION reachable with 1 config (e.g. id=0:
+        # Front+Up+NoFlip). Smaller region → smaller inner sphere → matches SDK.png.
         try:
             from ..kinematics.pieper_gp7 import (
                 inverse_kinematics_pieper_gp7_tagged,
@@ -4860,11 +4859,11 @@ class GP7AppQt(
     # ══════════════════════════════════════════════════════════════════
     # Show Frames (triad axes per frame)
     # ══════════════════════════════════════════════════════════════════
-    # Default 0.12m; resize qua View > Visibility > Reference frames ± .
-    # Instance attr (không class const) để resize động.
+    # Default 0.12m; resized via View > Visibility > Reference frames ± .
+    # Instance attr (not class const) for dynamic resize.
 
     def _on_show_frames_all(self, state: int) -> None:
-        """All/None toggle — set tất cả frame checkbox theo state."""
+        """All/None toggle — set all frame checkboxes to state."""
         checked = bool(state)
         for cb in self._frame_checks.values():
             cb.blockSignals(True)
@@ -4884,10 +4883,10 @@ class GP7AppQt(
         self._add_frame_triad(key, T)
 
     def _frame_world_matrix(self, key: str) -> np.ndarray | None:
-        """Tính world transform (meters) cho frame key. Returns None nếu N/A.
+        """Compute world transform (meters) for frame key. Returns None if N/A.
 
-        Perf P2: reuse self._cached_frames nếu joints state khớp (đã compute
-        trong _render_scene_frame cùng tick) — tránh recompute FK chain.
+        Perf P2: reuse self._cached_frames if joints state matches (already computed
+        in _render_scene_frame same tick) — avoids recomputing the FK chain.
         """
         # Base = robot base position (no rotation)
         T_world_base = np.eye(4); T_world_base[:3, 3] = self._base_xyz
@@ -4936,12 +4935,12 @@ class GP7AppQt(
         s = self._frame_triad_size                          # resizable instance attr
         actor.SetTotalLength(s, s, s)
         actor.SetShaftType(0)                              # cylinder
-        # Cùng proportions với world axes — base + tool đồng nhất, dày RGB.
+        # Same proportions as world axes — base + tool consistent, thick RGB.
         actor.SetCylinderRadius(0.035)
         actor.SetConeRadius(0.55)
         actor.SetConeResolution(24)
-        # Force OFF labels — SetVisibility(False) trên caption không có hiệu
-        # lực trong VTK 9.x. Clear text là cách chắc chắn.
+        # Force OFF labels — SetVisibility(False) on caption has no effect
+        # in VTK 9.x. Clearing text is the reliable approach.
         actor.SetXAxisLabelText("")
         actor.SetYAxisLabelText("")
         actor.SetZAxisLabelText("")
@@ -4969,7 +4968,7 @@ class GP7AppQt(
                 pass
 
     def _update_dynamic_frames(self) -> None:
-        """Khi robot move → update transform cho mọi frame triad đang visible."""
+        """When robot moves → update transform for all currently visible frame triads."""
         for key in list(self._frame_actors.keys()):
             T = self._frame_world_matrix(key)
             if T is not None:
@@ -4988,9 +4987,9 @@ class GP7AppQt(
             self._on_rotate(axis, sign)
 
     def _start_continuous_jog(self, mode: str, axis: int, sign: int) -> None:
-        """Press-hold continuous jog — auto-fire mỗi 120ms cho tới khi released."""
+        """Press-hold continuous jog — auto-fires every 120ms until released."""
         self._jog_active = (mode, axis, sign)
-        # Delay 250ms trước khi auto-fire (tránh trigger khi user chỉ click)
+        # Delay 250ms before auto-fire (avoids triggering on a simple click)
         QTimer.singleShot(250, self._jog_timer.start)
 
     def _stop_continuous_jog(self) -> None:
@@ -4998,16 +4997,16 @@ class GP7AppQt(
         self._jog_timer.stop()
 
     # ── Circular jog dial (QDial) — rotary encoder semantics ──────────
-    # Mỗi DIAL_DEG_PER_STEP độ xoay qua = 1 jog step. Persistent vị trí
-    # (không snap về 0 khi release chuột).
-    DIAL_DEG_PER_STEP = 30                                  # độ/step
+    # Every DIAL_DEG_PER_STEP degrees of rotation = 1 jog step. Persistent position
+    # (does not snap to 0 on mouse release).
+    DIAL_DEG_PER_STEP = 30                                  # degrees/step
 
     def _on_dial_value_changed(self, v: int) -> None:
-        """Tính delta angle (xử lý wrap 0↔359) → accumulate → fire jog mỗi
-        khi vượt qua DIAL_DEG_PER_STEP. Axis + sign theo radio đã chọn.
+        """Compute delta angle (handles wrap 0↔359) → accumulate → fire jog each
+        time DIAL_DEG_PER_STEP is exceeded. Axis + sign from selected radio.
         """
         delta = v - self._last_dial_value
-        # Wrap-around handling: 358° → 1° là +3°, không phải −357°.
+        # Wrap-around handling: 358° → 1° is +3°, not −357°.
         if delta > 180:
             delta -= 360
         elif delta < -180:
@@ -5015,7 +5014,7 @@ class GP7AppQt(
         self._last_dial_value = v
         self._dial_accumulator += delta
 
-        # Fire jog cho mỗi STEP_THRESHOLD độ đã accumulate
+        # Fire jog for each STEP_THRESHOLD degrees accumulated
         while abs(self._dial_accumulator) >= self.DIAL_DEG_PER_STEP:
             sign = +1 if self._dial_accumulator > 0 else -1
             self._dial_accumulator -= sign * self.DIAL_DEG_PER_STEP
@@ -5073,10 +5072,10 @@ class GP7AppQt(
 
     def _solve_cartesian(self, T_world_tool_target,
                           seeded: bool = True) -> list[float] | None:
-        """IK cho 1 TCP target (Tool frame, world) → joints rad hoặc None.
+        """IK for one TCP target (Tool frame, world) → joints in rad or None.
 
-        seeded=True: thử nhiều seed (bền, dùng cho target mới). seeded=False:
-        1 lần DLS từ joints hiện tại (nhanh, dùng trong bisection jog liên tục).
+        seeded=True: tries multiple seeds (robust, used for new targets). seeded=False:
+        single DLS from current joints (fast, used in continuous bisection jog).
         """
         T_flange_tool = self._tool_frames[self._tool_idx][1]
         T_world_tool0 = T_world_tool_target @ np.linalg.inv(T_flange_tool)
@@ -5090,7 +5089,7 @@ class GP7AppQt(
             tol_mm=0.5, tol_rad=1e-3, max_iter=100)
 
     def _limit_blocker(self, sol_rad, tol_deg: float = 1.5) -> str | None:
-        """Mô tả khớp đang chạm giới hạn trong nghiệm (None nếu không có)."""
+        """Describe the joint at limit in the solution (None if none at limit)."""
         for i, qr in enumerate(sol_rad):
             d = math.degrees(qr)
             lo = math.degrees(self._model.joints[i].joint_min)
@@ -5101,27 +5100,27 @@ class GP7AppQt(
                 return f"θ{i+1} at limit {lo:.0f}°"
         return None
 
-    # Ngưỡng manipulability cảnh báo singularity (hiệu chỉnh cho GP7:
-    # khỏe ~0.07-0.08, gần singularity < 0.01). Xem kinematics.manipulability().
+    # Manipulability threshold for singularity warning (tuned for GP7:
+    # healthy ~0.07-0.08, near singularity < 0.01). See kinematics.manipulability().
     _W_SINGULAR = 0.01
 
     def _jog_cartesian(self, target_at, full_amount: float, unit: str,
                         label: str) -> None:
-        """Jog Cartesian theo chuẩn industrial:
+        """Jog Cartesian per industrial convention:
 
-          1. **Giữ cấu hình** — dùng local IK (seed = joints hiện tại), KHÔNG
-             reseed random → không nhảy branch / lật cổ tay đột ngột.
-          2. **Dừng ở giới hạn khớp** — full step fail thì bisection tìm phần
-             lớn nhất đạt được (jog tới sát limit như teach pendant thật) +
-             báo khớp nào chặn.
-          3. **Cảnh báo singularity** — manipulability w < ngưỡng (wrist θ5≈0,
-             tay duỗi hết tầm…) → cảnh báo dù jog thành công (controller thật
-             giảm tốc / báo gần singularity).
+          1. **Hold configuration** — use local IK (seed = current joints), NO
+             random reseeding → no branch jumping / sudden wrist flip.
+          2. **Stop at joint limit** — if full step fails, bisection finds the
+             largest achievable fraction (jog up to the limit like a real teach pendant) +
+             reports which joint blocked.
+          3. **Singularity warning** — manipulability w < threshold (wrist θ5≈0,
+             arm fully extended…) → warn even if jog succeeds (real controller
+             decelerates / reports near singularity).
         """
         q_now = [math.radians(q) for q in self._joints]
         w_now = manipulability(self._model, q_now)
 
-        # 1+3. Full step bằng local IK (config-continuous).
+        # 1+3. Full step via local IK (config-continuous).
         sol = self._solve_cartesian(target_at(1.0), seeded=False)
         if sol is not None:
             self._apply_joints_main([math.degrees(q) for q in sol])
@@ -5135,7 +5134,7 @@ class GP7AppQt(
                 self._set_status(f"{label} {full_amount:.1f}{unit}", level="ok")
             return
 
-        # 2. Bisection: max reachable fraction, vẫn local IK (giữ branch).
+        # 2. Bisection: max reachable fraction, still local IK (hold branch).
         lo_f, hi_f, best = 0.0, 1.0, None
         for _ in range(14):
             mid = 0.5 * (lo_f + hi_f)
@@ -5145,7 +5144,7 @@ class GP7AppQt(
             else:
                 hi_f = mid
         if best is None or lo_f < 0.02:
-            # Không jog được kể cả bước nhỏ → phân loại nguyên nhân.
+            # Cannot jog even a small step → classify the cause.
             cause = ("near singularity — change orientation or jog joints out of "
                      "the singularity first" if w_now < self._W_SINGULAR
                      else "out of reach / joint limits exceeded")
@@ -5160,7 +5159,7 @@ class GP7AppQt(
             f"stopped by {blk}", level="warn")
 
     def _apply_cartesian_target(self, T_world_tool_target, source: str) -> None:
-        """1-shot Cartesian target (paste / teach) — không interpolate."""
+        """1-shot Cartesian target (paste / teach) — no interpolation."""
         sol = self._solve_cartesian(T_world_tool_target)
         if sol is None:
             self._set_status(
@@ -5312,12 +5311,12 @@ class GP7AppQt(
         self._prog_list.clear()
         if not self._program:
             self._prog_list.addItem("(empty)"); return
-        # Track modal state (speed/PL/tool/uframe) theo thứ tự lệnh → move
-        # hiển thị tag INFORM inline đúng giá trị áp dụng tại điểm đó (giống
-        # cách export fold modal vào từng MOV line).
+        # Track modal state (speed/PL/tool/uframe) in command order → move
+        # displays inline INFORM tag with the correct value applied at that point (like
+        # how export folds modal state into each MOV line).
         modal = {"vj": self._pp_default_vj, "v": self._pp_default_v_mms,
                  "pl": None, "tl": None, "uf": None}
-        depth = 0       # độ sâu lồng khối IF/WHILE → thụt lề cho dễ đọc
+        depth = 0       # nesting depth of IF/WHILE blocks → indent for readability
         for i, ins in enumerate(self._program):
             t = ins.type
             if t == "SetSpeed":
@@ -5329,15 +5328,15 @@ class GP7AppQt(
                 modal["tl"] = ins.tool_no
             elif t == "SetRefFrame":
                 modal["uf"] = ins.ref_frame_no
-            # Đóng khối → giảm depth TRƯỚC khi render (keyword về ngang khối mở).
+            # Closing block → decrease depth BEFORE rendering (keyword aligns with opening block).
             if t in ("EndIf", "EndWhile"):
                 depth = max(0, depth - 1)
             line_depth = depth
-            if t in ("ElseIf", "Else"):        # keyword giữa khối lùi 1 nấc
+            if t in ("ElseIf", "Else"):        # mid-block keyword dedented 1 level
                 line_depth = max(0, depth - 1)
             indent = "    " * line_depth
             self._prog_list.addItem(f"{i+1:>2}. {indent}{ins.describe(modal)}")
-            # Mở khối → tăng depth cho các dòng SAU.
+            # Opening block → increase depth for subsequent lines.
             if t in ("IfThen", "While"):
                 depth += 1
 
@@ -5355,8 +5354,8 @@ class GP7AppQt(
         self._set_status(f"Program +MoveL (n={len(self._program)})", level="ok")
 
     def _on_prog_add_setdo(self) -> None:
-        """Generic digital output (DOUT) — thay cho gripper-specific. Phần mềm
-        lập trình tổng quát: control bất kỳ output bit nào (gripper, valve, ...)."""
+        """Generic digital output (DOUT) — replaces gripper-specific. General-purpose
+        programming: control any output bit (gripper, valve, ...)."""
         ins = Instruction(
             type="SetDO",
             do_index=int(self._prog_do_idx.value()),
@@ -5374,7 +5373,7 @@ class GP7AppQt(
 
     # ── Tier-1 new instructions ───────────────────────────────────────
     def _on_prog_add_movec(self) -> None:
-        """2-step: lần 1 click → lưu pose hiện tại làm MID; lần 2 → end +
+        """2-step: first click → store current pose as MID; second click → end +
         commit MoveC instruction."""
         T = self._current_tool_world()
         if T is None: return
@@ -5462,7 +5461,7 @@ class GP7AppQt(
         self._set_status(f"Program +*{name}", level="ok")
 
     def _read_jump_cond(self):
-        """Đọc 3 widget điều kiện → (lhs,op,rhs) | None (uncond) | 'ERR'."""
+        """Read 3 condition widgets → (lhs,op,rhs) | None (uncond) | 'ERR'."""
         op = self._prog_jc_op.currentText()
         if op == "(uncond)":
             return None
@@ -5510,7 +5509,7 @@ class GP7AppQt(
 
     # ── Structured blocks (IF / WHILE) ────────────────────────────────
     def _read_struct_cond(self):
-        """Đọc condition builder của khối structured → (lhs,op,rhs) | None."""
+        """Read structured block condition builder → (lhs,op,rhs) | None."""
         lhs = self._prog_sc_lhs.text().strip()
         rhs = self._prog_sc_rhs.text().strip()
         if not lhs or not rhs:
@@ -5518,7 +5517,7 @@ class GP7AppQt(
         return (lhs, self._prog_sc_op.currentText(), rhs)
 
     def _append_block(self, ins_type: str, need_cond: bool) -> None:
-        """Append 1 lệnh khối; đọc condition nếu need_cond."""
+        """Append one block instruction; read condition if need_cond."""
         kwargs = {}
         if need_cond:
             cond = self._read_struct_cond()
@@ -5553,12 +5552,12 @@ class GP7AppQt(
     def _on_prog_modify(self) -> None:
         """F2 / double-click / Edit button — edit selected instruction.
 
-        Hành vi per-type:
-          • MoveJ/MoveL/MoveC (inline pose) → Replace with current pose (sau
-            confirm). Target-referencing → dialog chọn target khác.
+        Behaviour per type:
+          • MoveJ/MoveL/MoveC (inline pose) → Replace with current pose (after
+            confirm). Target-referencing → dialog to pick another target.
           • SetGripper → flip OPEN/CLOSE.
           • Wait / WaitIO / SetSpeed / SetRounding / SetTool / SetRefFrame /
-            ShowMessage / CallJob → dialog với editable fields.
+            ShowMessage / CallJob → dialog with editable fields.
         """
         idx = self._prog_list.currentRow()
         if idx < 0 or idx >= len(self._program):
@@ -5568,7 +5567,7 @@ class GP7AppQt(
         # ── Motion (inline vs target-ref) ─────────────────────────────
         if t in ("MoveJ", "MoveL"):
             if ins.target_name:
-                # Target-ref → chọn target khác qua combo
+                # Target-ref → pick another target via combo
                 new_name = self._dlg_pick_target(ins.target_name)
                 if new_name is None: return
                 ins.target_name = new_name
@@ -5660,7 +5659,7 @@ class GP7AppQt(
         self._set_status(f"Modified step {idx+1}: {ins.describe()}", level="ok")
 
     def _dlg_pick_target(self, current: str) -> str | None:
-        """QDialog chọn target khác từ list. Return new name hoặc None nếu cancel."""
+        """QDialog to pick another target from the list. Returns new name or None if cancelled."""
         if not self._targets:
             self._set_status("No targets defined", level="warn"); return None
         names = list(self._targets.keys())
@@ -5670,7 +5669,7 @@ class GP7AppQt(
         return v if ok else None
 
     def _dlg_edit_waitio(self, ins: Instruction):
-        """Trả về (io_index, io_state_bool, timeout_s) hoặc None."""
+        """Returns (io_index, io_state_bool, timeout_s) or None."""
         dlg = QDialog(self); dlg.setWindowTitle("Modify WaitIO")
         form = QFormLayout(dlg)
         sp_idx = QSpinBox(); sp_idx.setRange(1, 1024); sp_idx.setValue(ins.io_index)
@@ -5724,8 +5723,8 @@ class GP7AppQt(
     # Robot connection (HSE) — Run on Robot pipeline → ConnectionMixin
 
     def _on_show_script_editor(self) -> None:
-        """Mở Python script editor — user nhập code dùng `p.add_*()` API
-        để generate instructions programmatically. Run → append vào current job.
+        """Open Python script editor — user enters code using `p.add_*()` API
+        to generate instructions programmatically. Run → appends to current job.
         """
         dlg = QDialog(self); dlg.setWindowTitle("Generate from Python script")
         dlg.resize(720, 520)
@@ -5748,7 +5747,7 @@ class GP7AppQt(
         mono = QFont("Consolas"); mono.setStyleHint(QFont.StyleHint.Monospace)
         mono.setPointSize(10)
         editor.setFont(mono)
-        # Restore previous script nếu có
+        # Restore previous script if any
         editor.setPlainText(getattr(self, "_last_script_text", ""))
         lay.addWidget(editor, 1)
         result_lbl = QLabel("")
@@ -5794,7 +5793,7 @@ class GP7AppQt(
         dlg.exec()
 
     def _dlg_edit_simevent(self, ins: Instruction):
-        """Trả về (name, payload) hoặc None."""
+        """Returns (name, payload) or None."""
         dlg = QDialog(self); dlg.setWindowTitle("Modify SimEvent")
         form = QFormLayout(dlg)
         ed_name = QLineEdit(ins.event_name); ed_name.setMaxLength(32)
@@ -5808,7 +5807,7 @@ class GP7AppQt(
         return (ed_name.text().strip()[:32], ed_pl.text().strip()[:80])
 
     def _dlg_edit_setspeed(self, ins: Instruction):
-        """Trả về (vj_pct, v_mm_s) hoặc None."""
+        """Returns (vj_pct, v_mm_s) or None."""
         dlg = QDialog(self); dlg.setWindowTitle("Modify SetSpeed")
         form = QFormLayout(dlg)
         sp_vj = QDoubleSpinBox(); sp_vj.setRange(1.0, 30.0); sp_vj.setSuffix(" %")
@@ -5854,15 +5853,15 @@ class GP7AppQt(
         self, T, default_name: str, prompt_label: str | None = None,
         prompt: bool = True,
     ) -> str | None:
-        """IK cho TCP target T (4×4 world, mm) → (prompt name) → lưu vào library.
+        """IK for TCP target T (4×4 world, mm) → (prompt name) → save to library.
 
-        Dùng chung bởi Teach-on-surface (pick chuột) và camera grasp-teach
-        (pose từ detection). Trả về tên target đã lưu, hoặc None nếu IK fail /
-        user huỷ / tên trùng-không-hợp-lệ. KHÔNG emit "taught" status (caller
-        tự báo, vì văn cảnh khác nhau).
+        Shared by Teach-on-surface (mouse pick) and camera grasp-teach
+        (pose from detection). Returns the saved target name, or None if IK fails /
+        user cancels / name duplicate/invalid. Does NOT emit "taught" status (caller
+        reports it, because context differs).
 
-        prompt=False: bỏ qua dialog hỏi tên, dùng `default_name` (tự thêm hậu
-        tố _2, _3… nếu trùng) — dùng cho target phụ sinh tự động (vd approach)."""
+        prompt=False: skip name dialog, use `default_name` (auto-append suffix
+        _2, _3… on collision) — used for auto-generated auxiliary targets (e.g. approach)."""
         if self._model is None:
             self._set_status(
                 "Robot not loaded — IK needs a robot model", level="warn")
@@ -5914,8 +5913,8 @@ class GP7AppQt(
         self._surface_pick_mode = bool(enabled)
         if enabled:
             try:
-                # Loại mesh robot khỏi pick → chỉ teach trên cell/floor/object,
-                # không click nhầm thân robot (target trên chính mình = vô nghĩa).
+                # Exclude robot mesh from pick → only teach on cell/floor/object,
+                # avoiding accidental clicks on the robot body (target on itself = meaningless).
                 self._set_robot_pickable(False)
                 self._plotter.enable_surface_point_picking(
                     callback=self._on_surface_pick,
@@ -5938,12 +5937,12 @@ class GP7AppQt(
                 self._plotter.disable_picking()
             except Exception:                               # noqa: BLE001
                 pass
-            self._set_robot_pickable(True)                  # khôi phục pick robot
+            self._set_robot_pickable(True)                  # restore robot picking
             self._set_status("Teach on surface OFF", level="ok")
 
     def _set_robot_pickable(self, flag: bool) -> None:
-        """Bật/tắt pickable cho mọi actor robot (link + gripper). Dùng để loại
-        robot khỏi surface-pick (chỉ teach trên cell/floor/object)."""
+        """Enable/disable pickable for all robot actors (links + gripper). Used to exclude
+        robot from surface-pick (teach only on cell/floor/object)."""
         for actor in self._link_actors.values():
             try:
                 actor.SetPickable(bool(flag))
@@ -5951,7 +5950,7 @@ class GP7AppQt(
                 pass
 
     def _on_surface_pick(self, picked_point) -> None:
-        """Callback từ pyvista picker. picked_point in METERS (pyvista internal)."""
+        """Callback from pyvista picker. picked_point in METERS (pyvista internal)."""
         if picked_point is None: return
         if self._model is None:
             self._set_status(
@@ -5960,19 +5959,20 @@ class GP7AppQt(
             return
         pt_m = np.asarray(picked_point, dtype=float)
         pt_mm = pt_m * 1000.0
-        # Lấy surface normal tại pick point từ picked actor (nếu có).
+        # Get surface normal at pick point from the picked actor (if available).
         normal = self._surface_normal_at(pt_m)
         if normal is None:
             normal = np.array([0.0, 0.0, 1.0])              # fallback: assume +Z (floor)
-        # Orient normal về nửa không gian chứa robot base. Mặt phẳng hở (floor/
-        # worktable 1 mặt) có normal nhập nhằng — auto_orient có thể lật → tool
-        # tiếp cận sai phía (vd từ dưới sàn). Robot luôn với từ phía base nên
-        # ép normal hướng về base là căn cứ vật lý đúng cho mọi hướng bề mặt.
+        # Orient normal toward the half-space containing the robot base. Open surfaces (floor/
+        # single-sided worktable) have ambiguous normals — auto_orient may flip → tool
+        # approaches from the wrong side (e.g. from below the floor). Robot always reaches
+        # from the base side so forcing the normal toward the base is the physically correct
+        # anchor for all surface orientations.
         to_base = np.asarray(self._base_xyz, dtype=float) - pt_mm
         if float(np.dot(normal, to_base)) < 0.0:
             normal = -normal
         # Build TCP target: Z_tcp = -normal (tool point INTO surface),
-        # X_tcp = world X projected lên plane vuông góc Z_tcp.
+        # X_tcp = world X projected onto the plane perpendicular to Z_tcp.
         z_tcp = -normal / max(1e-9, np.linalg.norm(normal))
         ref_x = np.array([1.0, 0.0, 0.0])
         if abs(float(np.dot(ref_x, z_tcp))) > 0.99:
@@ -5983,8 +5983,8 @@ class GP7AppQt(
         T = np.eye(4)
         T[:3, 0] = x_tcp; T[:3, 1] = y_tcp; T[:3, 2] = z_tcp
         T[:3, 3] = pt_mm
-        # Teach target từ TCP matrix (IK + prompt + save) — helper dùng chung
-        # với camera grasp-teach.
+        # Teach target from TCP matrix (IK + prompt + save) — shared helper
+        # with camera grasp-teach.
         name = self._teach_target_from_matrix(
             T,
             default_name=f"SURF_{len(self._targets)+1:02d}",
@@ -5995,11 +5995,11 @@ class GP7AppQt(
             self._set_status(f"Taught '{name}' on surface", level="ok")
 
     def _surface_normal_at(self, point_m: np.ndarray) -> np.ndarray | None:
-        """Trả về world-frame surface normal tại 3D point.
+        """Return the world-frame surface normal at a 3D point.
 
-        Optimization: cache `mesh + cell_normals` per dataset id. First call cho
-        mỗi mesh chạy `compute_normals()` (O(N) cells, có thể vài ms cho mesh
-        lớn). Subsequent calls cùng mesh → chỉ `find_closest_cell` + index lookup,
+        Optimization: cache `mesh + cell_normals` per dataset id. First call per
+        mesh runs `compute_normals()` (O(N) cells, may take a few ms for large meshes).
+        Subsequent calls for the same mesh → only `find_closest_cell` + index lookup,
         ~100µs.
         """
         try:
@@ -6024,7 +6024,7 @@ class GP7AppQt(
                 if arr is None: return None
                 arr = np.asarray(arr, dtype=float)
                 self._normal_cache[key] = (mesh, arr)
-            # Transform point to actor local frame nếu có UserMatrix
+            # Transform point to actor local frame if UserMatrix is present
             user_mat = actor.GetUserMatrix()
             if user_mat is not None:
                 inv = vtk.vtkMatrix4x4()
@@ -6060,18 +6060,18 @@ class GP7AppQt(
         max_solutions: int = 8, n_seeds: int = 30,
         dedupe_deg: float = 5.0,
     ) -> list[list[float]]:
-        """Tìm tất cả IK solutions qua **Pieper analytical** — trả 3-8 native
-        solutions không cần stochastic seeding.
+        """Find all IK solutions via **Pieper analytical** — returns 3-8 native
+        solutions without stochastic seeding.
 
-        Pieper trả các configurations (front/back × elbow up/down × wrist normal/flip)
-        deterministic, exact (float precision ~1e-12mm). Fallback batched IK
-        nếu Pieper empty (rare — chỉ khi pose ngoài tầm hoàn toàn).
+        Pieper returns configurations (front/back × elbow up/down × wrist normal/flip)
+        deterministically, exactly (float precision ~1e-12mm). Fallback to batched IK
+        if Pieper returns empty (rare — only when pose is completely out of reach).
 
         Performance: ~150µs (Pieper) vs ~12ms (batched DLS) — 80× faster.
         """
         sols_rad = inverse_kinematics_pieper_gp7(self._model, T_target_tool0)
         if not sols_rad:
-            # Fallback: batched DLS với random seeds (legacy path)
+            # Fallback: batched DLS with random seeds (legacy path)
             link_attr = getattr(self._model, "joints", None) or getattr(
                 self._model, "links", None)
             q_min = np.array([j.joint_min for j in link_attr])
@@ -6082,7 +6082,7 @@ class GP7AppQt(
                 self._model, T_target_tool0, q_init_batch,
                 max_iter=100, tol_mm=0.5, tol_rad=1e-3)
             sols_rad = [s for s in results if s is not None]
-        # Dedupe (Pieper return uniquely-different configs nhưng vẫn dedupe an toàn)
+        # Dedupe (Pieper returns uniquely-different configs but deduping is still safe)
         thresh = np.deg2rad(dedupe_deg)
         unique: list[np.ndarray] = []
         for s in sols_rad:
@@ -6102,7 +6102,7 @@ class GP7AppQt(
             self._set_status("Select a target to Change Config", level="warn"); return
         name = list(self._targets.keys())[idx]
         tgt = self._targets[name]
-        # Need TCP pose to enumerate. Compute T_target_tool0 từ stored tcp_pose
+        # Need TCP pose to enumerate. Compute T_target_tool0 from stored tcp_pose
         T_target = _xyz_rpy_to_matrix(*tgt["tcp_pose"])
         T_flange_tool = self._tool_frames[self._tool_idx][1]
         T_target_tool0 = T_target @ np.linalg.inv(T_flange_tool)
@@ -6149,8 +6149,8 @@ class GP7AppQt(
             f"Target '{name}' config #{pick+1} applied", level="ok")
 
     def _on_tgt_goto(self) -> None:
-        """Preview: animate robot to selected target's joints. KHÔNG thêm
-        instruction — chỉ jog robot để verify pose hợp lệ."""
+        """Preview: animate robot to selected target's joints. Does NOT add
+        an instruction — only jogs the robot to verify the pose is valid."""
         idx = self._tgt_list.currentRow()
         if idx < 0 or not self._targets:
             self._set_status("Select a target to Go to", level="warn"); return
@@ -6158,7 +6158,7 @@ class GP7AppQt(
             self._set_status("Program is running — cannot Go to", level="warn"); return
         name = list(self._targets.keys())[idx]
         target_joints = list(self._targets[name]["joints"])
-        # Chạy animation trong worker thread (như Play, nhưng 1-step).
+        # Run animation in a worker thread (like Play, but 1-step).
         self._set_status(f"Going to '{name}'…", level="info")
         def _worker():
             self._animate_to(target_joints, steps=40, dt=0.025)
@@ -6174,11 +6174,11 @@ class GP7AppQt(
     # ══════════════════════════════════════════════════════════════════
 
     def _project_signature(self) -> str:
-        """Snapshot deterministic của DỮ LIỆU project (jobs + targets) → JSON.
+        """Deterministic snapshot of project DATA (jobs + targets) → JSON.
 
-        Dùng cho dirty-check: so với `self._saved_signature` (cập nhật mỗi lần
-        Save/Load). KHÔNG gồm active_job — đổi job đang xem chỉ là thao tác
-        'view', không tính là sửa dữ liệu → tránh hỏi Save vô cớ."""
+        Used for dirty-checking: compared against `self._saved_signature` (updated on
+        each Save/Load). Does NOT include active_job — switching the viewed job is a
+        'view' action, not a data edit → avoids spurious Save prompts."""
         doc = {
             "targets": self._targets,
             "jobs": {
@@ -6207,12 +6207,12 @@ class GP7AppQt(
                 event.ignore(); return
             if r == QMessageBox.StandardButton.Save:
                 self._on_prog_save_dlg()
-                # User huỷ dialog chọn file → vẫn dirty → abort close (tránh
-                # mất dữ liệu ngoài ý muốn).
+                # User cancelled file dialog → still dirty → abort close (avoids
+                # unintentional data loss).
                 if self._has_unsaved_changes():
                     event.ignore(); return
-        # Stop worker threads. Set _cam_closing TRƯỚC khi join camera để slot
-        # camera_result (worker emit 'stopped' lúc join) không chạm widget đã hủy.
+        # Stop worker threads. Set _cam_closing BEFORE joining the camera so the
+        # camera_result slot (worker emits 'stopped' during join) does not touch already-destroyed widgets.
         self._cam_closing = True
         self._prog_stop.set()
         self._exp_stop.set()

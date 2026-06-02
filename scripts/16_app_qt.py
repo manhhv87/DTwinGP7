@@ -30,21 +30,21 @@ from src.utils import setup_logging                            # noqa: E402
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
         description=("Yaskawa GP7 Programming — PyQt6 + pyvistaqt (VTK).\n"
-                     "Cold start (no args) ⇒ app trống; user load robot/cell "
-                     "qua menu File. Hoặc dùng --config để auto-load 1 cell."))
+                     "Cold start (no args) ⇒ empty app; load robot/cell "
+                     "via File menu. Or use --config to auto-load a cell."))
     p.add_argument("--config", default=None,
-                    help="Cell YAML file (optional). Bỏ qua thì app start trống.")
+                    help="Cell YAML file (optional). Omit to start with an empty app.")
     p.add_argument("--program", default=None,
                     help="Program JSON (optional). Auto-load + show Program panel "
-                         "+ load robot GP7 → sẵn sàng bấm Run Sim. "
-                         "Vd: examples/sample_program.json")
+                         "+ load robot GP7 → ready to click Run Sim. "
+                         "E.g.: examples/sample_program.json")
     p.add_argument("-v", "--verbose", action="store_true")
     return p.parse_args()
 
 
 def main() -> int:
-    # Console Windows cp1252 không in được ký tự Unicode (⇒, dấu tiếng Việt)
-    # trong --help / messages → ép stdout/stderr UTF-8.
+    # Windows console cp1252 cannot print Unicode characters (⇒, Vietnamese diacritics)
+    # in --help / messages → force stdout/stderr to UTF-8.
     for _stream in (sys.stdout, sys.stderr):
         try:
             _stream.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[union-attr]
@@ -58,7 +58,7 @@ def main() -> int:
     if args.config:
         config_path = PROJECT_ROOT / args.config
         if not config_path.exists():
-            print(f"Không tìm thấy cell config: {config_path}", file=sys.stderr)
+            print(f"Cell config not found: {config_path}", file=sys.stderr)
             return 2
         cell_config = CellConfig.from_yaml(config_path)
 
@@ -67,7 +67,7 @@ def main() -> int:
         program_path = (PROJECT_ROOT / args.program if not Path(args.program).is_absolute()
                         else Path(args.program))
         if not program_path.exists():
-            print(f"Không tìm thấy program file: {program_path}", file=sys.stderr)
+            print(f"Program file not found: {program_path}", file=sys.stderr)
             return 2
 
     app = QApplication(sys.argv)

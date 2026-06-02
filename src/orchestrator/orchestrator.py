@@ -1,19 +1,19 @@
 """
 orchestrator.py
 ───────────────
-Orchestrator: kết nối Perception ↔ robot backend, điều khiển chu trình pick-and-place.
+Orchestrator: bridges Perception ↔ robot backend, controls the pick-and-place cycle.
 
-Vai trò:
-  - Nhận detection (camera frame) từ perception queue
-  - Chuyển sang base frame qua ma trận hand-eye
-  - Kiểm tra reachability bằng backend (SimRobot reach envelope hoặc predictive
-    safety pure-Python) → đóng góp C2 của paper
-  - Thực thi pick-and-place qua robot backend (SimRobot sim hoặc DigitalTwin
+Responsibilities:
+  - Receive detections (camera frame) from the perception queue
+  - Transform to base frame via hand-eye matrix
+  - Check reachability via backend (SimRobot reach envelope or predictive
+    safety pure-Python) → contribution C2 of the paper
+  - Execute pick-and-place via robot backend (SimRobot sim or DigitalTwin
     + HSE real)
-  - Ghi log mọi trial qua TrialLogger
+  - Log every trial via TrialLogger
 
-Backend cần inject sẵn (`robot=` arg). Module này KHÔNG còn phụ thuộc RoboDK —
-SolveIK đi qua URDF chain pure-Python (verified match RoboDK 0.00mm) hoặc YRC1000
+Backend must be injected via the `robot=` arg. This module NO longer depends on RoboDK —
+SolveIK goes through a pure-Python URDF chain (verified match RoboDK 0.00mm) or YRC1000
 controller-side (Cartesian path).
 """
 from __future__ import annotations
@@ -32,86 +32,87 @@ from .state_machine import PickPlaceStateMachine, PickState
 logger = logging.getLogger(__name__)
 
 
-# Giá trị mặc định cho config — override qua dict truyền vào.
-# place_position phải khớp PlaceZone trong cell_layout.yaml (mm, base frame).
+# Default config values — override via dict passed in.
+# place_position must match PlaceZone in cell_layout.yaml (mm, base frame).
 _DEFAULT_CONFIG: dict[str, Any] = {
     "robot_name": "Yaskawa GP7",
     "calibration_path": "config/calibration/T_base_camera.npy",
     "place_position": [700.0, 120.0, 700.0],
-    # Lift cao trên grasp/place để robot tiếp cận thẳng đứng (MoveL xuống),
-    # arm không quét ngang workspace.
+    # Lift height above grasp/place so the robot approaches vertically (MoveL down),
+    # arm does not sweep across workspace.
     "approach_height_mm": 200.0,
-    # Offset trừ vào Z grasp pose để fingertip vào giữa thân object thay vì
-    # đỉnh (postprocess.deproject trả về tọa độ TOP). Adaptive theo height.
+    # Offset subtracted from grasp pose Z so the fingertip enters the object body
+    # rather than the top (postprocess.deproject returns TOP coordinate). Adaptive
+    # to object height.
     "grasp_depth_offset_mm": 50.0,
-    # Hard clamp: fingertip TCP không bao giờ thấp hơn (table_top + safety),
-    # tránh xuyên bàn dù offset adaptive sai.
+    # Hard clamp: fingertip TCP never goes below (table_top + safety),
+    # prevents table penetration even if adaptive offset is wrong.
     "table_top_z_mm": 500.0,
     "table_safety_margin_mm": 100.0,
-    # Bù lệch yaw giữa PCA major axis trên mask và trục mở gripper. Yaw=0:
-    # gripper jaws spread cùng hướng PCA major axis (= longest object dim).
-    # Yaw=90: jaws spread vuông góc PCA (= shortest object dim) — dùng cho
-    # khay Galaxy S23: PCA major = 180mm (chiều dài), jaws phải spread theo
-    # 100mm (chiều rộng) → cần yaw_offset 90°.
+    # Yaw offset between PCA major axis on mask and gripper opening axis. Yaw=0:
+    # gripper jaws spread along PCA major axis (= longest object dim).
+    # Yaw=90: jaws spread perpendicular to PCA (= shortest object dim) — used for
+    # Galaxy S23 tray: PCA major = 180mm (length), jaws must spread along
+    # 100mm (width) → requires yaw_offset 90°.
     "yaw_offset_deg": 90.0,
-    # Về home sau mỗi success → trial kế APPROACH từ trên cao xuống (không
-    # "đi ngang" từ place_lift đến lift mới). Tốn ~2 API call/trial nhưng
-    # cần cho video demo trông tự nhiên.
+    # Return home after each success → next trial APPROACHes top-down (no
+    # lateral move from place_lift to new lift). Costs ~2 API calls/trial but
+    # needed for the demo video to look natural.
     "return_home_after_success": True,
     # ─── Gripper config ───
-    # 2 chế độ:
+    # 2 modes:
     #   1. Single-bit toggle (default, sim + legacy): `gripper_do_index` 1 bit
     #   2. Dual-solenoid + sensors (CC-Link real): set `gripper_cc_link` dict
-    #      trong config experiment.yaml hoặc CLI. Khi có → orchestrator dùng
-    #      pattern double-acting với feedback sensors thay vì blind delay.
+    #      in experiment.yaml config or CLI. When present → orchestrator uses
+    #      double-acting pattern with feedback sensors instead of blind delay.
     "gripper_do_index": 1,
     "gripper_delay_s": 0.5,                 # fallback blind delay (no sensor)
-    "gripper_cc_link": None,                # opt-in: set dict cho CC-Link path
+    "gripper_cc_link": None,                # opt-in: set dict for CC-Link path
     "inter_trial_delay_s": 1.0,
     "speed_joint_deg_s": 60.0,
     "speed_linear_mm_s": 80.0,
     "detection_timeout_s": 2.0,
-    # Sim mặc định SKIP reachability check (MoveJ tự raise nếu out-of-reach).
-    # Real mode nên đổi thành False để bật C2 (predictive safety layer).
+    # Sim defaults to SKIP reachability check (MoveJ raises if out-of-reach).
+    # Real mode should set False to enable C2 (predictive safety layer).
     "skip_reachability_check": True,
     "is_real_mode": False,
-    # UC2 — Pure-Python predictive simulation TRƯỚC khi gửi MoveJ tới robot.
-    # Verify joint limit + self-collision đầy đủ trajectory. Khi True:
-    # pre-check ~50ms/trial, reject trial nếu predicted unsafe.
+    # UC2 — Pure-Python predictive simulation BEFORE sending MoveJ to robot.
+    # Verifies joint limits + self-collision for the full trajectory. When True:
+    # pre-check ~50ms/trial, rejects trial if predicted unsafe.
     "predictive_safety_enabled": False,
-    # Max joint speed (deg/s) dùng cho predict interpolation. Phải khớp tốc độ
-    # thực tế của robot để predict đúng motion sequence.
+    # Max joint speed (deg/s) used for predict interpolation. Must match actual
+    # robot speed to predict the correct motion sequence.
     "predict_max_speed_deg_s": 30.0,
-    # Khi True: dùng IK client-side (Pieper analytical nearest-branch, DLS
-    # fallback). Default cho mọi backend non-YRC.
+    # When True: use client-side IK (Pieper analytical nearest-branch, DLS
+    # fallback). Default for all non-YRC backends.
     "use_client_ik": False,
-    # Base pose của robot trong world frame (mm + radian). Dùng để init URDF
-    # model với base offset đúng cho client IK.
+    # Robot base pose in world frame (mm + degrees). Used to init the URDF
+    # model with the correct base offset for client IK.
     "robot_base_xyz_mm": (0.0, 0.0, 0.0),
     "robot_base_rpy_deg": (0.0, 0.0, 0.0),
-    # Tool TCP offset (mm) theo Z của flange. Phải khớp gripper TCP trong
-    # cell config để IK trả đúng joints cho fingertip pose.
+    # Tool TCP offset (mm) along flange Z. Must match gripper TCP in
+    # cell config so IK returns correct joints for fingertip pose.
     "robot_tool_offset_mm": 0.0,
-    # Khi True: gửi pose Cartesian thẳng tới YRC1000 qua HSE BASE position
-    # variable → controller tự IK. Recommended cho HSE real mode. Override
+    # When True: send Cartesian pose directly to YRC1000 via HSE BASE position
+    # variable → controller handles IK. Recommended for HSE real mode. Overrides
     # use_client_ik.
     "use_yrc_ik": False,
 }
 
 
 class Orchestrator:
-    """Điều phối chu trình pick-and-place qua robot backend (SimRobot hoặc HSE).
+    """Orchestrates the pick-and-place cycle via robot backend (SimRobot or HSE).
 
-    Sử dụng:
+    Usage:
         orch = Orchestrator(perception_queue, config, robot=sim_robot)
         stats = orch.run_n_trials(50)
 
     Args:
-        perception_queue: Queue chứa message detection từ PerceptionNode.
-        config: Dict cấu hình (xem _DEFAULT_CONFIG).
-        robot: Backend duck-typed (SimRobot hoặc DigitalTwinMirror). BẮT BUỘC
-            inject — không còn auto-connect tới RoboDK.
-        logger_obj: (Tùy chọn) TrialLogger để ghi kết quả.
+        perception_queue: Queue carrying detection messages from PerceptionNode.
+        config: Configuration dict (see _DEFAULT_CONFIG).
+        robot: Duck-typed backend (SimRobot or DigitalTwinMirror). REQUIRED
+            inject — auto-connect to RoboDK has been removed.
+        logger_obj: (Optional) TrialLogger for recording results.
     """
 
     def __init__(
@@ -127,8 +128,8 @@ class Orchestrator:
 
         if robot is None:
             raise ValueError(
-                "Orchestrator yêu cầu robot backend (SimRobot hoặc DigitalTwinMirror) "
-                "qua arg `robot=`. RoboDK auto-connect đã bị loại bỏ."
+                "Orchestrator requires a robot backend (SimRobot or DigitalTwinMirror) "
+                "via the `robot=` arg. RoboDK auto-connect has been removed."
             )
         self.robot = robot
 
@@ -137,38 +138,38 @@ class Orchestrator:
 
         self.sm = PickPlaceStateMachine()
         self.stats = {"attempted": 0, "successful": 0, "failed": 0}
-        self._current_joints: list[float] | None = None       # cache cho SolveIK ref
+        self._current_joints: list[float] | None = None       # cache for SolveIK ref
 
         self._set_speed()
 
     # ────────────────────────────────────────────────────────────
-    # Helpers chuyển toạ độ + điều khiển
+    # Coordinate transform + control helpers
     # ────────────────────────────────────────────────────────────
 
     def _select_objects(self, det_msg: dict[str, Any]) -> list[dict[str, Any]]:
-        """Chuyển detections sang base frame, sắp xếp vật trên-cùng trước.
+        """Transform detections to base frame, sorted topmost object first.
 
-        Trả về list rỗng nếu không có vật.
+        Returns an empty list if no objects are present.
         """
         objects = det_msg.get("objects", [])
         for o in objects:
             xyz_cam = np.array(o["pose_camera"][:3], dtype=float)
             o["pose_base"] = camera_to_base(xyz_cam, self.T_BC)
-        # Vật có Z cao nhất (gần camera / nằm trên cùng) được gắp trước.
+        # Object with highest Z (closest to camera / on top) is grasped first.
         objects.sort(key=lambda o: o["pose_base"][2], reverse=True)
         return objects
 
     def _is_reachable(self, target_T: np.ndarray) -> bool:
-        """Kiểm tra pose `target_T` (numpy 4x4) trong reach envelope GP7.
+        """Check whether `target_T` (numpy 4x4) lies within the GP7 reach envelope.
 
-        Dùng sphere envelope client-side (`backends.reach_envelope`) — pure
-        Python, không phụ thuộc backend. SimRobot có MoveJ_Test riêng (sphere
-        envelope nội bộ) nhưng DigitalTwinMirror.MoveJ_Test giờ là no-op → cần
-        check client-side ở orchestrator level.
+        Uses a client-side sphere envelope (`backends.reach_envelope`) — pure
+        Python, no backend dependency. SimRobot has its own MoveJ_Test (internal
+        sphere envelope) but DigitalTwinMirror.MoveJ_Test is now a no-op → need
+        client-side check at orchestrator level.
 
-        Đây là layer pre-filter NHẸ (0 IK call). Predictive safety C2 (joint
-        limit + self-collision toàn trajectory) chạy sau trong
-        `_execute_pick_place` nếu `predictive_safety_enabled=True`.
+        This is a LIGHTWEIGHT pre-filter layer (0 IK calls). Predictive safety C2
+        (joint limits + full-trajectory self-collision) runs later in
+        `_execute_pick_place` when `predictive_safety_enabled=True`.
         """
         try:
             from .backends.reach_envelope import ReachEnvelope
@@ -182,28 +183,29 @@ class Orchestrator:
         target_xyz = np.asarray(target_T)[:3, 3]
         if not self._reach_env_cached.can_reach(target_xyz):
             logger.info(
-                "Reach envelope fail tại world %s (base=%s)",
+                "Reach envelope fail at world %s (base=%s)",
                 target_xyz.round(1).tolist(), list(base_xyz),
             )
             return False
         return True
 
     def _gripper(self, close: bool, obj_class: str | None = None) -> None:
-        """Đóng/mở gripper. 2 paths tùy config:
+        """Close/open gripper. 2 paths depending on config:
 
-        **Path A — CC-Link double-acting + feedback** (real, có PLC + sensors):
-        Khi `config["gripper_cc_link"]` set:
-          1. Mutually exclusive: tắt solenoid kia trước rồi bật solenoid này
-             (an toàn cylinder — không drive 2 chiều cùng lúc)
-          2. Wait sensor position bit confirm cylinder đã đến vị trí (clamp/unclamp)
-          3. (Close only) verify detect sensor X505 ON → vật trong gripper
-             → fail "grasp_failed" nếu OFF (config require_detect_on_close=True)
+        **Path A — CC-Link double-acting + feedback** (real, with PLC + sensors):
+        When `config["gripper_cc_link"]` is set:
+          1. Mutually exclusive: de-energize the other solenoid first, then
+             energize this one (cylinder safety — do not drive both directions at once)
+          2. Wait for sensor position bit confirming cylinder has reached position
+             (clamp/unclamp)
+          3. (Close only) verify detect sensor X505 ON → object in gripper
+             → fail "grasp_failed" if OFF (config require_detect_on_close=True)
 
         **Path B — Single-bit blind delay** (sim, legacy, no PLC feedback):
-        Fallback `setDO(gripper_do_index, ...)` + `gripper_delay_s` cố định.
+        Fallback `setDO(gripper_do_index, ...)` + fixed `gripper_delay_s`.
 
-        Sim mode: kèm attach/detach object item vào gripper tool qua
-        `setParentStatic` để object visually di chuyển theo gripper.
+        Sim mode: includes attach/detach of the object item to the gripper tool via
+        `setParentStatic` so the object visually follows the gripper.
         """
         cc = self.config.get("gripper_cc_link")
         if cc and hasattr(self.robot, "set_io") and hasattr(self.robot, "read_io"):
@@ -214,16 +216,16 @@ class Orchestrator:
     def _gripper_simple(self, close: bool, obj_class: str | None) -> None:
         """Path B: 1-bit toggle + blind delay (legacy / sim path)."""
         self.robot.setDO(self.config["gripper_do_index"], 1 if close else 0)
-        # Visual attach/detach (sim viewport) — gọi backend nếu support
+        # Visual attach/detach (sim viewport) — call backend if supported
         self._notify_viewport_grasp(close, obj_class)
         self._robot_timer(self.config["gripper_delay_s"])
 
     def _gripper_cc_link(
         self, close: bool, obj_class: str | None, cc: dict,
     ) -> None:
-        """Path A: double-acting solenoid + sensor feedback qua CC-Link."""
+        """Path A: double-acting solenoid + sensor feedback via CC-Link."""
         if close:
-            # Sequence an toàn: tắt UnClamp trước, BẬT Clamp
+            # Safe sequence: de-energize UnClamp first, then energize Clamp
             self.robot.set_io(cc["unclamp_bit"], 0)
             self.robot.set_io(cc["clamp_bit"], 1)
             sensor_bit = cc["clamp_sensor_bit"]
@@ -234,7 +236,7 @@ class Orchestrator:
             sensor_bit = cc["unclamp_sensor_bit"]
             action_name = "UnClamp"
 
-        # Wait sensor confirm cylinder đã đến vị trí (KHÔNG dùng blind delay)
+        # Wait for sensor to confirm cylinder has reached position (NO blind delay)
         if not self._wait_sensor_on(
             sensor_bit,
             timeout_s=float(cc.get("wait_sensor_timeout_s", 2.0)),
@@ -242,42 +244,42 @@ class Orchestrator:
         ):
             raise RuntimeError(
                 f"gripper_timeout: {action_name} sensor (bit {sensor_bit}) "
-                f"không ON sau {cc.get('wait_sensor_timeout_s', 2.0)}s"
+                f"did not turn ON after {cc.get('wait_sensor_timeout_s', 2.0)}s"
             )
 
-        # Verify grasp khi close (require detect sensor X505)
+        # Verify grasp on close (require detect sensor X505)
         if close and cc.get("require_detect_on_close", True):
             detect = self.robot.read_io(cc["detect_bit"])
             if detect != 1:
                 raise RuntimeError(
                     f"grasp_failed: detect sensor (bit {cc['detect_bit']}) "
-                    f"OFF — vật không trong gripper"
+                    f"OFF — object not in gripper"
                 )
 
         # Visual object attach/detach (sim viewport)
         self._notify_viewport_grasp(close, obj_class)
 
     def _notify_viewport_grasp(self, close: bool, obj_class: str | None) -> None:
-        """Notify backend viewport (nếu support) khi gripper đóng/mở.
+        """Notify backend viewport (if supported) when gripper closes/opens.
 
-        Viewport (Open3D SimRobot/Mirror) dùng signal này để attach/detach
-        object mesh khỏi tool. Backend không có → no-op.
+        Viewport (Open3D SimRobot/Mirror) uses this signal to attach/detach
+        the object mesh from the tool. Backends without this → no-op.
         """
         if close and obj_class and hasattr(self.robot, "attach_object"):
             try:
                 self.robot.attach_object(obj_class)
             except Exception as e:  # noqa: BLE001
-                logger.debug("viewport attach_object lỗi: %s", e)
+                logger.debug("viewport attach_object error: %s", e)
         elif not close and hasattr(self.robot, "detach_object"):
             try:
                 self.robot.detach_object()
             except Exception as e:  # noqa: BLE001
-                logger.debug("viewport detach_object lỗi: %s", e)
+                logger.debug("viewport detach_object error: %s", e)
 
     def _wait_sensor_on(
         self, bit_addr: int, timeout_s: float, poll_s: float,
     ) -> bool:
-        """Poll sensor bit cho tới khi == 1 hoặc timeout. Returns True nếu ON."""
+        """Poll sensor bit until == 1 or timeout. Returns True if ON."""
         deadline = time.monotonic() + timeout_s
         while time.monotonic() < deadline:
             val = self.robot.read_io(bit_addr)
@@ -287,24 +289,24 @@ class Orchestrator:
         return False
 
     def _robot_timer(self, seconds: float) -> None:
-        """Sleep với batch awareness — INFORM TIMER trong batch, time.sleep ngoài."""
+        """Sleep with batch awareness — INFORM TIMER inside batch, time.sleep outside."""
         if hasattr(self.robot, "timer") and callable(self.robot.timer):
             self.robot.timer(seconds)
         else:
             time.sleep(seconds)
 
     def _robot_batch_ctx(self) -> Any:
-        """Context manager batch nếu backend support (HSE), nullcontext otherwise.
+        """Batch context manager if backend supports it (HSE), nullcontext otherwise.
 
-        Cho phép `_execute_pick_place` gom 5-7 motion call thành 1 INFORM upload —
-        giảm overhead từ ~1-2s/trial xuống ~200ms/trial (HSE backend M3).
+        Allows `_execute_pick_place` to consolidate 5-7 motion calls into 1 INFORM
+        upload — reduces overhead from ~1-2s/trial to ~200ms/trial (HSE backend M3).
 
-        QUAN TRỌNG: với `use_yrc_ik`, motion là pose Cartesian (4x4 → P-var BASE,
-        YRC tự IK). Backend HSE CHƯA hỗ trợ Cartesian trong batch/ultra-fast
-        (`_move_pose` raise NotImplementedError) → batch sẽ làm MỖI MoveJ/MoveL
-        Cartesian raise, robot không chạy. Vì vậy KHÔNG batch khi yrc — mỗi move
-        chạy single-shot (đúng, chỉ tốn thêm vài INFORM upload/trial). Batch chỉ
-        bật cho path joint-list (client IK).
+        IMPORTANT: with `use_yrc_ik`, motion is Cartesian pose (4x4 → P-var BASE,
+        YRC handles IK). HSE backend does NOT yet support Cartesian in batch/ultra-fast
+        (`_move_pose` raises NotImplementedError) → batch would cause EVERY Cartesian
+        MoveJ/MoveL to raise, robot won't move. Therefore do NOT batch when yrc — each
+        move runs single-shot (correct, just costs a few extra INFORM uploads/trial).
+        Batching is only enabled for the joint-list path (client IK).
         """
         if self.config.get("use_yrc_ik", False):
             return contextlib.nullcontext()
@@ -315,15 +317,15 @@ class Orchestrator:
     def _predict_safety(self, joint_waypoints_rad: list[list[float]]) -> str | None:
         """UC2 — Pre-execute trajectory prediction.
 
-        Run pure-Python FK trên trajectory đầy đủ → check joint limit +
-        self-collision toàn bộ path. Tốn ~50ms/trial nhưng catch được unsafe
-        path mà single-point MoveJ_Test miss.
+        Runs pure-Python FK on the full trajectory → checks joint limits +
+        self-collision along the entire path. Costs ~50ms/trial but catches
+        unsafe paths that single-point MoveJ_Test misses.
 
         Args:
-            joint_waypoints_rad: List 6-tuple joint configs (radian).
+            joint_waypoints_rad: List of 6-tuple joint configs (radians).
 
         Returns:
-            None nếu safe. String mô tả vi phạm nếu unsafe.
+            None if safe. String describing the violation if unsafe.
         """
         if not self.config.get("predictive_safety_enabled", False):
             return None
@@ -334,11 +336,11 @@ class Orchestrator:
                 gp7_default, interpolate_joints,
             )
         except ImportError as e:                    # noqa: BLE001
-            logger.debug("Kinematics module không import được: %s", e)
+            logger.debug("Kinematics module could not be imported: %s", e)
             return None
 
         if len(joint_waypoints_rad) < 2:
-            return None                              # Không đủ waypoint để predict
+            return None                              # Not enough waypoints to predict
 
         model = gp7_default()
         samples = interpolate_joints(
@@ -365,26 +367,26 @@ class Orchestrator:
     def _predict_safety_for_trajectory(
         self, target_T_world_list: list[np.ndarray]
     ) -> str | None:
-        """Build joint trajectory từ list pose world + check predictive safety.
+        """Build joint trajectory from a list of world poses and check predictive safety.
 
-        Solve IK client-side cho từng pose (URDF DLS), prepend joints hiện tại,
-        rồi gọi `_predict_safety`. Short-circuit return None nếu predictive
-        safety disabled hoặc IK fail (để main flow tự handle).
+        Solves IK client-side for each pose (URDF DLS), prepends current joints,
+        then calls `_predict_safety`. Short-circuits and returns None if predictive
+        safety is disabled or IK fails (letting the main flow handle it naturally).
         """
         if not self.config.get("predictive_safety_enabled", False):
             return None
         if not target_T_world_list:
             return None
 
-        # Build joint waypoints (radian) — current first, then each target via IK
+        # Build joint waypoints (radians) — current first, then each target via IK
         waypoints_rad: list[list[float]] = []
         if self._current_joints is not None:
             waypoints_rad.append([np.deg2rad(q) for q in self._current_joints])
         for T in target_T_world_list:
             joints_deg = self._solve_ik_client(T)
             if joints_deg is None:
-                # IK fail — không predict được, để main flow raise tự nhiên
-                logger.debug("Predictive safety skip: IK fail tại world %s",
+                # IK fail — cannot predict, let main flow raise naturally
+                logger.debug("Predictive safety skip: IK fail at world %s",
                              T[:3, 3].round(1).tolist())
                 return None
             waypoints_rad.append([np.deg2rad(q) for q in joints_deg])
@@ -410,14 +412,15 @@ class Orchestrator:
         return None
 
     def _normalize_target_joints(self, target_joints):
-        """Wrap mỗi joint của target ±360° để gần `_current_joints` nhất.
+        """Wrap each target joint ±360° to be closest to `_current_joints`.
 
-        MoveJ nội suy LINEAR trong joint space. Nếu home_joints[J4]=-180 và
-        current J4=+180 (cùng orientation thực tế), MoveJ sẽ quay -360° → "chong
-        chóng". Wrap target về phía gần current pick đường ngắn nhất.
+        MoveJ interpolates LINEARLY in joint space. If home_joints[J4]=-180 and
+        current J4=+180 (same physical orientation), MoveJ would rotate -360° →
+        "spin". Wrap the target toward current via the shortest path.
 
-        Yaskawa GP7 joint ranges lớn (R/T tới ±360) cho phép nhiều biểu diễn
-        cùng một orientation — normalize bắt buộc để tránh full-rotation.
+        Yaskawa GP7 large joint ranges (R/T up to ±360) allow multiple
+        representations of the same orientation — normalization is mandatory to
+        avoid full-rotation artifacts.
         """
         if self._current_joints is None or target_joints is None:
             return target_joints
@@ -434,19 +437,19 @@ class Orchestrator:
         return result
 
     def _solve_ik_client(self, target_T_world: np.ndarray) -> list[float] | None:
-        """IK client-side: **Pieper analytical** (nearest-branch) → DLS fallback.
+        """Client-side IK: **Pieper analytical** (nearest-branch) → DLS fallback.
 
-        Pieper exact (~1e-10mm, deterministic, ~50µs) + chọn nhánh gần
-        `_current_joints` để continuous motion không "chong chóng" cổ tay — đây
-        chính là solver app GUI dùng (Find branches / Change Config). DLS
-        (`inverse_kinematics_seeded`) chỉ làm fallback khi Pieper rỗng (pose
-        ngoài tầm hoàn toàn — hiếm). URDF chain verified match RoboDK 0.00mm.
+        Pieper exact (~1e-10mm, deterministic, ~50µs) + selects the branch nearest
+        to `_current_joints` for continuous motion without wrist spin — this is the
+        same solver used by the app GUI (Find branches / Change Config). DLS
+        (`inverse_kinematics_seeded`) only serves as fallback when Pieper returns
+        empty (pose fully out of reach — rare). URDF chain verified match RoboDK 0.00mm.
 
         Args:
-            target_T_world: 4x4 pose trong WORLD frame (orchestrator native).
+            target_T_world: 4x4 pose in WORLD frame (orchestrator native).
 
         Returns:
-            Joints (degrees) gần `_current_joints`, hoặc None nếu unreachable.
+            Joints (degrees) nearest to `_current_joints`, or None if unreachable.
         """
         try:
             from .kinematics import inverse_kinematics_seeded
@@ -459,9 +462,9 @@ class Orchestrator:
 
         tool_offset = float(self.config.get("robot_tool_offset_mm", 0.0))
         if not hasattr(self, "_dh_model_cached"):
-            # URDF chain — verified match RoboDK SolveFK (0.00mm diff). Truyền
-            # ĐỦ base_xyz + base_rpy để khớp _world_to_robot_base (YRC path) —
-            # nếu robot base xoay mà thiếu rpy, IK sẽ giải sai frame.
+            # URDF chain — verified match RoboDK SolveFK (0.00mm diff). Pass
+            # BOTH base_xyz + base_rpy to match _world_to_robot_base (YRC path) —
+            # if robot base is rotated and rpy is missing, IK will solve the wrong frame.
             base_rpy_deg = self.config.get("robot_base_rpy_deg", (0.0, 0.0, 0.0))
             self._dh_model_cached = gp7_urdf(
                 base_xyz_mm=tuple(self.config.get("robot_base_xyz_mm", (0.0, 0.0, 0.0))),
@@ -470,21 +473,22 @@ class Orchestrator:
             )
         model = self._dh_model_cached
 
-        # Seed nearest-branch: joints hiện tại nếu có; nếu chưa (trial đầu / sau
-        # YRC_POSE move set None) dùng HOME thay vì [0]*6 — tránh Pieper chọn
-        # nhánh "gần 0" khác tư thế thật → MoveJ nhảy lớn.
+        # Seed nearest-branch: use current joints if available; if not (first trial
+        # or after a YRC_POSE move that sets None) use HOME instead of [0]*6 —
+        # prevents Pieper from picking a "near-zero" branch that differs from the
+        # actual pose → large MoveJ jump.
         if self._current_joints is not None:
             q_init = [np.deg2rad(q) for q in self._current_joints]
         else:
             home = self.config.get("home_joints_deg") or [0.0] * 6
             q_init = [np.deg2rad(q) for q in home]
 
-        # Path 1: Pieper analytical → nhánh gần q_init (exact + đúng branch).
-        # Pieper giải cho FLANGE (tool0), KHÔNG tự cộng tool_offset_mm. Khi có
-        # tool offset, hạ target TCP về flange (lùi tool_offset dọc trục Z công
-        # cụ = cột Z của pose) TRƯỚC khi gọi Pieper — đúng nguyên lý controller
-        # công nghiệp (IK quanh wrist center, TCP là offset cố định). Nghiệm trả
-        # về vẫn đặt TCP đúng target.
+        # Path 1: Pieper analytical → branch nearest to q_init (exact + correct branch).
+        # Pieper solves for FLANGE (tool0) and does NOT automatically add tool_offset_mm.
+        # When a tool offset is present, retract the target TCP to the flange (back off
+        # tool_offset along the tool Z axis = column Z of the pose) BEFORE calling Pieper
+        # — consistent with industrial controller convention (IK about wrist center, TCP
+        # is a fixed offset). The returned solution still places TCP at the target.
         if abs(tool_offset) > 1e-6:
             pieper_target = target_T_world.copy()
             pieper_target[:3, 3] = (
@@ -495,9 +499,9 @@ class Orchestrator:
             sol_rad = inverse_kinematics_pieper_gp7_nearest(
                 model, pieper_target, q_init)
         except Exception as e:                                  # noqa: BLE001
-            logger.debug("Pieper IK lỗi (%s) → fallback DLS", e)
+            logger.debug("Pieper IK error (%s) → fallback DLS", e)
             sol_rad = None
-        # Path 2 (fallback): DLS multi-seed — FK đầy đủ (tự xử lý tool offset).
+        # Path 2 (fallback): DLS multi-seed — full FK (handles tool offset internally).
         if sol_rad is None:
             sol_rad = inverse_kinematics_seeded(model, target_T_world, q_init)
         if sol_rad is None:
@@ -505,9 +509,9 @@ class Orchestrator:
         return [float(np.rad2deg(q)) for q in sol_rad]
 
     def _world_to_robot_base(self, T_world: np.ndarray) -> np.ndarray:
-        """Convert pose 4x4 từ world → robot BASE frame (cho HSE Cartesian).
+        """Convert 4x4 pose from world → robot BASE frame (for HSE Cartesian).
 
-        Wrap frame_convert.world_to_robot_base() với config-driven base pose.
+        Wraps frame_convert.world_to_robot_base() with config-driven base pose.
         """
         from .frame_convert import world_to_robot_base
         base_xyz = tuple(self.config.get("robot_base_xyz_mm", (0.0, 0.0, 0.0)))
@@ -515,20 +519,20 @@ class Orchestrator:
         return world_to_robot_base(T_world, base_xyz, base_rpy)
 
     def _solve_ik_routed(self, target_T_world: np.ndarray):
-        """Pick IK source: YRC controller (Cartesian) hoặc client-side (Pieper/DLS).
+        """Select IK source: YRC controller (Cartesian) or client-side (Pieper/DLS).
 
         Priority:
-          1. use_yrc_ik=True → gửi pose Cartesian thẳng cho backend (YRC tự IK).
-             Trả về ("YRC_POSE", T_base).
+          1. use_yrc_ik=True → send Cartesian pose directly to backend (YRC handles IK).
+             Returns ("YRC_POSE", T_base).
           2. Default → client-side IK (Pieper analytical, DLS fallback).
-             Trả về (joint_list, None).
+             Returns (joint_list, None).
 
         Returns:
-            ("YRC_POSE", T_base): caller gọi MoveJ(T_base) Cartesian
-            (joint_list, None): caller gọi MoveJ(joint_list)
+            ("YRC_POSE", T_base): caller calls MoveJ(T_base) Cartesian
+            (joint_list, None): caller calls MoveJ(joint_list)
             (None, None): IK fail
         """
-        # Path 1: YRC tự IK — gửi pose Cartesian thẳng
+        # Path 1: YRC handles IK — send Cartesian pose directly
         if self.config.get("use_yrc_ik", False):
             T_base = self._world_to_robot_base(target_T_world)
             return ("YRC_POSE", T_base)
@@ -536,16 +540,16 @@ class Orchestrator:
         # Path 2: client-side numerical IK (default — URDF chain match RoboDK 0.00mm)
         joint_list = self._solve_ik_client(target_T_world)
         if joint_list is None:
-            logger.warning("Client IK (Pieper/DLS) fail tại world %s",
+            logger.warning("Client IK (Pieper/DLS) fail at world %s",
                            target_T_world[:3, 3].round(1).tolist())
             return (None, None)
         return (joint_list, None)
 
     def _move_j_via_ik(self, target_T: np.ndarray) -> None:
-        """MoveJ qua IK route (YRC controller hoặc client DLS)."""
+        """MoveJ via IK route (YRC controller or client DLS)."""
         result, pose = self._solve_ik_routed(target_T)
 
-        # YRC IK path — pass pose 4x4 trực tiếp, controller tự IK
+        # YRC IK path — pass 4x4 pose directly, controller handles IK
         if result == "YRC_POSE":
             logger.debug("MoveJ Cartesian (YRC IK): target_base=%s",
                          pose[:3, 3].round(1).tolist())
@@ -566,7 +570,7 @@ class Orchestrator:
         self._current_joints = joint_list
 
     def _move_l_via_ik(self, target_T: np.ndarray) -> None:
-        """MoveL qua IK route — same pattern as MoveJ."""
+        """MoveL via IK route — same pattern as MoveJ."""
         result, pose = self._solve_ik_routed(target_T)
 
         if result == "YRC_POSE":
@@ -584,48 +588,48 @@ class Orchestrator:
         self._current_joints = joint_list
 
     # ────────────────────────────────────────────────────────────
-    # Chu trình chính
+    # Main cycle
     # ────────────────────────────────────────────────────────────
 
     def run_one_cycle(self, trial_id: int = -1) -> bool:
-        """Thực thi một chu trình pick-and-place.
+        """Execute one pick-and-place cycle.
 
         Returns:
-            True nếu gắp-thả thành công, False nếu thất bại/không có vật.
+            True if grasp-and-place succeeded, False if failed or no objects detected.
         """
         self.sm.reset()
         t_start = time.time()
 
-        # Reset viewport scene về template ban đầu (nếu backend support) —
-        # tránh object "trôi" dần qua nhiều trial.
+        # Reset viewport scene to the initial template (if backend supports it) —
+        # prevents objects from drifting across multiple trials.
         if hasattr(self.robot, "reset_scene"):
             try:
                 self.robot.reset_scene()
             except Exception as e:  # noqa: BLE001
-                logger.debug("reset_scene lỗi: %s", e)
+                logger.debug("reset_scene error: %s", e)
 
         # ─── DETECT ───
         self.sm.transition_to(PickState.DETECT)
         try:
             det_msg = self.queue.get(timeout=self.config["detection_timeout_s"])
         except queue.Empty:
-            logger.warning("Trial %d: không nhận được detection", trial_id)
+            logger.warning("Trial %d: no detection received", trial_id)
             self._log_trial(trial_id, False, "detection_timeout", t_start, None)
             return False
 
         objects = self._select_objects(det_msg)
         if not objects:
-            logger.info("Trial %d: không phát hiện vật nào", trial_id)
+            logger.info("Trial %d: no objects detected", trial_id)
             self.sm.transition_to(PickState.IDLE, "no objects")
             self._log_trial(trial_id, False, "detection_miss", t_start, None)
             return False
 
-        # ─── PLAN: thử từng vật tới khi có vật với tới được ───
+        # ─── PLAN: try each object until one is reachable ───
         self.sm.transition_to(PickState.PLAN)
         dz = self.config["approach_height_mm"]
 
-        # Clamp cứng cho fingertip TCP: không bao giờ xuống dưới table_top + safety.
-        # Tránh xuyên bàn 100% cho mọi vật, kể cả khi adaptive offset chọn sai.
+        # Hard clamp for fingertip TCP: never go below table_top + safety.
+        # Guarantees no table penetration regardless of adaptive offset errors.
         table_top = float(self.config["table_top_z_mm"])
         safety_margin = float(self.config["table_safety_margin_mm"])
         min_grasp_z = table_top + safety_margin
@@ -633,8 +637,8 @@ class Orchestrator:
 
         for obj in objects:
             xyz_base = np.array(obj["pose_base"], dtype=float).copy()
-            # pose_base[2] là Z của TOP object (camera nhìn xuống → depth là top).
-            # Adaptive offset: clip theo chiều cao để fingertip vào giữa thân.
+            # pose_base[2] is Z of the object TOP (camera looks down → depth is top).
+            # Adaptive offset: clipped to object height so fingertip enters the body.
             obj_height = obj.get("height_mm")
             if obj_height and obj_height > 0:
                 effective_offset = min(max_offset,
@@ -642,12 +646,12 @@ class Orchestrator:
             else:
                 effective_offset = max_offset
             target_z = xyz_base[2] - effective_offset
-            # HARD CLAMP: dù offset thế nào, TCP không bao giờ dưới min_grasp_z.
+            # HARD CLAMP: regardless of offset, TCP never goes below min_grasp_z.
             clamped_z = max(target_z, min_grasp_z)
             if clamped_z > target_z:
                 logger.info(
                     "Grasp Z clamped: target=%.0f → %.0f (table_safety, "
-                    "fingertip giữ %dmm trên bàn)",
+                    "fingertip held %dmm above table)",
                     target_z, clamped_z, int(safety_margin),
                 )
             xyz_base[2] = clamped_z
@@ -656,17 +660,18 @@ class Orchestrator:
             lift_T = grasp_T.copy()
             lift_T[2, 3] += dz
 
-            # Place pose: X,Y từ config; Z = grasp Z (cùng tool-object offset
-            # → vật đặt lại ở cùng độ cao bàn). yaw + yaw_offset giống grasp →
-            # gripper giữ orientation, attached object không xoay khi transfer.
+            # Place pose: X,Y from config; Z = grasp Z (same tool-object offset
+            # → object placed at the same table height). yaw + yaw_offset same as
+            # grasp → gripper maintains orientation, attached object does not rotate
+            # during transfer.
             place_xyz = np.array(self.config["place_position"], dtype=float).copy()
             place_xyz[2] = xyz_base[2]
             place_T = make_grasp_pose(place_xyz, yaw, self.config["yaw_offset_deg"])
             place_lift_T = place_T.copy()
             place_lift_T[2, 3] += dz
 
-            # Kiểm tra reachability cho TOÀN BỘ trajectory (contribution C2).
-            # Skip trong sim để tiết kiệm API budget (4 calls/trial × N trials).
+            # Check reachability for the FULL trajectory (contribution C2).
+            # Skipped in sim to save API budget (4 calls/trial × N trials).
             if not self.config.get("skip_reachability_check", False):
                 unreachable = [
                     name for name, T in (
@@ -679,12 +684,12 @@ class Orchestrator:
                 ]
                 if unreachable:
                     logger.info(
-                        "Trial %d: vật '%s' không với tới được tại %s, bỏ qua",
+                        "Trial %d: object '%s' not reachable at %s, skipping",
                         trial_id, obj.get("class_name", "?"), unreachable,
                     )
                     continue
 
-            # ─── Thực thi pick-and-place cho vật này ───
+            # ─── Execute pick-and-place for this object ───
             self.stats["attempted"] += 1
             ok = self._execute_pick_place(
                 grasp_T, lift_T, place_T, place_lift_T, obj, trial_id,
@@ -696,8 +701,8 @@ class Orchestrator:
             )
             return ok
 
-        # Không vật nào với tới được.
-        logger.info("Trial %d: mọi vật đều ngoài tầm với", trial_id)
+        # No object was reachable.
+        logger.info("Trial %d: all objects out of reach", trial_id)
         self.sm.fail("unreachable")
         self._log_trial(trial_id, False, "unreachable", t_start, objects[0])
         return False
@@ -711,25 +716,25 @@ class Orchestrator:
         obj: dict[str, Any],
         trial_id: int,
     ) -> bool:
-        """Chạy chuỗi chuyển động gắp-thả. Trả về True nếu thành công.
+        """Execute the grasp-and-place motion sequence. Returns True on success.
 
-        Nhận 4 pose đã được PLAN tính sẵn. Pose ở WORLD frame numpy 4x4;
-        backend (SimRobot / DigitalTwinMirror) tự xử lý frame conversion.
+        Receives 4 poses pre-computed by PLAN. Poses are in WORLD frame (numpy 4x4);
+        the backend (SimRobot / DigitalTwinMirror) handles frame conversion.
         """
         try:
-            # Cache current joints chỉ lần đầu (trial 1) — các trial sau dùng
-            # self._current_joints đã được _move_*_via_ik cập nhật ở trial trước.
+            # Cache current joints only on the first call (trial 1) — subsequent trials
+            # use self._current_joints already updated by _move_*_via_ik.
             if self._current_joints is None:
                 try:
                     self._current_joints = self._joints_to_list(self.robot.Joints())
                 except Exception:  # noqa: BLE001
                     pass
 
-            # UC2 — Predictive safety: solve IK cho 4 waypoint, build joint
-            # trajectory (gồm current → lift → grasp → lift → place_lift →
-            # place → place_lift), verify joint limit + self-collision pure-
-            # Python TRƯỚC khi gửi MoveJ. Reject sớm trial unsafe → tránh
-            # gửi alarm-prone command lên controller thật.
+            # UC2 — Predictive safety: solve IK for 4 waypoints, build joint
+            # trajectory (current → lift → grasp → lift → place_lift →
+            # place → place_lift), verify joint limits + self-collision in pure
+            # Python BEFORE sending MoveJ. Early-reject unsafe trials → avoids
+            # sending alarm-prone commands to the real controller.
             reason = self._predict_safety_for_trajectory(
                 [lift_T, grasp_T, lift_T, place_lift_T, place_T, place_lift_T]
             )
@@ -740,14 +745,14 @@ class Orchestrator:
                 self.sm.fail(reason)
                 return False
 
-            # Batch context: HSE backend gom toàn bộ motion + IO vào 1 INFORM job
-            # → 1 FTP upload + 1 JOB_START/trial thay vì 5-7 lần. Backends khác
-            # (SimRobot) → nullcontext, code chạy nguyên văn.
+            # Batch context: HSE backend collects all motion + IO into 1 INFORM job
+            # → 1 FTP upload + 1 JOB_START/trial instead of 5-7 round trips. Other
+            # backends (SimRobot) → nullcontext, code runs as-is.
             with self._robot_batch_ctx():
                 self.sm.transition_to(PickState.APPROACH)
                 self._move_j_via_ik(lift_T)
-                # Cache joints sau APPROACH để LIFT reuse — cùng pose lift_T, không
-                # cần SolveIK lại (-1 API call/trial).
+                # Cache joints after APPROACH for LIFT reuse — same pose lift_T, no
+                # need to re-run SolveIK (-1 API call/trial).
                 approach_joints = self._current_joints
 
                 self.sm.transition_to(PickState.GRASP)
@@ -763,7 +768,7 @@ class Orchestrator:
 
                 self.sm.transition_to(PickState.TRANSFER)
                 self._move_j_via_ik(place_lift_T)
-                # Cache joints sau TRANSFER để RETREAT reuse (-1 API call/trial).
+                # Cache joints after TRANSFER for RETREAT reuse (-1 API call/trial).
                 transfer_joints = self._current_joints
 
                 self.sm.transition_to(PickState.PLACE)
@@ -780,7 +785,7 @@ class Orchestrator:
             self.sm.transition_to(PickState.DONE)
             self.stats["successful"] += 1
             logger.info(
-                "Trial %d: gắp-thả '%s' THÀNH CÔNG | stats=%s",
+                "Trial %d: pick-and-place '%s' SUCCESS | stats=%s",
                 trial_id, obj.get("class_name", "?"), self.stats,
             )
             if self.config["return_home_after_success"]:
@@ -790,28 +795,28 @@ class Orchestrator:
         except Exception as e:  # noqa: BLE001
             self.stats["failed"] += 1
             self.sm.fail(f"motion_error: {e}")
-            logger.error("Trial %d: pick thất bại — %s", trial_id, e)
+            logger.error("Trial %d: pick failed — %s", trial_id, e)
             self._return_home()
             return False
 
     def _set_speed(self) -> None:
-        """Áp tốc độ joint/linear từ config."""
+        """Apply joint/linear speed from config."""
         try:
             self.robot.setSpeed(
                 self.config["speed_linear_mm_s"],
                 self.config["speed_joint_deg_s"],
             )
         except Exception as e:  # noqa: BLE001
-            logger.debug("setSpeed bỏ qua: %s", e)
+            logger.debug("setSpeed skipped: %s", e)
 
     def _return_home(self) -> None:
-        """Đưa robot về home — normalize joints để tránh quay chong chóng.
+        """Move robot to home — normalize joints to avoid spin artifacts.
 
-        Ưu tiên `config['home_joints_deg']` (truyền từ cell layout) thay vì
-        `robot.JointsHome()` — vì JointsHome() đọc từ file .robot library
-        (mặc định Yaskawa GP7 = [0,0,0,0,0,0]), KHÔNG phải pose home user đặt
-        trong cell_layout.yaml. Dùng sai source → MoveJ về 0 mà current đang
-        ở -180 → quay 180° trên J4/J6 = "chong chóng".
+        Prefers `config['home_joints_deg']` (supplied from cell layout) over
+        `robot.JointsHome()` — because JointsHome() reads from the .robot library
+        file (Yaskawa GP7 default = [0,0,0,0,0,0]), NOT the home pose the user set
+        in cell_layout.yaml. Using the wrong source → MoveJ to 0 while current is
+        at -180 → 180° rotation on J4/J6 = spin artifact.
         """
         try:
             home_list = None
@@ -828,11 +833,11 @@ class Orchestrator:
             else:
                 self.robot.MoveJ(self.robot.JointsHome())
         except Exception as e:  # noqa: BLE001
-            logger.warning("Không về home được: %s", e)
+            logger.warning("Could not return home: %s", e)
 
     def run_n_trials(self, n: int) -> dict[str, Any]:
-        """Chạy `n` trial liên tiếp, trả về thống kê tổng hợp."""
-        logger.info("Bắt đầu %d trials", n)
+        """Run `n` consecutive trials, returning aggregate statistics."""
+        logger.info("Starting %d trials", n)
         for i in range(n):
             logger.info("─── Trial %d/%d ───", i + 1, n)
             self.run_one_cycle(trial_id=i + 1)
@@ -841,7 +846,7 @@ class Orchestrator:
         attempted = max(self.stats["attempted"], 1)
         rate = self.stats["successful"] / attempted
         result = {**self.stats, "success_rate": rate}
-        logger.info("Hoàn tất. %s", result)
+        logger.info("Done. %s", result)
         return result
 
     # ────────────────────────────────────────────────────────────
@@ -856,7 +861,7 @@ class Orchestrator:
         t_start: float,
         obj: dict[str, Any] | None,
     ) -> None:
-        """Ghi 1 dòng kết quả trial nếu có TrialLogger."""
+        """Write one trial result row if a TrialLogger is present."""
         if self.trial_logger is None:
             return
         self.trial_logger.log_trial(

@@ -1,16 +1,16 @@
 """
 perception_node.py
 ──────────────────
-Node perception chạy nền: camera → detector → pose extractor → queue.
+Background perception node: camera → detector → pose extractor → queue.
 
-Kiến trúc: chạy một thread vòng lặp liên tục, đẩy message detection vào
-queue cho Orchestrator tiêu thụ. Queue có maxsize → tự bỏ frame cũ nếu
-orchestrator xử lý chậm (luôn dùng detection mới nhất).
+Architecture: runs a continuous loop thread, pushing detection messages into
+a queue for the Orchestrator to consume. Queue has maxsize → old frames are
+dropped automatically if the orchestrator is slow (always uses the latest detection).
 
-Message đẩy vào queue:
+Message pushed to queue:
     {
         "timestamp": float,
-        "objects": list[dict],   # mỗi dict có 'class_name', 'pose_camera', ...
+        "objects": list[dict],   # each dict has 'class_name', 'pose_camera', ...
         "fps": float,
     }
 """
@@ -29,12 +29,12 @@ logger = logging.getLogger(__name__)
 
 
 class PerceptionNode:
-    """Vòng lặp perception chạy trên thread riêng.
+    """Perception loop running on a dedicated thread.
 
     Args:
-        camera: Đối tượng có .get_frame() và .intrinsics (D455Camera/MockCamera).
-        detector: Đối tượng có .detect(rgb) (ObjectDetector/MockDetector).
-        output_queue: Queue nhận message detection.
+        camera: Object with .get_frame() and .intrinsics (D455Camera/MockCamera).
+        detector: Object with .detect(rgb) (ObjectDetector/MockDetector).
+        output_queue: Queue that receives detection messages.
     """
 
     def __init__(
@@ -52,9 +52,9 @@ class PerceptionNode:
         self._thread: threading.Thread | None = None
 
     def start(self) -> None:
-        """Khởi động vòng lặp perception trên thread nền."""
+        """Start the perception loop on a background thread."""
         if self._running:
-            logger.warning("PerceptionNode đã chạy rồi")
+            logger.warning("PerceptionNode is already running")
             return
         self._running = True
         self._thread = threading.Thread(target=self._loop, daemon=True)
@@ -62,7 +62,7 @@ class PerceptionNode:
         logger.info("PerceptionNode started")
 
     def stop(self) -> None:
-        """Dừng vòng lặp và camera."""
+        """Stop the loop and the camera."""
         self._running = False
         if self._thread is not None:
             self._thread.join(timeout=2.0)
@@ -70,9 +70,9 @@ class PerceptionNode:
         logger.info("PerceptionNode stopped")
 
     def process_once(self) -> dict[str, Any] | None:
-        """Xử lý đúng một frame, trả về message detection.
+        """Process exactly one frame and return a detection message.
 
-        Tách riêng khỏi vòng lặp để test được mà không cần thread.
+        Decoupled from the loop so it can be tested without a thread.
         """
         t0 = time.time()
         rgb, depth = self.camera.get_frame()
@@ -90,18 +90,18 @@ class PerceptionNode:
         return {"timestamp": time.time(), "objects": objects, "fps": 1.0 / dt}
 
     def _loop(self) -> None:
-        """Vòng lặp nền: liên tục process_once → đẩy vào queue."""
+        """Background loop: continuously call process_once → push to queue."""
         while self._running:
             msg = self.process_once()
             if msg is None:
-                # Không có frame (camera lỗi hoặc timeout) — nghỉ ngắn để
-                # không busy-spin CPU.
+                # No frame (camera error or timeout) — short sleep to avoid
+                # busy-spinning the CPU.
                 time.sleep(0.01)
                 continue
             try:
                 self.queue.put_nowait(msg)
             except queue.Full:
-                # Bỏ frame cũ nhất, giữ frame mới.
+                # Drop the oldest frame, keep the new one.
                 try:
                     self.queue.get_nowait()
                     self.queue.put_nowait(msg)

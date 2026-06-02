@@ -60,7 +60,7 @@ class TestInvertTransform:
 
 class TestValidatePoses:
     def test_too_few_raises(self):
-        with pytest.raises(ValueError, match="tối thiểu"):
+        with pytest.raises(ValueError, match="At least 10 poses"):
             validate_poses([np.eye(4)] * 5)
 
     def test_enough_poses_ok(self):
@@ -107,7 +107,7 @@ class TestSolveHandEye:
 
     def test_mismatched_lengths_raise(self):
         g2b, t2c = synthetic_dataset(self.T_BC, self.T_TG, n=12)
-        with pytest.raises(ValueError, match="lệch"):
+        with pytest.raises(ValueError, match="Pose count mismatch"):
             solve_hand_eye(g2b, t2c[:-1])
 
 

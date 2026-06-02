@@ -2,9 +2,9 @@
 mixin_program_io.py
 ───────────────────
 ProgramIOMixin: Save/Load project JSON (v1/v2/v3 backward-compat) + Export
-INFORM .JBI (single hoặc all jobs).
+INFORM .JBI (single or all jobs).
 
-Host class (GP7AppQt) phải cung cấp:
+Host class (GP7AppQt) must provide:
   attributes: _active_job, _jobs, _targets, _program, _saved_signature,
               _pp_max_speed_pct, _pp_default_vj, _pp_default_v_mms
   methods:    _set_status, _safe_job_name, _solve_movel, _project_signature,
@@ -37,7 +37,7 @@ class ProgramIOMixin:
             self, "Save project", "", "Program JSON (*.json)")
         if not path: return
         try:
-            # v3 format: project với nhiều jobs + global targets.
+            # v3 format: project with multiple jobs + global targets.
             doc = {
                 "version": 3,
                 "active_job": self._active_job,
@@ -63,15 +63,15 @@ class ProgramIOMixin:
         self._load_program_file(path)
 
     def _load_program_file(self, path) -> bool:
-        """Parse + load program JSON từ `path` vào jobs/targets/UI.
+        """Parse + load program JSON from `path` into jobs/targets/UI.
 
-        Hỗ trợ backward compat 3 format:
+        Supports backward compat for 3 formats:
           v1: bare list of instructions → single MAIN job
           v2: {"targets":..., "program":[...]} → single MAIN job
           v3: {"jobs":{name:[...]}, "active_job":..., "targets":...}
 
-        Dùng chung bởi nút Load (dialog) + `--program` launcher arg.
-        Return True nếu load OK.
+        Shared by the Load button (dialog) + `--program` launcher arg.
+        Returns True if load succeeded.
         """
         try:
             data = json.loads(Path(path).read_text(encoding="utf-8"))
@@ -128,11 +128,11 @@ class ProgramIOMixin:
         self._load_jbi_file(path)
 
     def _load_jbi_file(self, path) -> bool:
-        """Parse 1 file .JBI → list[Instruction] → load thành job hiện tại.
+        """Parse one .JBI file → list[Instruction] → load as the current job.
 
-        Thay TOÀN BỘ project (giống Load JSON) vì .JBI = 1 job đơn. MOVL/MOVC
-        cần model robot (FK dựng lại Cartesian pose) → báo lỗi nếu chưa load
-        robot. Return True nếu OK.
+        Replaces the ENTIRE project (like Load JSON) because .JBI = single job.
+        MOVL/MOVC require the robot model (FK reconstructs Cartesian pose) →
+        raises an error if the robot is not loaded yet. Returns True if OK.
         """
         try:
             text = Path(path).read_text(encoding="utf-8", errors="replace")
@@ -153,8 +153,8 @@ class ProgramIOMixin:
                 msg += f" — {len(parsed.warnings)} line(s) skipped/warned"
                 QMessageBox.warning(
                     self, "Import .JBI — warnings",
-                    f"{len(parsed.warnings)} dòng không nằm trong subset hỗ trợ "
-                    f"(JUMP/IF/SET/biến/P-var…) đã bị bỏ qua:\n\n"
+                    f"{len(parsed.warnings)} line(s) outside the supported subset "
+                    f"(JUMP/IF/SET/variable/P-var…) were skipped:\n\n"
                     + "\n".join(f"• {w}" for w in parsed.warnings[:12])
                     + ("\n…" if len(parsed.warnings) > 12 else ""))
             self._set_status(msg, level=("warn" if parsed.warnings else "ok"))
@@ -164,28 +164,28 @@ class ProgramIOMixin:
             return False
 
     def _joints_deg_to_tcp_pose(self, joints_deg: list[float]) -> list[float]:
-        """Joints (deg) → TCP pose [X,Y,Z mm, Rx,Ry,Rz deg] WORLD frame.
+        """Joints (deg) → TCP pose [X,Y,Z mm, Rx,Ry,Rz deg] in WORLD frame.
 
-        Inverse chính xác của `_solve_movel` forward path: FK(joints)=T_tool0,
-        rồi áp tool frame T_tcp = T_tool0 @ T_flange_tool. Vì _solve_movel làm
-        T_target_tool0 = T_target @ inv(T_flange_tool), round-trip khử nhau →
-        re-export trả về đúng joints ban đầu.
+        Exact inverse of the `_solve_movel` forward path: FK(joints)=T_tool0,
+        then apply tool frame T_tcp = T_tool0 @ T_flange_tool. Because
+        _solve_movel computes T_target_tool0 = T_target @ inv(T_flange_tool),
+        the round-trip cancels → re-export recovers the original joints.
         """
         if self._model is None:
             raise RuntimeError(
-                "MOVL/MOVC cần model robot — load robot GP7 trước khi import")
+                "MOVL/MOVC require the robot model — load GP7 robot before importing")
         T_flange_tool = self._tool_frames[self._tool_idx][1]
         sol_rad = [math.radians(q) for q in joints_deg]
         T_tcp = forward_kinematics_urdf(self._model, sol_rad) @ T_flange_tool
         return list(_matrix_to_xyz_rpy_deg(T_tcp))
 
     def _jbi_to_instructions(self, parsed: ParsedJob) -> list[Instruction]:
-        """ParsedJob → list[Instruction] của editor.
+        """ParsedJob → list[Instruction] for the editor.
 
         - MOVJ → MoveJ (joints inline, exact).
         - MOVL → MoveL (FK joints → Cartesian pose).
-        - MOVC (cặp liên tiếp) → MoveC (mid+end); MOVC lẻ → degrade MoveL.
-        - Modifier VJ/V/PL/TL/UF tái tạo thành Set* instruction khi đổi giá trị.
+        - MOVC (consecutive pair) → MoveC (mid+end); lone MOVC → degrade to MoveL.
+        - Modifiers VJ/V/PL/TL/UF are reconstructed as Set* instructions on change.
         - DOUT→SetDO, TIMER→Wait, WAIT→WaitIO, MSG→ShowMessage, CALL→CallJob.
         """
         out: list[Instruction] = []
@@ -200,7 +200,7 @@ class ProgramIOMixin:
         while i < n:
             p = items[i]
             if p.kind in ("movj", "movl", "movc"):
-                # Modal: emit Set* khi modifier đổi so với trạng thái hiện tại.
+                # Modal: emit Set* when a modifier changes relative to current state.
                 new_vj = p.vj_pct if p.vj_pct is not None else cur_vj
                 new_v = p.v_mm_s if p.v_mm_s is not None else cur_v
                 if (new_vj, new_v) != (cur_vj, cur_v) and (
@@ -239,10 +239,10 @@ class ProgramIOMixin:
                                 p.joints_deg or []),
                             tcp_pose=self._joints_deg_to_tcp_pose(
                                 items[i + 1].joints_deg or [])))
-                        i += 1                              # consume cặp
+                        i += 1                              # consume pair
                     else:
                         parsed.warnings.append(
-                            "MOVC lẻ (thiếu cặp mid+end) → coi như MOVL")
+                            "Lone MOVC (missing mid+end pair) → treated as MOVL")
                         out.append(Instruction(
                             type="MoveL",
                             tcp_pose=self._joints_deg_to_tcp_pose(
@@ -295,7 +295,7 @@ class ProgramIOMixin:
         return out
 
     def _on_prog_export_dlg(self) -> None:
-        # Multi-job: nếu project có > 1 job, hỏi user mode export.
+        # Multi-job: if project has > 1 job, ask the user for the export mode.
         non_empty_jobs = [n for n, p in self._jobs.items() if p]
         if not non_empty_jobs:
             self._set_status("All jobs empty", level="warn"); return
@@ -332,9 +332,9 @@ class ProgramIOMixin:
         out_dir = QFileDialog.getExistingDirectory(
             self, "Export ALL jobs — choose output folder")
         if not out_dir: return
-        # Sequential — IK solving (~1.4ms hot, ~10ms cold) per MoveL có GIL
-        # contention nếu parallel; benchmark confirms threading SLOWER for sub-ms
-        # numpy ops. Đa phần jobs ≤ 50 instructions → tổng <200ms acceptable.
+        # Sequential — IK solving (~1.4ms hot, ~10ms cold) per MoveL has GIL
+        # contention when parallel; benchmark confirms threading SLOWER for sub-ms
+        # numpy ops. Most jobs ≤ 50 instructions → total <200ms is acceptable.
         n_ok = 0; errors: list[str] = []
         for name in job_names:
             try:
@@ -355,10 +355,10 @@ class ProgramIOMixin:
     def _export_job_to_path(
         self, program: list[Instruction], job_name: str, path: Path,
     ) -> None:
-        """Helper: export 1 job's instruction list ra .JBI file tại path.
+        """Helper: export one job's instruction list to a .JBI file at path.
 
-        Raises trên IK failure / invalid CallJob name. Caller catch để show
-        status. KHÔNG đụng self._program — chỉ dùng `program` param.
+        Raises on IK failure / invalid CallJob name. Caller catches to show
+        status. Does NOT touch self._program — uses only the `program` param.
         """
         errs = validate_program(program)
         if errs:
@@ -366,7 +366,7 @@ class ProgramIOMixin:
                 f"Program logic invalid ({len(errs)} error): {errs[0]}")
         builder = InformJobBuilder(
             name=job_name, max_speed_pct=self._pp_max_speed_pct)
-        # Pre-pass: collect referenced targets, add as named C-vars upfront
+        # Pre-pass: collect referenced targets, add as named C-vars up front
         # (RoboDK convention — multiple references share single C-var).
         target_cvars: dict[str, str] = {}
         for ins in program:
@@ -379,7 +379,7 @@ class ProgramIOMixin:
                     builder.add_position(
                         cvar_name, self._targets[ins.target_name]["joints"])
                     target_cvars[ins.target_name] = cvar_name
-        # Modal state — áp lên MOVJ/MOVL/MOVC kế tiếp. Initial từ pp settings.
+        # Modal state — applied to subsequent MOVJ/MOVL/MOVC. Initialized from pp settings.
         cur_vj_pct: float = self._pp_default_vj
         cur_v_mm_s: float = self._pp_default_v_mms
         cur_pl: int | None = None
@@ -425,7 +425,7 @@ class ProgramIOMixin:
                 builder.movc(pname_e, speed_mm_s=cur_v_mm_s,
                              tool_no=cur_tl, pl=cur_pl, user_frame=cur_uf)
             elif t == "SetGripper":
-                # Legacy — gripper map cố định DOUT #1 (backward-compat program cũ).
+                # Legacy — gripper mapped to fixed DOUT #1 (backward-compat with old programs).
                 builder.dout(1, on=ins.gripper_close)
             elif t == "SetDO":
                 builder.dout(int(ins.do_index), on=bool(ins.do_state))
@@ -453,7 +453,7 @@ class ProgramIOMixin:
             elif t == "CallJob":
                 builder.call_job(ins.job_name)
             elif t == "SimEvent":
-                # Không export ra INFORM (sim-only). Emit comment để traceable.
+                # Not exported to INFORM (sim-only). Emit a comment for traceability.
                 pl = f" — {ins.event_payload}" if ins.event_payload else ""
                 builder.comment(f"SimEvent: {ins.event_name}{pl}")
             # ── Flow control + variables (INFORM logic) ──

@@ -1,5 +1,5 @@
 """
-utils — Helper functions dùng chung cho toàn bộ pipeline pick-and-place.
+utils — Shared helper functions for the entire pick-and-place pipeline.
 
 Public API:
     setup_logging, load_yaml, timestamp, ensure_dir

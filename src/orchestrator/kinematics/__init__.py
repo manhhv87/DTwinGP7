@@ -1,8 +1,8 @@
 """
-kinematics — Pure-Python forward kinematics + trajectory simulation cho GP7.
+kinematics — Pure-Python forward kinematics + trajectory simulation for GP7.
 
-Module này KHÔNG phụ thuộc RoboDK — chạy bằng numpy thuần. Dùng cho:
-  - Predictive simulation (UC1, UC2): preview trajectory trước khi execute
+This module has NO dependency on RoboDK — runs on plain numpy. Used for:
+  - Predictive simulation (UC1, UC2): preview trajectory before execution
   - Replay mode (UC4): visualize CSV telemetry offline
   - Future IK solver client-side (foundation)
 """

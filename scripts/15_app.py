@@ -2,12 +2,12 @@
 """
 15_app.py
 ─────────
-Launcher cho GP7 Digital Twin **unified app**: 1 cửa sổ duy nhất với
-scene 3D + side panel tabs (Jog / View / Cell / Run).
+Launcher for the GP7 Digital Twin **unified app**: single window with a
+3D scene + side panel tabs (Jog / View / Cell / Run).
 
-Khác `14_jog_panel.py` (vốn mở 2 cửa sổ Open3D — không stable trên Windows),
-script này dùng `gui.Window + SceneWidget + TabControl` → 1 cửa sổ, mọi
-control nằm trong panel cùng cửa sổ.
+Unlike `14_jog_panel.py` (which opened 2 Open3D windows — not stable on Windows),
+this script uses `gui.Window + SceneWidget + TabControl` → 1 window, all
+controls live inside the same window panel.
 
 Usage:
     python scripts/15_app.py
@@ -46,7 +46,7 @@ def main() -> int:
 
     config_path = PROJECT_ROOT / args.config
     if not config_path.exists():
-        print(f"Không tìm thấy cell config: {config_path}", file=sys.stderr)
+        print(f"Cell config not found: {config_path}", file=sys.stderr)
         return 2
     cell_config = CellConfig.from_yaml(config_path)
 
@@ -54,7 +54,7 @@ def main() -> int:
     try:
         app.run()
     finally:
-        # Force exit để bypass Filament/atexit non-daemon thread.
+        # Force exit to bypass Filament/atexit non-daemon thread.
         os._exit(0)
 
 
