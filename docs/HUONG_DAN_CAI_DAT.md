@@ -24,7 +24,7 @@ flowchart TB
     S2B --> S3[Section 2.9<br/>YRC1000 HSE setup<br/>Maintenance mode<br/>HSE Server ON<br/>Network config<br/>CIO ladder gripper<br/>REMOTE mode]
     S2A --> S4[Section 3-5<br/>Linux train YOLO<br/>Copy *.pt file về<br/>config YAML]
     S3 --> S4
-    S4 --> S5[Section 6<br/>Verify cài đặt<br/>pytest tests<br/>300 passed]
+    S4 --> S5[Section 6<br/>Verify cài đặt<br/>pytest tests<br/>452 passed]
     S5 --> DONE([Sang HUONG_DAN_SU_DUNG.md<br/>để chạy thí nghiệm])
 
     style S0 fill:#9E9E9E,stroke:#fff,color:#fff
@@ -373,7 +373,7 @@ UnClamp sensor X503 (30051): 1
 
 Nếu trả `0` hoặc `-1` → debug bottom-up: hardware sensor → PLC X-input → PLC ladder
 bridge → CC-Link mapping → YRC bit address. Detail tại `docs/phat_bieu_bai_toan_v3_2_HD.md`
-mục ``§7.9 Gripper subsyste``.
+mục ``§7.9 Gripper subsystem``.
 
 **Tuning `gripper_delay_s` (fallback, không dùng nếu có sensor feedback)**:
 total chain latency ~150-400ms (HSE + CC-Link + PLC scan + pneumatic stroke).
@@ -532,7 +532,7 @@ python -m src.cell.cell_models validate config/cell_layout.yaml
 pytest tests/ -q
 ```
 
-**Kỳ vọng:** bước 1 in `✓ Config hợp lệ: ...`; bước 2 báo `300 passed`.
+**Kỳ vọng:** bước 1 in `✓ Config hợp lệ: ...`; bước 2 báo `452 passed`.
 Hai bước này đạt → code + dependencies đã cài đúng.
 
 ### 6.2. Kiểm tra sim viewport — Open3D
@@ -555,7 +555,7 @@ Tóm tắt nhanh sau khi cài xong:
 
 ```powershell
 # Test cài đặt OK
-pytest tests/ -q                                          # → 300 passed
+pytest tests/ -q                                          # → 452 passed
 
 # Sim không cần robot
 python scripts/03_run_experiment.py --mode sim --headless --trials 500
@@ -588,8 +588,10 @@ python scripts/03_run_experiment.py --mode real --backend hse --trials 50
 
 - **Entry point + tổng quan**: [`../README.md`](../README.md)
 - **Giới thiệu phần mềm + chức năng các phần**: [`GIOI_THIEU_PHAN_MEM.md`](GIOI_THIEU_PHAN_MEM.md)
-- **Học lập trình (GUI + INFORM + Python + SDK)**: [`HUONG_DAN_LAP_TRINH.md`](HUONG_DAN_LAP_TRINH.md)
+- **Thao tác giao diện (click-by-click)**: [`HUONG_DAN_GUI.md`](HUONG_DAN_GUI.md)
+- **Học lập trình (INFORM + Python + SDK)**: [`HUONG_DAN_LAP_TRINH.md`](HUONG_DAN_LAP_TRINH.md)
 - **Workflow + commands hàng ngày**: [`HUONG_DAN_SU_DUNG.md`](HUONG_DAN_SU_DUNG.md)
+- **Digital Twin + vận hành robot thật**: [`HUONG_DAN_DIGITAL_TWIN.md`](HUONG_DAN_DIGITAL_TWIN.md)
 - **Trọng số + mesh + CIO ladder**: [`../models/README.md`](../models/README.md)
 - **Thiết kế hệ thống + kiến trúc**: [`phat_bieu_bai_toan_v3_2_HD.md`](phat_bieu_bai_toan_v3_2_HD.md)
 - Repo GitHub: https://github.com/manhhv87/DTwinGP7

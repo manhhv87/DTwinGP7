@@ -91,6 +91,27 @@ class Instruction:
     cond_lhs: str = ""
     cond_op: str = ""                   # =, <>, >, <, >=, <=
     cond_rhs: str = ""
+    # Compound condition (ANDEXP/OREXP). When cond_terms is non-empty it takes
+    # precedence over the single cond_lhs/op/rhs. Each term = (lhs, op, rhs);
+    # cond_join ∈ {"AND","OR"} combines them. INFORM: 'a<>1 ANDEXP b<>2'.
+    cond_terms: list = field(default_factory=list)
+    cond_join: str = ""                 # "AND" / "OR" / "" (single term)
+    # Whether the condition used the INFORM "expression" keyword form
+    # (IFTHENEXP/ELSEIFEXP/WHILEEXP). Preserved so re-synthesis reproduces the
+    # original keyword even for variable conditions (not just I/O).
+    cond_exp: bool = False
+    # ── Extended INFORM (LG production jobs) ──
+    # Clear: zero `clear_count` consecutive vars from var_name (-1 = ALL).
+    clear_count: int = 0
+    # DIN/DOUT group I/O: DIN Bxxx IG#(n) / SOUT#(n); DOUT OG#(n) Bxxx.
+    io_group: int = 0                   # group index (IG#/OG#/SOUT#)
+    io_group_kind: str = ""             # "IG" / "OG" / "SOUT"
+    # SET Ixxx EXPRESS <expr> — arithmetic expression string (e.g. "5 * B005").
+    var_expr: str = ""
+    # Variable speed: V=Ixxx / VJ=Ixxx — speed comes from a variable at runtime.
+    speed_var: str = ""
+    # P[Bxxx] indirect addressing — position index taken from this variable.
+    pos_index_var: str = ""
 
     def describe(self, modal: dict | None = None) -> str:
         """Render the line using INFORM III syntax (MOVJ/MOVL/MOVC/DOUT/WAIT/TIMER/
@@ -123,18 +144,30 @@ class Instruction:
                 parts.append(f"UF#({int(modal['uf'])})")
             return "  " + " ".join(parts)
 
+        def _spd(is_joint: bool) -> str:
+            # Variable speed (V=Ixxx) overrides the modal numeric tail.
+            if self.speed_var:
+                return f"  {'VJ' if is_joint else 'V'}={self.speed_var}"
+            return _move_tail(is_joint)
+
         if t == "MoveJ":
-            pos = (self.target_name if self.target_name
-                   else "[" + " ".join(f"{q:+.1f}" for q in self.joints) + "]")
-            return f"MOVJ  {pos}{_move_tail(True)}"
+            if self.pos_index_var:
+                pos = f"P[{self.pos_index_var}]"
+            elif self.target_name:
+                pos = self.target_name
+            else:
+                pos = "[" + " ".join(f"{q:+.1f}" for q in self.joints) + "]"
+            return f"MOVJ  {pos}{_spd(True)}"
         if t == "MoveL":
-            if self.target_name:
+            if self.pos_index_var:
+                pos = f"P[{self.pos_index_var}]"
+            elif self.target_name:
                 pos = self.target_name
             else:
                 p = self.tcp_pose
                 pos = (f"P(X{p[0]:+.0f} Y{p[1]:+.0f} Z{p[2]:+.0f} "
                        f"Rx{p[3]:+.0f} Ry{p[4]:+.0f} Rz{p[5]:+.0f})")
-            return f"MOVL  {pos}{_move_tail(False)}"
+            return f"MOVL  {pos}{_spd(False)}"
         if t == "MoveC":
             m = self.tcp_pose_mid; e = self.tcp_pose
             return (f"MOVC  MID(X{m[0]:+.0f} Y{m[1]:+.0f} Z{m[2]:+.0f}) "
@@ -176,23 +209,41 @@ class Instruction:
             op = self.var_op.upper()
             if op in ("INC", "DEC"):
                 return f"{op}  {self.var_name}"
+            if self.var_expr:
+                return f"SET  {self.var_name} EXPRESS {self.var_expr}"
             return f"{op}  {self.var_name} {self.var_arg}"
+        if t == "PulseDO":
+            return f"PULSE  OT#({self.do_index})"
+        if t == "ClearStack":
+            return "CLEAR  STACK"
+        if t == "ClearVar":
+            n = "ALL" if self.clear_count < 0 else self.clear_count
+            return f"CLEAR  {self.var_name} {n}"
+        if t == "ReadGroupIn":
+            return f"DIN  {self.var_name} {self.io_group_kind}#({self.io_group})"
+        if t == "WriteGroupOut":
+            return f"DOUT  OG#({self.io_group}) {self.var_name}"
+        exp = "EXP" if self.cond_exp else ""     # IFTHENEXP/ELSEIFEXP/WHILEEXP
         if t == "IfThen":
-            return f"IFTHEN  {self._cond_str()}"
+            return f"IFTHEN{exp}  {self._cond_str()}"
         if t == "ElseIf":
-            return f"ELSEIF  {self._cond_str()}"
+            return f"ELSEIF{exp}  {self._cond_str()}"
         if t == "Else":
             return "ELSE"
         if t == "EndIf":
             return "ENDIF"
         if t == "While":
-            return f"WHILE  {self._cond_str()}"
+            return f"WHILE{exp}  {self._cond_str()}"
         if t == "EndWhile":
             return "ENDWHILE"
         return f"?{t}"
 
     def _cond_str(self) -> str:
-        """Render an INFORM condition 'lhs op rhs' (e.g. 'B000>5'). Empty if not set."""
+        """Render an INFORM condition. Compound (cond_terms) → 'a<>1 ANDEXP b<>2';
+        single → 'lhs op rhs' (e.g. 'B000>5'). Empty if not set."""
+        if self.cond_terms:
+            joiner = f" {self.cond_join or 'AND'}EXP "
+            return joiner.join(f"{l}{o}{r}" for l, o, r in self.cond_terms)
         if not self.cond_op:
             return ""
         return f"{self.cond_lhs}{self.cond_op}{self.cond_rhs}"
@@ -201,15 +252,23 @@ class Instruction:
         d: dict[str, Any] = {"type": self.type}
         t = self.type
         if t == "MoveJ":
-            if self.target_name:
+            if self.pos_index_var:
+                d["pos_index_var"] = self.pos_index_var
+            elif self.target_name:
                 d["target_name"] = self.target_name
             else:
                 d["joints"] = list(self.joints)
+            if self.speed_var:
+                d["speed_var"] = self.speed_var
         elif t == "MoveL":
-            if self.target_name:
+            if self.pos_index_var:
+                d["pos_index_var"] = self.pos_index_var
+            elif self.target_name:
                 d["target_name"] = self.target_name
             else:
                 d["tcp_pose"] = list(self.tcp_pose)
+            if self.speed_var:
+                d["speed_var"] = self.speed_var
         elif t == "MoveC":
             d["tcp_pose_mid"] = list(self.tcp_pose_mid)
             d["tcp_pose"] = list(self.tcp_pose)
@@ -244,33 +303,59 @@ class Instruction:
             d["label_name"] = str(self.label_name)
         elif t == "Jump":
             d["label_name"] = str(self.label_name)
-            if self.cond_op:
-                d["cond_lhs"] = str(self.cond_lhs)
-                d["cond_op"] = str(self.cond_op)
-                d["cond_rhs"] = str(self.cond_rhs)
+            self._cond_to_dict(d)
         elif t == "SetVar":
             d["var_name"] = str(self.var_name)
             d["var_op"] = str(self.var_op)
-            if self.var_op.upper() not in ("INC", "DEC"):
+            if self.var_expr:
+                d["var_expr"] = str(self.var_expr)
+            elif self.var_op.upper() not in ("INC", "DEC"):
                 d["var_arg"] = str(self.var_arg)
         elif t in ("IfThen", "ElseIf", "While"):
+            self._cond_to_dict(d)
+        elif t == "PulseDO":
+            d["do_index"] = int(self.do_index)
+        elif t == "ClearVar":
+            d["var_name"] = str(self.var_name)
+            d["clear_count"] = int(self.clear_count)
+        elif t in ("ReadGroupIn", "WriteGroupOut"):
+            d["var_name"] = str(self.var_name)
+            d["io_group"] = int(self.io_group)
+            d["io_group_kind"] = str(self.io_group_kind)
+        # Else / EndIf / EndWhile / ClearStack: only "type" is needed.
+        return d
+
+    def _cond_to_dict(self, d: dict) -> None:
+        """Serialize condition fields (single or compound) into d."""
+        if self.cond_terms:
+            d["cond_terms"] = [list(t) for t in self.cond_terms]
+            d["cond_join"] = str(self.cond_join or "AND")
+        elif self.cond_op:
             d["cond_lhs"] = str(self.cond_lhs)
             d["cond_op"] = str(self.cond_op)
             d["cond_rhs"] = str(self.cond_rhs)
-        # Else / EndIf / EndWhile: only "type" is needed.
-        return d
+        if self.cond_exp:
+            d["cond_exp"] = True
 
     @classmethod
     def from_dict(cls, d: dict) -> "Instruction":
         t = d["type"]
         if t == "MoveJ":
+            sv = str(d.get("speed_var", ""))
+            if "pos_index_var" in d:
+                return cls(type=t, pos_index_var=str(d["pos_index_var"]),
+                           speed_var=sv)
             if "target_name" in d:
-                return cls(type=t, target_name=str(d["target_name"]))
-            return cls(type=t, joints=list(d["joints"]))
+                return cls(type=t, target_name=str(d["target_name"]), speed_var=sv)
+            return cls(type=t, joints=list(d["joints"]), speed_var=sv)
         if t == "MoveL":
+            sv = str(d.get("speed_var", ""))
+            if "pos_index_var" in d:
+                return cls(type=t, pos_index_var=str(d["pos_index_var"]),
+                           speed_var=sv)
             if "target_name" in d:
-                return cls(type=t, target_name=str(d["target_name"]))
-            return cls(type=t, tcp_pose=list(d["tcp_pose"]))
+                return cls(type=t, target_name=str(d["target_name"]), speed_var=sv)
+            return cls(type=t, tcp_pose=list(d["tcp_pose"]), speed_var=sv)
         if t == "MoveC":
             return cls(type=t,
                        tcp_pose_mid=list(d["tcp_pose_mid"]),
@@ -309,21 +394,42 @@ class Instruction:
         if t == "Label":
             return cls(type=t, label_name=str(d.get("label_name", "")))
         if t == "Jump":
-            return cls(type=t,
-                       label_name=str(d.get("label_name", "")),
-                       cond_lhs=str(d.get("cond_lhs", "")),
-                       cond_op=str(d.get("cond_op", "")),
-                       cond_rhs=str(d.get("cond_rhs", "")))
+            ins = cls(type=t, label_name=str(d.get("label_name", "")))
+            cls._cond_from_dict(ins, d)
+            return ins
         if t == "SetVar":
             return cls(type=t,
                        var_name=str(d.get("var_name", "")),
                        var_op=str(d.get("var_op", "SET")),
-                       var_arg=str(d.get("var_arg", "")))
+                       var_arg=str(d.get("var_arg", "")),
+                       var_expr=str(d.get("var_expr", "")))
         if t in ("IfThen", "ElseIf", "While"):
-            return cls(type=t,
-                       cond_lhs=str(d.get("cond_lhs", "")),
-                       cond_op=str(d.get("cond_op", "")),
-                       cond_rhs=str(d.get("cond_rhs", "")))
-        if t in ("Else", "EndIf", "EndWhile"):
+            ins = cls(type=t)
+            cls._cond_from_dict(ins, d)
+            return ins
+        if t == "PulseDO":
+            return cls(type=t, do_index=int(d.get("do_index", 1)))
+        if t == "ClearVar":
+            return cls(type=t, var_name=str(d.get("var_name", "")),
+                       clear_count=int(d.get("clear_count", 0)))
+        if t in ("ReadGroupIn", "WriteGroupOut"):
+            return cls(type=t, var_name=str(d.get("var_name", "")),
+                       io_group=int(d.get("io_group", 0)),
+                       io_group_kind=str(d.get("io_group_kind", "")))
+        if t in ("Else", "EndIf", "EndWhile", "ClearStack"):
             return cls(type=t)
         raise ValueError(f"Unknown instruction type: {t}")
+
+    @staticmethod
+    def _cond_from_dict(ins: "Instruction", d: dict) -> None:
+        """Load condition fields (single or compound) from d into ins."""
+        if "cond_terms" in d:
+            ins.cond_terms = [tuple(t) for t in d["cond_terms"]]
+            ins.cond_join = str(d.get("cond_join", "AND"))
+            if ins.cond_terms:               # mirror first term for back-compat
+                ins.cond_lhs, ins.cond_op, ins.cond_rhs = ins.cond_terms[0]
+        else:
+            ins.cond_lhs = str(d.get("cond_lhs", ""))
+            ins.cond_op = str(d.get("cond_op", ""))
+            ins.cond_rhs = str(d.get("cond_rhs", ""))
+        ins.cond_exp = bool(d.get("cond_exp", False))

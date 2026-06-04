@@ -50,10 +50,18 @@ PosType = Literal["PULSE", "BASE", "ROBOT", "USER"]
 
 @dataclass
 class _Position:
-    """C-variable position constant."""
+    """Position constant declared in //POS.
+
+    letter = 'C' (global C-variable) or 'P' (job position variable). index is the
+    numeric id; the declaration token is always 5-digit ({letter}{index:05d}),
+    while the //INST reference is 3-digit for P-vars and 5-digit for C-vars
+    (Yaskawa teach-pendant convention).
+    """
 
     name: str
     joints_pulse: list[int]
+    letter: str = "C"
+    index: int = 0
     tool_no: int = 0
     user_frame: int = 0
 
@@ -77,6 +85,7 @@ class InformJobBuilder:
         pulse_per_deg: Pulse/degree ratio per axis. Default GP7.
         max_speed_pct: Joint speed cap for safety. Default 30%.
         group: GROUP1 RB1 (single robot). Change for multi-robot setups.
+        folder_name: Optional ///FOLDERNAME (controller folder). "" = omit line.
     """
 
     def __init__(
@@ -87,6 +96,7 @@ class InformJobBuilder:
         max_speed_pct: float = MAX_SPEED_PCT_DEFAULT,
         group: str = "RB1",
         emit_axis_count: int = 0,
+        folder_name: str = "",
     ) -> None:
         """Args:
             emit_axis_count: Number of axis values emitted in the C-var line.
@@ -101,6 +111,7 @@ class InformJobBuilder:
         self.pulse_per_deg = pulse_per_deg
         self.max_speed_pct = max_speed_pct
         self.group = group
+        self.folder_name = folder_name
         self.emit_axis_count = (int(emit_axis_count) if emit_axis_count > 0
                                  else len(pulse_per_deg))
         if self.emit_axis_count < len(pulse_per_deg):
@@ -123,9 +134,29 @@ class InformJobBuilder:
             raise ValueError(
                 f"Job name must start with a letter, got '{name}'")
 
+    @staticmethod
+    def _validate_label(name: str) -> None:
+        """Validate a *LABEL name. INFORM labels allow purely-numeric names
+        (e.g. *1, *12) as well as alphanumeric — looser than job names."""
+        if not name or len(name) > 32:
+            raise ValueError(f"Label must be 1-32 characters, got '{name}'")
+        if not name.replace("_", "").isalnum():
+            raise ValueError(f"Label must be alphanumeric/_, got '{name}'")
+
     # ─── Positions ───
-    def add_position(self, name: str, joints_deg: list[float]) -> "InformJobBuilder":
-        """Add a C-variable position from joint angles (degrees)."""
+    def add_position(
+        self, name: str, joints_deg: list[float],
+        pos_token: str | None = None,
+    ) -> "InformJobBuilder":
+        """Add a position from joint angles (degrees).
+
+        Args:
+            name: Logical name used to reference this position in movj/movl/movc.
+            joints_deg: Joint angles (len = number of axes).
+            pos_token: Optional explicit INFORM token, e.g. 'P00001' or 'C00003',
+                to preserve the original variable kind + index on round-trip. If
+                None, a sequential C-variable (C00000, C00001, …) is assigned.
+        """
         if name in self._pos_index:
             raise ValueError(f"Position '{name}' already exists")
         if len(joints_deg) != len(self.pulse_per_deg):
@@ -138,16 +169,32 @@ class InformJobBuilder:
                 f"Reached limit of {MAX_POSITIONS_PER_JOB} positions/job. "
                 f"Split large jobs into multiple files."
             )
+        if pos_token is not None:
+            m = re.match(r"^([CP])(\d{1,5})$", pos_token.strip(), re.IGNORECASE)
+            if not m:
+                raise ValueError(
+                    f"Invalid pos_token '{pos_token}' (expected C##### or P###)")
+            letter, index = m.group(1).upper(), int(m.group(2))
+        else:
+            letter, index = "C", len(self._positions)
         pulses = [int(round(d * r)) for d, r in zip(joints_deg, self.pulse_per_deg)]
         self._pos_index[name] = len(self._positions)
-        self._positions.append(_Position(name=name, joints_pulse=pulses))
+        self._positions.append(_Position(
+            name=name, joints_pulse=pulses, letter=letter, index=index))
         return self
 
+    def _pos_decl_token(self, pos: "_Position") -> str:
+        """//POS declaration token — always 5-digit (e.g. 'P00001', 'C00003')."""
+        return f"{pos.letter}{pos.index:05d}"
+
     def _resolve_cvar(self, position_name: str) -> str:
-        """Map logical position name → C-variable token (e.g. 'p0' → 'C00000')."""
+        """Map logical position name → //INST reference token. P-vars use 3-digit
+        (P001), C-vars use 5-digit (C00000) — Yaskawa convention."""
         if position_name not in self._pos_index:
             raise KeyError(f"Position '{position_name}' not added — call add_position first")
-        return f"C{self._pos_index[position_name]:05d}"
+        pos = self._positions[self._pos_index[position_name]]
+        width = 3 if pos.letter == "P" else 5
+        return f"{pos.letter}{pos.index:0{width}d}"
 
     # ─── Motion instructions ───
     @staticmethod
@@ -171,17 +218,22 @@ class InformJobBuilder:
     def movj(self, position_name: str, speed_pct: float | None = None,
              tool_no: int | None = None,
              pl: int | None = None,
-             user_frame: int | None = None) -> "InformJobBuilder":
+             user_frame: int | None = None,
+             speed_var: str = "") -> "InformJobBuilder":
         """Joint move to position (high speed, path not controlled).
 
         Args:
             tool_no: TOOL coordinate (TL=). None = do not emit modifier.
             pl: Position level / rounding 0..8 (PL=). None = do not emit.
             user_frame: User frame index (UF#). None = do not emit.
+            speed_var: If set, emit VJ=<var> (e.g. VJ=I000) instead of a number.
         """
         cvar = self._resolve_cvar(position_name)
-        vj = self._clamp_joint_speed(speed_pct)
-        inst = f"MOVJ {cvar} VJ={vj:.2f}"
+        if speed_var:
+            vj = f"VJ={self._validate_var(speed_var)}"
+        else:
+            vj = f"VJ={self._clamp_joint_speed(speed_pct):.2f}"
+        inst = f"MOVJ {cvar} {vj}"
         inst += self._motion_modifiers(pl, tool_no, user_frame)
         self._instructions.append(_Instruction(inst))
         return self
@@ -193,11 +245,15 @@ class InformJobBuilder:
         tool_no: int | None = None,
         pl: int | None = None,
         user_frame: int | None = None,
+        speed_var: str = "",
     ) -> "InformJobBuilder":
-        """Linear (Cartesian) move."""
+        """Linear (Cartesian) move. speed_var → emit V=<var> (e.g. V=I003)."""
         cvar = self._resolve_cvar(position_name)
-        v = max(1.0, min(float(speed_mm_s), MAX_LINEAR_MM_S))
-        inst = f"MOVL {cvar} V={v:.1f}"
+        if speed_var:
+            v = f"V={self._validate_var(speed_var)}"
+        else:
+            v = f"V={max(1.0, min(float(speed_mm_s), MAX_LINEAR_MM_S)):.1f}"
+        inst = f"MOVL {cvar} {v}"
         inst += self._motion_modifiers(pl, tool_no, user_frame)
         self._instructions.append(_Instruction(inst))
         return self
@@ -254,7 +310,8 @@ class InformJobBuilder:
         """Pause for `seconds` seconds (gripper settle time, etc)."""
         if seconds < 0 or seconds > 600:
             raise ValueError(f"TIMER out of range 0-600s: {seconds}")
-        self._instructions.append(_Instruction(f"TIMER T={seconds:.2f}"))
+        # 3 decimals — matches Yaskawa teach-pendant output (e.g. 'TIMER T=1.000').
+        self._instructions.append(_Instruction(f"TIMER T={seconds:.3f}"))
         return self
 
     def msg(self, text: str) -> "InformJobBuilder":
@@ -266,10 +323,13 @@ class InformJobBuilder:
         return self
 
     def call_job(self, job_name: str) -> "InformJobBuilder":
-        """CALL JOB:job_name — invoke sub-program. job_name validated same as
-        _validate_name (≤32 ASCII alphanumeric/_)."""
-        self._validate_name(job_name)
-        self._instructions.append(_Instruction(f"CALL JOB:{job_name}"))
+        """CALL JOB:job_name — invoke a sub-program. Real job names may contain
+        '-' (e.g. SPEED-1), so this is looser than _validate_name: 1-32 chars,
+        alphanumeric plus _ and -."""
+        jn = (job_name or "").strip()
+        if not jn or len(jn) > 32 or not jn.replace("_", "").replace("-", "").isalnum():
+            raise ValueError(f"Invalid CALL JOB name: '{job_name}'")
+        self._instructions.append(_Instruction(f"CALL JOB:{jn}"))
         return self
 
     def comment(self, text: str) -> "InformJobBuilder":
@@ -294,18 +354,40 @@ class InformJobBuilder:
             raise ValueError(f"Unsupported condition operator: '{op}'")
         return f"{lhs.strip()}{op}{rhs.strip()}"
 
+    @staticmethod
+    def _is_io_cond(cond: tuple[str, str, str]) -> bool:
+        """True if the condition tests an I/O signal — Yaskawa requires the
+        expression form (IFTHENEXP/ELSEIFEXP/WHILEEXP) for IN#/OT#/ON/OFF, vs the
+        plain form for variable/numeric comparisons."""
+        toks = (cond[0].strip().upper(), cond[2].strip().upper())
+        return any(
+            t in ("ON", "OFF") or t.startswith(("IN#", "OT#", "OG#", "IG#"))
+            for t in toks)
+
+    @classmethod
+    def _cond_keyword(cls, base: str, cond: tuple[str, str, str],
+                      force_exp: bool = False) -> str:
+        """'IFTHEN'/'ELSEIF'/'WHILE' → append 'EXP' for I/O conditions, or when
+        force_exp is set (preserves the original keyword for variable conditions)."""
+        return base + ("EXP" if (force_exp or cls._is_io_cond(cond)) else "")
+
     def label(self, name: str) -> "InformJobBuilder":
-        """*LABEL — jump target. Name follows job convention (start letter, ≤32 alnum/_)."""
-        self._validate_name(name)
+        """*LABEL — jump target. Allows numeric labels (*1) and alphanumeric/_."""
+        self._validate_label(name)
         self._instructions.append(_Instruction(f"*{name}"))
         return self
 
     def jump(self, label: str, cond: tuple[str, str, str] | None = None,
+             terms: list | None = None, join: str = "AND",
              ) -> "InformJobBuilder":
-        """JUMP *LABEL [IF <cond>]. cond = (lhs, op, rhs) or None (unconditional)."""
-        self._validate_name(label)
+        """JUMP *LABEL [IF <cond>]. cond = (lhs, op, rhs) or None (unconditional);
+        terms = compound condition (combined with ANDEXP/OREXP)."""
+        self._validate_label(label)
         text = f"JUMP *{label}"
-        if cond is not None:
+        if terms:
+            joiner = f" {join or 'AND'}EXP "
+            text += " IF " + joiner.join(self._fmt_cond(*t) for t in terms)
+        elif cond is not None:
             text += f" IF {self._fmt_cond(*cond)}"
         self._instructions.append(_Instruction(text))
         return self
@@ -323,12 +405,34 @@ class InformJobBuilder:
             raise ValueError(f"Unsupported variable assignment operator: '{op}'")
         return self
 
-    def if_then(self, cond: tuple[str, str, str]) -> "InformJobBuilder":
-        self._instructions.append(_Instruction(f"IFTHEN {self._fmt_cond(*cond)}"))
+    @classmethod
+    def _cond_line(
+        cls, base: str, cond: tuple[str, str, str],
+        terms: list | None = None, join: str = "AND", force_exp: bool = False,
+    ) -> str:
+        """Build a flow-condition line. Compound (terms + AND/OR) → joined with
+        ANDEXP/OREXP. The EXP form (I/O conditions, or force_exp) gets a trailing
+        space, matching Yaskawa teach-pendant output."""
+        if terms:
+            io = force_exp or any(cls._is_io_cond(t) for t in terms)
+            kw = base + ("EXP" if io else "")
+            joiner = f" {join or 'AND'}EXP "
+            body = joiner.join(cls._fmt_cond(*t) for t in terms)
+            return f"{kw} {body}" + (" " if kw.endswith("EXP") else "")
+        kw = cls._cond_keyword(base, cond, force_exp)
+        line = f"{kw} {cls._fmt_cond(*cond)}"
+        return line + " " if kw.endswith("EXP") else line
+
+    def if_then(self, cond: tuple[str, str, str], terms: list | None = None,
+                join: str = "AND", exp: bool = False) -> "InformJobBuilder":
+        self._instructions.append(
+            _Instruction(self._cond_line("IFTHEN", cond, terms, join, exp)))
         return self
 
-    def else_if(self, cond: tuple[str, str, str]) -> "InformJobBuilder":
-        self._instructions.append(_Instruction(f"ELSEIF {self._fmt_cond(*cond)}"))
+    def else_if(self, cond: tuple[str, str, str], terms: list | None = None,
+                join: str = "AND", exp: bool = False) -> "InformJobBuilder":
+        self._instructions.append(
+            _Instruction(self._cond_line("ELSEIF", cond, terms, join, exp)))
         return self
 
     def else_(self) -> "InformJobBuilder":
@@ -339,12 +443,74 @@ class InformJobBuilder:
         self._instructions.append(_Instruction("ENDIF"))
         return self
 
-    def while_(self, cond: tuple[str, str, str]) -> "InformJobBuilder":
-        self._instructions.append(_Instruction(f"WHILE {self._fmt_cond(*cond)}"))
+    def while_(self, cond: tuple[str, str, str], terms: list | None = None,
+               join: str = "AND", exp: bool = False) -> "InformJobBuilder":
+        self._instructions.append(
+            _Instruction(self._cond_line("WHILE", cond, terms, join, exp)))
         return self
 
     def end_while(self) -> "InformJobBuilder":
         self._instructions.append(_Instruction("ENDWHILE"))
+        return self
+
+    # ─── Extended LG instructions ───
+    def set_express(self, name: str, expr: str) -> "InformJobBuilder":
+        """SET Ixxx EXPRESS <expr> — assign an arithmetic expression."""
+        name = self._validate_var(name)
+        self._instructions.append(_Instruction(f"SET {name} EXPRESS {expr}"))
+        return self
+
+    def pulse(self, output_index: int) -> "InformJobBuilder":
+        """PULSE OT#(n) — momentary output pulse."""
+        self._instructions.append(_Instruction(f"PULSE OT#({int(output_index)})"))
+        return self
+
+    def clear_stack(self) -> "InformJobBuilder":
+        self._instructions.append(_Instruction("CLEAR STACK"))
+        return self
+
+    def clear_var(self, name: str, count: int) -> "InformJobBuilder":
+        """CLEAR Ixxx n | CLEAR Ixxx ALL (count < 0 → ALL)."""
+        name = self._validate_var(name)
+        n = "ALL" if count < 0 else int(count)
+        self._instructions.append(_Instruction(f"CLEAR {name} {n}"))
+        return self
+
+    def din(self, name: str, group_kind: str, group_index: int,
+            ) -> "InformJobBuilder":
+        """DIN Bxxx IG#(n) | DIN Bxxx SOUT#(n) — read input/status group → var."""
+        name = self._validate_var(name)
+        self._instructions.append(
+            _Instruction(f"DIN {name} {group_kind.upper()}#({int(group_index)})"))
+        return self
+
+    def dout_group(self, group_index: int, name: str) -> "InformJobBuilder":
+        """DOUT OG#(n) Bxxx — write a variable to an output group."""
+        name = self._validate_var(name)
+        self._instructions.append(
+            _Instruction(f"DOUT OG#({int(group_index)}) {name}"))
+        return self
+
+    def movj_indirect(self, index_var: str, speed_var: str = "",
+                      speed_pct: float | None = None) -> "InformJobBuilder":
+        """MOVJ P[Bxxx] [VJ=Ixxx | VJ=n] — indirect position, optional var speed."""
+        index_var = self._validate_var(index_var)
+        if speed_var:
+            vj = f"VJ={self._validate_var(speed_var)}"
+        else:
+            vj = f"VJ={self._clamp_joint_speed(speed_pct):.2f}"
+        self._instructions.append(_Instruction(f"MOVJ P[{index_var}] {vj}"))
+        return self
+
+    def movl_indirect(self, index_var: str, speed_var: str = "",
+                      speed_mm_s: float = 100.0) -> "InformJobBuilder":
+        """MOVL P[Bxxx] [V=Ixxx | V=n] — indirect position, optional var speed."""
+        index_var = self._validate_var(index_var)
+        if speed_var:
+            v = f"V={self._validate_var(speed_var)}"
+        else:
+            v = f"V={max(1.0, min(float(speed_mm_s), MAX_LINEAR_MM_S)):.1f}"
+        self._instructions.append(_Instruction(f"MOVL P[{index_var}] {v}"))
         return self
 
     def _clamp_joint_speed(self, speed_pct: float | None) -> float:
@@ -354,37 +520,59 @@ class InformJobBuilder:
 
     # ─── Render ───
     def render(self, date_str: str = "2026/01/01 00:00") -> str:
-        """Generate full INFORM .JBI text. CRLF line endings (Yaskawa convention)."""
-        if not self._positions:
-            raise ValueError("Job must have at least 1 position")
+        """Generate full INFORM .JBI text. CRLF line endings (Yaskawa convention).
+
+        Logic-only jobs (no MOVJ/MOVL — e.g. a master/speed-calc job) are allowed:
+        they render an empty //POS section (NPOS 0,0,0,0,0,0)."""
         if not self._instructions:
             raise ValueError("Job must have at least 1 instruction")
 
         lines: list[str] = []
         lines.append("/JOB")
         lines.append(f"//NAME {self.name}")
+        if self.folder_name:
+            lines.append(f"///FOLDERNAME {self.folder_name}")
         lines.append("//POS")
-        # NPOS = number of positions per group (BP/EX/ST/EXP = 0 for single 6-axis robot).
-        lines.append(f"///NPOS {len(self._positions)},0,0,0,0,0")
-        lines.append(f"///TOOL {self._positions[0].tool_no}")
-        lines.append(f"///POSTYPE {self.pos_type}")
-        # First section (PULSE/BASE/...) matches pos_type.
-        lines.append(f"///{self.pos_type}")
-        for p in self._positions:
-            cvar = f"C{self._pos_index[p.name]:05d}"
-            # Pad with 0 for axes 7-8 if emit_axis_count > number of joints (GP7: 6→8).
-            padded = list(p.joints_pulse) + [0] * (
-                self.emit_axis_count - len(p.joints_pulse))
-            values = ",".join(str(v) for v in padded)
-            lines.append(f"{cvar}={values}")
+        # NPOS counts positions per slot. Slot 0 = C-variables; slot 3 holds the
+        # P-variable count (matches real Yaskawa teach-pendant jobs, e.g.
+        # '///NPOS 0,0,0,5,0,0' for 5 P-vars). Other slots (BP/EX/ST/EXP) = 0 for
+        # a single 6-axis robot.
+        n_cvar = sum(1 for p in self._positions if p.letter == "C")
+        n_pvar = sum(1 for p in self._positions if p.letter == "P")
+        lines.append(f"///NPOS {n_cvar},0,0,{n_pvar},0,0")
+        if self._positions:
+            lines.append(f"///TOOL {self._positions[0].tool_no}")
+            lines.append(f"///POSTYPE {self.pos_type}")
+            # First section (PULSE/BASE/...) matches pos_type.
+            lines.append(f"///{self.pos_type}")
+            for p in self._positions:
+                token = self._pos_decl_token(p)
+                # Pad with 0 for axes 7-8 if emit_axis_count > joints (GP7: 6→8).
+                padded = list(p.joints_pulse) + [0] * (
+                    self.emit_axis_count - len(p.joints_pulse))
+                values = ",".join(str(v) for v in padded)
+                lines.append(f"{token}={values}")
 
         lines.append("//INST")
         lines.append(f"///DATE {date_str}")
         lines.append("///ATTR SC,RW")
         lines.append(f"///GROUP1 {self.group}")
         lines.append("NOP")
+        # Indent IF/WHILE block bodies with '\t ' per nesting level (matches
+        # Yaskawa teach-pendant formatting). Opener/closer/mid-keywords sit at
+        # the block's own level; the body between them is indented one deeper.
+        depth = 0
         for inst in self._instructions:
-            lines.append(inst.text)
+            head = inst.text.split(None, 1)[0].upper() if inst.text else ""
+            opens = head in ("IFTHEN", "IFTHENEXP", "WHILE", "WHILEEXP")
+            closes = head in ("ENDIF", "ENDWHILE")
+            mid = head in ("ELSE", "ELSEIF", "ELSEIFEXP")
+            level = depth - 1 if (closes or mid) else depth
+            lines.append("\t " * max(0, level) + inst.text)
+            if opens:
+                depth += 1
+            elif closes:
+                depth = max(0, depth - 1)
         lines.append("END")
 
         return "\r\n".join(lines) + "\r\n"

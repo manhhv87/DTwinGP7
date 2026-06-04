@@ -272,6 +272,14 @@ class GP7AppQt(
         # Targets are project-global (RoboDK convention).
         self._jobs: dict[str, list[Instruction]] = {"MAIN": []}
         self._active_job: str = "MAIN"
+        # Per-job ///FOLDERNAME from imported .JBI (job name → folder). Preserved
+        # through save/load and re-emitted on export. Absent = no folder line.
+        self._job_folders: dict[str, str] = {}
+        # Verbatim re-export cache: job key → {text, name, sig}. An imported job
+        # UNCHANGED since import (sig match) re-exports byte-for-byte from `text`.
+        self._jbi_raw: dict[str, dict] = {}
+        # Global //POS table (key 'P<idx>' → joints_deg) for P[Bxxx] indirect.
+        self._jbi_positions: dict[str, list[float]] = {}
         # Target library: name → {"joints": [..6 deg..], "tcp_pose": [..6..]}
         self._targets: dict[str, dict] = {}
         # Dirty-check baseline: project signature at the last Save/Load.
@@ -285,6 +293,10 @@ class GP7AppQt(
         self._pp_max_speed_pct: float = 30.0
         self._pp_default_vj: float = 10.0
         self._pp_default_v_mms: float = 100.0
+        # Digital-output index that actuates the gripper (OT#n). DOUT/SetDO on this
+        # index drives grasp(ON)/release(OFF) in the sim, matching the real robot.
+        # Loaded from config/experiment.yaml (gripper_do_index); default 1.
+        self._gripper_do_index: int = self._load_gripper_do_index()
         # Teach-on-surface mode (click 3D scene → create target on picked surface).
         self._surface_pick_mode: bool = False
         # Cache: id(vtkDataSet) → (mesh_with_normals, cell_normals_array).
@@ -334,6 +346,8 @@ class GP7AppQt(
         self._signals.gripper.connect(self._toggle_gripper)
         self._signals.sim_reset.connect(self._on_reset_scene)
         self._signals.program_done.connect(self._on_program_done)
+        self._signals.prog_step.connect(self._on_prog_step_highlight)
+        self._signals.prog_show_job.connect(self._on_prog_show_job)
         self._signals.camera_result.connect(self._on_camera_result)
         self._signals.exp_progress.connect(self._on_exp_progress)
         self._signals.exp_done.connect(self._on_exp_done)
@@ -353,6 +367,23 @@ class GP7AppQt(
         # pops up immediately, scene loads after event loop starts → smooth startup.
         from PyQt6.QtCore import QTimer as _QT
         _QT.singleShot(0, self._post_show_setup)
+
+    def _load_gripper_do_index(self) -> int:
+        """Read gripper_do_index from config/experiment.yaml (default 1).
+
+        Determines which DOUT/SetDO output actuates the gripper in the sim so
+        imported DOUT-based pick-place jobs grasp/release like the real robot.
+        """
+        try:
+            from ...utils import load_yaml
+            exp_yaml = self._project_root / "config" / "experiment.yaml"
+            if exp_yaml.exists():
+                loaded = load_yaml(exp_yaml)
+                if isinstance(loaded, dict) and "gripper_do_index" in loaded:
+                    return int(loaded["gripper_do_index"])
+        except Exception:                                       # noqa: BLE001
+            pass
+        return 1
 
     def _post_show_setup(self) -> None:
         """Runs after the window has been shown — initialise the base scene. Robot/cell
@@ -871,8 +902,9 @@ class GP7AppQt(
         jhdr.addStretch()
         self._align_btn = QPushButton("Align")
         self._align_btn.setToolTip(
-            "Align with closest target (placeholder — snaps to home in sim)")
-        self._align_btn.clicked.connect(self._on_home)
+            "Align the tool orientation to the reference frame "
+            "(keep TCP position, snap wrist perpendicular)")
+        self._align_btn.clicked.connect(self._on_align)
         jhdr.addWidget(self._align_btn)
         home_btn = QPushButton("Home"); home_btn.clicked.connect(self._on_home)
         jhdr.addWidget(home_btn)
@@ -926,14 +958,16 @@ class GP7AppQt(
         # 3. OTHER CONFIGURATIONS — collapsible, CLOSED by default
         # ──────────────────────────────────────────────────────
         other_sec = CollapsibleSection(
-            "Other configurations — robot postures (8 IK branches)",
+            "Other configurations — IK solutions (postures + joint turns)",
             expanded=False)
         oh = QHBoxLayout()
         oh.addWidget(QLabel("(θ1..θ6)"))
         oh.addStretch()
         find_btn = QPushButton("Find branches")
-        find_btn.setToolTip("List 8 robot configurations (Pieper analytical) "
-                             "for current TCP pose")
+        find_btn.setToolTip(
+            "List ALL IK solutions for the current TCP pose (Pieper analytical), "
+            "like RoboDK: up to 8 postures (Front/Rear · Up/Down · Flip) × ±360° "
+            "joint-turn variants. Switching posture crosses a singularity.")
         find_btn.clicked.connect(self._on_find_alternates)
         oh.addWidget(find_btn)
         cfg_btn = QPushButton("Configurations…")
@@ -943,7 +977,7 @@ class GP7AppQt(
         oh.addWidget(cfg_btn)
         other_sec.add_layout(oh)
         self._alt_combo = QComboBox()
-        self._alt_combo.addItem("(no alternates — click \"Find branches\")")
+        self._alt_combo.addItem("(no configurations — click \"Find branches\")")
         self._alt_combo.currentIndexChanged.connect(self._on_alternate_selected)
         other_sec.add_widget(self._alt_combo)
         self._alt_solutions: list[list[float]] = []
@@ -1222,25 +1256,32 @@ class GP7AppQt(
         self._prog_list.setMinimumHeight(180)
         vbox.addWidget(self._prog_list, 3)
 
-        # ── 1b. Edit toolbar — hand-drawn icons (↑↓✕ glyphs don't render in Segoe UI),
-        # "Edit" keeps text for clarity. Full tooltips on all buttons.
+        # ── 1b. Edit toolbar — icon buttons for move/delete (↑↓✕ glyphs don't
+        # render in Segoe UI), text buttons for Edit/Replace. Edit & Replace
+        # stretch to fill so their labels are never clipped at narrow dock widths.
         edit_row = QHBoxLayout(); edit_row.setSpacing(4)
+        edit_row.setContentsMargins(0, 0, 0, 0)
         for icon, cb, tip in (
             (_draw_arrow_up_icon(),   self._on_prog_move_up,   "Move selected instruction up"),
             (_draw_arrow_down_icon(), self._on_prog_move_down, "Move selected instruction down"),
         ):
-            b = QPushButton(); b.setIcon(icon); b.setToolTip(tip); b.setFixedWidth(40)
-            b.clicked.connect(cb)
+            b = QPushButton(); b.setIcon(icon); b.setToolTip(tip)
+            b.setFixedWidth(38); b.clicked.connect(cb)
             edit_row.addWidget(b)
         b_edit = QPushButton("Edit")
-        b_edit.setToolTip("F2 — edit selected instruction (or double-click)")
-        b_edit.setFixedWidth(56); b_edit.clicked.connect(self._on_prog_modify)
-        edit_row.addWidget(b_edit)
+        b_edit.setToolTip("F2 — edit the selected instruction's parameters "
+                          "(or double-click the list)")
+        b_edit.setMinimumWidth(60); b_edit.clicked.connect(self._on_prog_modify)
+        edit_row.addWidget(b_edit, 1)               # stretch
+        b_repl = QPushButton("Replace")
+        b_repl.setToolTip("Change the selected instruction to a different type "
+                          "(keeps its position), then edit its parameters")
+        b_repl.setMinimumWidth(72); b_repl.clicked.connect(self._on_prog_replace)
+        edit_row.addWidget(b_repl, 1)               # stretch
         b_pdel = QPushButton(); b_pdel.setIcon(_draw_x_icon())
-        b_pdel.setToolTip("Delete selected instruction")
-        b_pdel.setFixedWidth(40); b_pdel.clicked.connect(self._on_prog_delete)
+        b_pdel.setToolTip("Delete the selected instruction")
+        b_pdel.setFixedWidth(38); b_pdel.clicked.connect(self._on_prog_delete)
         edit_row.addWidget(b_pdel)
-        edit_row.addStretch()
         eb = QWidget(); eb.setLayout(edit_row)
         vbox.addWidget(eb)
         # Double-click instruction in list → Edit
@@ -1325,7 +1366,9 @@ class GP7AppQt(
         # Label col fixed (aligns labels), input col STRETCH fills remaining
         # width → NO empty right margin at any dock width; inputs fill
         # col1 (fill=True) so also no gap. Button col fixed → +Add aligned in column.
-        _LABEL_W = 52
+        # Wide enough for the longest label ("Pulse OT#", "DOUT OG#") — narrower
+        # values clipped those labels at 52px.
+        _LABEL_W = 72
 
         def _grid_row(grid, r, label, mid, btn):
             """label@col0 (fixed) | mid@col1 (stretch, fill) | btn@col2 (fixed)."""
@@ -1566,6 +1609,56 @@ class GP7AppQt(
                        "IF/WHILE blocks must be balanced (validated before Run/Export).")
         _hint.setWordWrap(True); _hint.setStyleSheet("color: #8a8a8a; font-size: 11px;")
         lgc_lay.addWidget(_hint, r, 0, 1, 3); r += 1
+
+        # ── I/O & registers (extended INFORM: PULSE / CLEAR / DIN / DOUT OG#) ──
+        _sep2 = QFrame(); _sep2.setFrameShape(QFrame.Shape.HLine)
+        _sep2.setFrameShadow(QFrame.Shadow.Sunken)
+        lgc_lay.addWidget(_sep2, r, 0, 1, 3); r += 1
+        lgc_lay.addWidget(QLabel("I/O & registers:"), r, 0, 1, 3); r += 1
+        # PULSE OT#(n)
+        self._prog_pulse_idx = QSpinBox(); self._prog_pulse_idx.setRange(1, 1024)
+        self._prog_pulse_idx.setValue(1)
+        b_pulse = QPushButton("+ Pulse")
+        b_pulse.setToolTip("PULSE OT#(n) — momentary output pulse")
+        b_pulse.clicked.connect(self._on_prog_add_pulse)
+        _grid_row(lgc_lay, r, "Pulse OT#", _hwrap(self._prog_pulse_idx, fill=True),
+                  b_pulse); r += 1
+        # CLEAR Ixxx n|ALL
+        self._prog_clear_var = QLineEdit(); self._prog_clear_var.setMaxLength(5)
+        self._prog_clear_var.setPlaceholderText("I010")
+        self._prog_clear_cnt = QLineEdit(); self._prog_clear_cnt.setPlaceholderText("2 / ALL")
+        b_clear = QPushButton("+ Clear")
+        b_clear.setToolTip("CLEAR Ixxx n | CLEAR Ixxx ALL — zero consecutive registers")
+        b_clear.clicked.connect(self._on_prog_add_clearvar)
+        _grid_row(lgc_lay, r, "Clear",
+                  _hwrap(self._prog_clear_var, self._prog_clear_cnt, fill=True),
+                  b_clear); r += 1
+        b_cstk = QPushButton("+ Clear STACK")
+        b_cstk.setToolTip("CLEAR STACK — clear the call stack")
+        b_cstk.clicked.connect(self._on_prog_add_clearstack)
+        lgc_lay.addWidget(_btn_fill_row(b_cstk), r, 0, 1, 3); r += 1
+        # DIN Bxxx IG#(n)/SOUT#(n)
+        self._prog_din_var = QLineEdit(); self._prog_din_var.setMaxLength(5)
+        self._prog_din_var.setPlaceholderText("B005")
+        self._prog_din_kind = QComboBox(); self._prog_din_kind.addItems(["IG", "SOUT"])
+        self._prog_din_grp = QSpinBox(); self._prog_din_grp.setRange(0, 4095)
+        b_din = QPushButton("+ DIN")
+        b_din.setToolTip("DIN Bxxx IG#(n)/SOUT#(n) — read input/status group into a register")
+        b_din.clicked.connect(self._on_prog_add_din)
+        _grid_row(lgc_lay, r, "DIN",
+                  _hwrap(self._prog_din_var, self._prog_din_kind, self._prog_din_grp,
+                         fill=True), b_din); r += 1
+        # DOUT OG#(n) Bxxx
+        self._prog_dog_grp = QSpinBox(); self._prog_dog_grp.setRange(0, 4095)
+        self._prog_dog_var = QLineEdit(); self._prog_dog_var.setMaxLength(5)
+        self._prog_dog_var.setPlaceholderText("B005")
+        b_dog = QPushButton("+ DOUT OG#")
+        b_dog.setToolTip("DOUT OG#(n) Bxxx — write a register to an output group")
+        b_dog.clicked.connect(self._on_prog_add_doutgroup)
+        _grid_row(lgc_lay, r, "DOUT OG#",
+                  _hwrap(self._prog_dog_grp, self._prog_dog_var, fill=True),
+                  b_dog); r += 1
+
         lgc_lay.setRowStretch(r, 1)
         tabs.addTab(lgc_w, "Logic")
 
@@ -4289,10 +4382,42 @@ class GP7AppQt(
             T_ref_tool = np.linalg.inv(T_world_ref) @ T_world_tool
             self._fill_pose_row(self._tcp_pose_lbls, T_ref_tool)
 
-    # ── Other configurations (IK branches) ────────────────────────────
+    # ── Other configurations (IK solutions) ───────────────────────────
+    @staticmethod
+    def _solution_turns(joints_deg: list[float]) -> list[int]:
+        """Per-joint turn number = how many full ±360° revolutions a joint is wound
+        away from its principal value in (-180°, 180°]. Yaskawa/RoboDK convention:
+        turn 0 = principal solution; ±1 = one extra revolution (possible only on
+        axes with range > 360°, e.g. GP7 J6 ±360°)."""
+        turns = []
+        for a in joints_deg:
+            principal = ((a + 180.0) % 360.0) - 180.0
+            turns.append(int(round((a - principal) / 360.0)))
+        return turns
+
+    @staticmethod
+    def _turn_label(turns: list[int]) -> str:
+        """Compact label of the non-zero turns, e.g. 'J6+1' or 'J4-1 J6+1'.
+        'turn 0' when the solution is the principal (no winding)."""
+        parts = [f"J{i + 1}{t:+d}" for i, t in enumerate(turns) if t != 0]
+        return " ".join(parts) if parts else "turn 0"
+
     def _compute_configurations(self) -> list[dict]:
-        """8 robot configs (Pieper analytical, labelled with posture flags) for the
-        current TCP pose. Returns list of dicts. Empty if unreachable.
+        """All IK solutions for the current TCP pose (Pieper analytical), enumerated
+        like RoboDK. Each row is one joint solution reaching the same TCP. Empty if
+        unreachable.
+
+        Two things distinguish the rows:
+          • Configuration — the (up to 8) posture regions Front/Rear · Elbow Up/Down ·
+            Flip/Non-Flip. These ARE separated by singularities: moving between two of
+            them requires crossing a singularity.
+          • Joint turns — the SAME posture wound differently (±360°). The GP7 has wide
+            axes (J6 ±360°, J4 ±190°, J3 spans 371°), so one posture can be reached at
+            several turn counts that all stay within limits. RoboDK lists these too,
+            which is why a pose can have "from 1 to more than 100" configurations.
+
+        `include_turns=True` so the count matches RoboDK (dropping turns would show
+        roughly half the rows).
 
         Perf P8: cache result by TCP pose tuple — if pose unchanged, reuse
         cache instead of calling Pieper IK again (~20-50ms). Invalidate when tool_idx
@@ -4312,7 +4437,10 @@ class GP7AppQt(
             return cached[1]
         try:
             result = inverse_kinematics_pieper_gp7_tagged(
-                self._model, T_target_tool0)
+                self._model, T_target_tool0, include_turns=True)
+            for c in result:                # annotate per-joint turn numbers
+                c["turns"] = self._solution_turns(c["joints_deg"])
+                c["turn_label"] = self._turn_label(c["turns"])
             self._pieper_cache = (key, result)
             return result
         except Exception as e:                              # noqa: BLE001
@@ -4329,8 +4457,9 @@ class GP7AppQt(
         )
 
     def _on_find_alternates(self) -> None:
-        """List 8 robot configurations for the current TCP pose (Pieper analytical).
-        Each entry labelled with posture flags (Front/Rear · Up/Down · Flip/Non-Flip).
+        """List ALL IK solutions for the current TCP pose (Pieper analytical), like
+        RoboDK: up to 8 postures (Front/Rear · Up/Down · Flip/Non-Flip), each with
+        its ±360° joint-turn variants. The current solution is included.
         """
         cfgs = self._compute_configurations()
         self._alt_solutions = [c["joints_deg"] for c in cfgs]
@@ -4344,15 +4473,19 @@ class GP7AppQt(
             for c in cfgs:
                 fr, ud, fn = self._config_flag_text(c)
                 self._alt_combo.addItem(
-                    f"id {c['id']} · {fr}/{ud}/{fn}")
-            self._set_status(f"Found {len(cfgs)} robot configuration(s)", "ok")
+                    f"id {c['id']} · {fr}/{ud}/{fn} · {c['turn_label']}")
+            n_post = len({c["id"] for c in cfgs})
+            self._set_status(
+                f"Found {len(cfgs)} IK solution(s) in {n_post} posture(s) "
+                f"— switching posture crosses a singularity", "ok")
         self._alt_combo.blockSignals(False)
 
     def _on_alternate_selected(self, idx: int) -> None:
         i = int(idx)
         if 0 <= i < len(self._alt_solutions):
             self._apply_joints_main(self._alt_solutions[i])
-            self._set_status(f"Switched to configuration #{i+1}", level="ok")
+            self._set_status(
+                f"Switched → {self._alt_combo.itemText(i)}", level="ok")
 
     def _show_configurations_dlg(self) -> None:
         """'Robot Configurations' dialog like RoboDK — config table + filters
@@ -4432,8 +4565,19 @@ class GP7AppQt(
         info.setAlignment(Qt.AlignmentFlag.AlignCenter)
         v.addWidget(info)
 
+        note = QLabel(
+            "Each row is an IK solution reaching the same TCP. Up to 8 postures "
+            "(Front/Rear · Elbow Up/Down · Flip/Non-Flip) are bounded by "
+            "singularities — switching posture crosses a singularity. Rows sharing "
+            "an id are ±360° joint-turn variants of the same posture (GP7 has wide "
+            "axes), so a pose may list many solutions, as in RoboDK.")
+        note.setWordWrap(True)
+        note.setStyleSheet("color: #9a9a9a; font-style: italic;")
+        v.addWidget(note)
+
         # ── Table ──
-        cols = ["id", "F/R", "U/D", "F/N", "J1", "J2", "J3", "J4", "J5", "J6"]
+        cols = ["id", "F/R", "U/D", "F/N", "Turn",
+                "J1", "J2", "J3", "J4", "J5", "J6"]
         table = QTableWidget(0, len(cols))
         table.setHorizontalHeaderLabels(cols)
         table.verticalHeader().setVisible(False)
@@ -4441,7 +4585,7 @@ class GP7AppQt(
         table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         hh = table.horizontalHeader()
         hh.setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
-        for c in (0, 1, 2, 3):                               # id + dots: narrow
+        for c in (0, 1, 2, 3, 4):                            # id + dots + turn: narrow
             hh.setSectionResizeMode(c, QHeaderView.ResizeMode.ResizeToContents)
         v.addWidget(table)
 
@@ -4473,11 +4617,19 @@ class GP7AppQt(
                 table.setItem(r, 1, _dot(c["front"]))
                 table.setItem(r, 2, _dot(c["elbow_up"]))
                 table.setItem(r, 3, _dot(c["no_flip"]))
+                turn_it = QTableWidgetItem(
+                    c.get("turn_label", self._turn_label(
+                        self._solution_turns(c["joints_deg"]))))
+                turn_it.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                table.setItem(r, 4, turn_it)
                 for jc, a in enumerate(c["joints_deg"]):
                     it = QTableWidgetItem(f"{a:.1f}")
                     it.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-                    table.setItem(r, 4 + jc, it)
-            info.setText(f"Showing: {len(shown)} / {len(cfgs)} configurations")
+                    table.setItem(r, 5 + jc, it)
+            n_post = len({c["id"] for c in shown})
+            info.setText(
+                f"Showing: {len(shown)} solution(s) in {n_post} posture(s) "
+                f"/ {len(cfgs)} total")
             if shown:
                 table.selectRow(0)
         _refill()
@@ -4657,161 +4809,162 @@ class GP7AppQt(
     # WorkSpace sphere
     # ══════════════════════════════════════════════════════════════════
     def _compute_reach_envelope_mesh(self, mode: str):
-        """Compute reach envelope:
-          • Outer = convex hull of wrist 2D positions, revolved around J1
-                    Z axis over J1 range [-170°, +170°] (slit at the rear).
-          • Inner = simple sphere at elbow position when J2 = +145° URDF
-                    (Yaskawa "deep negative"), centered on J1 axis at
-                    elbow Z height.
+        """Reach (work) envelope, RoboDK-style: BRUTE-FORCE forward kinematics.
+
+        Instead of a hand-derived L1/L2/L3 formula, sample the position joints
+        through their REAL limits, run FK on the URDF model for each sample, collect
+        the reachable point of interest, then build the envelope as a surface of
+        revolution about the J1 axis. This is exact to the URDF and — for 'tool'/
+        'flange' — also sweeps the wrist (J4/J5) so the envelope grows correctly by
+        the tool length in every orientation the wrist can reach (something a fixed
+        offset along the forearm cannot capture).
+
+          • mode 'wrist'  → wrist-centre point (depends on J2,J3 only).
+          • mode 'flange' → flange point      (also sweeps J4,J5).
+          • mode 'tool'   → current TCP point (also sweeps J4,J5).
+
+        Built as a DENTED ball (no wedge cut): per world-azimuth bin, the reachable
+        (r,z) cross-section is taken from the points reachable there for some
+        q1∈[-170°,+170°]. The radius dents inward where max reach is reduced. There is
+        NO binary hole — every azimuth is reachable (the arm folds to either side of
+        its plane); only the radius shrinks. OUTER = max reach over all configs (dents
+        mildly behind). INNER = reach with J2(L)<0 (RoboDK's "reach when joint 2
+        negative"), which reaches backward → dents in FRONT, opposite the outer dent.
+        Verified by FK, not RoboDK mimicry. FK output mm; scene metres (÷1000).
+        Cached by (model, mode, tool, base).
         """
+        if self._model is None:
+            return None
         cache = getattr(self, "_reach_envelope_cache", {})
-        ckey = (id(self._model), mode, tuple(self._base_xyz))
+        ckey = (id(self._model), mode, self._tool_idx, tuple(self._base_xyz))
         if ckey in cache:
             return cache[ckey]
 
-        base = self._base_xyz
-        L1 = 40.0
-        L2 = 445.0
-        L3 = 442.0
-        if mode == "wrist":
-            tip_offset = 0.0
-        elif mode == "flange":
-            tip_offset = 80.0
-        else:
-            tip_offset = 80.0 + 100.0
+        bx, by, bz = self._base_xyz
+        jl = [(j.joint_min, j.joint_max) for j in self._model.joints]
 
-        j2_min, j2_max = math.radians(-65), math.radians(145)
-        j3_min, j3_max = math.radians(-116), math.radians(255)
+        def _lin(i, n):
+            return np.linspace(jl[i][0], jl[i][1], n)
 
-        def _sample_2d(j2_lo, j2_hi):
-            pts = []
-            for j2 in np.linspace(j2_lo, j2_hi, 36):
-                e_x = L1 + L2 * math.sin(j2)
-                e_z = L2 * math.cos(j2)
-                for j3 in np.linspace(j3_min, j3_max, 48):
-                    angle_total = j2 + j3
-                    wx = e_x + L3 * math.sin(angle_total)
-                    wz = e_z + L3 * math.cos(angle_total)
-                    if tip_offset > 0:
-                        wx += tip_offset * math.sin(angle_total)
-                        wz += tip_offset * math.cos(angle_total)
-                    pts.append((wx, wz))
-            return pts
+        def _fk_point(q):
+            fr = dict(link_frames_urdf(self._model, q))
+            if mode == "wrist":
+                for k in ("link_B", "link_T", "link_tool0"):
+                    if k in fr:
+                        T = fr[k]; break
+            elif mode == "flange":
+                T = fr["link_flange"] if "link_flange" in fr else fr["link_tool0"]
+            else:                                            # tool
+                T = fr["link_tool0"] @ self._tool_frames[self._tool_idx][1]
+            return T[:3, 3]
 
-        def _convex_hull_2d(pts):
-            from scipy.spatial import ConvexHull
-            arr = np.array(pts)
-            hull = ConvexHull(arr)
-            return arr[hull.vertices]
-
-        def _build_quad_sphere(radius, center, n_az=24, n_el=14):
-            cx_s, cy_s, cz_s = center
-            pts = []
-            for i_el in range(n_el):
-                theta = math.pi * i_el / (n_el - 1)
-                z = math.cos(theta) * radius
-                r_xy = math.sin(theta) * radius
-                for i_az in range(n_az):
-                    phi = 2.0 * math.pi * i_az / n_az
-                    pts.append([cx_s + r_xy * math.cos(phi),
-                                 cy_s + r_xy * math.sin(phi),
-                                 cz_s + z])
-            faces = []
-            for i_el in range(n_el - 1):
-                for i_az in range(n_az):
-                    i_az_n = (i_az + 1) % n_az
-                    p0 = i_el * n_az + i_az
-                    p1 = i_el * n_az + i_az_n
-                    p2 = (i_el + 1) * n_az + i_az_n
-                    p3 = (i_el + 1) * n_az + i_az
-                    faces.extend([4, p0, p1, p2, p3])
-            return pv.PolyData(np.array(pts), faces)
-
-        def _revolve_2d_to_3d(boundary_2d, center_z, n_az=36):
-            j1_min = math.radians(-170.0)
-            j1_max = math.radians(+170.0)
-            n_b = len(boundary_2d)
-            pts = []
-            for i_az in range(n_az):
-                t = i_az / (n_az - 1) if n_az > 1 else 0.0
-                az = j1_min + (j1_max - j1_min) * t
-                ca, sa = math.cos(az), math.sin(az)
-                for r, z in boundary_2d:
-                    pts.append([r * ca, r * sa, z + center_z])
-            faces = []
-            for i_az in range(n_az - 1):
-                i_az_n = i_az + 1
-                for j in range(n_b):
-                    j_n = (j + 1) % n_b
-                    p0 = i_az * n_b + j
-                    p1 = i_az_n * n_b + j
-                    p2 = i_az_n * n_b + j_n
-                    p3 = i_az * n_b + j_n
-                    faces.extend([4, p0, p1, p2, p3])
-            return pv.PolyData(np.array(pts), faces)
-
+        # ── Sample the q1=0 cross-section. For each reachable point record its
+        # NATURAL azimuth (atan2 at q1=0), radius and height. J1 is then applied
+        # ANALYTICALLY: a point at natural azimuth a is reachable at world azimuth
+        # a+q1 for q1∈[-170°,+170°]. Split by shoulder: ALL configs → OUTER (max
+        # reach overall), backward (J2<0) → INNER ("reach when joint 2 is negative",
+        # per RoboDK). ──
+        j1_half = math.degrees(min(-jl[0][0], jl[0][1]))     # 170° for GP7
+        allp, bwd = [], []                                   # (natural_az, r, z) mm
         try:
-            outer_boundary = _convex_hull_2d(_sample_2d(j2_min, j2_max))
-        except Exception as e:                              # noqa: BLE001
-            logger.warning("Outer envelope hull failed: %s", e)
-            return None
-
-        # ── INNER: REACHABLE zone cho specific IK configuration.
-        # Forum: "inner sphere = dead zone for robot in specific config"
-        # ⇒ Implement: boundary of the REGION reachable with 1 config (e.g. id=0:
-        # Front+Up+NoFlip). Smaller region → smaller inner sphere → matches SDK.png.
-        try:
-            from ..kinematics.pieper_gp7 import (
-                inverse_kinematics_pieper_gp7_tagged,
-            )
-        except Exception:                                   # noqa: BLE001
-            logger.warning("Pieper tagged not available")
-            return None
-
-        target_config_id = 0       # Front+Up+NoFlip
-        reachable_pts = []
-        for j2 in np.linspace(j2_min, j2_max, 24):
-            e_x = L1 + L2 * math.sin(j2)
-            e_z = L2 * math.cos(j2)
-            for j3 in np.linspace(j3_min, j3_max, 30):
-                angle_total = j2 + j3
-                wx = e_x + L3 * math.sin(angle_total)
-                wz = e_z + L3 * math.cos(angle_total)
-                if tip_offset > 0:
-                    wx += tip_offset * math.sin(angle_total)
-                    wz += tip_offset * math.cos(angle_total)
-                T = np.eye(4)
-                T[:3, 3] = (wx, 0.0, wz)
-                try:
-                    cfgs = inverse_kinematics_pieper_gp7_tagged(
-                        self._model, T, include_turns=False)
-                except Exception:                          # noqa: BLE001
+            if mode == "wrist":
+                grid = [(qL, qU, 0.0, 0.0)
+                        for qL in _lin(1, 28) for qU in _lin(2, 32)]
+            else:
+                grid = [(qL, qU, qR, qB)
+                        for qL in _lin(1, 16) for qU in _lin(2, 18)
+                        for qR in _lin(3, 5) for qB in _lin(4, 9)]
+            for qL, qU, qR, qB in grid:
+                p = _fk_point([0.0, qL, qU, qR, qB, 0.0])
+                x, y, z = p[0] - bx, p[1] - by, p[2] - bz
+                r = math.hypot(x, y)
+                if r < 1.0:
                     continue
-                ids = {c["id"] for c in cfgs}
-                if target_config_id in ids:
-                    reachable_pts.append((wx, wz))
+                rec = (math.degrees(math.atan2(y, x)), r, z)
+                allp.append(rec)
+                if qL < 0.0:
+                    bwd.append(rec)
+        except Exception as e:                              # noqa: BLE001
+            logger.warning("Reach envelope FK failed: %s", e)
+            return None
+        if len(allp) < 8:
+            return None
+        try:
+            from scipy.spatial import ConvexHull
+        except Exception as e:                              # noqa: BLE001
+            logger.warning("Reach envelope: scipy unavailable: %s", e)
+            return None
 
-        if len(reachable_pts) < 4:
-            inner_boundary = None
-        else:
-            try:
-                inner_boundary = _convex_hull_2d(reachable_pts)
-            except Exception:                              # noqa: BLE001
-                inner_boundary = None
+        def _resample_closed(poly, n):
+            """Resample a closed (r,z) loop to n evenly arc-length-spaced points."""
+            p = np.asarray(poly, dtype=float)
+            seg = np.vstack([p, p[:1]])                      # close the loop
+            d = np.sqrt((np.diff(seg, axis=0) ** 2).sum(1))
+            cum = np.concatenate([[0.0], np.cumsum(d)])
+            total = cum[-1]
+            if total <= 0:
+                return poly
+            out = []
+            for t in np.linspace(0.0, total, n, endpoint=False):
+                k = min(max(int(np.searchsorted(cum, t) - 1), 0), len(seg) - 2)
+                span = cum[k + 1] - cum[k]
+                f = (t - cum[k]) / span if span > 0 else 0.0
+                q = seg[k] + f * (seg[k + 1] - seg[k])
+                out.append((float(q[0]), float(q[1])))
+            return out
 
-        outer_boundary_m = outer_boundary / 1000.0
-        cz = base[2] / 1000.0
+        def _dented_mesh(recs, nb=72, nsec=48):
+            """Mathematically-faithful envelope (no wedge cut). For each world-azimuth
+            bin, the reachable (r,z) cross-section = the points reachable there for
+            some q1∈[-170°,+170°]. The radius DENTS inward where max reach is reduced
+            (e.g. the forward reach behind the robot, or the J2<0 reach in front), so
+            the surface stays a closed 360° dented ball — exactly the FK envelope."""
+            a = np.asarray(recs, dtype=float)
+            if len(a) < 8:
+                return None
+            rings, off, pts = [], [None] * nb, []
+            for b in range(nb):
+                beta = 360.0 * b / nb
+                d = np.abs(((a[:, 0] - beta + 180.0) % 360.0) - 180.0)
+                sel = a[d <= j1_half + 1e-6]            # reachable at this azimuth
+                ring = None
+                if len(sel) >= 3 and float(sel[:, 2].max()) - float(
+                        sel[:, 2].min()) >= 1.0:
+                    rz = sel[:, 1:3]
+                    try:
+                        hv = rz[ConvexHull(rz).vertices]
+                        sec = _resample_closed(
+                            [(rr / 1000.0, zz / 1000.0) for rr, zz in hv], nsec)
+                        br = math.radians(beta)
+                        ca, sa = math.cos(br), math.sin(br)
+                        ring = [(bx / 1000.0 + rr * ca, by / 1000.0 + rr * sa,
+                                 bz / 1000.0 + zz) for rr, zz in sec]
+                    except Exception:                   # noqa: BLE001
+                        ring = None
+                rings.append(ring)
+            for b in range(nb):
+                if rings[b] is not None:
+                    off[b] = len(pts); pts.extend(rings[b])
+            if len(pts) < nsec * 3:
+                return None
+            faces = []
+            for b in range(nb):
+                b2 = (b + 1) % nb
+                if rings[b] is None or rings[b2] is None:
+                    continue
+                o0, o1 = off[b], off[b2]
+                for j in range(nsec):
+                    jn = (j + 1) % nsec
+                    faces.extend([4, o0 + j, o1 + j, o1 + jn, o0 + jn])
+            return pv.PolyData(np.array(pts), faces)
 
-        outer_mesh = _revolve_2d_to_3d(outer_boundary_m, cz, n_az=36)
-        outer_mesh.translate([base[0]/1000.0, base[1]/1000.0, 0],
-                                inplace=True)
-        if inner_boundary is not None:
-            inner_boundary_m = inner_boundary / 1000.0
-            inner_mesh = _revolve_2d_to_3d(inner_boundary_m, cz, n_az=36)
-            inner_mesh.translate([base[0]/1000.0, base[1]/1000.0, 0],
-                                    inplace=True)
-        else:
-            inner_mesh = None
+        # OUTER = max reach over ALL configs (dents mildly behind, where only folded
+        # configs reach). INNER = reach with J2(L)<0, which points backward → dents in
+        # FRONT, opposite the outer dent. Both verified by FK (not RoboDK mimicry).
+        outer_mesh = _dented_mesh(allp)
+        if outer_mesh is None:
+            return None
+        inner_mesh = _dented_mesh(bwd) if len(bwd) >= 8 else None
 
         result = (outer_mesh, inner_mesh)
         if not hasattr(self, "_reach_envelope_cache"):
@@ -4851,7 +5004,7 @@ class GP7AppQt(
                 self._workspace_actor = None
             self._plotter.render()
             self._set_status(
-                f"Workspace ({mode}): outer + inner envelopes",
+                f"Workspace ({mode}): brute-force FK reach envelope",
                 level="ok")
         except Exception as e:                             # noqa: BLE001
             self._set_status(f"Workspace error: {e}", level="err")
@@ -5185,6 +5338,84 @@ class GP7AppQt(
                           args=(list(self._home_joints),), daemon=True).start()
         self._set_status("Move: Home", level="ok")
 
+    # Below this orientation change (deg) the tool is already aligned → no move.
+    _ALIGN_MIN_ANGLE_DEG = 0.5
+
+    @staticmethod
+    def _signed_perm_rotations() -> list[np.ndarray]:
+        """The 24 proper rotation matrices whose columns are signed unit axes
+        (the octahedral group). Cached on the class after first build."""
+        cache = getattr(GP7AppQt, "_SIGNED_PERMS_CACHE", None)
+        if cache is not None:
+            return cache
+        perms = [(0, 1, 2), (0, 2, 1), (1, 0, 2),
+                 (1, 2, 0), (2, 0, 1), (2, 1, 0)]
+        mats: list[np.ndarray] = []
+        for p in perms:
+            for bits in range(8):
+                s = [1 if (bits >> k) & 1 == 0 else -1 for k in range(3)]
+                M = np.zeros((3, 3))
+                for col, (row, sg) in enumerate(zip(p, s)):
+                    M[row, col] = sg
+                if round(float(np.linalg.det(M))) == 1:   # proper rotation only
+                    mats.append(M)
+        GP7AppQt._SIGNED_PERMS_CACHE = mats               # 24 matrices
+        return mats
+
+    def _align_target_rotation(self, R_cur: np.ndarray,
+                               R_ref: np.ndarray) -> np.ndarray:
+        """Snap R_cur so the tool frame is axis-aligned with the reference frame:
+        nearest rotation R_ref @ P where P is a signed-permutation rotation. Picks
+        the P maximising the Frobenius inner product with R_ref.T @ R_cur."""
+        R_local = R_ref.T @ R_cur
+        best_P, best_dot = None, -1e9
+        for P in self._signed_perm_rotations():
+            dot = float(np.sum(P * R_local))
+            if dot > best_dot:
+                best_dot, best_P = dot, P
+        return R_ref @ best_P
+
+    def _on_align(self) -> None:
+        """Align the tool ORIENTATION to the active reference frame (RoboDK 'Align').
+
+        Keeps the TCP point fixed and rotates the wrist so the tool frame becomes
+        axis-aligned with the reference frame — snapping the orientation to the nearest
+        signed-axis match (e.g. tool Z pointing straight down the frame's -Z). Solves
+        IK holding the current configuration, then animates. Visible wrist re-orient."""
+        if self._model is None:
+            self._set_status("Robot not loaded", level="warn"); return
+        T_cur = self._current_tool_world()
+        if T_cur is None:
+            self._set_status("Align: cannot read current TCP pose", level="warn")
+            return
+        T_world_base = np.eye(4); T_world_base[:3, 3] = self._base_xyz
+        R_ref = (T_world_base @ self._ref_frames[self._ref_idx][1])[:3, :3]
+        R_cur = T_cur[:3, :3]
+        R_aligned = self._align_target_rotation(R_cur, R_ref)
+        # Orientation change magnitude (rotation angle of R_cur^T R_aligned).
+        dR = R_cur.T @ R_aligned
+        ang = math.degrees(math.acos(max(-1.0, min(1.0, (np.trace(dR) - 1.0) / 2.0))))
+        if ang < self._ALIGN_MIN_ANGLE_DEG:
+            self._set_status("Align: tool already aligned to reference frame",
+                             level="ok")
+            return
+        T_target = np.eye(4)
+        T_target[:3, :3] = R_aligned
+        T_target[:3, 3] = T_cur[:3, 3]                    # keep TCP position
+        sol = self._solve_cartesian(T_target, seeded=False)
+        if sol is None:
+            sol = self._solve_cartesian(T_target, seeded=True)
+        if sol is None:
+            self._set_status(
+                "Align: no IK solution for the aligned orientation", level="warn")
+            return
+        joints_deg = [math.degrees(q) for q in sol]
+        threading.Thread(target=self._animate_to,
+                          args=(joints_deg,), daemon=True).start()
+        self._set_status(
+            f"Align → tool ⟂ '{self._ref_frames[self._ref_idx][0]}' "
+            f"(Δ={ang:.0f}°)", level="ok")
+
     def _on_zero(self) -> None:
         if self._model is None:
             self._set_status("Robot not loaded", level="warn"); return
@@ -5309,6 +5540,7 @@ class GP7AppQt(
 
     def _refresh_program_list(self) -> None:
         self._prog_list.clear()
+        self._prog_running_row = None       # list rebuilt → drop stale run marker
         if not self._program:
             self._prog_list.addItem("(empty)"); return
         # Track modal state (speed/PL/tool/uframe) in command order → move
@@ -5339,6 +5571,72 @@ class GP7AppQt(
             # Opening block → increase depth for subsequent lines.
             if t in ("IfThen", "While"):
                 depth += 1
+
+    # ── Playback live view: highlight running step + follow CALL JOB ──────
+    def _on_prog_show_job(self, job_name: str) -> None:
+        """Switch the program list to show `job_name` during playback (e.g. when
+        a CALL JOB enters a sub-job). Remembers the user's pre-play selection so
+        it can be restored when the program finishes."""
+        if job_name not in self._jobs:
+            return
+        if not hasattr(self, "_playback_prev_job") or self._playback_prev_job is None:
+            self._playback_prev_job = self._active_job   # remember to restore
+        if self._active_job != job_name:
+            self._active_job = job_name
+            # Reflect in the combo without re-triggering refresh storms.
+            self._job_combo.blockSignals(True)
+            idx = self._job_combo.findText(job_name)
+            if idx >= 0:
+                self._job_combo.setCurrentIndex(idx)
+            self._job_combo.blockSignals(False)
+            self._refresh_program_list()
+
+    def _on_prog_step_highlight(self, row: int) -> None:
+        """Light up + scroll to the currently-executing step.
+
+        NOTE: a QListWidget with a stylesheet ignores item.setBackground(), so we
+        mark the running step with a BRIGHT amber foreground + bold font (both
+        reliably honoured) plus a '▶ ' prefix — clearly visible on the dark theme.
+        """
+        from PyQt6.QtGui import QBrush, QColor
+
+        def _restore(idx: int) -> None:
+            if 0 <= idx < self._prog_list.count():
+                it = self._prog_list.item(idx)
+                if it is not None:
+                    it.setForeground(QBrush())          # back to theme default
+                    f = it.font(); f.setBold(False); it.setFont(f)
+                    txt = it.text()
+                    if txt.startswith("▶ "):
+                        it.setText(txt[2:])
+
+        prev = getattr(self, "_prog_running_row", None)
+        if prev is not None:
+            _restore(prev)
+        if 0 <= row < self._prog_list.count():
+            item = self._prog_list.item(row)
+            if item is not None:
+                item.setForeground(QColor("#ffb000"))   # bright amber
+                f = item.font(); f.setBold(True); item.setFont(f)
+                if not item.text().startswith("▶ "):
+                    item.setText("▶ " + item.text())
+                self._prog_list.scrollToItem(item)
+            self._prog_running_row = row
+        else:
+            self._prog_running_row = None
+
+    def _on_prog_show_job_restore(self, job_name: str) -> None:
+        """Restore the program list to `job_name` after playback (no re-arming of
+        the saved-selection state). Used by _on_program_done."""
+        if job_name not in self._jobs:
+            return
+        self._active_job = job_name
+        self._job_combo.blockSignals(True)
+        idx = self._job_combo.findText(job_name)
+        if idx >= 0:
+            self._job_combo.setCurrentIndex(idx)
+        self._job_combo.blockSignals(False)
+        self._refresh_program_list()
 
     def _on_prog_add_movej(self) -> None:
         self._program.append(Instruction(type="MoveJ", joints=list(self._joints)))
@@ -5549,6 +5847,171 @@ class GP7AppQt(
     def _on_prog_add_endwhile(self) -> None:
         self._append_block("EndWhile", need_cond=False)
 
+    # ── I/O & registers (extended INFORM) ─────────────────────────────
+    def _on_prog_add_pulse(self) -> None:
+        ins = Instruction(type="PulseDO", do_index=int(self._prog_pulse_idx.value()))
+        self._program.append(ins)
+        self._refresh_program_list()
+        self._set_status(f"Program +{ins.describe()}", level="ok")
+
+    def _on_prog_add_clearstack(self) -> None:
+        ins = Instruction(type="ClearStack")
+        self._program.append(ins)
+        self._refresh_program_list()
+        self._set_status(f"Program +{ins.describe()}", level="ok")
+
+    def _on_prog_add_clearvar(self) -> None:
+        from .program_logic import VarStore
+        var = self._prog_clear_var.text().strip().upper()
+        cnt_raw = self._prog_clear_cnt.text().strip().upper()
+        try:
+            VarStore.validate(var)
+        except ValueError as e:
+            self._set_status(str(e), level="warn"); return
+        if cnt_raw in ("ALL", ""):
+            cnt = -1
+        else:
+            try:
+                cnt = int(cnt_raw)
+            except ValueError:
+                self._set_status("Count must be a number or ALL", level="warn"); return
+        ins = Instruction(type="ClearVar", var_name=var, clear_count=cnt)
+        self._program.append(ins)
+        self._refresh_program_list()
+        self._set_status(f"Program +{ins.describe()}", level="ok")
+
+    def _on_prog_add_din(self) -> None:
+        from .program_logic import VarStore
+        var = self._prog_din_var.text().strip().upper()
+        try:
+            VarStore.validate(var)
+        except ValueError as e:
+            self._set_status(str(e), level="warn"); return
+        ins = Instruction(
+            type="ReadGroupIn", var_name=var,
+            io_group_kind=self._prog_din_kind.currentText(),
+            io_group=int(self._prog_din_grp.value()))
+        self._program.append(ins)
+        self._refresh_program_list()
+        self._set_status(f"Program +{ins.describe()}", level="ok")
+
+    def _on_prog_add_doutgroup(self) -> None:
+        from .program_logic import VarStore
+        var = self._prog_dog_var.text().strip().upper()
+        try:
+            VarStore.validate(var)
+        except ValueError as e:
+            self._set_status(str(e), level="warn"); return
+        ins = Instruction(
+            type="WriteGroupOut", var_name=var, io_group_kind="OG",
+            io_group=int(self._prog_dog_grp.value()))
+        self._program.append(ins)
+        self._refresh_program_list()
+        self._set_status(f"Program +{ins.describe()}", level="ok")
+
+    # Replace picker entries: (label, type, exp). `exp=True` builds the EXP
+    # keyword variant (IFTHENEXP/ELSEIFEXP/WHILEEXP) of a flow-control type.
+    _REPLACE_TYPES = [
+        ("MoveJ — joint move", "MoveJ", False),
+        ("MoveL — linear move", "MoveL", False),
+        ("SetDO — DOUT OT#", "SetDO", False),
+        ("PulseDO — PULSE OT#", "PulseDO", False),
+        ("Wait — TIMER", "Wait", False),
+        ("WaitIO — WAIT IN#", "WaitIO", False),
+        ("SetSpeed — VJ/V", "SetSpeed", False),
+        ("SetRounding — PL", "SetRounding", False),
+        ("SetTool — TL#", "SetTool", False),
+        ("SetRefFrame — UF#", "SetRefFrame", False),
+        ("ShowMessage — MSG", "ShowMessage", False),
+        ("CallJob — CALL JOB", "CallJob", False),
+        ("Label — *LABEL", "Label", False),
+        ("Jump — JUMP", "Jump", False),
+        ("SetVar — SET/ADD/EXPRESS", "SetVar", False),
+        ("IfThen — IFTHEN", "IfThen", False),
+        ("IfThenExp — IFTHENEXP (I/O)", "IfThen", True),
+        ("ElseIf — ELSEIF", "ElseIf", False),
+        ("ElseIfExp — ELSEIFEXP (I/O)", "ElseIf", True),
+        ("Else — ELSE", "Else", False),
+        ("EndIf — ENDIF", "EndIf", False),
+        ("While — WHILE", "While", False),
+        ("WhileExp — WHILEEXP (I/O)", "While", True),
+        ("EndWhile — ENDWHILE", "EndWhile", False),
+        ("ClearStack — CLEAR STACK", "ClearStack", False),
+        ("ClearVar — CLEAR", "ClearVar", False),
+        ("ReadGroupIn — DIN", "ReadGroupIn", False),
+        ("WriteGroupOut — DOUT OG#", "WriteGroupOut", False),
+        ("SimEvent", "SimEvent", False),
+    ]
+
+    def _on_prog_replace(self) -> None:
+        """Change the selected instruction to a DIFFERENT type, keeping its
+        position in the list. Inserts a default instance of the new type, then
+        routes to the parameter editor. Cancelling the editor keeps the default."""
+        idx = self._prog_list.currentRow()
+        if idx < 0 or idx >= len(self._program):
+            self._set_status("Select an instruction to Replace", level="warn"); return
+        cur = self._program[idx]
+        labels = [e[0] for e in self._REPLACE_TYPES]
+        # Pre-select the entry matching the current type + its EXP flavour.
+        pre = 0
+        for i, (_lbl, ty, exp) in enumerate(self._REPLACE_TYPES):
+            if ty == cur.type and exp == bool(getattr(cur, "cond_exp", False)):
+                pre = i; break
+        lbl, ok = QInputDialog.getItem(
+            self, "Replace instruction",
+            f"Change step {idx+1} ({cur.describe()}) to:", labels, pre, False)
+        if not ok: return
+        _lbl, new_type, new_exp = self._REPLACE_TYPES[labels.index(lbl)]
+        # Swap in a default instance of the new type at the SAME position, then
+        # rebuild the list so the new line shows immediately. We do NOT auto-open
+        # the parameter editor here (that second dialog confused users into
+        # thinking nothing changed) — the user presses Edit/F2 to set params.
+        self._program[idx] = self._default_instruction(new_type, new_exp)
+        self._refresh_program_list()
+        self._prog_list.setCurrentRow(idx)
+        self._prog_list.repaint()                # force immediate repaint
+        editable = new_type not in (
+            "Else", "EndIf", "EndWhile", "ClearStack",
+            "ReadGroupIn", "WriteGroupOut", "MoveJ", "MoveL")
+        tail = " — press Edit (F2) to set its parameters" if editable else ""
+        self._set_status(
+            f"Replaced step {idx+1} → {self._program[idx].describe()}{tail}",
+            level="ok")
+
+    def _default_instruction(self, t: str, exp: bool = False) -> "Instruction":
+        """Build a sensible default Instruction of type `t` for Replace.
+        Motion types capture the current pose so the step is immediately valid;
+        `exp` sets the EXP keyword flavour on flow-control conditions."""
+        if t == "MoveJ":
+            return Instruction(type="MoveJ", joints=list(self._joints))
+        if t == "MoveL":
+            T = self._current_tool_world()
+            pose = list(_matrix_to_xyz_rpy_deg(T)) if T is not None else [0.0] * 6
+            return Instruction(type="MoveL", tcp_pose=pose)
+        if t == "SetVar":
+            return Instruction(type="SetVar", var_name="B000", var_op="SET",
+                               var_arg="0")
+        if t in ("IfThen", "ElseIf", "While"):
+            return Instruction(type=t, cond_lhs="B000", cond_op="=", cond_rhs="1",
+                               cond_exp=exp)
+        if t == "Jump":
+            return Instruction(type="Jump", label_name="L1")
+        if t == "Label":
+            return Instruction(type="Label", label_name="L1")
+        if t == "ClearVar":
+            return Instruction(type="ClearVar", var_name="I000", clear_count=1)
+        if t == "ReadGroupIn":
+            return Instruction(type="ReadGroupIn", var_name="B000",
+                               io_group=1, io_group_kind="IG")
+        if t == "WriteGroupOut":
+            return Instruction(type="WriteGroupOut", var_name="B000",
+                               io_group=1, io_group_kind="OG")
+        if t == "CallJob":
+            return Instruction(type="CallJob", job_name="SUB")
+        if t == "ShowMessage":
+            return Instruction(type="ShowMessage", message="MSG")
+        return Instruction(type=t)               # field defaults are fine
+
     def _on_prog_modify(self) -> None:
         """F2 / double-click / Edit button — edit selected instruction.
 
@@ -5557,7 +6020,13 @@ class GP7AppQt(
             confirm). Target-referencing → dialog to pick another target.
           • SetGripper → flip OPEN/CLOSE.
           • Wait / WaitIO / SetSpeed / SetRounding / SetTool / SetRefFrame /
-            ShowMessage / CallJob → dialog with editable fields.
+            ShowMessage / CallJob / SimEvent → dialog with editable fields.
+          • Label / Jump / IfThen / ElseIf / While / SetVar / PulseDO / ClearVar
+            → dialog (logic instructions). The condition dialog edits compound
+            (ANDEXP/OREXP) conditions as text and has an EXP-keyword toggle.
+            ClearStack / group I/O have no inline editor (delete + re-add).
+        Editing mutates the active job's list in place, which invalidates the
+        verbatim re-export cache (signature mismatch) → export re-synthesises.
         """
         idx = self._prog_list.currentRow()
         if idx < 0 or idx >= len(self._program):
@@ -5652,11 +6121,186 @@ class GP7AppQt(
             new = self._dlg_edit_simevent(ins)
             if new is None: return
             ins.event_name, ins.event_payload = new
+        # ── Flow control / variables (INFORM logic) ───────────────────
+        elif t == "Label":
+            v, ok = QInputDialog.getText(
+                self, "Modify Label", "Label name (*LABEL):",
+                QLineEdit.EchoMode.Normal, ins.label_name)
+            if not ok: return
+            name = "".join(c for c in v if c.isalnum() or c == "_")[:32]
+            if not name:
+                self._set_status("Invalid label name", level="warn"); return
+            ins.label_name = name
+        elif t == "Jump":
+            v, ok = QInputDialog.getText(
+                self, "Modify Jump", "Target label:",
+                QLineEdit.EchoMode.Normal, ins.label_name)
+            if not ok: return
+            name = "".join(c for c in v if c.isalnum() or c == "_")[:32]
+            if not name:
+                self._set_status("Invalid label name", level="warn"); return
+            ins.label_name = name
+            cond = self._dlg_edit_condition(ins, allow_none=True,
+                                            title="Modify Jump condition")
+            if cond is False: return            # cancelled
+            self._apply_cond(ins, cond)
+        elif t in ("IfThen", "ElseIf", "While"):
+            cond = self._dlg_edit_condition(ins, allow_none=False,
+                                            title=f"Modify {t} condition")
+            if cond is False: return
+            self._apply_cond(ins, cond)
+        elif t == "SetVar":
+            new = self._dlg_edit_setvar(ins)
+            if new is None: return
+            ins.var_name, ins.var_op, ins.var_arg, ins.var_expr = new
+        elif t == "PulseDO":
+            v, ok = QInputDialog.getInt(
+                self, "Modify Pulse", "Output bit OT# (1..1024):",
+                ins.do_index, 1, 1024)
+            if not ok: return
+            ins.do_index = int(v)
+        elif t == "ClearVar":
+            v, ok = QInputDialog.getText(
+                self, "Modify Clear", "Variable + count (e.g. 'I010 2' or 'I010 ALL'):",
+                QLineEdit.EchoMode.Normal,
+                f"{ins.var_name} {'ALL' if ins.clear_count < 0 else ins.clear_count}")
+            if not ok: return
+            parts = v.split()
+            if len(parts) != 2:
+                self._set_status("Format: <var> <count|ALL>", level="warn"); return
+            ins.var_name = parts[0].upper()
+            ins.clear_count = -1 if parts[1].upper() == "ALL" else int(parts[1])
+        elif t in ("ReadGroupIn", "WriteGroupOut", "ClearStack"):
+            self._set_status(
+                f"{t}: no editable fields (delete + re-add to change)", level="info")
+            return
         else:
             self._set_status(f"Edit not supported for type {t}", level="warn"); return
         self._refresh_program_list()
         self._prog_list.setCurrentRow(idx)
         self._set_status(f"Modified step {idx+1}: {ins.describe()}", level="ok")
+
+    def _apply_cond(self, ins: Instruction, cond) -> None:
+        """Apply a parsed condition to ins. `cond` is one of:
+          • None                       → unconditional (clear everything)
+          • {"terms": [...], "join": "AND"/"OR", "exp": bool}  → from the dialog.
+        Sets single (cond_lhs/op/rhs) when one term, else compound (cond_terms);
+        always sets cond_exp; mirrors the first term for back-compat."""
+        if cond is None:
+            ins.cond_terms = []
+            ins.cond_lhs = ins.cond_op = ins.cond_rhs = ""
+            ins.cond_join = ""
+            ins.cond_exp = False
+            return
+        terms = cond["terms"]
+        ins.cond_exp = bool(cond.get("exp", False))
+        ins.cond_lhs, ins.cond_op, ins.cond_rhs = terms[0]
+        if len(terms) > 1:
+            ins.cond_terms = list(terms)
+            ins.cond_join = cond.get("join", "AND")
+        else:
+            ins.cond_terms = []
+            ins.cond_join = ""
+
+    @staticmethod
+    def _parse_cond_text(text: str):
+        """Parse a condition string into (terms, join). Supports a single
+        'lhs op rhs' or compound 'a op b ANDEXP c op d' / OREXP. Returns
+        (list_of_(lhs,op,rhs), 'AND'/'OR'/'') or None if unparseable."""
+        import re as _re
+        parts = _re.split(r"\s+(ANDEXP|OREXP|AND|OR)\s+", text.strip(),
+                          flags=_re.IGNORECASE)
+        term_strs = parts[0::2]
+        joiners = [j.upper().replace("EXP", "") for j in parts[1::2]]
+        if joiners and len(set(joiners)) > 1:
+            return None                         # mixed AND/OR not supported
+        terms = []
+        for ts in term_strs:
+            m = _re.match(r"^\s*(\S+?)\s*(<>|>=|<=|=|>|<)\s*(\S+?)\s*$", ts)
+            if not m:
+                return None
+            terms.append((m.group(1), m.group(2), m.group(3)))
+        if not terms:
+            return None
+        return terms, (joiners[0] if joiners else "")
+
+    def _dlg_edit_condition(self, ins: Instruction, allow_none: bool, title: str):
+        """Dialog editing a condition (single OR compound) + an EXP toggle.
+
+        Returns a dict {"terms":[...], "join":..., "exp":bool}, or None for
+        unconditional (allow_none only), or False if cancelled. Supports
+        compound 'a<>1 ANDEXP b<>2' / OREXP entered as text."""
+        # Current text from the instruction.
+        if ins.cond_terms:
+            join = f" {ins.cond_join or 'AND'}EXP "
+            cur = join.join(f"{l}{o}{r}" for l, o, r in ins.cond_terms)
+        elif ins.cond_op:
+            cur = f"{ins.cond_lhs}{ins.cond_op}{ins.cond_rhs}"
+        else:
+            cur = ""
+
+        dlg = QDialog(self); dlg.setWindowTitle(title)
+        form = QFormLayout(dlg)
+        ed = QLineEdit(cur)
+        ed.setPlaceholderText("B000>5  |  IN#(8)=ON  |  I010<>11 ANDEXP B010<>12")
+        ed.setMinimumWidth(320)
+        form.addRow("Condition", ed)
+        cb_exp = QCheckBox("Use EXP keyword (IFTHENEXP/ELSEIFEXP/WHILEEXP)")
+        cb_exp.setChecked(bool(ins.cond_exp))
+        cb_exp.setToolTip(
+            "Required for I/O conditions (IN#/OT#/ON/OFF). Auto-applied for "
+            "those even if unchecked. Tick to force EXP on variable conditions.")
+        form.addRow("", cb_exp)
+        hint = QLabel("Operators: = <> > < >= <=. Combine terms with ANDEXP / "
+                      "OREXP." + ("  Empty = unconditional." if allow_none else ""))
+        hint.setWordWrap(True); hint.setStyleSheet("color:#8a8a8a; font-size:11px;")
+        form.addRow("", hint)
+        bb = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        bb.accepted.connect(dlg.accept); bb.rejected.connect(dlg.reject)
+        form.addRow(bb)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return False
+
+        v = ed.text().strip()
+        if not v:
+            if allow_none:
+                return None
+            self._set_status("Condition required", level="warn"); return False
+        parsed = self._parse_cond_text(v)
+        if parsed is None:
+            self._set_status(f"Cannot parse condition: {v!r}", level="warn")
+            return False
+        terms, join = parsed
+        return {"terms": terms, "join": join or "AND", "exp": cb_exp.isChecked()}
+
+    def _dlg_edit_setvar(self, ins: Instruction):
+        """Dialog editing a SetVar. Returns (var_name, var_op, var_arg, var_expr)
+        or None if cancelled."""
+        ops = ["SET", "ADD", "SUB", "MUL", "DIV", "INC", "DEC", "EXPRESS"]
+        cur_op = "EXPRESS" if ins.var_expr else (ins.var_op.upper() or "SET")
+        op, ok = QInputDialog.getItem(
+            self, "Modify SetVar", "Operation:", ops,
+            ops.index(cur_op) if cur_op in ops else 0, False)
+        if not ok: return None
+        name, ok = QInputDialog.getText(
+            self, "Modify SetVar", "Variable (B###/I###):",
+            QLineEdit.EchoMode.Normal, ins.var_name)
+        if not ok: return None
+        name = name.strip().upper()
+        if op in ("INC", "DEC"):
+            return (name, op, "", "")
+        if op == "EXPRESS":
+            expr, ok = QInputDialog.getText(
+                self, "Modify SetVar", "Expression (e.g. 5 * B005):",
+                QLineEdit.EchoMode.Normal, ins.var_expr)
+            if not ok: return None
+            return (name, "SET", "", expr.strip())
+        arg, ok = QInputDialog.getText(
+            self, "Modify SetVar", "Operand (value or variable):",
+            QLineEdit.EchoMode.Normal, ins.var_arg)
+        if not ok: return None
+        return (name, op, arg.strip(), "")
 
     def _dlg_pick_target(self, current: str) -> str | None:
         """QDialog to pick another target from the list. Returns new name or None if cancelled."""
