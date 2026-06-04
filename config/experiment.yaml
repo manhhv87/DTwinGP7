@@ -20,7 +20,7 @@ speed_linear_mm_s: 80.0         # tốc độ linear
 yaw_offset_deg: 90.0            # 90°: gripper jaws spread vuông góc PCA major axis → kẹp chiều rộng tray (Y, 100mm) thay vì chiều dài (X, 180mm)
 
 # ───── Gripper ─────
-gripper_do_index: 1             # chỉ số Digital Output điều khiển gripper
+gripper_do_index: 10            # chỉ số Digital Output điều khiển gripper (OT#10 trên YRC1000)
 # gripper_delay_s: fallback blind delay khi KHÔNG có CC-Link sensor feedback
 # (sim/headless, hoặc real chưa wire sensor). Real chain PC → YRC → PLC
 # Mitsubishi → solenoid → pneumatic total ~150-415ms tùy hardware. 0.5s an toàn.

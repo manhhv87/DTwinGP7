@@ -76,7 +76,7 @@ class VarStore:
 
 
 def is_valid_operand(tok: str) -> bool:
-    """Is the token a valid operand? = B/I variable | IN#(n) | literal int.
+    """Is the token a valid operand? = B/I variable | IN#(n) | ON/OFF | literal int.
 
     Used by validate_program to block Play/Export for programs with bad operands
     (e.g. 'B0000' 4 digits, 'FOO', '??') — prevents malformed .JBI syntax from
@@ -85,7 +85,7 @@ def is_valid_operand(tok: str) -> bool:
     up = tok.strip().upper()
     if not up:
         return False
-    if _RE_VAR.match(up) or _RE_IN.match(up):
+    if up in ("ON", "OFF") or _RE_VAR.match(up) or _RE_IN.match(up):
         return True
     try:
         int(up)
@@ -95,9 +95,13 @@ def is_valid_operand(tok: str) -> bool:
 
 
 def resolve_operand(tok: str, store: VarStore, io_reader: IoReader) -> int:
-    """Token → int value. Token = B/I variable | IN#(n) | literal int."""
+    """Token → int value. Token = B/I variable | IN#(n) | ON/OFF | literal int."""
     tok = tok.strip()
     up = tok.upper()
+    if up == "ON":
+        return 1
+    if up == "OFF":
+        return 0
     if _RE_VAR.match(up):
         return store.get(up)
     m = _RE_IN.match(up)
@@ -119,6 +123,82 @@ def eval_condition(
     a = resolve_operand(lhs, store, io_reader)
     b = resolve_operand(rhs, store, io_reader)
     return bool(cmp(a, b))
+
+
+def eval_instr_condition(ins, store: VarStore, io_reader: IoReader = _no_io) -> bool:
+    """Evaluate an Instruction's condition — compound (cond_terms + AND/OR) or
+    single (cond_lhs/op/rhs). Used by the interpreter for Jump/If/ElseIf/While."""
+    terms = getattr(ins, "cond_terms", None)
+    if terms:
+        results = [eval_condition(l, o, r, store, io_reader) for l, o, r in terms]
+        if (getattr(ins, "cond_join", "AND") or "AND").upper() == "OR":
+            return any(results)
+        return all(results)
+    return eval_condition(ins.cond_lhs, ins.cond_op, ins.cond_rhs,
+                          store, io_reader)
+
+
+# Arithmetic expression eval (SET Ixxx EXPRESS <expr>) — safe, no eval().
+_RE_TOKENIZE = re.compile(r"\s*([BI]\d{1,3}|IN#\(\d+\)|\d+|[-+*/()])", re.IGNORECASE)
+
+
+def eval_express(expr: str, store: VarStore, io_reader: IoReader = _no_io) -> int:
+    """Evaluate an INFORM EXPRESS arithmetic expression (e.g. '5 * B005').
+
+    Supports + - * / and parentheses over integer literals / B,I variables /
+    IN#(n). Integer arithmetic (// for divide, like the controller). Safe
+    recursive-descent parser — does NOT use eval()."""
+    pos = 0
+    tokens: list[str] = []
+    s = expr.strip()
+    while pos < len(s):
+        m = _RE_TOKENIZE.match(s, pos)
+        if not m:
+            raise ValueError(f"Invalid EXPRESS token in {expr!r} at {s[pos:]!r}")
+        tokens.append(m.group(1))
+        pos = m.end()
+    idx = [0]
+
+    def peek():
+        return tokens[idx[0]] if idx[0] < len(tokens) else None
+
+    def nxt():
+        t = tokens[idx[0]]; idx[0] += 1; return t
+
+    def factor() -> int:
+        t = peek()
+        if t == "(":
+            nxt(); v = expr_add();
+            if peek() != ")":
+                raise ValueError(f"Unbalanced parens in {expr!r}")
+            nxt(); return v
+        if t == "-":
+            nxt(); return -factor()
+        if t == "+":
+            nxt(); return factor()
+        if t is None:
+            raise ValueError(f"Unexpected end of EXPRESS {expr!r}")
+        nxt()
+        return resolve_operand(t, store, io_reader)
+
+    def term() -> int:
+        v = factor()
+        while peek() in ("*", "/"):
+            op = nxt(); r = factor()
+            v = v * r if op == "*" else (v // r if r != 0 else v)
+        return v
+
+    def expr_add() -> int:
+        v = term()
+        while peek() in ("+", "-"):
+            op = nxt(); r = term()
+            v = v + r if op == "+" else v - r
+        return v
+
+    result = expr_add()
+    if idx[0] != len(tokens):
+        raise ValueError(f"Trailing tokens in EXPRESS {expr!r}")
+    return int(result)
 
 
 def apply_setvar(
@@ -145,6 +225,15 @@ def apply_setvar(
     else:
         raise ValueError(f"Unsupported variable assignment operator: '{op}'")
     store.set(name, res)
+
+
+def apply_setvar_instr(ins, store: VarStore, io_reader: IoReader = _no_io) -> None:
+    """Apply a SetVar Instruction. Handles `SET Ixxx EXPRESS <expr>` (var_expr)
+    as well as plain SET/ADD/.../INC/DEC (var_arg)."""
+    if getattr(ins, "var_expr", ""):
+        store.set(ins.var_name, eval_express(ins.var_expr, store, io_reader))
+        return
+    apply_setvar(ins.var_name, ins.var_op, ins.var_arg, store, io_reader)
 
 
 # ───── Labels & structured blocks ─────
@@ -225,15 +314,27 @@ def validate_program(program: list[Instruction]) -> list[str]:
             except ValueError as e:
                 errors.append(f"Line {i+1}: {e}")
             op = ins.var_op.upper()
-            if op not in ("SET", "ADD", "SUB", "MUL", "DIV", "INC", "DEC"):
+            if getattr(ins, "var_expr", ""):
+                pass                                # EXPRESS validated at runtime
+            elif op not in ("SET", "ADD", "SUB", "MUL", "DIV", "INC", "DEC"):
                 errors.append(f"Line {i+1}: invalid assignment operator '{ins.var_op}'")
             elif op not in ("INC", "DEC") and not is_valid_operand(ins.var_arg):
                 errors.append(
                     f"Line {i+1}: invalid operand '{ins.var_arg}' "
                     f"(expected B###/I###, IN#(n), or integer)")
         if t in ("Jump", "IfThen", "ElseIf", "While"):
-            # IfThen/ElseIf/While REQUIRE a condition; Jump without op = unconditional.
-            if not ins.cond_op:
+            terms = getattr(ins, "cond_terms", None)
+            if terms:                               # compound condition
+                for (cl, co, cr) in terms:
+                    if co not in _CMP:
+                        errors.append(
+                            f"Line {i+1}: unsupported condition operator '{co}'")
+                    for side, val in (("left", cl), ("right", cr)):
+                        if not is_valid_operand(val):
+                            errors.append(
+                                f"Line {i+1}: invalid {side} operand '{val}'")
+            elif not ins.cond_op:
+                # IfThen/ElseIf/While REQUIRE a condition; Jump w/o op = unconditional.
                 if t != "Jump":
                     errors.append(f"Line {i+1}: {t.upper()} missing condition")
             elif ins.cond_op not in _CMP:
@@ -267,9 +368,8 @@ def next_pc(
 
     if t == "Jump":
         take = True
-        if ins.cond_op:
-            take = eval_condition(ins.cond_lhs, ins.cond_op, ins.cond_rhs,
-                                  store, io_reader)
+        if ins.cond_op or getattr(ins, "cond_terms", None):
+            take = eval_instr_condition(ins, store, io_reader)
         if take:
             if ins.label_name not in label_map:
                 raise ValueError(f"JUMP to undefined label: *{ins.label_name}")
@@ -279,8 +379,7 @@ def next_pc(
     if t == "IfThen":
         endif = block_map[pc]["jend"]
         state[endif] = False                       # reset each time IF is entered
-        if eval_condition(ins.cond_lhs, ins.cond_op, ins.cond_rhs,
-                          store, io_reader):
+        if eval_instr_condition(ins, store, io_reader):
             state[endif] = True
             return pc + 1
         return block_map[pc]["jnext"]
@@ -289,8 +388,7 @@ def next_pc(
         endif = block_map[pc]["jend"]
         if state.get(endif):                       # a branch already ran → skip to ENDIF
             return endif
-        if eval_condition(ins.cond_lhs, ins.cond_op, ins.cond_rhs,
-                          store, io_reader):
+        if eval_instr_condition(ins, store, io_reader):
             state[endif] = True
             return pc + 1
         return block_map[pc]["jnext"]
@@ -305,8 +403,7 @@ def next_pc(
         return pc + 1
 
     if t == "While":
-        if eval_condition(ins.cond_lhs, ins.cond_op, ins.cond_rhs,
-                          store, io_reader):
+        if eval_instr_condition(ins, store, io_reader):
             return pc + 1
         return block_map[pc]["jend"] + 1           # exit loop (past ENDWHILE)
 

@@ -15,8 +15,11 @@ from src.orchestrator.viewports.program_logic import (
     CONTROL_FLOW,
     VarStore,
     apply_setvar,
+    apply_setvar_instr,
     build_block_map,
     eval_condition,
+    eval_express,
+    eval_instr_condition,
     next_pc,
     resolve_labels,
     validate_program,
@@ -138,6 +141,61 @@ class TestSetVar:
         s = VarStore(); s.set("B001", 42)
         apply_setvar("B000", "SET", "B001", s)
         assert s.get("B000") == 42
+
+
+# ───── Extended LG features (EXPRESS, compound conditions, ON/OFF) ─────
+
+
+class TestExpress:
+    def test_basic_arithmetic(self):
+        s = VarStore(); s.set("B005", 20)
+        assert eval_express("5 * B005", s) == 100
+        assert eval_express("10 * B005", s) == 200
+        assert eval_express("B005 + 5", s) == 25
+        assert eval_express("B005 - 8", s) == 12
+        assert eval_express("100 / B005", s) == 5          # integer divide
+
+    def test_precedence_and_parens(self):
+        s = VarStore()
+        assert eval_express("2 + 3 * 4", s) == 14
+        assert eval_express("(2 + 3) * 4", s) == 20
+        assert eval_express("-5 + 10", s) == 5
+
+    def test_div_by_zero_guard(self):
+        s = VarStore(); s.set("B000", 0)
+        assert eval_express("10 / B000", s) == 10          # guarded → unchanged lhs
+
+    def test_apply_setvar_instr_express(self):
+        s = VarStore(); s.set("B005", 7)
+        ins = Instruction(type="SetVar", var_name="I000", var_op="SET",
+                          var_expr="5 * B005")
+        apply_setvar_instr(ins, s)
+        assert s.get("I000") == 35
+
+
+class TestCompoundCondition:
+    def test_andexp(self):
+        s = VarStore(); s.set("I010", 5); s.set("B010", 5)
+        ins = Instruction(type="IfThen",
+                          cond_terms=[("I010", "<>", "11"), ("B010", "<>", "12")],
+                          cond_join="AND")
+        assert eval_instr_condition(ins, s) is True
+        s.set("I010", 11)                                  # first term now false
+        assert eval_instr_condition(ins, s) is False
+
+    def test_orexp(self):
+        s = VarStore(); s.set("B000", 1); s.set("B001", 99)
+        ins = Instruction(type="IfThen",
+                          cond_terms=[("B000", "=", "5"), ("B001", "=", "99")],
+                          cond_join="OR")
+        assert eval_instr_condition(ins, s) is True        # 2nd term true
+
+    def test_in_on_off_condition(self):
+        s = VarStore()
+        ins = Instruction(type="IfThen", cond_lhs="IN#(8)", cond_op="=",
+                          cond_rhs="ON")
+        assert eval_instr_condition(ins, s, lambda i: i == 8) is True
+        assert eval_instr_condition(ins, s, lambda i: False) is False
 
 
 # ───── Labels & validation ─────
@@ -336,8 +394,10 @@ class TestAppAdapterRoundTrip:
         s = types.SimpleNamespace(
             _pp_max_speed_pct=30.0, _pp_default_vj=10.0, _pp_default_v_mms=100.0,
             _targets={}, _model=None, _tool_frames=[("flange", None)], _tool_idx=0)
+        from src.orchestrator.viewports.mixin_job_target import JobTargetMixin
         s.export = ProgramIOMixin._export_job_to_path.__get__(s)
         s.imp = ProgramIOMixin._jbi_to_instructions.__get__(s)
+        s._safe_target_name = JobTargetMixin._safe_target_name
         return s
 
     def test_structured_pipeline(self, tmp_path):
@@ -360,9 +420,508 @@ class TestAppAdapterRoundTrip:
         s.export(prog, "STRUCTJOB", path)
         parsed = parse_jbi(path.read_text(encoding="utf-8"))
         assert parsed.warnings == []
-        back = s.imp(parsed)
+        targets: dict = {}
+        back = s.imp(parsed, targets)
         # Bỏ SetSpeed importer tự dựng cho MoveJ → so phần còn lại.
         back_types = [i.type for i in back if i.type != "SetSpeed"]
         assert back_types == [i.type for i in prog]
         # Khối parse lại phải cân bằng (build_block_map không raise).
         build_block_map(back)
+
+    def test_pvar_job_shared_targets(self, tmp_path):
+        """Import .JBI có P-var dùng lại → MoveJ/MoveL tham chiếu shared target
+        (giữ joints chính xác, điểm dùng lại → 1 target)."""
+        from src.orchestrator.backends.inform_parser import parse_jbi
+        text = (
+            "/JOB\r\n//NAME PP\r\n//POS\r\n///NPOS 0,0,0,2,0,0\r\n"
+            "///TOOL 0\r\n///POSTYPE PULSE\r\n///PULSE\r\n"
+            "P00001=55242,26922,11446,1601,-60437,64378\r\n"
+            "P00002=55242,35623,-7881,1830,-43902,63991\r\n"
+            "//INST\r\n///DATE 2026/01/01 00:00\r\n///ATTR SC,RW\r\n"
+            "///GROUP1 RB1\r\nNOP\r\n"
+            "MOVJ P001 VJ=20.00\r\nMOVL P002 V=80.0\r\nMOVL P001 V=80.0\r\nEND\r\n")
+        parsed = parse_jbi(text)
+        s = self._stub()
+        targets: dict = {}
+        back = s.imp(parsed, targets)
+        moves = [i for i in back if i.type in ("MoveJ", "MoveL")]
+        # 3 motions, all via target_name (no inline joints/pose).
+        assert [i.type for i in moves] == ["MoveJ", "MoveL", "MoveL"]
+        assert all(i.target_name and not i.joints and not i.tcp_pose
+                   for i in moves)
+        # P001 reused → 1st and 3rd share one target; only 2 unique targets.
+        assert moves[0].target_name == moves[2].target_name
+        assert len(targets) == 2
+        # Exact joints preserved (no FK/IK drift).
+        assert targets[moves[0].target_name]["joints"][0] == \
+            parsed.instructions[0].joints_deg[0]
+
+    def test_dout_gripper_index_preserved_for_sim(self):
+        """DOUT OT#(n) → SetDO do_index=n must be preserved so the sim can
+        actuate the gripper on the configured index (regression: pick-place jobs
+        that grip via DOUT must grab objects in sim, not just log)."""
+        from src.orchestrator.backends.inform_parser import parse_jbi
+        text = (
+            "/JOB\r\n//NAME G\r\n//POS\r\n///NPOS 0,0,0,1,0,0\r\n"
+            "///TOOL 0\r\n///POSTYPE PULSE\r\n///PULSE\r\nP00001=0,0,0,0,0,0\r\n"
+            "//INST\r\n///DATE 2026/01/01 00:00\r\n///ATTR SC,RW\r\n"
+            "///GROUP1 RB1\r\nNOP\r\n"
+            "MOVJ P001 VJ=20.00\r\nDOUT OT#(10) ON\r\nDOUT OT#(10) OFF\r\nEND\r\n")
+        parsed = parse_jbi(text)
+        s = self._stub()
+        back = s.imp(parsed, {})
+        douts = [i for i in back if i.type == "SetDO"]
+        assert [d.do_index for d in douts] == [10, 10]
+        assert [d.do_state for d in douts] == [True, False]
+
+
+class TestCallJobResolution:
+    """CALL JOB lookup for master → N sub-jobs (incl. nested + //NAME mismatch)."""
+
+    def _stub(self, jobs):
+        import types
+        from src.orchestrator.viewports.mixin_program_playback import (
+            ProgramPlaybackMixin,
+        )
+        from src.orchestrator.viewports.mixin_job_target import JobTargetMixin
+        s = types.SimpleNamespace(_jobs=jobs, _sim_speed_mult=1.0, executed=[])
+        s._safe_job_name = JobTargetMixin._safe_job_name
+        # Capture executions instead of animating.
+        s._signals = types.SimpleNamespace(
+            status=types.SimpleNamespace(emit=lambda *a, **k: None))
+
+        def fake_exec_job(prog, store, sim_io, guard, call_stack, job_label=""):
+            s.executed.append(job_label)
+        s._exec_job = fake_exec_job
+        s._exec_call_job = ProgramPlaybackMixin._exec_call_job.__get__(s)
+        return s
+
+    def test_call_resolves_by_call_name(self):
+        jobs = {"MASTER": [], "SUB_A": [], "SUB_B": []}
+        s = self._stub(jobs)
+        s._exec_call_job("SUB_A", None, {}, [0], [])
+        s._exec_call_job("SUB_B", None, {}, [0], [])
+        assert s.executed == ["SUB_A", "SUB_B"]
+
+    def test_call_missing_subjob_skips(self):
+        s = self._stub({"MASTER": []})
+        s._exec_call_job("NOPE", None, {}, [0], [])
+        assert s.executed == []                      # skipped, no crash
+
+    def test_call_recursion_blocked(self):
+        s = self._stub({"A": []})
+        s._exec_call_job("A", None, {}, [0], ["A"])  # already on stack
+        assert s.executed == []
+
+
+# ───── Verbatim re-export (import .JBI → unchanged → byte-exact) ─────
+
+
+class TestVerbatimReexport:
+    """An imported .JBI job re-exports byte-for-byte when UNCHANGED, but is
+    re-synthesised from the model once edited (the two user workflows)."""
+
+    def _stub(self):
+        import types
+        from src.orchestrator.viewports.mixin_program_io import ProgramIOMixin
+        from src.orchestrator.viewports.mixin_job_target import JobTargetMixin
+        s = types.SimpleNamespace(
+            _pp_max_speed_pct=100.0, _pp_default_vj=20.0, _pp_default_v_mms=80.0,
+            _targets={}, _model=None, _tool_frames=[("flange", None)],
+            _tool_idx=0, _jbi_raw={}, _jbi_positions={})
+        s._safe_target_name = JobTargetMixin._safe_target_name
+        s._safe_job_name = JobTargetMixin._safe_job_name
+        s._job_signature = ProgramIOMixin._job_signature
+        s.export = ProgramIOMixin._export_job_to_path.__get__(s)
+        s.imp = ProgramIOMixin._jbi_to_instructions.__get__(s)
+        return s
+
+    _JOB = (
+        "/JOB\r\n//NAME J\r\n//POS\r\n///NPOS 0,0,0,1,0,0\r\n///TOOL 0\r\n"
+        "///POSTYPE PULSE\r\n///PULSE\r\nP00001=55242,26922,11446,1601,-60437,64378\r\n"
+        "//INST\r\n///DATE 2024/08/21 18:20\r\n///ATTR SC,RW\r\n///GROUP1 RB1\r\n"
+        "NOP\r\n'a comment line\r\nIFTHENEXP B000=1\r\n\t MOVJ P001 VJ=I000\r\n"
+        "ENDIF\r\nEND\r\n")
+
+    def test_unedited_exports_verbatim(self, tmp_path):
+        from src.orchestrator.backends.inform_parser import parse_jbi
+        s = self._stub()
+        pj = parse_jbi(self._JOB)
+        prog = s.imp(pj, s._targets)
+        s._jbi_raw["J"] = {"text": self._JOB, "name": "J",
+                           "sig": s._job_signature(prog)}
+        out = tmp_path / "J.JBI"
+        s.export(prog, "J", out, raw_key="J")
+        # Byte-for-byte identical — comment, IFTHENEXP, VJ=I000, indent all kept.
+        # (read_bytes: read_text would normalize CRLF and mask the comparison.)
+        assert out.read_bytes() == self._JOB.encode("utf-8")
+
+    def test_edited_resynthesises(self, tmp_path):
+        from src.orchestrator.backends.inform_parser import parse_jbi
+        s = self._stub()
+        pj = parse_jbi(self._JOB)
+        prog = s.imp(pj, s._targets)
+        s._jbi_raw["J"] = {"text": self._JOB, "name": "J",
+                           "sig": s._job_signature(prog)}
+        prog.append(Instruction(type="Wait", wait_seconds=2.0))   # edit
+        out = tmp_path / "J.JBI"
+        s.export(prog, "J", out, raw_key="J")
+        txt = out.read_text(encoding="utf-8")
+        assert txt != self._JOB                  # not verbatim
+        assert "TIMER T=2.000" in txt            # synthesised edit present
+        assert "'a comment line" not in txt      # comments dropped on synthesis
+
+
+# ───── Full instruction coverage (every type round-trips + exports) ─────
+
+
+class TestAllTypesCoverage:
+    """Build a program containing one of every instruction type and verify
+    dict round-trip + describe for all, and export → re-parse with no warnings."""
+
+    ALL_TYPES = [
+        "MoveJ", "MoveL", "MoveC", "SetGripper", "SetDO", "Wait", "WaitIO",
+        "SetSpeed", "SetRounding", "SetTool", "SetRefFrame", "ShowMessage",
+        "CallJob", "SimEvent", "Label", "Jump", "SetVar", "IfThen", "ElseIf",
+        "Else", "EndIf", "While", "EndWhile", "PulseDO", "ClearStack",
+        "ClearVar", "ReadGroupIn", "WriteGroupOut",
+    ]
+
+    @staticmethod
+    def _mk(t):
+        d = {"type": t}
+        if t == "MoveJ":
+            d["joints"] = [0.0] * 6
+        elif t in ("MoveL",):
+            d["tcp_pose"] = [0.0] * 6
+        elif t == "MoveC":
+            d["tcp_pose"] = [0.0] * 6; d["tcp_pose_mid"] = [0.0] * 6
+        elif t == "SetVar":
+            d["var_name"] = "I000"; d["var_op"] = "SET"; d["var_arg"] = "1"
+        elif t in ("Label", "Jump"):
+            d["label_name"] = "L1"
+        elif t in ("IfThen", "ElseIf", "While"):
+            d["cond_lhs"] = "B000"; d["cond_op"] = "="; d["cond_rhs"] = "1"
+        elif t == "ClearVar":
+            d["var_name"] = "I010"; d["clear_count"] = 2
+        elif t in ("ReadGroupIn", "WriteGroupOut"):
+            d["var_name"] = "B005"; d["io_group"] = 2
+            d["io_group_kind"] = "IG" if t == "ReadGroupIn" else "OG"
+        elif t == "CallJob":
+            d["job_name"] = "SUB"
+        elif t == "PulseDO":
+            d["do_index"] = 6
+        return Instruction(**d)
+
+    def test_every_type_describes_and_roundtrips(self):
+        for t in self.ALL_TYPES:
+            ins = self._mk(t)
+            assert not ins.describe().startswith("?"), f"{t}: describe fallback"
+            rt = Instruction.from_dict(ins.to_dict())
+            assert rt.to_dict() == ins.to_dict(), f"{t}: dict round-trip mismatch"
+
+    def test_logic_program_exports_and_reparses_clean(self, tmp_path):
+        import types
+        from src.orchestrator.backends.inform_parser import parse_jbi
+        from src.orchestrator.viewports.mixin_program_io import ProgramIOMixin
+        from src.orchestrator.viewports.mixin_job_target import JobTargetMixin
+
+        prog = [
+            Instruction(type="Label", label_name="TOP"),
+            Instruction(type="SetVar", var_name="I000", var_op="SET", var_arg="0"),
+            Instruction(type="SetVar", var_name="I001", var_op="SET",
+                        var_expr="5 * B005"),
+            Instruction(type="ClearStack"),
+            Instruction(type="ClearVar", var_name="I010", clear_count=2),
+            Instruction(type="ReadGroupIn", var_name="B005", io_group=2,
+                        io_group_kind="IG"),
+            Instruction(type="WriteGroupOut", var_name="B005", io_group=2,
+                        io_group_kind="OG"),
+            Instruction(type="PulseDO", do_index=6),
+            Instruction(type="IfThen", cond_lhs="IN#(8)", cond_op="=",
+                        cond_rhs="ON", cond_exp=True),
+            Instruction(type="ShowMessage", message="HI"),
+            Instruction(type="ElseIf", cond_lhs="B000", cond_op=">", cond_rhs="5"),
+            Instruction(type="WaitIO", io_index=3, io_state=True),
+            Instruction(type="Else"),
+            Instruction(type="SetDO", do_index=1, do_state=True),
+            Instruction(type="EndIf"),
+            Instruction(type="While",
+                        cond_terms=[("I000", "<", "3"), ("B010", "<>", "12")],
+                        cond_join="AND"),
+            Instruction(type="SetVar", var_name="I000", var_op="INC"),
+            Instruction(type="Wait", wait_seconds=1.0),
+            Instruction(type="EndWhile"),
+            Instruction(type="CallJob", job_name="SUB"),
+            Instruction(type="Jump", label_name="TOP", cond_lhs="I001",
+                        cond_op="<>", cond_rhs="9"),
+        ]
+        s = types.SimpleNamespace(
+            _model=None, _tool_frames=[("f", None)], _tool_idx=0, _targets={},
+            _jbi_raw={}, _jbi_positions={}, _pp_max_speed_pct=100.0,
+            _pp_default_vj=20.0, _pp_default_v_mms=80.0)
+        s._safe_target_name = JobTargetMixin._safe_target_name
+        s._safe_job_name = JobTargetMixin._safe_job_name
+        s._job_signature = ProgramIOMixin._job_signature
+        exp = ProgramIOMixin._export_job_to_path.__get__(s)
+        out = tmp_path / "ALL.JBI"
+        exp(prog, "ALLTEST", out)
+        txt = out.read_bytes().decode("utf-8")
+        # Spot-check the tricky lines, then confirm a clean re-parse.
+        assert "IFTHENEXP IN#(8)=ON " in txt          # I/O cond → EXP + trailing space
+        assert "WHILE I000<3 ANDEXP B010<>12" in txt  # compound condition
+        assert "SET I001 EXPRESS 5 * B005" in txt     # arithmetic expression
+        assert "CLEAR STACK" in txt and "CLEAR I010 2" in txt
+        assert "DIN B005 IG#(2)" in txt and "DOUT OG#(2) B005" in txt
+        assert "PULSE OT#(6)" in txt
+        assert parse_jbi(txt).warnings == []          # round-trip is lossless
+
+
+# ───── Condition edit helpers (compound parse + EXP toggle, no Qt) ─────
+
+
+class TestConditionEditHelpers:
+    """_parse_cond_text + _apply_cond power the Program-panel condition editor:
+    compound ANDEXP/OREXP entry and the IFTHEN↔IFTHENEXP toggle."""
+
+    def _fns(self):
+        from src.orchestrator.viewports.gp7_app_qt import GP7AppQt
+        return GP7AppQt._parse_cond_text, GP7AppQt._apply_cond
+
+    def test_parse_single_and_compound(self):
+        parse, _ = self._fns()
+        assert parse("B000>5") == ([("B000", ">", "5")], "")
+        assert parse("IN#(8)=ON") == ([("IN#(8)", "=", "ON")], "")
+        assert parse("I010<>11 ANDEXP B010<>12") == (
+            [("I010", "<>", "11"), ("B010", "<>", "12")], "AND")
+        assert parse("B000=1 OREXP B001=2") == (
+            [("B000", "=", "1"), ("B001", "=", "2")], "OR")
+
+    def test_parse_rejects_bad(self):
+        parse, _ = self._fns()
+        assert parse("garbage") is None
+        assert parse("a AND b ANDEXP c") is None      # mixed/incomplete terms
+
+    def test_apply_single_with_exp_toggle(self):
+        _, apply = self._fns()
+        ins = Instruction(type="IfThen")
+        apply(None, ins, {"terms": [("I010", "=", "12")], "join": "AND", "exp": True})
+        assert (ins.cond_lhs, ins.cond_op, ins.cond_rhs) == ("I010", "=", "12")
+        assert ins.cond_terms == [] and ins.cond_exp is True
+
+    def test_apply_compound_then_back_to_single_clears_terms(self):
+        _, apply = self._fns()
+        ins = Instruction(type="While")
+        apply(None, ins, {"terms": [("I000", "<", "3"), ("B010", "<>", "12")],
+                          "join": "AND", "exp": False})
+        assert ins.cond_terms == [("I000", "<", "3"), ("B010", "<>", "12")]
+        assert ins.cond_join == "AND"
+        apply(None, ins, {"terms": [("B000", ">", "5")], "join": "AND", "exp": False})
+        assert ins.cond_terms == []                    # compound terms cleared
+        assert (ins.cond_lhs, ins.cond_op, ins.cond_rhs) == ("B000", ">", "5")
+
+    def test_apply_unconditional(self):
+        _, apply = self._fns()
+        ins = Instruction(type="Jump", label_name="L",
+                          cond_lhs="B000", cond_op="=", cond_rhs="1")
+        apply(None, ins, None)
+        assert (ins.cond_lhs, ins.cond_op, ins.cond_rhs) == ("", "", "")
+        assert ins.cond_terms == [] and ins.cond_exp is False
+
+
+# ───── Replace instruction type (default instances are valid) ─────
+
+
+class TestReplaceInstruction:
+    """The Replace button swaps a step's TYPE in place via _default_instruction;
+    every offered type must produce a valid, describable instance."""
+
+    def _mk_fn(self):
+        import types
+        from src.orchestrator.viewports.gp7_app_qt import GP7AppQt
+        s = types.SimpleNamespace(_joints=[0.0] * 6)
+        s._current_tool_world = lambda: None
+        return GP7AppQt._default_instruction.__get__(s), GP7AppQt._REPLACE_TYPES
+
+    def test_all_replace_types_valid(self):
+        from src.orchestrator.viewports.program_model import Instruction
+        mk, replace_types = self._mk_fn()
+        for _label, t, exp in replace_types:
+            ins = mk(t, exp)
+            assert ins.type == t
+            assert not ins.describe().startswith("?"), f"{t}: describe fallback"
+            # dict round-trip must survive too (save/load safe)
+            assert Instruction.from_dict(ins.to_dict()).type == t
+            # EXP flavour sets cond_exp on flow-control conditions
+            if exp:
+                assert ins.cond_exp is True, f"{t}: exp flag not set"
+
+    def test_replace_exp_variant_present(self):
+        """The Replace picker must offer the EXP keyword variants (IFTHENEXP
+        etc.) — they were missing originally."""
+        _mk, replace_types = self._mk_fn()
+        exp_types = {t for _l, t, e in replace_types if e}
+        assert exp_types == {"IfThen", "ElseIf", "While"}
+
+    def test_replace_keeps_position_and_validity(self):
+        from src.orchestrator.viewports.program_model import Instruction
+        from src.orchestrator.viewports.program_logic import validate_program
+        mk, _ = self._mk_fn()
+        prog = [Instruction(type="Label", label_name="L"),
+                Instruction(type="MoveJ", joints=[0.0] * 6),
+                Instruction(type="Jump", label_name="L")]
+        prog[1] = mk("Wait")                      # replace middle step
+        assert [i.type for i in prog] == ["Label", "Wait", "Jump"]
+        assert validate_program(prog) == []       # still a valid program
+
+
+class TestCondExpDisplay:
+    """describe() must distinguish IFTHEN from IFTHENEXP (and ELSEIF/WHILE) so a
+    Replace IFTHEN→IFTHENEXP is visible in the program list (regression)."""
+
+    def test_ifthen_vs_ifthenexp_display(self):
+        plain = Instruction(type="IfThen", cond_lhs="B000", cond_op="=",
+                            cond_rhs="1", cond_exp=False)
+        exp = Instruction(type="IfThen", cond_lhs="B000", cond_op="=",
+                          cond_rhs="1", cond_exp=True)
+        assert plain.describe().startswith("IFTHEN ")
+        assert exp.describe().startswith("IFTHENEXP ")
+        assert plain.describe() != exp.describe()
+
+    def test_while_elseif_exp_display(self):
+        w = Instruction(type="While", cond_lhs="IN#(8)", cond_op="=",
+                        cond_rhs="ON", cond_exp=True)
+        e = Instruction(type="ElseIf", cond_lhs="B000", cond_op=">",
+                        cond_rhs="5", cond_exp=True)
+        assert w.describe().startswith("WHILEEXP ")
+        assert e.describe().startswith("ELSEIFEXP ")
+
+
+class TestJointTurnLabels:
+    """§3.3 turn numbers (Yaskawa/RoboDK convention): turn 0 = principal value in
+    (-180°,180°]; ±1 = one extra ±360° winding (only on axes with range > 360°)."""
+
+    def _G(self):
+        from src.orchestrator.viewports.gp7_app_qt import GP7AppQt
+        return GP7AppQt
+
+    def test_principal_values_are_turn_zero(self):
+        G = self._G()
+        assert G._solution_turns([0, 179, -180, -60, 120, 43]) == [0, 0, 0, 0, 0, 0]
+
+    def test_plus_minus_full_turns(self):
+        G = self._G()
+        # 300 = -60 + 360 → +1 ; -240 = 120 - 360 → -1 ; 181 = -179 + 360 → +1
+        assert G._solution_turns([0, 0, 0, 0, 0, 300])[5] == 1
+        assert G._solution_turns([0, 0, 0, 0, 0, -240])[5] == -1
+        assert G._solution_turns([0, 0, 0, 0, 0, 181])[5] == 1
+
+    def test_label_lists_only_nonzero_turns(self):
+        G = self._G()
+        assert G._turn_label([0, 0, 0, 0, 0, 1]) == "J6+1"
+        assert G._turn_label([0, 0, 0, -1, 0, 1]) == "J4-1 J6+1"
+        assert G._turn_label([0, 0, 0, 0, 0, 0]) == "turn 0"
+
+
+class TestAlignToReferenceFrame:
+    """Align button (RoboDK-style): keep TCP position, snap tool ORIENTATION to be
+    axis-aligned with the reference frame, solve IK, animate. Pure-math parts here
+    (signed-perm group + nearest-rotation snap) need no Qt/OpenGL."""
+
+    def _import(self):
+        from src.orchestrator.viewports.gp7_app_qt import GP7AppQt
+        return GP7AppQt
+
+    def test_signed_perm_group_is_24_proper_rotations(self):
+        import numpy as np
+        mats = self._import()._signed_perm_rotations()
+        assert len(mats) == 24
+        for m in mats:
+            assert abs(np.linalg.det(m) - 1.0) < 1e-9
+            assert np.allclose(m @ m.T, np.eye(3), atol=1e-12)
+
+    def test_snap_tilted_orientation_back_to_frame(self):
+        import math, numpy as np, types
+        GP7AppQt = self._import()
+        s = types.SimpleNamespace(
+            _signed_perm_rotations=GP7AppQt._signed_perm_rotations)
+        th = math.radians(15)
+        R_cur = np.array([[math.cos(th), -math.sin(th), 0],
+                          [math.sin(th),  math.cos(th), 0],
+                          [0, 0, 1]])
+        R_al = GP7AppQt._align_target_rotation.__get__(s)(R_cur, np.eye(3))
+        assert np.allclose(R_al, np.eye(3), atol=1e-9)
+
+    def test_exact_axis_pose_is_left_unchanged(self):
+        import numpy as np, types
+        GP7AppQt = self._import()
+        s = types.SimpleNamespace(
+            _signed_perm_rotations=GP7AppQt._signed_perm_rotations)
+        R_cur = np.array([[1, 0, 0], [0, 0, -1], [0, 1, 0]], dtype=float)  # 90° about X
+        R_al = GP7AppQt._align_target_rotation.__get__(s)(R_cur, np.eye(3))
+        assert np.allclose(R_al, R_cur, atol=1e-9)
+
+    def _stub(self, R_cur, ik_result=(0.0,) * 6):
+        import numpy as np, types
+        from src.orchestrator.viewports.gp7_app_qt import GP7AppQt
+        T_cur = np.eye(4)
+        T_cur[:3, :3] = R_cur
+        T_cur[:3, 3] = [400.0, 0.0, 300.0]
+        captured = {}
+        s = types.SimpleNamespace(
+            _model=object(), _joints=[0, 0, 0, 0, 0, 0],
+            _base_xyz=(0.0, 0.0, 0.0),
+            _ref_frames=[("Base", np.eye(4))], _ref_idx=0,
+            _ALIGN_MIN_ANGLE_DEG=GP7AppQt._ALIGN_MIN_ANGLE_DEG,
+            _signed_perm_rotations=GP7AppQt._signed_perm_rotations,
+            _align_target_rotation=GP7AppQt._align_target_rotation,
+            _current_tool_world=lambda: T_cur,
+            _solve_cartesian=lambda T, seeded=True: (
+                captured.setdefault("target", T), list(ik_result))[1],
+            _animate_to=lambda j: captured.setdefault("joints", list(j)),
+            _set_status=lambda msg, level="ok": captured.setdefault("status", (msg, level)),
+        )
+        # bind methods that call self
+        s._align_target_rotation = GP7AppQt._align_target_rotation.__get__(s)
+        return s, captured
+
+    def _run(self, stub):
+        import time
+        from src.orchestrator.viewports.gp7_app_qt import GP7AppQt
+        GP7AppQt._on_align.__get__(stub)()
+        time.sleep(0.05)
+
+    def test_tilted_tool_triggers_ik_and_keeps_position(self):
+        import math, numpy as np
+        th = math.radians(20)
+        R_cur = np.array([[math.cos(th), -math.sin(th), 0],
+                          [math.sin(th),  math.cos(th), 0],
+                          [0, 0, 1]])
+        stub, cap = self._stub(R_cur, ik_result=(0.1, 0.2, 0.3, 0.4, 0.5, 0.6))
+        self._run(stub)
+        # _solve_cartesian returns radians; _on_align animates in degrees
+        assert cap["joints"] == [math.degrees(q) for q in (0.1, 0.2, 0.3, 0.4, 0.5, 0.6)]
+        # IK target keeps the original TCP position
+        assert np.allclose(cap["target"][:3, 3], [400.0, 0.0, 300.0])
+        # ...and uses the snapped (identity) orientation
+        assert np.allclose(cap["target"][:3, :3], np.eye(3), atol=1e-9)
+
+    def test_already_aligned_does_not_move(self):
+        import numpy as np
+        stub, cap = self._stub(np.eye(3))
+        self._run(stub)
+        assert "joints" not in cap
+        assert "already aligned" in cap["status"][0]
+
+    def test_no_ik_solution_warns(self):
+        import math, numpy as np
+        th = math.radians(20)
+        R_cur = np.array([[math.cos(th), -math.sin(th), 0],
+                          [math.sin(th),  math.cos(th), 0],
+                          [0, 0, 1]])
+        stub, cap = self._stub(R_cur)
+        # force IK failure
+        stub._solve_cartesian = lambda T, seeded=True: None
+        self._run(stub)
+        assert "joints" not in cap
+        assert cap["status"][1] == "warn"

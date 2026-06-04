@@ -374,7 +374,7 @@ class TestBatchMode:
         assert b"MOVJ" in data
         assert b"MOVL" in data
         assert b"DOUT OT#(1) ON" in data
-        assert b"TIMER T=0.30" in data
+        assert b"TIMER T=0.300" in data
 
     def test_batch_outside_falls_back_to_single_shot(self, backend_with_mock_socket, monkeypatch):
         """Ngoài batch: mỗi MoveJ tự upload độc lập như trước (preserved behavior)."""
@@ -441,7 +441,7 @@ class TestBatchMode:
             backend.timer(2.0)                                # nếu sleep thật → mất 2s
         elapsed = _time.time() - t_start
         assert elapsed < 1.0, f"timer() trong batch sleep thật ({elapsed:.2f}s)"
-        assert b"TIMER T=2.00" in uploaded["data"]
+        assert b"TIMER T=2.000" in uploaded["data"]
 
     def test_batch_exception_drops_builder_no_upload(self, backend_with_mock_socket, monkeypatch):
         backend, mock_sock = backend_with_mock_socket

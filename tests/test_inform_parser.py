@@ -120,6 +120,156 @@ class TestRobustness:
         assert any("P-var" in w or "không có trong //POS" in w
                    for w in pj.warnings)
 
+    def test_pvar_declared_in_pos_resolved(self):
+        """P-var KHAI BÁO trong //POS (job teach-pendant thật) phải resolve được,
+        kể cả khi //POS dùng 5 chữ số (P00001) còn //INST dùng 3 chữ số (P001).
+        Regression: trước đây parser bỏ //POS P-var → mất hết motion."""
+        text = (
+            "/JOB\r\n//NAME PP1\r\n//POS\r\n///NPOS 0,0,0,2,0,0\r\n"
+            "///TOOL 0\r\n///POSTYPE PULSE\r\n///PULSE\r\n"
+            "P00001=55242,26922,11446,1601,-60437,64378\r\n"
+            "P00002=55242,35623,-7881,1830,-43902,63991\r\n"
+            "//INST\r\n///DATE 2025/12/05 13:12\r\n///ATTR SC,RW\r\n"
+            "///GROUP1 RB1\r\nNOP\r\n"
+            "MOVJ P001 VJ=20.00 PL=0\r\nMOVL P002 V=80.0 PL=0\r\nEND\r\n")
+        pj = parse_jbi(text)
+        assert [i.kind for i in pj.instructions] == ["movj", "movl"]
+        assert pj.warnings == []
+        assert len(pj.instructions[0].joints_deg) == 6
+        # P001 (//INST) resolves to P00001 (//POS) — padding-independent.
+        # 55242 pulses / GP7 axis-1 ratio ≈ 41.2°.
+        assert abs(pj.instructions[0].joints_deg[0] - 41.2) < 1.0
+        # pos_key exposes the canonical key for shared-target mapping.
+        assert pj.instructions[0].pos_key == "P1"
+        assert pj.instructions[1].pos_key == "P2"
+
+    def test_pos_key_shared_for_reused_point(self):
+        """Motions reusing the same //POS var get the SAME pos_key (so the
+        importer can map them to one shared target)."""
+        text = (
+            "/JOB\r\n//NAME R\r\n//POS\r\n///NPOS 0,0,0,2,0,0\r\n"
+            "///TOOL 0\r\n///POSTYPE PULSE\r\n///PULSE\r\n"
+            "P00001=1,2,3,4,5,6\r\nP00002=7,8,9,10,11,12\r\n"
+            "//INST\r\n///DATE 2026/01/01 00:00\r\n///ATTR SC,RW\r\n"
+            "///GROUP1 RB1\r\nNOP\r\n"
+            "MOVJ P001 VJ=20.00\r\nMOVL P002 V=80.0\r\nMOVL P001 V=80.0\r\nEND\r\n")
+        pj = parse_jbi(text)
+        keys = [i.pos_key for i in pj.instructions if i.kind in ("movj", "movl")]
+        assert keys == ["P1", "P2", "P1"]      # 1st and 3rd reuse the same point
+
+    def test_ifthenexp_parsed_as_ifthen(self):
+        """IFTHENEXP (expression form) + IN#(n)=ON condition must parse, keeping
+        the IF block balanced (regression: IFTHENEXP was skipped → orphan ENDIF)."""
+        text = (
+            "/JOB\r\n//NAME M\r\n//POS\r\n///NPOS 0,0,0,1,0,0\r\n///TOOL 0\r\n"
+            "///POSTYPE PULSE\r\n///PULSE\r\nP00006=0,0,0,0,0,0\r\n//INST\r\n"
+            "///DATE 2026/01/01 00:00\r\n///ATTR SC,RW\r\n///GROUP1 RB1\r\nNOP\r\n"
+            "*RESET\r\nMOVJ P006 VJ=20.00\r\nIFTHENEXP IN#(8)=ON\r\n"
+            "\tCALL JOB:PP1\r\nENDIF\r\nJUMP *RESET\r\nEND\r\n")
+        pj = parse_jbi(text)
+        kinds = [i.kind for i in pj.instructions]
+        assert "ifthen" in kinds and "endif" in kinds
+        assert pj.warnings == []
+        ift = next(i for i in pj.instructions if i.kind == "ifthen")
+        # ON/OFF kept verbatim so export reproduces 'IFTHENEXP IN#(8)=ON'.
+        assert (ift.cond_lhs, ift.cond_op, ift.cond_rhs) == ("IN#(8)", "=", "ON")
+        assert ift.cond_exp is True              # remembers the EXP keyword form
+
+    def test_cond_exp_flag_distinguishes_ifthen_vs_ifthenexp(self):
+        """IFTHENEXP on a VARIABLE condition keeps cond_exp=True; plain IFTHEN
+        keeps False — so re-synthesis reproduces the original keyword."""
+        text = (
+            "/JOB\r\n//NAME J\r\n//POS\r\n///NPOS 0,0,0,0,0,0\r\n//INST\r\n"
+            "///DATE 2026/01/01 00:00\r\n///ATTR SC,RW\r\n///GROUP1 RB1\r\nNOP\r\n"
+            "IFTHENEXP I010=12\r\nSET B000 1\r\nENDIF\r\n"
+            "IFTHEN B000=1\r\nSET B001 1\r\nENDIF\r\nEND\r\n")
+        ifs = [i for i in parse_jbi(text).instructions if i.kind == "ifthen"]
+        assert ifs[0].cond_exp is True           # IFTHENEXP I010=12
+        assert ifs[1].cond_exp is False          # IFTHEN B000=1
+
+    def test_on_off_operands_kept_verbatim(self):
+        text = (
+            "/JOB\r\n//NAME M\r\n//POS\r\n///NPOS 1,0,0,0,0,0\r\n///TOOL 0\r\n"
+            "///POSTYPE PULSE\r\n///PULSE\r\nC00000=0,0,0,0,0,0\r\n//INST\r\n"
+            "///DATE 2026/01/01 00:00\r\n///ATTR SC,RW\r\n///GROUP1 RB1\r\nNOP\r\n"
+            "MOVJ C00000 VJ=10.00\r\nWHILEEXP IN#(3)=OFF\r\nENDWHILE\r\nEND\r\n")
+        pj = parse_jbi(text)
+        wh = next(i for i in pj.instructions if i.kind == "while")
+        assert (wh.cond_lhs, wh.cond_op, wh.cond_rhs) == ("IN#(3)", "=", "OFF")
+
+    def test_foldername_parsed(self):
+        """///FOLDERNAME (controller folder metadata) được giữ vào ParsedJob."""
+        text = (
+            "/JOB\r\n//NAME PP1\r\n///FOLDERNAME FOLDER001\r\n//POS\r\n"
+            "///NPOS 1,0,0,0,0,0\r\n///TOOL 0\r\n///POSTYPE PULSE\r\n///PULSE\r\n"
+            "C00000=0,0,0,0,0,0\r\n//INST\r\n///DATE 2026/01/01 00:00\r\n"
+            "///ATTR SC,RW\r\n///GROUP1 RB1\r\nNOP\r\nMOVJ C00000 VJ=10.00\r\nEND\r\n")
+        pj = parse_jbi(text)
+        assert pj.folder_name == "FOLDER001"
+
+    def test_foldername_absent_is_empty(self):
+        text = (
+            "/JOB\r\n//NAME J\r\n//POS\r\n///NPOS 1,0,0,0,0,0\r\n///TOOL 0\r\n"
+            "///POSTYPE PULSE\r\n///PULSE\r\nC00000=0,0,0,0,0,0\r\n//INST\r\n"
+            "///DATE 2026/01/01 00:00\r\n///ATTR SC,RW\r\n///GROUP1 RB1\r\n"
+            "NOP\r\nMOVJ C00000 VJ=10.00\r\nEND\r\n")
+        assert parse_jbi(text).folder_name == ""
+
+    def test_lg_production_jobs_parse_clean(self):
+        """The real LG job set (4 files: extended INFORM — P[B], ANDEXP, EXPRESS,
+        DIN/CLEAR/PULSE/COMM, var speeds) must parse with ZERO warnings."""
+        import os
+        base = os.path.join(os.path.dirname(__file__), "..", "examples", "LG")
+        if not os.path.isdir(base):
+            pytest.skip("examples/LG not present")
+        for fn in ("MATER.JBI", "HOME.JBI", "SPEED-1.JBI", "POS-DATA.JBI"):
+            p = os.path.join(base, fn)
+            pj = parse_jbi(open(p, encoding="utf-8").read())
+            assert pj.warnings == [], f"{fn}: {pj.warnings}"
+
+    def test_compound_condition_andexp(self):
+        text = (
+            "/JOB\r\n//NAME J\r\n//POS\r\n///NPOS 0,0,0,0,0,0\r\n//INST\r\n"
+            "///DATE 2026/01/01 00:00\r\n///ATTR SC,RW\r\n///GROUP1 RB1\r\nNOP\r\n"
+            "IFTHENEXP I010<>11 ANDEXP B010<>12\r\nSET B000 1\r\nENDIF\r\nEND\r\n")
+        pj = parse_jbi(text)
+        ift = next(i for i in pj.instructions if i.kind == "ifthen")
+        assert ift.cond_terms == [("I010", "<>", "11"), ("B010", "<>", "12")]
+        assert ift.cond_join == "AND"
+
+    def test_set_express_parsed(self):
+        text = (
+            "/JOB\r\n//NAME J\r\n//POS\r\n///NPOS 0,0,0,0,0,0\r\n//INST\r\n"
+            "///DATE 2026/01/01 00:00\r\n///ATTR SC,RW\r\n///GROUP1 RB1\r\nNOP\r\n"
+            "SET I000  EXPRESS 5 * B005\r\nEND\r\n")
+        sv = next(i for i in parse_jbi(text).instructions if i.kind == "setvar")
+        assert sv.var_name == "I000" and sv.var_expr == "5 * B005"
+
+    def test_indirect_pos_and_var_speed(self):
+        text = (
+            "/JOB\r\n//NAME J\r\n//POS\r\n///NPOS 0,0,0,1,0,0\r\n///TOOL 0\r\n"
+            "///POSTYPE PULSE\r\n///PULSE\r\nP00010=1,2,3,4,5,6\r\n//INST\r\n"
+            "///DATE 2026/01/01 00:00\r\n///ATTR SC,RW\r\n///GROUP1 RB1\r\nNOP\r\n"
+            "MOVJ P[B010] VJ=I002\r\nEND\r\n")
+        pj = parse_jbi(text)
+        mv = next(i for i in pj.instructions if i.kind == "movj")
+        assert mv.pos_index_var == "B010"
+        assert mv.speed_var == "I002"
+        assert "P10" in pj.positions          # //POS table carried for indirect
+
+    def test_comm_clear_pulse_din_parse(self):
+        text = (
+            "/JOB\r\n//NAME J\r\n//POS\r\n///NPOS 0,0,0,0,0,0\r\n//INST\r\n"
+            "///DATE 2026/01/01 00:00\r\n///ATTR SC,RW\r\n///GROUP1 RB1\r\nNOP\r\n"
+            "CLEAR STACK\r\nCLEAR I010 2\r\nPULSE OT#(6)\r\n"
+            "DIN B005 IG#(2)\r\nDOUT OG#(2) B005\r\n"
+            "COMM IFTHENEXP IN#(6)=OFF\r\nCOMM \t MOVJ P010 VJ=15.00\r\n"
+            "COMM ENDIF\r\nEND\r\n")
+        pj = parse_jbi(text)
+        kinds = [i.kind for i in pj.instructions]
+        assert kinds == ["clear_stack", "clear", "pulse", "din", "dout_group"]
+        assert pj.warnings == []               # COMM lines dropped silently
+
     def test_unknown_command_warns_not_raises(self):
         # MOVS (spline) + ARCON (welding) nằm ngoài subset hỗ trợ → warning.
         text = (
@@ -188,3 +338,50 @@ class TestLogicRoundTrip:
         b.label("L")
         jmp = [i for i in parse_jbi(b.render()).instructions if i.kind == "jump"][0]
         assert jmp.cond_op == op
+
+
+class TestExampleJobsPipeline:
+    """End-to-end gate: every bundled example .JBI parses, validates, describes,
+    dict-round-trips, and (for non-inline-MOVL jobs) exports + re-parses clean."""
+
+    def test_all_examples_full_pipeline(self):
+        import glob, os, tempfile, types
+        from pathlib import Path
+        from src.orchestrator.viewports.mixin_program_io import ProgramIOMixin
+        from src.orchestrator.viewports.mixin_job_target import JobTargetMixin
+        from src.orchestrator.viewports.program_logic import (
+            validate_program, build_block_map, resolve_labels)
+        from src.orchestrator.viewports.program_model import Instruction
+
+        base = os.path.join(os.path.dirname(__file__), "..", "examples")
+        files = sorted(glob.glob(os.path.join(base, "**", "*.JBI"), recursive=True))
+        if not files:
+            pytest.skip("no example .JBI files")
+        d = Path(tempfile.mkdtemp())
+        for f in files:
+            s = types.SimpleNamespace(
+                _model=None, _tool_frames=[("f", None)], _tool_idx=0, _targets={},
+                _jbi_raw={}, _jbi_positions={}, _pp_max_speed_pct=100.0,
+                _pp_default_vj=20.0, _pp_default_v_mms=80.0)
+            s._safe_target_name = JobTargetMixin._safe_target_name
+            s._safe_job_name = JobTargetMixin._safe_job_name
+            s._job_signature = ProgramIOMixin._job_signature
+            imp = ProgramIOMixin._jbi_to_instructions.__get__(s)
+            exp = ProgramIOMixin._export_job_to_path.__get__(s)
+            pj = parse_jbi(Path(f).read_text(encoding="utf-8"))
+            assert pj.warnings == [], f"{f}: parse warnings {pj.warnings}"
+            targets = {}
+            prog = imp(pj, targets)
+            s._targets = targets
+            assert validate_program(prog) == [], f"{f}: validate errors"
+            build_block_map(prog); resolve_labels(prog)        # raises if unbalanced
+            for ins in prog:
+                assert not ins.describe().startswith("?"), f"{f}: {ins.type} desc"
+                assert Instruction.from_dict(ins.to_dict()).to_dict() == ins.to_dict()
+            # Export + re-parse for jobs without inline (cartesian) MOVL.
+            if not any(i.type == "MoveL" and not i.target_name
+                       and not i.pos_index_var for i in prog):
+                op = d / os.path.basename(f)
+                exp(prog, "T" + (s._safe_job_name(pj.name) or "J"), op)
+                assert parse_jbi(op.read_text(encoding="utf-8")).warnings == [], \
+                    f"{f}: re-parse warnings after export"

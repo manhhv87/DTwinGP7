@@ -53,7 +53,7 @@ RoboDK FK 0.00mm), real mode dùng HSE backend + telemetry CSV @10Hz (replay off
 
 ```bash
 pip install -r requirements.txt
-pytest tests/ -q                                              # → 300 passed
+pytest tests/ -q                                              # → 452 passed
 python scripts/03_run_experiment.py --mode sim --headless --trials 500
 python scripts/03_run_experiment.py --mode sim --trials 500 --minimal-build
 python scripts/16_app_qt.py                                   # GP7 Program editor GUI
@@ -123,7 +123,7 @@ DTwinGP7/                        ← root repo (DTwinGP7 trên GitHub)
 │   ├── calibration/               hand-eye ChArUco
 │   ├── logging/ · utils/
 ├── scripts/                     ← CLI entry points (01–07, 11, 13–17 + helpers, BẠN CHẠY)
-├── tests/                       ← 300 unit/integration tests
+├── tests/                       ← 452 unit/integration tests
 └── results/ · figures/ · logs/  ← output (gitignored)
 ```
 

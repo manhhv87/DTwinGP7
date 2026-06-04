@@ -39,10 +39,10 @@
 
 ```powershell
 .venv\Scripts\Activate.ps1                      # activate venv (đã cài theo HUONG_DAN_CAI_DAT)
-pytest tests/ -q                                # → 300 passed
+pytest tests/ -q                                # → 452 passed
 ```
 
-Nếu **300 passed** → sẵn sàng dùng mọi use case không cần phần cứng.
+Nếu **452 passed** → sẵn sàng dùng mọi use case không cần phần cứng.
 
 > **Chưa cài đặt?** → [`HUONG_DAN_CAI_DAT.md`](HUONG_DAN_CAI_DAT.md) (cài đặt từ A-Z).
 
@@ -58,7 +58,7 @@ Nếu **300 passed** → sẵn sàng dùng mọi use case không cần phần c�
 **3.2. Các thư mục code (logic, không chạy trực tiếp)**
 - **`src/`** — logic Python
 - **`models/`** — STL meshes + YOLO weights
-- **`tests/`** — 300 unit/integration tests
+- **`tests/`** — 452 unit/integration tests
 
 Module tree đầy đủ: [`phat_bieu_bai_toan_v3_2_HD.md` mục 3](phat_bieu_bai_toan_v3_2_HD.md#3-cấu-trúc-thư-mục-code).
 
@@ -77,7 +77,7 @@ flowchart TB
     B --> D[Kịch bản D<br/>04 analyze results<br/>06 simulate trial]
     C --> D
     E --> F[05 analyze telemetry<br/>07 replay telemetry<br/>Sinh figure + MP4]
-    A_TEST([Verify code OK]) --> A[Kịch bản A<br/>pytest tests<br/>300 passed]
+    A_TEST([Verify code OK]) --> A[Kịch bản A<br/>pytest tests<br/>452 passed]
 
     style A fill:#558B2F,stroke:#fff,color:#fff
     style B fill:#1565C0,stroke:#fff,color:#fff
@@ -96,7 +96,7 @@ flowchart TB
 pytest tests/ -q
 ```
 
-→ Kỳ vọng `300 passed`. Nếu fail → có issue, xem section 6 Debug.
+→ Kỳ vọng `452 passed`. Nếu fail → có issue, xem section 6 Debug.
 
 ---
 
@@ -159,11 +159,10 @@ python scripts/06_simulate_trial.py --no-show
 
 **Bạn muốn**: Robot thật di chuyển, gắp vật thật.
 
-> **Hai cách chạy**: (a) **CLI** `03_run_experiment.py --mode real` (bên dưới), hoặc
-> (b) **NGAY TRONG APP** `16_app_qt.py` qua panel **Digital Twin** (live mirror + run
-> experiment có nút Stop ngắt giữa chừng) — xem mục *"Chạy Digital Twin NGAY TRONG
-> APP"* cuối kịch bản này. Khuyến nghị **leo thang theo bậc an toàn 3 bước** (mục
-> *"Workflow LÊN ROBOT THẬT theo bậc an toàn"*).
+> **Hai cách chạy**: (a) **CLI** `03_run_experiment.py --mode real` (mục này), hoặc
+> (b) **trong app** `16_app_qt.py` qua panel **Digital Twin** — có nút Stop ngắt giữa
+> chừng. Thao tác panel + **quy trình lên robot thật 3 bậc an toàn** mô tả trong
+> [`HUONG_DAN_DIGITAL_TWIN.md`](HUONG_DAN_DIGITAL_TWIN.md).
 
 **3-tier performance ladder** — chọn theo nhu cầu:
 
@@ -243,66 +242,17 @@ python scripts/05_analyze_telemetry.py latest --no-show
 python scripts/07_replay_telemetry.py latest --mp4 figures/replay.mp4
 ```
 
-#### Chạy Digital Twin NGAY TRONG APP (panel "Digital Twin") — MỚI
+#### Chạy ngay trong app (panel Digital Twin)
 
-Ngoài CLI `03_run_experiment.py`, giờ có thể chạy robot THẬT trực tiếp trong app
-`16_app_qt.py` qua panel **Digital Twin** (dock tab cùng cụm Jog/Program — mở bằng
-menu **Digital Twin → Show Digital Twin panel**). Tái dùng đúng pipeline real-mode của CLI
-(`MotomanHSEBackend` + `DigitalTwinMirror` + `Orchestrator`), nhưng vòng trial NGẮT
-ĐƯỢC giữa chừng.
+Ngoài CLI, có thể chạy robot thật trực tiếp trong app `16_app_qt.py` qua panel
+**Digital Twin** (menu **Digital Twin → Show Digital Twin panel**) — tái dùng đúng
+pipeline real-mode (`MotomanHSEBackend` + `DigitalTwinMirror` + `Orchestrator`) nhưng
+vòng trial **ngắt được** giữa chừng bằng nút Stop (E-stop latch + servo OFF).
 
-Trước khi dùng: **Robot → Connection settings…** nhập IP YRC1000, và đã **Load Robot
-GP7** (cần model để dựng viewport).
-
-```
-Digital Twin — real robot (HSE)
-   • Mirror Hz (viewport) — mặc định 2.0
-   • Telemetry Hz (CSV)   — mặc định 10.0
-
-Experiment parameters (autonomous pick-place)
-   • Trials               — 1..1000 (mặc định 10)
-   • IK source            — yrc (YRC1000 onboard IK) | client (Pieper analytical)
-   • Perception           — D455 + YOLO (real) | Mock (dry-run test)
-   • ☐ Ultra-fast (P-var, upload template once)
-
-[▶ Start live mirror]   [▶ Start experiment]
-[⏹ Stop Digital Twin]
-```
-
-- **▶ Start live mirror** — CHỈ ĐỌC joints robot thật @Hz vẽ vào viewport + ghi
-  telemetry CSV (`results/telemetry_*.csv`). Robot **không nhận lệnh** → an toàn để
-  kiểm HSE/mạng. Có dialog xác nhận (yêu cầu HSE Server ON + ping OK).
-- **▶ Start experiment** — Orchestrator điều khiển robot thật gắp-thả **tự động
-  (robot DI CHUYỂN)**. Có **dialog an toàn** (cảnh báo "robot WILL move", yêu cầu
-  vùng làm việc trống + E-stop trong tầm + YRC ở PLAY/REMOTE). Predictive safety +
-  reach envelope BẬT. Kết quả ghi `results/experiment_real_*.csv` + telemetry CSV.
-- **⏹ Stop Digital Twin** — dừng tức thì. Với experiment (robot đang chuyển động) là
-  **E-stop latch**: set stop flag + servo OFF NGAY, không gửi thêm lệnh motion.
-
-> **Lưu ý IK source trong panel**: `client` ở đây dùng **Pieper analytical** (giống
-> Mode C của CLI), `yrc` để YRC1000 tự IK (cần TOOL01 trên TP).
-
-#### Workflow LÊN ROBOT THẬT theo bậc an toàn (3 bước)
-
-Đừng chạy thẳng experiment thật — leo thang theo mức rủi ro tăng dần:
-
-1. **Bước 1 — Live mirror (chỉ đọc)**: bấm *Start live mirror* (hoặc CLI Mode A).
-   Robot không nhận lệnh → kiểm mạng/HSE an toàn, xác nhận joints đọc về đúng, drift
-   OK. Không có rủi ro va chạm.
-2. **Bước 2 — Experiment Mock (dry-run) trên robot thật**: panel → Perception =
-   **Mock (dry-run test)** → *Start experiment*. Robot DI CHUYỂN tới pose tính từ
-   detection GIẢ → kiểm chuỗi motion + gripper + nút E-stop có dừng được không. **Vùng
-   làm việc PHẢI trống.** Lưu ý: dry-run dùng calib sim (`T_base_camera.npy` sinh từ
-   layout) nên pose có thể **lệch so với thực** — chỉ để kiểm chuỗi, KHÔNG để gắp thật.
-3. **Bước 3 — Experiment thật (D455 + YOLO)**: chỉ chạy khi đủ HẾT:
-   - ✅ YOLO weights `models/*.pt` đã copy về (vd `models/yolov8s-seg_best.pt`)
-   - ✅ Hand-eye calibration **THẬT**: chạy `python scripts/02_run_calibration.py`
-     (ChArUco) → `config/calibration/T_base_camera.npy`, KHÔNG dùng calib sim
-   - ✅ **TOOL01** đã setup trên teach-pendant (TCP offset gripper)
-   - ✅ Gripper CC-Link bits đã verify trên TP (clamp/unclamp/sensor/detect)
-   - ✅ YRC1000 ở **PLAY/REMOTE** mode
-
-   → panel: Perception = **D455 + YOLO (real)** → *Start experiment* (hoặc CLI Mode A/B).
+Toàn bộ thao tác panel (Live mirror vs Run experiment, tham số Mirror/Telemetry Hz, IK
+source, Perception, Ultra-fast), cơ chế **E-stop latch** và **quy trình lên robot thật
+3 bậc an toàn** (live mirror → experiment Mock dry-run → experiment thật D455+YOLO) được
+mô tả đầy đủ trong [`HUONG_DAN_DIGITAL_TWIN.md`](HUONG_DAN_DIGITAL_TWIN.md).
 
 ---
 
@@ -322,75 +272,28 @@ python scripts/16_app_qt.py --config config/cell_layout_real.yaml   # cell thậ
 
 **Stack**: PyQt6 + pyvistaqt (VTK 9.6) — cùng stack ROS RViz/MoveIt, industrial-standard. Cùng FK/IK đã verify khớp RoboDK 0.00mm.
 
-**Workflow trong app** (top-down):
+**Quy trình tóm tắt** (chi tiết click-by-click: [`HUONG_DAN_GUI.md`](HUONG_DAN_GUI.md)):
+kết nối YRC1000 (**Robot → Connection settings…**) → jog robot (Cartesian/Joint) →
+teach pose (`Ctrl+T`) → thêm lệnh chuyển động / logic / modal → **▶ Run Sim** kiểm tra →
+**File → Save** (`.json`) hoặc **Program → Export .JBI** → **⚙ Run on Robot** (HSE).
 
-```
-1. Robot menu → Connection settings…   (IP YRC1000, tool#, FTP creds)
-2. Robot menu → Test connection         (heartbeat + read joints + alarm check)
-3. Jog dock (left):
-   - Cartesian Jog: ±X/Y/Z translate + Rx/Ry/Rz rotate (Tool/Ref frame combo)
-   - Joint Axis Jog: 6 sliders θ1..θ6 với QDial rotary encoder
-   - Workspace radio + Show Frames toggle
-4. Program dock (right):
-   ── 1. Program list (instructions, drag to reorder)
-   ── 2. Edit toolbar [↑][↓][Edit (F2)][✕]
-   ── 3. Targets (named pose library):
-        - Name + [+ Teach (Ctrl+T)]    ← capture current pose
-        - [Modify (F3)] [Delete] [Go to]   [+ MoveJ→tgt] [+ MoveL→tgt]
-        - [Config (F4)] — chọn IK config khác (multi-solution picker)
-   ── 4. Add instruction tabs:
-        - [Motion]: + MoveJ, + MoveL, + MoveC (2-step set MID then END)
-        - [Logic]:  + Grip OPEN/CLOSE, + Wait timer, + WaitIO IN#=ON/OFF,
-                    + MSG "...", + Call JOB:..., + SimEvent
-        - [Modal]:  VJ%, V mm/s, PL rounding, TL# tool, UF# frame
-   ── 5. Playback bar: [▶ Sim] [⚙ Run on Robot] [⏸ Pause] [⏹ Stop] Speed[1.0×]
-   ── 6. File bar: [Save] [Load] [Export .JBI] [Clear all]
-5. Menu → File → Save → .json (project: jobs + targets, v3 format)
-6. Menu → Program → Export .JBI → .JBI file cho YRC1000
-7. ⚙ Run on Robot → safety confirm dialog → FTP upload + JOB_SELECT + START
-```
+**Tính năng đáng chú ý** (thao tác chi tiết xem GUI guide):
+- **Teach on Surface** (`Ctrl+Shift+T`): click mesh trong scene → raycast lấy điểm +
+  pháp tuyến bề mặt → IK → target có trục Z vuông góc bề mặt.
+- **Multi-job project**: một `.json` chứa nhiều job (`MAIN`, `WELD_A`, …) liên kết bằng
+  `CALL JOB`; export tất cả cùng lúc.
+- **Python Script generator** (**Program → Generate from Python script…**): sinh hàng
+  loạt lệnh bằng API `p` — xem [`HUONG_DAN_LAP_TRINH.md` §4](HUONG_DAN_LAP_TRINH.md).
+- **Post-processor settings**: giới hạn `max_speed_pct`, VJ%/V mặc định cho INFORM codegen.
+- **Camera (D455) dock** (**View → Window → Camera (D455)**): live RGB/depth, chụp
+  dataset, và vòng kín thị giác (Detect → Teach grasp → Pick → Program → Run on Robot).
+  Cần đã **Load Robot GP7** và có `config/calibration/T_base_camera.npy`.
 
-**Tính năng đặc biệt**:
-- **Teach on Surface** (Robot menu → Ctrl+Shift+T): toggle mode → click vào mesh trong scene 3D → app raycast pick + extract surface normal → IK solve → tạo target với TCP Z aligned vào surface
-- **Multi-job project**: 1 file .json chứa nhiều JOBs (`MAIN`, `WELD_A`, ...) với CallJob cross-references. Export ALL jobs ra thư mục cùng lúc.
-- **Python Script generator** (menu Program → Generate from Python script…): viết Python với API `p.add_movej_to('HOME')`, `p.add_wait(0.5)`,... → script generate hàng loạt instructions (vd: 8 điểm vòng tròn).
-- **Post-processor settings** (menu Program): cap `max_speed_pct` (safety), initial VJ%, V mm/s cho INFORM codegen.
+**Kinematics**: Pieper analytical IK (~0.24 ms/call, sai số ~1e-13 mm = RoboDK SolveIK),
+trả 3–8 nghiệm cho Change Configuration; DLS chỉ là fallback khi Pieper rỗng.
 
-**Kinematics**: dùng [Pieper analytical IK](../src/orchestrator/kinematics/pieper_gp7.py) — ~0.24ms/call, 1e-13mm accuracy (= RoboDK SolveIK), trả 3-8 native solutions cho Change Configuration. Fallback DLS nếu Pieper miss.
-
-#### Camera D455 & thị giác trong app (dock "Camera (D455)")
-
-Mở: **View → Window → Camera (D455)** (dock cùng cụm tab với Controls/Cell/Program).
-
-```
-1. Nguồn: Auto (D455→Mock) / D455 / Mock  → Start
-   - Chưa cắm D455 → tự fallback Mock (vẫn test được pipeline).
-   - Độ phân giải: combo preset (chỉ D455 thật; đổi xong Stop→Start để áp).
-2. Toggle hiển thị: [Depth colormap] [Detector] [Overlay]
-   - Depth/Overlay đổi tức thì; Detector đổi xong cần Stop→Start (nạp model 1 lần).
-3. Dataset — chụp ảnh:
-   - Class (Quản lý… để định nghĩa danh sách lớp của bài toán → lưu vào Cell),
-     Lighting / Overlap / Background, [Lưu depth (.npy)], [📷 Capture]
-   - File ra: data/raw/{class}_{lighting}_0_{overlap}_{bg}_{ts}_{NNNN}_rgb.png (+ _depth.npy)
-4. Control — vision-guided (vòng kín):
-   - [Detect → Teach grasp]: vật phát hiện → grasp pose (camera_to_base + make_grasp_pose)
-     → IK → lưu target
-   - [Pick → Program]: chèn chuỗi open→approach→grasp→close→retreat vào job hiện tại
-   - [▶ Run on Robot]: chạy thật qua HSE (dialog an toàn)
-   - [Đồng bộ Camera → Cell]: ghi pose (từ T_base_camera.npy) + intrinsics thật vào
-     node camera → vẽ frustum (nón nhìn) trong viewport
-   - Approach Z: độ cao tiếp cận cho Pick (mm)
-```
-
-**Lưu ý:**
-- Detection thật cần file `models/*.pt|onnx`; chưa có → MockDetector (1 vật giả) để demo.
-- Teach grasp cần **đã load robot** (IK) và **đã có** `config/calibration/T_base_camera.npy`
-  (sinh bằng `calibration_from_layout.py` cho sim, hoặc `02_run_calibration.py` cho thật).
-- Node **Camera** (CameraConfig: pose + intrinsics + frustum) khác **Camera Mount**
-  (CameraMountConfig: chỉ mesh giá đỡ). Frustum tự kéo tới mặt sàn theo độ cao camera.
-
-**Thu dataset bằng CLI (thay cho dock):** `python scripts/01_collect_dataset.py` — live view
-OpenCV, phím tắt chọn metadata + SPACE chụp (xem docstring script).
+**Thu dataset bằng CLI** (thay cho dock): `python scripts/01_collect_dataset.py` — live
+OpenCV, phím tắt chọn metadata + SPACE để chụp (xem docstring script).
 
 ---
 
@@ -621,7 +524,7 @@ flowchart TB
     START([Bắt đầu]) --> Q1{Có robot<br/>GP7 thật?}
 
     %% ─── Path KHÔNG (sim only) ───
-    Q1 -->|KHÔNG| TEST[TEST CODE<br/>pytest tests<br/>300 passed]
+    Q1 -->|KHÔNG| TEST[TEST CODE<br/>pytest tests<br/>452 passed]
     TEST --> STATS[THỐNG KÊ 500 TRIAL<br/>mode sim<br/>headless flag<br/>trials 500]
     STATS --> DEMO[DEMO TRỰC QUAN<br/>mode sim<br/>trials 20<br/>Open3D GUI tự mở]
     DEMO --> ANALYZE[PHÂN TÍCH KẾT QUẢ<br/>04 analyze results<br/>06 simulate trial<br/>+ figures]
@@ -652,12 +555,14 @@ flowchart TB
 
 ## 10. Cần giúp đỡ?
 
-- **Giới thiệu phần mềm + chức năng các phần**: `docs/GIOI_THIEU_PHAN_MEM.md`
-- **Học lập trình (GUI + INFORM + Python + SDK)**: `docs/HUONG_DAN_LAP_TRINH.md`
-- **Cài đặt setup chi tiết**: `docs/HUONG_DAN_CAI_DAT.md`
-- **Thiết kế hệ thống chi tiết**: `docs/phat_bieu_bai_toan_v3_2_HD.md`
-- **Architecture tổng quan**: `README.md`
-- **STL mesh + YOLO weights**: `models/README.md`
+- **Giới thiệu phần mềm + chức năng các phần**: [`GIOI_THIEU_PHAN_MEM.md`](GIOI_THIEU_PHAN_MEM.md)
+- **Thao tác giao diện (click-by-click)**: [`HUONG_DAN_GUI.md`](HUONG_DAN_GUI.md)
+- **Học lập trình (INFORM + Python + SDK)**: [`HUONG_DAN_LAP_TRINH.md`](HUONG_DAN_LAP_TRINH.md)
+- **Digital Twin + vận hành robot thật**: [`HUONG_DAN_DIGITAL_TWIN.md`](HUONG_DAN_DIGITAL_TWIN.md)
+- **Cài đặt setup chi tiết**: [`HUONG_DAN_CAI_DAT.md`](HUONG_DAN_CAI_DAT.md)
+- **Thiết kế hệ thống chi tiết**: [`phat_bieu_bai_toan_v3_2_HD.md`](phat_bieu_bai_toan_v3_2_HD.md)
+- **Tổng quan + quickstart**: [`../README.md`](../README.md)
+- **STL mesh + YOLO weights**: [`../models/README.md`](../models/README.md)
 - **GitHub issue**: https://github.com/manhhv87/DTwinGP7/issues
 
 ---

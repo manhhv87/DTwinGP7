@@ -196,7 +196,7 @@ còn dùng cho mirror real-time + `14_jog_panel.py`), `urdf_gen.py` (sinh URDF X
 ### 4.1. Kiểm tra cài đặt
 ```powershell
 .venv\Scripts\Activate.ps1
-pytest tests/ -q            # → 300 passed
+pytest tests/ -q            # → 452 passed
 ```
 
 ### 4.2. Chạy thử không cần phần cứng (sim)
@@ -275,7 +275,7 @@ DTwinGP7/
 │   ├── calibration/            hand-eye ChArUco
 │   ├── logging/  ·  utils/
 ├── scripts/                  ← lệnh CLI (BẠN CHẠY)
-├── tests/                    ← 300 unit/integration tests
+├── tests/                    ← 452 unit/integration tests
 └── results/ · figures/ · logs/  ← output (gitignored)
 ```
 
@@ -291,6 +291,23 @@ DTwinGP7/
 | Sim GUI Open3D (`03_run_experiment` non-headless) | Không (pip) | Demo trực quan experiment runner |
 | App GUI Qt+VTK (`16_app_qt`) + Camera | Không để thiết kế; D455 để xem thật | Lập trình robot + thị giác |
 | Real (HSE) | YRC1000 + GP7 + D455 | Sản xuất |
+
+---
+
+## 7. Tài liệu liên quan
+
+Tài liệu này là điểm khởi đầu; tùy nhu cầu đọc tiếp:
+
+| Nhu cầu | Tài liệu |
+|---|---|
+| Cài đặt phần mềm + phần cứng + calibration | [`HUONG_DAN_CAI_DAT.md`](HUONG_DAN_CAI_DAT.md) |
+| Workflow + lệnh CLI theo kịch bản | [`HUONG_DAN_SU_DUNG.md`](HUONG_DAN_SU_DUNG.md) |
+| Thao tác giao diện (click-by-click) | [`HUONG_DAN_GUI.md`](HUONG_DAN_GUI.md) |
+| Lập trình (INFORM + Python script + SDK + API) | [`HUONG_DAN_LAP_TRINH.md`](HUONG_DAN_LAP_TRINH.md) |
+| Digital Twin + vận hành robot thật (HSE) | [`HUONG_DAN_DIGITAL_TWIN.md`](HUONG_DAN_DIGITAL_TWIN.md) |
+| Thiết kế hệ thống + kiến trúc + phương pháp | [`phat_bieu_bai_toan_v3_2_HD.md`](phat_bieu_bai_toan_v3_2_HD.md) |
+| Trọng số YOLO + mesh STL | [`../models/README.md`](../models/README.md) |
+| Tổng quan + quickstart | [`../README.md`](../README.md) |
 
 ---
 

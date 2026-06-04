@@ -85,6 +85,8 @@ class WorkerSignals(QObject):
     status        = pyqtSignal(str, str)    # message, level (info/ok/warn/err)
     gripper       = pyqtSignal(bool)        # close
     program_done  = pyqtSignal()
+    prog_step     = pyqtSignal(int)         # highlight currently-executing step (row index)
+    prog_show_job = pyqtSignal(str)         # switch program list to show this job (CALL JOB)
     camera_result = pyqtSignal(object)      # dict {rgb, depth, objects, fps, source}
     sim_reset     = pyqtSignal()            # SimEvent 'reset_objects' → objects return to initial positions
     exp_progress  = pyqtSignal(int, object)  # (trials completed, stats dict) — Digital Twin experiment

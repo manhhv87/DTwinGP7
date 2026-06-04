@@ -70,12 +70,21 @@ class TestValidation:
             b.dout(2000, True)
 
     def test_render_empty_raises(self):
+        # A job must have at least 1 instruction. Positions are now OPTIONAL
+        # (logic-only jobs like a master/speed-calc job have an empty //POS).
         b = InformJobBuilder(name="J")
-        with pytest.raises(ValueError, match="at least 1 position"):
-            b.render()
-        b.add_position("p", [0] * 6)
         with pytest.raises(ValueError, match="at least 1 instruction"):
             b.render()
+
+    def test_logic_only_job_empty_pos(self):
+        """A job with instructions but no positions renders an empty //POS."""
+        b = InformJobBuilder(name="MASTER")
+        b.set_var("B000", "SET", "1")
+        b.call_job("SUB")
+        text = b.render()
+        assert "///NPOS 0,0,0,0,0,0" in text
+        assert "///POSTYPE" not in text         # no position section body
+        assert "SET B000 1" in text and "CALL JOB:SUB" in text
 
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -134,6 +143,115 @@ class TestSpeedClamp:
 
 
 # ─────────────────────────────────────────────────────────────────────────
+# P-variable positions (preserve original .JBI var kind + index on round-trip)
+# ─────────────────────────────────────────────────────────────────────────
+
+
+class TestPVarPositions:
+    def test_pos_token_preserves_pvar_kind_and_index(self):
+        """add_position(pos_token='P1') → //POS decl 'P00001' (5-digit),
+        //INST ref 'P001' (3-digit), NPOS P-var slot (index 3)."""
+        b = InformJobBuilder(name="J")
+        b.add_position("a", [0] * 6, pos_token="P1")
+        b.add_position("b", [0] * 6, pos_token="P2")
+        b.movj("a"); b.movl("b")
+        text = b.render()
+        assert "///NPOS 0,0,0,2,0,0" in text     # 2 P-vars in slot 3
+        assert "P00001=0,0,0,0,0,0" in text      # 5-digit declaration
+        assert "P00002=0,0,0,0,0,0" in text
+        assert "MOVJ P001 " in text              # 3-digit reference
+        assert "MOVL P002 " in text
+
+    def test_pos_token_cvar_still_default_5digit(self):
+        b = InformJobBuilder(name="J")
+        b.add_position("a", [0] * 6, pos_token="C3")
+        b.movj("a")
+        text = b.render()
+        assert "///NPOS 1,0,0,0,0,0" in text      # C-var slot 0
+        assert "C00003=0,0,0,0,0,0" in text
+        assert "MOVJ C00003 " in text
+
+    def test_pos_token_invalid_raises(self):
+        b = InformJobBuilder(name="J")
+        with pytest.raises(ValueError, match="Invalid pos_token"):
+            b.add_position("a", [0] * 6, pos_token="X9")
+
+    def test_foldername_emitted_after_name(self):
+        b = InformJobBuilder(name="PP1", folder_name="FOLDER001")
+        b.add_position("a", [0] * 6, pos_token="P1")
+        b.movj("a")
+        text = b.render()
+        assert "//NAME PP1\r\n///FOLDERNAME FOLDER001\r\n//POS" in text
+
+    def test_foldername_omitted_when_empty(self):
+        b = InformJobBuilder(name="J")
+        b.add_position("a", [0] * 6)
+        b.movj("a")
+        assert "FOLDERNAME" not in b.render()
+
+    def test_io_condition_emits_exp_keyword(self):
+        """I/O conditions (IN#/ON/OFF) must use the IFTHENEXP/WHILEEXP form;
+        variable conditions stay plain IFTHEN/WHILE (Yaskawa convention)."""
+        b = InformJobBuilder(name="J")
+        b.add_position("a", [0] * 6, pos_token="P1")
+        b.label("RESET")
+        b.movj("a")
+        b.if_then(("IN#(8)", "=", "ON"))
+        b.call_job("PP1")
+        b.end_if()
+        b.jump("RESET")
+        text = b.render()
+        assert "IFTHENEXP IN#(8)=ON" in text       # I/O → EXP form, ON kept
+        assert "IFTHEN IN#(8)" not in text          # not the plain form
+
+    def test_variable_condition_stays_plain(self):
+        b = InformJobBuilder(name="J")
+        b.add_position("a", [0] * 6)
+        b.movj("a")
+        b.while_(("B000", "<", "3"))
+        b.end_while()
+        text = b.render()
+        assert "WHILE B000<3" in text
+        assert "WHILEEXP" not in text
+
+    def test_block_body_indented(self):
+        """IF/WHILE bodies indent with '\\t ' per level; EXP cond has trailing
+        space — matches Yaskawa teach-pendant formatting (byte-exact round-trip)."""
+        b = InformJobBuilder(name="J")
+        b.add_position("a", [0] * 6, pos_token="P1")
+        b.if_then(("IN#(8)", "=", "ON"))
+        b.call_job("PP1")
+        b.end_if()
+        b.movj("a")
+        text = b.render()
+        assert "IFTHENEXP IN#(8)=ON \r\n" in text     # EXP keeps trailing space
+        assert "\t CALL JOB:PP1\r\n" in text          # body indented one level
+        assert "\r\nENDIF\r\n" in text                # closer back at level 0
+
+    def test_nested_block_indent_levels(self):
+        b = InformJobBuilder(name="J")
+        b.add_position("a", [0] * 6)
+        b.movj("a")
+        b.if_then(("B000", "=", "1"))
+        b.while_(("B001", "<", "3"))
+        b.set_var("B001", "INC")
+        b.end_while()
+        b.end_if()
+        text = b.render()
+        assert "\t WHILE B001<3\r\n" in text          # while nested 1 level in IF
+        assert "\t \t INC B001\r\n" in text           # while body nested 2 levels
+
+    def test_default_no_token_sequential_cvar(self):
+        b = InformJobBuilder(name="J")
+        b.add_position("a", [0] * 6)
+        b.add_position("b", [0] * 6)
+        b.movj("a"); b.movj("b")
+        text = b.render()
+        assert "C00000=" in text and "C00001=" in text
+        assert "MOVJ C00000 " in text and "MOVJ C00001 " in text
+
+
+# ─────────────────────────────────────────────────────────────────────────
 # Snapshot test — full job text byte-exact
 # ─────────────────────────────────────────────────────────────────────────
 
@@ -183,7 +301,7 @@ class TestSnapshot:
         assert text.startswith("/JOB\r\n//NAME PICKTEST\r\n")
         assert "///NPOS 5,0,0,0,0,0" in text       # 5 positions
         assert "DOUT OT#(2) ON" in text            # gripper close
-        assert "TIMER T=0.50" in text
+        assert "TIMER T=0.500" in text
         assert "DOUT OT#(2) OFF" in text
         assert "VJ=15.00" in text                   # speed_pct = 15 ≤ max 30
         assert text.endswith("END\r\n")
@@ -253,3 +371,56 @@ class TestLogicCodegen:
         b = InformJobBuilder(name="J")
         with pytest.raises(ValueError, match="Unsupported condition operator"):
             b.if_then(("B000", "==", "1"))
+
+
+class TestExtendedLGCodegen:
+    def test_numeric_label_allowed(self):
+        """INFORM labels may be numeric (*1) — unlike job names."""
+        b = InformJobBuilder(name="J")
+        b.label("1").set_var("B000", "INC").jump("1")
+        text = b.render()
+        assert "*1\r\n" in text and "JUMP *1\r\n" in text
+
+    def test_call_job_allows_dash(self):
+        b = InformJobBuilder(name="J")
+        b.call_job("SPEED-1")
+        assert "CALL JOB:SPEED-1" in b.render()
+
+    def test_set_express(self):
+        b = InformJobBuilder(name="J")
+        b.set_express("I000", "5 * B005")
+        assert "SET I000 EXPRESS 5 * B005" in b.render()
+
+    def test_compound_condition_andexp(self):
+        b = InformJobBuilder(name="J")
+        b.if_then(("", "", ""),
+                  terms=[("I010", "<>", "11"), ("B010", "<>", "12")], join="AND")
+        b.end_if()
+        assert "IFTHEN I010<>11 ANDEXP B010<>12" in b.render()
+
+    def test_exp_flag_forces_ifthenexp_on_variable_cond(self):
+        """exp=True emits IFTHENEXP even for a variable condition (preserves the
+        original keyword on re-synthesis); exp=False stays plain IFTHEN."""
+        b = InformJobBuilder(name="J")
+        b.if_then(("I010", "=", "12"), exp=True).end_if()
+        b.if_then(("B000", "=", "1"), exp=False).end_if()
+        text = b.render()
+        assert "IFTHENEXP I010=12 " in text       # forced EXP + trailing space
+        assert "IFTHEN B000=1\r\n" in text         # plain form
+
+    def test_indirect_motion_and_var_speed(self):
+        b = InformJobBuilder(name="J")
+        b.movj_indirect("B010", speed_var="I002")
+        b.movl_indirect("B011", speed_var="I003")
+        text = b.render()
+        assert "MOVJ P[B010] VJ=I002" in text
+        assert "MOVL P[B011] V=I003" in text
+
+    def test_extended_io_instructions(self):
+        b = InformJobBuilder(name="J")
+        b.clear_stack().clear_var("I010", 2).pulse(6)
+        b.din("B005", "IG", 2).dout_group(2, "B005")
+        text = b.render()
+        for tok in ["CLEAR STACK", "CLEAR I010 2", "PULSE OT#(6)",
+                    "DIN B005 IG#(2)", "DOUT OG#(2) B005"]:
+            assert tok in text, tok

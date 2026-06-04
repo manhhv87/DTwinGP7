@@ -28,7 +28,7 @@ from .control_panel import _xyz_rpy_to_matrix
 from .program_logic import (
     CONTROL_FLOW,
     VarStore,
-    apply_setvar,
+    apply_setvar_instr,
     build_block_map,
     next_pc,
     resolve_labels,
@@ -40,6 +40,11 @@ from .program_model import Instruction
 _LOOP_GUARD_MAX = 200_000
 
 logger = logging.getLogger(__name__)
+
+
+class _PlaybackAbort(Exception):
+    """Internal: unwind nested CALL JOB execution on stop / error / IK fail.
+    Status message is emitted before raising; the top-level loop swallows it."""
 
 
 class ProgramPlaybackMixin:
@@ -92,6 +97,9 @@ class ProgramPlaybackMixin:
         self._jobs = {"MAIN": []}
         self._active_job = "MAIN"
         self._targets.clear()
+        self._job_folders.clear()
+        self._jbi_raw.clear()
+        self._jbi_positions.clear()
         self._refresh_job_combo()
         self._refresh_program_list()
         self._refresh_target_list()
@@ -127,6 +135,17 @@ class ProgramPlaybackMixin:
             self._btn_pause.setChecked(False)
             self._btn_pause.setText("▮▮  Pause")
         self._prog_pause.clear()
+        # Restore the job the user had selected before playback switched views
+        # (CALL JOB navigation leaves the list on the last sub-job otherwise).
+        prev = getattr(self, "_playback_prev_job", None)
+        if prev is not None:
+            self._playback_prev_job = None
+            if prev in self._jobs and prev != self._active_job:
+                self._on_prog_show_job_restore(prev)
+                return                       # _refresh already cleared the marker
+        # No view switch happened → clear the running-step marker explicitly.
+        if hasattr(self, "_on_prog_step_highlight"):
+            self._on_prog_step_highlight(-1)
 
     def _wait_while_paused(self) -> None:
         """Block the player loop while pause is set; exit quickly when stop is set."""
@@ -148,157 +167,281 @@ class ProgramPlaybackMixin:
             return list(tgt[want])
         return list(ins.joints if want == "joints" else ins.tcp_pose)
 
+    def _resolve_motion_joints(self, ins: Instruction, store) -> list[float] | None:
+        """Resolve a MoveJ/MoveL to joint angles (deg) for the sim:
+          • pos_index_var → P[Bxxx] indirect: index from the variable → look up
+            the global //POS table (self._jbi_positions, key 'P<idx>').
+          • target_name   → shared target library.
+          • else          → inline joints.
+        Emits an err + returns None if unresolvable."""
+        if getattr(ins, "pos_index_var", ""):
+            idx = store.get(ins.pos_index_var)
+            key = f"P{idx}"
+            pos = getattr(self, "_jbi_positions", {}).get(key)
+            if pos is None:
+                self._signals.status.emit(
+                    f"Indirect P[{ins.pos_index_var}]={idx} → '{key}' not in "
+                    f"//POS table", "err")
+                return None
+            return list(pos)
+        if ins.target_name:
+            return self._resolve_move_target(ins, "joints")
+        return list(ins.joints)
+
     def _play_program_loop(self) -> None:
-        prog = self._program
+        # Shared interpreter state across the active job and any CALL JOB sub-jobs.
+        store = VarStore()
+        sim_io = getattr(self, "_sim_io", {})        # IN# sim (default OFF)
+        guard = [0]                                  # mutable step counter (shared)
+        call_stack: list[str] = []                   # CALL JOB recursion guard
+        # Capture the entry job up front — display may switch to sub-jobs during
+        # playback (prog_show_job), but execution iterates this captured list.
+        entry_prog = list(self._program)
+        entry_label = self._active_job
+        try:
+            self._exec_job(entry_prog, store, sim_io, guard, call_stack,
+                           job_label=entry_label)
+            if not self._prog_stop.is_set():
+                self._signals.status.emit(
+                    f"Program: done ({guard[0]} steps executed)", "ok")
+        except _PlaybackAbort:
+            pass                                     # status already emitted
+        except Exception as e:                       # noqa: BLE001
+            self._signals.status.emit(f"Program error: {e}", "err")
+        finally:
+            self._signals.program_done.emit()
+
+    def _exec_job(
+        self, prog: list[Instruction], store: "VarStore",
+        sim_io: dict, guard: list[int], call_stack: list[str],
+        job_label: str = "",
+    ) -> None:
+        """Execute one job's instruction list (recursively for CALL JOB).
+
+        Raises _PlaybackAbort to unwind cleanly on stop / fatal error / IK fail.
+        Shares `store`, `sim_io` and the step `guard` across nested jobs.
+        """
         n = len(prog)
-        # Modal sim state (scales animation speed; modifiers are metadata only).
-        sim_vj_pct: float = 10.0
-        # ── Logic infra: interpreter with program counter + variables + labels/blocks ──
+        sim_vj_pct: float = 10.0                     # modal, per-job
+        def io_reader(idx: int) -> bool:
+            return bool(sim_io.get(idx, False))
         try:
             label_map = resolve_labels(prog)
             block_map = build_block_map(prog)
         except ValueError as e:
             self._signals.status.emit(f"Program logic error: {e}", "err")
-            self._signals.program_done.emit()
-            return
-        store = VarStore()
-        sim_io = getattr(self, "_sim_io", {})        # IN# sim (default OFF)
-        def io_reader(idx: int) -> bool:
-            return bool(sim_io.get(idx, False))
+            raise _PlaybackAbort from e
+        # Show this job's code in the program list (switches view on CALL JOB).
+        if job_label:
+            self._signals.prog_show_job.emit(job_label)
         if_state: dict[int, bool] = {}
         pc = 0
-        guard = 0
-        try:
-            while pc < n:
-                guard += 1
-                if guard > _LOOP_GUARD_MAX:
-                    self._signals.status.emit(
-                        f"Program: loop guard tripped (>{_LOOP_GUARD_MAX} "
-                        f"steps) — aborted (infinite loop?)", "err")
-                    return
-                if self._prog_stop.is_set():
-                    self._signals.status.emit("Program: stopped", "warn"); return
-                self._wait_while_paused()
-                if self._prog_stop.is_set():
-                    self._signals.status.emit("Program: stopped", "warn"); return
-                ins = prog[pc]
-                t = ins.type
+        while pc < n:
+            guard[0] += 1
+            if guard[0] > _LOOP_GUARD_MAX:
                 self._signals.status.emit(
-                    f"Step {pc+1}/{n}: {ins.describe()}", "info")
-                # ── Variables: SET/ADD/INC/... — mutate store, no motion ──
-                if t == "SetVar":
-                    try:
-                        apply_setvar(ins.var_name, ins.var_op, ins.var_arg,
-                                     store, io_reader)
-                        self._signals.status.emit(
-                            f"Step {pc+1}: {ins.var_op.upper()} {ins.var_name} "
-                            f"→ {store.get(ins.var_name)}", "info")
-                    except ValueError as e:
-                        self._signals.status.emit(
-                            f"Step {pc+1}: var error: {e}", "err"); return
-                    pc += 1
-                    continue
-                # ── Branching: Label/Jump/IfThen/.../EndWhile → pure next_pc ──
-                if t in CONTROL_FLOW:
-                    try:
-                        pc = next_pc(prog, pc, store, io_reader,
-                                     block_map, label_map, if_state)
-                    except ValueError as e:
-                        self._signals.status.emit(
-                            f"Step {pc+1}: flow error: {e}", "err"); return
-                    continue
-                i = pc                               # alias for the block below
-                # Animation step count: low VJ% + low sim_speed_mult → slower.
-                base_steps = int(40 * 30.0 / max(5.0, sim_vj_pct))
-                steps = max(8, int(base_steps / max(0.1, self._sim_speed_mult)))
-                if t == "MoveJ":
-                    joints = self._resolve_move_target(ins, "joints")
-                    if joints is None: return
+                    f"Program: loop guard tripped (>{_LOOP_GUARD_MAX} "
+                    f"steps) — aborted (infinite loop?)", "err")
+                raise _PlaybackAbort
+            if self._prog_stop.is_set():
+                self._signals.status.emit("Program: stopped", "warn")
+                raise _PlaybackAbort
+            self._wait_while_paused()
+            if self._prog_stop.is_set():
+                self._signals.status.emit("Program: stopped", "warn")
+                raise _PlaybackAbort
+            ins = prog[pc]
+            t = ins.type
+            self._signals.prog_step.emit(pc)         # highlight current step
+            self._signals.status.emit(
+                f"Step {pc+1}/{n}: {ins.describe()}", "info")
+            # ── Variables: SET/ADD/INC/EXPRESS — mutate store, no motion ──
+            if t == "SetVar":
+                try:
+                    apply_setvar_instr(ins, store, io_reader)
+                    self._signals.status.emit(
+                        f"Step {pc+1}: {ins.var_op.upper()} {ins.var_name} "
+                        f"→ {store.get(ins.var_name)}", "info")
+                except ValueError as e:
+                    self._signals.status.emit(
+                        f"Step {pc+1}: var error: {e}", "err")
+                    raise _PlaybackAbort from e
+                pc += 1
+                continue
+            # ── Branching: Label/Jump/IfThen/.../EndWhile → pure next_pc ──
+            if t in CONTROL_FLOW:
+                try:
+                    pc = next_pc(prog, pc, store, io_reader,
+                                 block_map, label_map, if_state)
+                except ValueError as e:
+                    self._signals.status.emit(
+                        f"Step {pc+1}: flow error: {e}", "err")
+                    raise _PlaybackAbort from e
+                continue
+            i = pc                               # alias for the block below
+            # Variable speed (V=Ixxx / VJ=Ixxx) overrides the modal % for timing.
+            eff_vj = sim_vj_pct
+            if getattr(ins, "speed_var", ""):
+                try:
+                    eff_vj = float(store.get(ins.speed_var)) or sim_vj_pct
+                except Exception:                # noqa: BLE001
+                    eff_vj = sim_vj_pct
+            # Animation step count: low VJ% + low sim_speed_mult → slower.
+            base_steps = int(40 * 30.0 / max(5.0, eff_vj))
+            steps = max(8, int(base_steps / max(0.1, self._sim_speed_mult)))
+            if t == "MoveJ":
+                joints = self._resolve_motion_joints(ins, store)
+                if joints is None: raise _PlaybackAbort
+                self._animate_to(joints, steps=steps, dt=0.025,
+                                  stop_event=self._prog_stop,
+                                  pause_event=self._prog_pause)
+            elif t == "MoveL":
+                if ins.pos_index_var or ins.target_name:
+                    # Target / indirect stored joints — bypass IK, animate directly.
+                    joints = self._resolve_motion_joints(ins, store)
+                    if joints is None: raise _PlaybackAbort
                     self._animate_to(joints, steps=steps, dt=0.025,
                                       stop_event=self._prog_stop,
                                       pause_event=self._prog_pause)
-                elif t == "MoveL":
-                    if ins.target_name:
-                        # Target stored joints — bypass IK, animate directly.
-                        joints = self._resolve_move_target(ins, "joints")
-                        if joints is None: return
-                        self._animate_to(joints, steps=steps, dt=0.025,
-                                          stop_event=self._prog_stop,
-                                          pause_event=self._prog_pause)
-                    else:
-                        sol = self._solve_movel(ins.tcp_pose)
-                        if sol is None:
-                            self._signals.status.emit(
-                                f"Step {i+1}: IK fail, abort", "err"); return
-                        self._animate_to(sol, steps=steps, dt=0.025,
-                                          stop_event=self._prog_stop,
-                                          pause_event=self._prog_pause)
-                elif t == "MoveC":
-                    # Simplified sim: run MoveL to mid then end (no true circular
-                    # interpolation — sufficient to verify sequence, .JBI still MOVC).
-                    for pose in (ins.tcp_pose_mid, ins.tcp_pose):
-                        sol = self._solve_movel(pose)
-                        if sol is None:
-                            self._signals.status.emit(
-                                f"Step {i+1}: IK fail (MoveC), abort", "err"); return
-                        self._animate_to(sol, steps=steps, dt=0.025,
-                                          stop_event=self._prog_stop,
-                                          pause_event=self._prog_pause)
-                elif t == "SetGripper":
-                    self._signals.gripper.emit(bool(ins.gripper_close))
-                    time.sleep(0.25 / max(0.1, self._sim_speed_mult))
-                elif t == "SetDO":
-                    # Generic digital output — sim has no real IO, log only.
-                    self._signals.status.emit(
-                        f"Step {i+1}: (sim) DOUT OT#{ins.do_index} = "
-                        f"{'ON' if ins.do_state else 'OFF'}", "info")
-                    time.sleep(0.2 / max(0.1, self._sim_speed_mult))
-                elif t == "Wait":
-                    deadline = time.monotonic() + max(0.0, ins.wait_seconds) \
-                        / max(0.1, self._sim_speed_mult)
-                    while time.monotonic() < deadline:
-                        if self._prog_stop.is_set(): return
-                        self._wait_while_paused()
-                        if self._prog_stop.is_set(): return
-                        time.sleep(0.05)
-                elif t == "WaitIO":
-                    # Sim has no real IO → log only + short delay.
-                    self._signals.status.emit(
-                        f"Step {i+1}: (sim) WaitIO IN#{ins.io_index}="
-                        f"{'ON' if ins.io_state else 'OFF'} → assumed satisfied",
-                        "warn")
-                    time.sleep(0.3 / max(0.1, self._sim_speed_mult))
-                elif t == "SetSpeed":
-                    sim_vj_pct = float(ins.speed_joint_pct)
-                elif t == "ShowMessage":
-                    self._signals.status.emit(
-                        f"Step {i+1}: MSG \"{ins.message[:32]}\"", "info")
-                    time.sleep(0.4 / max(0.1, self._sim_speed_mult))
-                elif t == "CallJob":
-                    # Sim does not execute sub-jobs — log only to confirm order.
-                    self._signals.status.emit(
-                        f"Step {i+1}: (sim) CALL JOB:{ins.job_name} → skipped",
-                        "warn")
-                    time.sleep(0.2 / max(0.1, self._sim_speed_mult))
-                elif t == "SimEvent":
-                    # Sim hook — emit signal + log. event_name 'reset'/'reset_objects'/
-                    # 'reset_scene' → return objects to initial positions (for pick-loop demo).
-                    ev = (ins.event_name or "").strip().lower()
-                    pl = f" — {ins.event_payload}" if ins.event_payload else ""
-                    if ev in ("reset", "reset_objects", "reset_scene"):
-                        self._signals.sim_reset.emit()
-                    self._signals.status.emit(
-                        f"⚑ Step {i+1}: SimEvent '{ins.event_name}'{pl}", "info")
-                    time.sleep(0.15 / max(0.1, self._sim_speed_mult))
-                # SetRounding / SetTool / SetRefFrame: pure metadata for .JBI,
-                # sim needs no action — already shown in status.
-                pc += 1
+                else:
+                    sol = self._solve_movel(ins.tcp_pose)
+                    if sol is None:
+                        self._signals.status.emit(
+                            f"Step {i+1}: IK fail, abort", "err")
+                        raise _PlaybackAbort
+                    self._animate_to(sol, steps=steps, dt=0.025,
+                                      stop_event=self._prog_stop,
+                                      pause_event=self._prog_pause)
+            elif t == "MoveC":
+                # Simplified sim: run MoveL to mid then end (no true circular
+                # interpolation — sufficient to verify sequence, .JBI still MOVC).
+                for pose in (ins.tcp_pose_mid, ins.tcp_pose):
+                    sol = self._solve_movel(pose)
+                    if sol is None:
+                        self._signals.status.emit(
+                            f"Step {i+1}: IK fail (MoveC), abort", "err")
+                        raise _PlaybackAbort
+                    self._animate_to(sol, steps=steps, dt=0.025,
+                                      stop_event=self._prog_stop,
+                                      pause_event=self._prog_pause)
+            elif t == "SetGripper":
+                self._signals.gripper.emit(bool(ins.gripper_close))
+                time.sleep(0.25 / max(0.1, self._sim_speed_mult))
+            elif t == "SetDO":
+                # If this output drives the gripper, actuate it in the sim
+                # (ON = close/grasp, OFF = open/release) so imported DOUT-based
+                # pick-place jobs grab objects like on the real robot.
+                if int(ins.do_index) == int(
+                        getattr(self, "_gripper_do_index", 1)):
+                    self._signals.gripper.emit(bool(ins.do_state))
+                self._signals.status.emit(
+                    f"Step {i+1}: (sim) DOUT OT#{ins.do_index} = "
+                    f"{'ON' if ins.do_state else 'OFF'}", "info")
+                time.sleep(0.2 / max(0.1, self._sim_speed_mult))
+            elif t == "PulseDO":
+                # Momentary output pulse — actuate gripper if it's the gripper DO.
+                if int(ins.do_index) == int(
+                        getattr(self, "_gripper_do_index", 1)):
+                    self._signals.gripper.emit(True)
+                self._signals.status.emit(
+                    f"Step {i+1}: (sim) PULSE OT#{ins.do_index}", "info")
+                time.sleep(0.15 / max(0.1, self._sim_speed_mult))
+            elif t == "ClearStack":
+                self._signals.status.emit(
+                    f"Step {i+1}: (sim) CLEAR STACK", "info")
+            elif t == "ClearVar":
+                # Zero clear_count consecutive vars from var_name (-1 = ALL → 1 here).
+                base = ins.var_name
+                cnt = ins.clear_count if ins.clear_count > 0 else 1
+                try:
+                    letter, num = base[0], int(base[1:])
+                    for k in range(cnt):
+                        store.set(f"{letter}{num + k:03d}", 0)
+                except Exception:                # noqa: BLE001
+                    store.set(base, 0)
+                self._signals.status.emit(
+                    f"Step {i+1}: CLEAR {base} ({cnt})", "info")
+            elif t in ("ReadGroupIn", "WriteGroupOut"):
+                # Group I/O — sim has no PLC. DIN reads 0 into the var; log only.
+                if t == "ReadGroupIn":
+                    store.set(ins.var_name, 0)
+                self._signals.status.emit(
+                    f"Step {i+1}: (sim) {ins.io_group_kind}#({ins.io_group}) "
+                    f"↔ {ins.var_name}", "warn")
+                time.sleep(0.1 / max(0.1, self._sim_speed_mult))
+            elif t == "Wait":
+                deadline = time.monotonic() + max(0.0, ins.wait_seconds) \
+                    / max(0.1, self._sim_speed_mult)
+                while time.monotonic() < deadline:
+                    if self._prog_stop.is_set(): raise _PlaybackAbort
+                    self._wait_while_paused()
+                    if self._prog_stop.is_set(): raise _PlaybackAbort
+                    time.sleep(0.05)
+            elif t == "WaitIO":
+                # Sim has no real IO → log only + short delay.
+                self._signals.status.emit(
+                    f"Step {i+1}: (sim) WaitIO IN#{ins.io_index}="
+                    f"{'ON' if ins.io_state else 'OFF'} → assumed satisfied",
+                    "warn")
+                time.sleep(0.3 / max(0.1, self._sim_speed_mult))
+            elif t == "SetSpeed":
+                sim_vj_pct = float(ins.speed_joint_pct)
+            elif t == "ShowMessage":
+                self._signals.status.emit(
+                    f"Step {i+1}: MSG \"{ins.message[:32]}\"", "info")
+                time.sleep(0.4 / max(0.1, self._sim_speed_mult))
+            elif t == "CallJob":
+                self._exec_call_job(ins.job_name, store, sim_io, guard,
+                                    call_stack, parent_label=job_label)
+                # Sub-job finished → restore THIS job's view + current step.
+                if job_label:
+                    self._signals.prog_show_job.emit(job_label)
+                    self._signals.prog_step.emit(pc)
+            elif t == "SimEvent":
+                # Sim hook — emit signal + log. event_name 'reset'/'reset_objects'/
+                # 'reset_scene' → return objects to initial positions (for pick-loop demo).
+                ev = (ins.event_name or "").strip().lower()
+                pl = f" — {ins.event_payload}" if ins.event_payload else ""
+                if ev in ("reset", "reset_objects", "reset_scene"):
+                    self._signals.sim_reset.emit()
+                self._signals.status.emit(
+                    f"⚑ Step {i+1}: SimEvent '{ins.event_name}'{pl}", "info")
+                time.sleep(0.15 / max(0.1, self._sim_speed_mult))
+            # SetRounding / SetTool / SetRefFrame: pure metadata for .JBI,
+            # sim needs no action — already shown in status.
+            pc += 1
+
+    def _exec_call_job(
+        self, job_name: str, store: "VarStore", sim_io: dict,
+        guard: list[int], call_stack: list[str], parent_label: str = "",
+    ) -> None:
+        """Execute a CALL JOB sub-job inline (sim). Resolves the sub-job from the
+        project's loaded jobs; warns + skips if missing. Guards against recursion.
+
+        Lookup matches how the importer keys sub-jobs: by the CALL name (sanitized),
+        falling back to the raw/exact name — so master→N sub-jobs (and nested
+        sub→sub CALLs) all resolve regardless of the file's //NAME."""
+        key = None
+        for cand in (job_name, self._safe_job_name(job_name)):
+            if cand in self._jobs:
+                key = cand
+                break
+        if key is None:
             self._signals.status.emit(
-                f"Program: done ({guard} steps executed)", "ok")
-        except Exception as e:                              # noqa: BLE001
-            self._signals.status.emit(f"Program error: {e}", "err")
+                f"(sim) CALL JOB:{job_name} → not loaded, skipping", "warn")
+            time.sleep(0.2 / max(0.1, self._sim_speed_mult))
+            return
+        if key in call_stack:
+            self._signals.status.emit(
+                f"(sim) CALL JOB:{job_name} → recursion blocked, skipping", "warn")
+            return
+        self._signals.status.emit(f"→ CALL JOB:{key}", "info")
+        call_stack.append(key)
+        try:
+            self._exec_job(self._jobs[key], store, sim_io, guard, call_stack,
+                           job_label=key)
         finally:
-            self._signals.program_done.emit()
+            call_stack.pop()
 
     def _solve_movel(self, tcp_pose_6: list[float]) -> list[float] | None:
         """Solve IK via **Pieper analytical** + verify post-FK pose error.

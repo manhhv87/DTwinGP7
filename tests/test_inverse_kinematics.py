@@ -293,6 +293,59 @@ class TestAlternativeIK:
 # ─────────────────────────────────────────────────────────────────────────
 
 
+class TestTaggedConfigurations:
+    """Pieper tagged IK enumerates IK solutions like RoboDK. The §3.3 'Other
+    configurations' list uses include_turns=True so the COUNT matches RoboDK:
+      • up to 8 postures (Front/Rear · Up/Down · Flip), singularity-separated;
+      • each posture × its ±360° joint-turn variants (GP7 has wide axes: J6 ±360°,
+        J4 ±190°, J3 spans 371°), which RoboDK also lists.
+    Dropping turns would show roughly half the rows — the bug this guards against."""
+
+    @pytest.fixture
+    def model_pose(self):
+        from src.orchestrator.kinematics.urdf_chain import (
+            gp7_urdf, forward_kinematics_urdf,
+        )
+        m = gp7_urdf()
+        T = forward_kinematics_urdf(m, np.deg2rad([20, 10, -15, 30, -40, 25]))
+        return m, T
+
+    def test_turns_enumerated_so_count_matches_robodk(self, model_pose):
+        # The panel uses include_turns=True. For this GP7 pose the ±360° windings
+        # of the wide axes give strictly MORE solutions than the bare postures.
+        from src.orchestrator.kinematics.pieper_gp7 import (
+            inverse_kinematics_pieper_gp7_tagged as tag)
+        m, T = model_pose
+        with_turns = tag(m, T, include_turns=True)
+        no_turns = tag(m, T, include_turns=False)
+        assert with_turns, "pose should be reachable"
+        assert len(with_turns) > len(no_turns), (
+            "joint turns must inflate the list (else we under-count vs RoboDK)")
+        # turn variants share a config_id → duplicate ids are expected with turns
+        ids = [c["id"] for c in with_turns]
+        assert len(ids) != len(set(ids)), "expected ±360° turn variants per posture"
+
+    def test_each_row_flags_consistent_with_id(self, model_pose):
+        from src.orchestrator.kinematics.pieper_gp7 import (
+            inverse_kinematics_pieper_gp7_tagged as tag)
+        m, T = model_pose
+        for c in tag(m, T, include_turns=True):
+            assert c["id"] == ((not c["front"]) * 4
+                               + (not c["elbow_up"]) * 2
+                               + (not c["no_flip"]))
+            assert 0 <= c["id"] <= 7
+
+    def test_no_turns_is_one_per_posture(self, model_pose):
+        # Sanity on the postures themselves: ≤ 8, one per id, singularity-separated.
+        from src.orchestrator.kinematics.pieper_gp7 import (
+            inverse_kinematics_pieper_gp7_tagged as tag)
+        m, T = model_pose
+        no_turns = tag(m, T, include_turns=False)
+        ids = [c["id"] for c in no_turns]
+        assert len(ids) == len(set(ids))
+        assert len(no_turns) <= 8
+
+
 class TestPerformance:
     def test_ik_completes_in_reasonable_time(self):
         """IK 1 call < 50ms (real-time requirement cho cycle ~7s/trial)."""

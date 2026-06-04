@@ -39,7 +39,7 @@
 # 1. Kích hoạt môi trường ảo (đã cài theo HUONG_DAN_CAI_DAT.md)
 .venv\Scripts\Activate.ps1
 # 2. Kiểm tra
-pytest tests/ -q          # → 300 passed
+pytest tests/ -q          # → 452 passed
 ```
 
 **Quy tắc vàng về đơn vị** (nhớ kỹ — sai đơn vị là lỗi phổ biến nhất):
@@ -820,7 +820,9 @@ Methods: `run_one_cycle(trial_id=-1) -> bool` · `run_n_trials(n) -> dict` (th�
 
 ## Liên kết
 - Giới thiệu + chức năng các phần: [`GIOI_THIEU_PHAN_MEM.md`](GIOI_THIEU_PHAN_MEM.md)
+- Thao tác giao diện (click-by-click): [`HUONG_DAN_GUI.md`](HUONG_DAN_GUI.md)
 - Workflow + CLI: [`HUONG_DAN_SU_DUNG.md`](HUONG_DAN_SU_DUNG.md)
+- Digital Twin + robot thật: [`HUONG_DAN_DIGITAL_TWIN.md`](HUONG_DAN_DIGITAL_TWIN.md)
 - Cài đặt: [`HUONG_DAN_CAI_DAT.md`](HUONG_DAN_CAI_DAT.md)
 - Thiết kế hệ thống: [`phat_bieu_bai_toan_v3_2_HD.md`](phat_bieu_bai_toan_v3_2_HD.md)
 - Mã nguồn kinematics: [`../src/orchestrator/kinematics/`](../src/orchestrator/kinematics/)
