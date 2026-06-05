@@ -925,3 +925,287 @@ class TestAlignToReferenceFrame:
         self._run(stub)
         assert "joints" not in cap
         assert cap["status"][1] == "warn"
+
+
+class TestSetSpeedVEffective:
+    """V (linear mm/s) of a SetSpeed only matters when a MOVL/MOVC follows it.
+    Guards the GUI honesty fix: V is hidden/disabled (not silently reset) when the
+    SetSpeed governs joint moves only, since MOVJ carries no V= tag in .JBI."""
+
+    def _fn(self, program):
+        import types
+        from src.orchestrator.viewports.gp7_app_qt import GP7AppQt
+        stub = types.SimpleNamespace(_program=program)
+        return GP7AppQt._setspeed_v_effective.__get__(stub)
+
+    def test_movj_only_after_setspeed_is_not_effective(self):
+        prog = [Instruction(type="SetSpeed", speed_joint_pct=20.0,
+                            speed_linear_mm_s=100.0),
+                Instruction(type="MoveJ", target_name="P6")]
+        assert self._fn(prog)(0) is False
+
+    def test_movl_after_setspeed_is_effective(self):
+        prog = [Instruction(type="SetSpeed", speed_joint_pct=20.0,
+                            speed_linear_mm_s=150.0),
+                Instruction(type="MoveJ", target_name="A"),
+                Instruction(type="MoveL", target_name="B")]
+        assert self._fn(prog)(0) is True
+
+    def test_movc_after_setspeed_is_effective(self):
+        prog = [Instruction(type="SetSpeed"),
+                Instruction(type="MoveC")]
+        assert self._fn(prog)(0) is True
+
+    def test_next_setspeed_stops_the_scan(self):
+        # The MOVL belongs to the SECOND SetSpeed, not the first.
+        prog = [Instruction(type="SetSpeed"),
+                Instruction(type="MoveJ", target_name="A"),
+                Instruction(type="SetSpeed"),
+                Instruction(type="MoveL", target_name="B")]
+        assert self._fn(prog)(0) is False
+        assert self._fn(prog)(2) is True
+
+    def test_trailing_setspeed_not_effective(self):
+        prog = [Instruction(type="MoveL", target_name="A"),
+                Instruction(type="SetSpeed")]
+        assert self._fn(prog)(1) is False
+
+
+class TestPostProcessorJsonRoundTrip:
+    """Post-processor settings (max VJ cap + default VJ/V) must persist through a
+    Save -> Load .json round-trip and be reflected in the dirty-check signature.
+    Save/Load are exercised headlessly via a stub host carrying the same attrs."""
+
+    def _host(self):
+        import json, types
+        from src.orchestrator.viewports.mixin_program_io import ProgramIOMixin
+        from src.orchestrator.viewports.gp7_app_qt import GP7AppQt
+        h = types.SimpleNamespace(
+            _active_job="MAIN",
+            _jobs={"MAIN": [Instruction(type="MoveJ", target_name="P1")]},
+            _targets={"P1": {"joints": [0, 0, 0, 0, 0, 0],
+                             "tcp_pose": [0, 0, 0, 0, 0, 0]}},
+            _job_folders={}, _jbi_raw={}, _jbi_positions={},
+            _pp_max_speed_pct=30.0, _pp_default_vj=10.0, _pp_default_v_mms=100.0,
+            _saved_signature="",
+            _set_status=lambda *a, **k: None,
+            _refresh_job_combo=lambda: None,
+            _refresh_program_list=lambda: None,
+            _refresh_target_list=lambda: None,
+        )
+        h._project_signature = GP7AppQt._project_signature.__get__(h)
+        h._on_prog_save_dlg = ProgramIOMixin._on_prog_save_dlg.__get__(h)
+        h._load_program_file = ProgramIOMixin._load_program_file.__get__(h)
+        return h
+
+    def test_pp_settings_survive_save_load(self, tmp_path, monkeypatch):
+        from src.orchestrator.viewports import mixin_program_io as mio
+        h = self._host()
+        h._pp_max_speed_pct = 25.0
+        h._pp_default_vj = 15.0
+        h._pp_default_v_mms = 180.0
+        out = tmp_path / "proj.json"
+        monkeypatch.setattr(mio.QFileDialog, "getSaveFileName",
+                            staticmethod(lambda *a, **k: (str(out), "")))
+        h._on_prog_save_dlg()
+        assert out.exists()
+        # Fresh host at defaults → load must overwrite with saved values.
+        h2 = self._host()
+        assert h2._load_program_file(str(out)) is True
+        assert h2._pp_max_speed_pct == 25.0
+        assert h2._pp_default_vj == 15.0
+        assert h2._pp_default_v_mms == 180.0
+
+    def test_pp_change_alters_signature(self):
+        h = self._host()
+        sig0 = h._project_signature()
+        h._pp_default_v_mms = 222.0
+        assert h._project_signature() != sig0
+
+    def test_missing_pp_block_keeps_defaults(self, tmp_path):
+        # Older v2 project (no post_processor) → current values unchanged.
+        import json
+        f = tmp_path / "old.json"
+        f.write_text(json.dumps({"version": 2, "targets": {}, "program": []}),
+                     encoding="utf-8")
+        h = self._host()
+        h._pp_default_vj = 12.0
+        assert h._load_program_file(str(f)) is True
+        assert h._pp_default_vj == 12.0
+
+
+class TestFullProjectJsonRoundTrip:
+    """Save -> Load .json restores EVERY project component: all jobs (with all 28
+    instruction types + their fields), targets (+jbi_token), job_folders, jbi_raw,
+    jbi_positions, post_processor, active_job — and the loaded project is 'clean'
+    (signature == saved → no spurious unsaved-changes prompt). Run headlessly via a
+    stub host that binds the real save/load/signature methods."""
+
+    def _instructions(self):
+        """One instruction of every serializable type (must stay == 28)."""
+        return [
+            Instruction(type="MoveJ", target_name="P1"),
+            Instruction(type="MoveL", tcp_pose=[1, 2, 3, 4, 5, 6], speed_var="I003"),
+            Instruction(type="MoveC", tcp_pose_mid=[1, 1, 1, 0, 0, 0],
+                        tcp_pose=[2, 2, 2, 0, 0, 0]),
+            Instruction(type="SetSpeed", speed_joint_pct=22.0, speed_linear_mm_s=133.0),
+            Instruction(type="SetRounding", rounding_pl=3),
+            Instruction(type="SetTool", tool_no=2),
+            Instruction(type="SetRefFrame", ref_frame_no=4),
+            Instruction(type="SetGripper", gripper_close=True),
+            Instruction(type="SetDO", do_index=10, do_state=False),
+            Instruction(type="PulseDO", do_index=5),
+            Instruction(type="Wait", wait_seconds=0.3),
+            Instruction(type="WaitIO", io_index=7, io_state=True, io_timeout_s=2.0),
+            Instruction(type="ShowMessage", message="hello"),
+            Instruction(type="CallJob", job_name="SUB"),
+            Instruction(type="SimEvent", event_name="cp", event_payload="x"),
+            Instruction(type="Label", label_name="LOOP"),
+            Instruction(type="Jump", label_name="LOOP",
+                        cond_lhs="B000", cond_op=">", cond_rhs="5"),
+            Instruction(type="SetVar", var_name="B000", var_op="ADD", var_arg="1"),
+            Instruction(type="ClearVar", var_name="I010", clear_count=3),
+            Instruction(type="ReadGroupIn", var_name="B005", io_group=1,
+                        io_group_kind="IG"),
+            Instruction(type="WriteGroupOut", var_name="B005", io_group=2,
+                        io_group_kind="OG"),
+            Instruction(type="IfThen", cond_terms=[("B1", "<>", "1"),
+                                                   ("B2", "<>", "2")],
+                        cond_join="AND", cond_exp=True),
+            Instruction(type="ElseIf", cond_lhs="B1", cond_op="=", cond_rhs="0"),
+            Instruction(type="Else"),
+            Instruction(type="While", cond_lhs="B3", cond_op="<", cond_rhs="9",
+                        cond_exp=True),
+            Instruction(type="EndWhile"),
+            Instruction(type="EndIf"),
+            Instruction(type="ClearStack"),
+        ]
+
+    def _host(self, **over):
+        import types
+        from src.orchestrator.viewports.mixin_program_io import ProgramIOMixin
+        from src.orchestrator.viewports.gp7_app_qt import GP7AppQt
+        h = types.SimpleNamespace(
+            _set_status=lambda *a, **k: None,
+            _refresh_job_combo=lambda: None,
+            _refresh_program_list=lambda: None,
+            _refresh_target_list=lambda: None,
+            _saved_signature="",
+            _pp_max_speed_pct=30.0, _pp_default_vj=10.0, _pp_default_v_mms=100.0,
+            _job_folders={}, _jbi_raw={}, _jbi_positions={},
+            _active_job="MAIN", _jobs={"MAIN": []}, _targets={})
+        for k, v in over.items():
+            setattr(h, k, v)
+        h._project_signature = GP7AppQt._project_signature.__get__(h)
+        h._on_prog_save_dlg = ProgramIOMixin._on_prog_save_dlg.__get__(h)
+        h._load_program_file = ProgramIOMixin._load_program_file.__get__(h)
+        return h
+
+    def test_covers_all_28_instruction_types(self):
+        # Guard: if a new type is added to the model, extend _instructions() too.
+        assert len({i.type for i in self._instructions()}) == 28
+
+    def test_full_project_survives_save_load(self, tmp_path, monkeypatch):
+        from src.orchestrator.viewports import mixin_program_io as mio
+        ins = self._instructions()
+        src = self._host(
+            _active_job="SUB",
+            _jobs={"MAIN": ins,
+                   "SUB": [Instruction(type="MoveJ", joints=[0, 0, 0, 0, 0, 0])]},
+            _targets={"P1": {"joints": [-38, 16, 13, 1, -66, 167],
+                             "tcp_pose": [10, 20, 30, 0, 90, 0],
+                             "jbi_token": "P00001"}},
+            _job_folders={"MAIN": "FOLDER_A", "SUB": "FOLDER_B"},
+            _jbi_raw={"SUB": "NOP END"},
+            _jbi_positions={"P10": [1, 2, 3, 4, 5, 6]},
+            _pp_max_speed_pct=25.0, _pp_default_vj=15.0, _pp_default_v_mms=180.0)
+        out = tmp_path / "full.json"
+        monkeypatch.setattr(mio.QFileDialog, "getSaveFileName",
+                            staticmethod(lambda *a, **k: (str(out), "")))
+        src._on_prog_save_dlg()
+        assert out.exists()
+
+        dst = self._host()
+        assert dst._load_program_file(str(out)) is True
+
+        def jd(h):
+            return {n: [i.to_dict() for i in p] for n, p in h._jobs.items()}
+        assert jd(dst) == jd(src)                 # every job + every instruction field
+        assert dst._active_job == src._active_job
+        assert dst._targets == src._targets       # incl. jbi_token
+        assert dst._job_folders == src._job_folders
+        assert dst._jbi_raw == src._jbi_raw
+        assert dst._jbi_positions == src._jbi_positions
+        assert (dst._pp_max_speed_pct, dst._pp_default_vj,
+                dst._pp_default_v_mms) == (25.0, 15.0, 180.0)
+        # Loaded project must be clean → no false "unsaved changes" prompt.
+        assert dst._project_signature() == dst._saved_signature
+
+
+class TestRunOnRobotCollectsSubJobs:
+    """Run on Robot must upload the active job + ALL sub-jobs reachable via
+    CALL JOB (so the controller resolves them), and flag CALL targets missing
+    from the project. Tests the pure collection/naming logic headlessly."""
+
+    def _host(self, jobs, active, jbi_raw=None):
+        import types
+        from src.orchestrator.viewports.gp7_app_qt import GP7AppQt
+        h = types.SimpleNamespace(_jobs=jobs, _active_job=active,
+                                  _jbi_raw=jbi_raw or {})
+        h._safe_job_name = GP7AppQt._safe_job_name           # staticmethod
+        h._resolve_job_key = GP7AppQt._resolve_job_key.__get__(h)
+        h._collect_run_jobs = GP7AppQt._collect_run_jobs.__get__(h)
+        h._robot_job_name = GP7AppQt._robot_job_name.__get__(h)
+        return h
+
+    def _call(self, name):
+        return Instruction(type="CallJob", job_name=name)
+
+    def test_collects_nested_subjobs_bfs(self):
+        jobs = {
+            "MAIN": [self._call("SUB1"), self._call("SUB2")],
+            "SUB1": [self._call("SUB3")],
+            "SUB2": [], "SUB3": [],
+        }
+        order, missing = self._host(jobs, "MAIN")._collect_run_jobs()
+        assert order[0] == "MAIN"                 # main job first (JOB_SELECT target)
+        assert set(order) == {"MAIN", "SUB1", "SUB2", "SUB3"}
+        assert missing == []
+
+    def test_flags_missing_call_target(self):
+        jobs = {"MAIN": [self._call("PP1")]}      # PP1 not in project
+        order, missing = self._host(jobs, "MAIN")._collect_run_jobs()
+        assert order == ["MAIN"]
+        assert missing == ["PP1"]
+
+    def test_resolves_subjob_by_sanitized_key(self):
+        # Reproduces the REAL importer keying: `CALL JOB:SPEED-1` is stored under
+        # the sanitized key "SPEED1" (dash stripped). _collect_run_jobs must
+        # resolve the raw CALL literal to that key — NOT report it missing.
+        jobs = {"MAIN": [self._call("SPEED-1"), self._call("POS-DATA")],
+                "SPEED1": [], "POSDATA": []}      # keys as the importer makes them
+        order, missing = self._host(jobs, "MAIN")._collect_run_jobs()
+        assert set(order) == {"MAIN", "SPEED1", "POSDATA"}
+        assert missing == []                      # was ["SPEED-1", "POS-DATA"] before fix
+
+    def test_truly_missing_dashed_target_still_flagged(self):
+        jobs = {"MAIN": [self._call("NO-SUCH")]}  # neither raw nor sanitized exists
+        order, missing = self._host(jobs, "MAIN")._collect_run_jobs()
+        assert order == ["MAIN"]
+        assert missing == ["NO-SUCH"]             # raw literal reported to the user
+
+    def test_cycle_does_not_loop_forever(self):
+        jobs = {"MAIN": [self._call("SUB")], "SUB": [self._call("MAIN")]}
+        order, missing = self._host(jobs, "MAIN")._collect_run_jobs()
+        assert order == ["MAIN", "SUB"]           # deduped, terminates
+        assert missing == []
+
+    def test_robot_job_name_prefers_original_with_dash(self):
+        # Imported job keeps its //NAME (dash preserved) so CALL JOB:SPEED-1 resolves.
+        h = self._host({"SPEED-1": []}, "SPEED-1",
+                       jbi_raw={"SPEED-1": {"name": "SPEED-1"}})
+        assert h._robot_job_name("SPEED-1") == "SPEED-1"
+
+    def test_robot_job_name_falls_back_to_sanitized(self):
+        h = self._host({"WELD_A": []}, "WELD_A")
+        assert h._robot_job_name("WELD_A") == "WELD_A"

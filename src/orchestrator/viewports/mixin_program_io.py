@@ -47,6 +47,14 @@ class ProgramIOMixin:
                     name: [ins.to_dict() for ins in prog]
                     for name, prog in self._jobs.items()
                 },
+                # Post-processor settings (modal speed defaults + VJ safety cap).
+                # Persisted so a saved project reproduces the SAME default VJ/V on
+                # moves before the first SetSpeed (and the same Max VJ cap on export).
+                "post_processor": {
+                    "max_speed_pct": self._pp_max_speed_pct,
+                    "default_vj": self._pp_default_vj,
+                    "default_v_mms": self._pp_default_v_mms,
+                },
             }
             if self._job_folders:                       # ///FOLDERNAME per job
                 doc["job_folders"] = dict(self._job_folders)
@@ -64,6 +72,22 @@ class ProgramIOMixin:
                 f"{len(self._targets)} targets", level="ok")
         except Exception as e:                              # noqa: BLE001
             self._set_status(f"Save failed: {e}", level="err")
+
+    def _on_prog_open_file_dlg(self) -> None:
+        """Open a job code file from the Program panel (button beside the Job
+        selector). Accepts BOTH Yaskawa INFORM .JBI and the editor's .json
+        project, dispatching to the right loader by extension — a convenience
+        entry that reuses the same loaders as the File menu."""
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Open job code", "",
+            "Job code (*.JBI *.jbi *.json);;INFORM (*.JBI *.jbi);;"
+            "Program JSON (*.json);;All files (*)")
+        if not path:
+            return
+        if Path(path).suffix.lower() == ".json":
+            self._load_program_file(path)
+        else:
+            self._load_jbi_file(path)
 
     def _on_prog_load_dlg(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
@@ -112,6 +136,16 @@ class ProgramIOMixin:
                 self._job_folders = {
                     str(k): str(v)
                     for k, v in (data.get("job_folders", {}) or {}).items()}
+                # Restore post-processor settings (fallback to current values when a
+                # field/the block is absent — e.g. older v1/v2 projects).
+                pp = data.get("post_processor") or {}
+                if isinstance(pp, dict):
+                    self._pp_max_speed_pct = float(
+                        pp.get("max_speed_pct", self._pp_max_speed_pct))
+                    self._pp_default_vj = float(
+                        pp.get("default_vj", self._pp_default_vj))
+                    self._pp_default_v_mms = float(
+                        pp.get("default_v_mms", self._pp_default_v_mms))
                 if "jobs" in data:                              # v3
                     self._jobs = {
                         str(name): [Instruction.from_dict(d) for d in prog]

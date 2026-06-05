@@ -30,6 +30,7 @@
 - [§9. Tham chiếu API chi tiết](#9-tham-chiếu-api-chi-tiết)
 - [§10. Mini-project: vision → IK → .JBI](#10-mini-project-vision--ik--jbi)
 - [§11. API nâng cao: HSE backend + Orchestrator](#11-api-nâng-cao--backend-hse--orchestrator)
+- [§12. Định dạng project `.json` (kiến trúc chương trình)](#12-định-dạng-project-json-kiến-trúc-chương-trình)
 
 ---
 
@@ -815,6 +816,110 @@ Methods: `run_one_cycle(trial_id=-1) -> bool` · `run_n_trials(n) -> dict` (th�
 > Để chạy đủ pipeline (load cell, perception thread, telemetry, viewport), dùng
 > `scripts/03_run_experiment.py` thay vì tự ghép `Orchestrator` — script đã wire
 > sẵn mọi thứ. Tự dựng `Orchestrator` chỉ khi cần nhúng vào app khác.
+
+---
+
+## §12. Định dạng project `.json` (kiến trúc chương trình)
+
+`.json` là **định dạng project nội bộ** của Program Editor — nơi chương trình được lập
+trình được lưu lại. Khác với `.JBI` (một job, cú pháp INFORM để nạp lên YRC1000), `.json`
+giữ **nhiều job + thư viện target + cấu hình post-processor + nguồn gốc `.JBI`** trong một
+file. Sinh bởi **File → Save program (.json)** (`mixin_program_io.py`), nạp bởi **Open**
+/ **Load**. Định dạng có **versioning** (v1 → v3); v3 là hiện hành, v1/v2 vẫn nạp được.
+
+### 12.1. Cấu trúc tổng thể (v3)
+
+```jsonc
+{
+  "version": 3,                         // số phiên bản schema (hiện tại = 3)
+  "active_job": "MAIN",                 // job đang xem (chỉ là view-state)
+  "targets": {                          // thư viện pose dùng chung cho mọi job
+    "P6": {
+      "joints":   [-38, 16, 13, 1, -66, 167],   // 6 góc khớp (độ)
+      "tcp_pose": [x, y, z, Rx, Ry, Rz],         // pose TCP (mm + độ, ZYX)
+      "jbi_token": "P00001"                       // (tùy chọn) tên P-var .JBI gốc
+    }
+  },
+  "jobs": {                             // map: tên job → danh sách lệnh (theo thứ tự)
+    "MAIN": [ { "type": "MoveJ", "target_name": "P6" }, ... ],
+    "PP1":  [ ... ]
+  },
+  "post_processor": {                   // cấu hình post-processor (mục 12.3)
+    "max_speed_pct": 30.0,             // trần an toàn VJ cho mọi move
+    "default_vj":    10.0,             // VJ% mặc định trước lệnh SET SPEED đầu tiên
+    "default_v_mms": 100.0            // V mm/s mặc định trước lệnh SET SPEED đầu tiên
+  },
+
+  // ── Các khối CHỈ xuất khi có dữ liệu ──
+  "job_folders":   { "PP1": "PPTUNG" },          // ///FOLDERNAME mỗi job
+  "jbi_raw":       { "PP1": "<text .JBI gốc>" }, // nếu project import từ .JBI
+  "jbi_positions": { "P10": [j1..j6] }           // bảng P-var gốc (re-export byte-exact)
+}
+```
+
+| Khóa | Bắt buộc | Ý nghĩa |
+|---|---|---|
+| `version` | ✓ | Schema version (3). Bộ nạp tự nhận v1/v2 cũ. |
+| `active_job` | ✓ | Job đang hiển thị khi lưu (không tính vào dirty-check). |
+| `targets` | ✓ | Pose có tên, dùng chung cho mọi job. `joints` (độ) là nguồn chuẩn; `tcp_pose` để hiển thị; `jbi_token` giữ tên P-var để round-trip `.JBI` chính xác. |
+| `jobs` | ✓ | Mỗi job = list **Instruction object** (mục 12.2), giữ nguyên thứ tự thực thi. |
+| `post_processor` | ✓ (v3) | Tốc độ mặc định + trần VJ; xem mục 12.3. |
+| `job_folders` | — | `///FOLDERNAME` của từng job (cấu trúc thư mục pendant). |
+| `jbi_raw`, `jbi_positions` | — | Văn bản `.JBI` gốc + bảng P-var, chỉ có khi project được **import từ `.JBI`**, để Export lại **byte-exact**. |
+
+### 12.2. Instruction object — kiến trúc một lệnh
+
+Mỗi phần tử trong `jobs[*]` là một object với khóa bắt buộc `type` cùng các trường riêng
+theo loại. Tốc độ/PL/Tool/Frame là **modal** (lưu thành lệnh `Set*` riêng, áp cho các
+move kế tiếp), nên move chỉ giữ vị trí (+ `speed_var` nếu dùng biến tốc độ).
+
+| `type` | Trường JSON | Ghi chú |
+|---|---|---|
+| `MoveJ` | `target_name` \| `joints`[6] \| `pos_index_var`; `speed_var?` | Move khớp; tham chiếu 1 target hoặc joints trực tiếp hoặc P[Bxxx]. |
+| `MoveL` | `target_name` \| `tcp_pose`[6] \| `pos_index_var`; `speed_var?` | Move thẳng. |
+| `MoveC` | `tcp_pose_mid`[6], `tcp_pose`[6] | Cung tròn (điểm giữa + điểm cuối). |
+| `SetSpeed` | `speed_joint_pct`, `speed_linear_mm_s` | VJ% (khớp) + V mm/s (thẳng). V chỉ hiệu lực với MOVL/MOVC (xem §3). |
+| `SetRounding` | `rounding_pl` | PL 0–8. |
+| `SetTool` | `tool_no` | TL# 0–15. |
+| `SetRefFrame` | `ref_frame_no` | UF# 0–15. |
+| `SetGripper` | `close` (bool) | Kẹp đóng/mở (→ DOUT). |
+| `SetDO` | `do_index`, `do_state` | Ghi 1 output (OT#). |
+| `PulseDO` | `do_index` | Xung output tức thời. |
+| `Wait` | `seconds` | TIMER. |
+| `WaitIO` | `io_index`, `io_state`, `io_timeout_s` | Chờ IN#=ON/OFF (+timeout). |
+| `ShowMessage` | `message` | MSG. |
+| `CallJob` | `job_name` | CALL JOB. |
+| `SimEvent` | `event_name`, `event_payload` | Checkpoint mô phỏng (comment trong .JBI). |
+| `Label` | `label_name` | Nhãn `*LABEL`. |
+| `Jump` | `label_name` + *điều kiện* | Nhảy có/không điều kiện. |
+| `SetVar` | `var_name`, `var_op`, `var_arg?` \| `var_expr?` | Gán/biến đổi biến B/I (INC/DEC không cần arg). |
+| `ClearVar` | `var_name`, `clear_count` | Xóa n thanh ghi. |
+| `ReadGroupIn`, `WriteGroupOut` | `var_name`, `io_group`, `io_group_kind` | DIN/DOUT nhóm. |
+| `IfThen`, `ElseIf`, `While` | *điều kiện* | Mở khối điều kiện. Biến thể **EXP** (`IFTHENEXP`/`ELSEIFEXP`/`WHILEEXP`) = chính các type này với `cond_exp: true`, **không phải type riêng**. |
+| `Else`, `EndIf`, `EndWhile`, `ClearStack` | (chỉ `type`) | Lệnh không tham số. |
+
+**Trường điều kiện** (dùng bởi `Jump`/`IfThen`/`ElseIf`/`While`):
+- Điều kiện đơn: `cond_lhs`, `cond_op`, `cond_rhs` (vd `"B000"`, `">"`, `"5"`).
+- Điều kiện ghép: `cond_terms` = `[[lhs, op, rhs], …]` + `cond_join` = `"AND"`\|`"OR"`.
+- `cond_exp: true` → render họ từ khóa **EXP**: `IFTHENEXP` / `ELSEIFEXP` / `WHILEEXP`
+  (và `JUMP` có điều kiện EXP). Đây **không phải type riêng** — chỉ là cờ trên cùng các
+  type `IfThen`/`ElseIf`/`While`/`Jump`. Điều kiện ghép luôn dùng `ANDEXP`/`OREXP`.
+
+### 12.3. Ghi chú ngữ nghĩa
+
+- **Tốc độ modal & V:** `SetSpeed` lưu cả VJ lẫn V. Khi Export `.JBI`, V chỉ ghi cho
+  `MOVL`/`MOVC` (`MOVJ` chỉ mang `VJ=`) — vì vậy `.json` là cách **giữ trọn V** kể cả
+  khi move kế là MOVJ. `post_processor.default_vj/v` là tốc độ áp cho move **trước** lệnh
+  `SetSpeed` đầu tiên.
+- **Tương thích ngược:** v1 = list lệnh trần (→ 1 job `MAIN`); v2 = `{"targets", "program"}`
+  (→ 1 job `MAIN`); v3 = đa job như trên. Khóa thiếu khi nạp được điền mặc định an toàn.
+- **Round-trip `.JBI`:** project import từ `.JBI` mang theo `jbi_raw` + `jbi_positions`,
+  nên sau Save/Load `.json` vẫn Export lại `.JBI` **giống hệt từng byte** (nếu chưa sửa).
+- **Dirty-check:** `targets` + `jobs` + `post_processor` cấu thành chữ ký project; đổi bất
+  kỳ phần nào → app hỏi lưu khi đóng. `active_job` là view-state, không tính.
+
+> Cấu hình **cell** (robot/bàn/camera/frame) **không** nằm trong `.json` này — lưu riêng
+> qua **File → Save Cell to YAML** (schema Pydantic, xem [§9.6](#96-cell-config)).
 
 ---
 
