@@ -54,6 +54,11 @@ logger = logging.getLogger(__name__)
 HSE_PORT_ROBOT = 10040
 HSE_PORT_FILE = 10041
 
+# Max stale datagrams to drain while looking for a matching request_id before
+# giving up and using the last response (prevents an infinite loop if the peer
+# never echoes the expected id).
+_MAX_DRAIN = 8
+
 # Network I/O range for writable bits (YRC1000):
 # 27010-27020 = general purpose network I/O (CIO ladder accessible).
 # Purpose for gripper: bind 1 bit here to a physical Y-output via CIO ladder
@@ -189,6 +194,10 @@ class MotomanHSEBackend:
             try:
                 raw, _ = self._sock.recvfrom(2048)
             except socket.timeout as e:
+                # Flush any datagram that arrives LATE for this now-abandoned
+                # request, so a stale reply can't be mis-read as the answer to
+                # the NEXT request (UDP keeps it buffered otherwise).
+                self._drain_socket()
                 raise TimeoutError(
                     f"HSE request 0x{command:02X} timeout {self.timeout_s}s — "
                     f"YRC1000 not responding. Check ping + HSE Server function."
@@ -207,6 +216,24 @@ class MotomanHSEBackend:
 
         resp.raise_for_status()
         return resp
+
+    def _drain_socket(self) -> None:
+        """Discard any datagrams currently buffered on the socket — e.g. a late
+        reply to a request that already timed out. Non-blocking, bounded by
+        _MAX_DRAIN so a flood can't stall us. Called only on the timeout path so
+        the happy path is unchanged."""
+        if self._sock is None:
+            return
+        try:
+            self._sock.setblocking(False)
+            for _ in range(_MAX_DRAIN):
+                try:
+                    self._sock.recvfrom(2048)
+                except (BlockingIOError, socket.timeout, OSError):
+                    break
+        finally:
+            self._sock.setblocking(True)
+            self._sock.settimeout(self.timeout_s)
 
     # ─── RoboDK Item-like interface ───
     def Valid(self) -> bool:
@@ -299,11 +326,15 @@ class MotomanHSEBackend:
             Command.READ_STATUS, instance=1,
             service=Service.GET_ATTRIBUTE_ALL,
         )
-        # Status payload byte 0 contains multiple flags — bit 1 ("Running") is needed
-        # per Yaskawa HSE spec. If payload < 1 byte → treat as idle.
+        # Status Data 1 (low byte) flag layout per Yaskawa HSE spec:
+        #   bit0=Step  bit1=1-Cycle  bit2=Continuous  bit3=Running(operating)
+        #   bit4=SpeedLimited  bit5=Teach  bit6=Play  bit7=Remote
+        # "Running" is bit3 (0x08); the previous 0x02 read the 1-Cycle MODE flag,
+        # so _wait_idle could mis-detect completion. If payload empty → idle.
+        # NOTE: verify against the real controller — see Stop()'s caveat.
         if not resp.payload:
             return False
-        return bool(resp.payload[0] & 0x02)
+        return bool(resp.payload[0] & 0x08)
 
     # ─── P-variable write (M3++ ultra-fast mode) ───
     def write_position_var(
@@ -876,15 +907,21 @@ class MotomanHSEBackend:
     def Stop(self) -> None:
         """Emergency stop: turns off servo on YRC1000.
 
-        HOLD_SERVO (0x83) with value=0 → servo off. Robot stops completely.
-        To resume, servo must be re-enabled and alarm reset on TP.
+        HOLD_SERVO (0x83), instance 2 = Servo-ON control, data part 1=ON / 2=OFF
+        per the Yaskawa HSE spec. The previous value=0 is NOT a valid data value
+        and the controller rejects it (status != 0) → the E-stop was a silent
+        no-op. Sending 2 = servo OFF. To resume, re-enable servo + reset alarm on
+        the TP.
+
+        SAFETY: this is software stop only — verify the value/instance against the
+        actual controller; never rely on it in place of a physical E-stop.
         """
         try:
             import struct as _struct
             self._send_request(
                 Command.HOLD_SERVO, instance=2, attribute=1,
                 service=Service.SET_ATTRIBUTE_SINGLE,
-                payload=_struct.pack("<I", 0),    # servo off
+                payload=_struct.pack("<I", 2),    # 2 = servo OFF (1 = ON)
             )
             logger.warning("HSE Stop(): servo OFF sent to YRC1000")
         except Exception as e:                    # noqa: BLE001

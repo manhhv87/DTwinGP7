@@ -39,12 +39,21 @@ class JobTargetMixin:
 
     def _on_job_changed(self, name: str) -> None:
         if not name or name not in self._jobs: return
+        if self._playback_running():
+            # A run drives _active_job itself (CALL JOB view-follow). Re-sync the
+            # combo to the live job and ignore the user's switch.
+            if name != self._active_job:
+                self._set_status(
+                    "Cannot switch jobs while the program is running", level="warn")
+                self._refresh_job_combo()
+            return
         self._active_job = name
         self._refresh_program_list()
         self._set_status(
             f"Active job: {name}  ({len(self._program)} steps)", level="info")
 
     def _on_job_add(self) -> None:
+        if self._guard_not_running("add a job"): return
         v, ok = QInputDialog.getText(
             self, "Add job", "New job name:", QLineEdit.EchoMode.Normal, "SUB1")
         if not ok: return
@@ -60,6 +69,7 @@ class JobTargetMixin:
         self._set_status(f"Added job '{name}'", level="ok")
 
     def _on_job_rename(self) -> None:
+        if self._guard_not_running("rename a job"): return
         old = self._active_job
         v, ok = QInputDialog.getText(
             self, "Rename job", f"New name for '{old}':",
@@ -75,16 +85,20 @@ class JobTargetMixin:
             new_jobs[new if k == old else k] = v_list
         self._jobs = new_jobs
         self._active_job = new
-        # Update CallJob refs if any (across all jobs)
+        # Update CallJob refs if any (across all jobs). job_name holds the RAW
+        # CALL literal (e.g. "SPEED-1"); the project key is its sanitized form
+        # ("SPEED1" == old), so match on the sanitized name, not the raw string.
         for job_prog in self._jobs.values():
             for ins in job_prog:
-                if ins.type == "CallJob" and ins.job_name == old:
+                if (ins.type == "CallJob"
+                        and self._safe_job_name(ins.job_name) == old):
                     ins.job_name = new
         self._refresh_job_combo()
         self._refresh_program_list()
         self._set_status(f"Renamed '{old}' → '{new}'", level="ok")
 
     def _on_job_delete(self) -> None:
+        if self._guard_not_running("delete a job"): return
         if len(self._jobs) <= 1:
             self._set_status("At least one job is required", level="warn"); return
         old = self._active_job
@@ -92,7 +106,9 @@ class JobTargetMixin:
         refs = sum(
             1
             for k, prog in self._jobs.items() if k != old
-            for ins in prog if ins.type == "CallJob" and ins.job_name == old)
+            for ins in prog
+            if ins.type == "CallJob"
+            and self._safe_job_name(ins.job_name) == old)
         msg = f"Delete job '{old}' ({len(self._program)} steps)?"
         if refs > 0:
             msg += f"\n\nWarning: {refs} CallJob instruction(s) in other jobs reference it."
@@ -120,8 +136,11 @@ class JobTargetMixin:
             self._tgt_list.addItem("(no targets)"); return
         for name, pose in self._targets.items():
             j = pose["joints"]
-            self._tgt_list.addItem(
-                f"{name}  [{', '.join(f'{q:+5.0f}' for q in j)}]")
+            # Joints (J) in degrees, labelled + unit so they aren't misread as a
+            # Cartesian pose [X,Y,Z,Rx,Ry,Rz]. Stored value keeps full precision;
+            # only the display is rounded to whole degrees for compactness.
+            vals = "  ".join(f"{q:+.0f}" for q in j)
+            self._tgt_list.addItem(f"{name}   J[{vals}] °")
 
     def _capture_current_pose(self) -> dict | None:
         """Snapshot current joints + tcp_pose from robot state."""
@@ -134,6 +153,7 @@ class JobTargetMixin:
         }
 
     def _on_tgt_teach(self) -> None:
+        if self._guard_not_running("teach a target"): return
         name_raw = self._tgt_name_edit.text().strip()
         if not name_raw:
             self._set_status("Target name empty", level="warn"); return
@@ -154,6 +174,7 @@ class JobTargetMixin:
 
     def _on_tgt_modify(self) -> None:
         """F3 — replace selected target's pose with current pose."""
+        if self._guard_not_running("modify a target"): return
         idx = self._tgt_list.currentRow()
         if idx < 0 or not self._targets:
             self._set_status("Select a target to Modify", level="warn"); return
@@ -166,11 +187,16 @@ class JobTargetMixin:
         self._set_status(f"Target '{name}' modified", level="ok")
 
     def _on_tgt_delete(self) -> None:
+        if self._guard_not_running("delete a target"): return
         idx = self._tgt_list.currentRow()
         if idx < 0 or not self._targets: return
         name = list(self._targets.keys())[idx]
+        # Targets are project-global — scan EVERY job, not just the active one,
+        # so we don't silently orphan a MoveJ/MoveL in another job.
         refs = sum(
-            1 for ins in self._program
+            1
+            for prog in self._jobs.values()
+            for ins in prog
             if ins.type in ("MoveJ", "MoveL") and ins.target_name == name)
         if refs > 0:
             r = QMessageBox.question(

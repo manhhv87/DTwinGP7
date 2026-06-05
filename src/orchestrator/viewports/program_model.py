@@ -166,12 +166,16 @@ class Instruction:
             else:
                 p = self.tcp_pose
                 pos = (f"P(X{p[0]:+.0f} Y{p[1]:+.0f} Z{p[2]:+.0f} "
-                       f"Rx{p[3]:+.0f} Ry{p[4]:+.0f} Rz{p[5]:+.0f})")
+                       f"Rx{p[3]:+.0f} Ry{p[4]:+.0f} Rz{p[5]:+.0f})"
+                       if len(p) >= 6 else "P(?)")
             return f"MOVL  {pos}{_spd(False)}"
         if t == "MoveC":
             m = self.tcp_pose_mid; e = self.tcp_pose
-            return (f"MOVC  MID(X{m[0]:+.0f} Y{m[1]:+.0f} Z{m[2]:+.0f}) "
-                    f"END(X{e[0]:+.0f} Y{e[1]:+.0f} Z{e[2]:+.0f}){_move_tail(False)}")
+            mid = (f"MID(X{m[0]:+.0f} Y{m[1]:+.0f} Z{m[2]:+.0f})"
+                   if len(m) >= 3 else "MID(?)")
+            end = (f"END(X{e[0]:+.0f} Y{e[1]:+.0f} Z{e[2]:+.0f})"
+                   if len(e) >= 3 else "END(?)")
+            return f"MOVC  {mid} {end}{_move_tail(False)}"
         if t == "SetGripper":
             # Legacy gripper → DOUT bit 1 fixed (see inform_codegen).
             return f"DOUT  OT#(1) {'ON' if self.gripper_close else 'OFF'}"
@@ -347,7 +351,7 @@ class Instruction:
                            speed_var=sv)
             if "target_name" in d:
                 return cls(type=t, target_name=str(d["target_name"]), speed_var=sv)
-            return cls(type=t, joints=list(d["joints"]), speed_var=sv)
+            return cls(type=t, joints=list(d.get("joints", [])), speed_var=sv)
         if t == "MoveL":
             sv = str(d.get("speed_var", ""))
             if "pos_index_var" in d:
@@ -355,11 +359,11 @@ class Instruction:
                            speed_var=sv)
             if "target_name" in d:
                 return cls(type=t, target_name=str(d["target_name"]), speed_var=sv)
-            return cls(type=t, tcp_pose=list(d["tcp_pose"]), speed_var=sv)
+            return cls(type=t, tcp_pose=list(d.get("tcp_pose", [])), speed_var=sv)
         if t == "MoveC":
             return cls(type=t,
-                       tcp_pose_mid=list(d["tcp_pose_mid"]),
-                       tcp_pose=list(d["tcp_pose"]))
+                       tcp_pose_mid=list(d.get("tcp_pose_mid", [])),
+                       tcp_pose=list(d.get("tcp_pose", [])))
         if t == "SetGripper":
             return cls(type=t, gripper_close=bool(d["close"]))
         if t == "SetDO":

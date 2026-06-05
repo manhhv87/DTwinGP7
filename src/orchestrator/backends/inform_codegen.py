@@ -639,10 +639,10 @@ def gen_pvar_template_job(
     for i in range(num_positions):
         if gripper_close_at is not None and i == gripper_close_at:
             lines.append(f"DOUT OT#({gripper_do_index}) ON")
-            lines.append(f"TIMER T={gripper_delay_s:.2f}")
+            lines.append(f"TIMER T={gripper_delay_s:.3f}")
         if gripper_open_at is not None and i == gripper_open_at:
             lines.append(f"DOUT OT#({gripper_do_index}) OFF")
-            lines.append(f"TIMER T={gripper_delay_s:.2f}")
+            lines.append(f"TIMER T={gripper_delay_s:.3f}")
 
         kind = motion_kinds[i].upper()
         if kind == "MOVJ":

@@ -275,8 +275,17 @@ def parse_jbi(
                 except ValueError:
                     warnings.append(f"Could not parse position var: {s!r}")
                     continue
-                positions[_norm_pos_key(letter, idx)] = _pulses_to_deg(
-                    vals, pulse_per_deg)
+                joints = _pulses_to_deg(vals, pulse_per_deg)
+                n_axes = len(pulse_per_deg)
+                if len(joints) < n_axes:
+                    # A short //POS line (malformed/truncated) would yield a
+                    # <6-axis vector, which crashes re-export (add_position needs
+                    # exactly n_axes). Pad with zeros and warn instead of failing.
+                    warnings.append(
+                        f"Position {letter}{idx} has {len(joints)} axes, "
+                        f"expected {n_axes} — padded with zeros")
+                    joints = joints + [0.0] * (n_axes - len(joints))
+                positions[_norm_pos_key(letter, idx)] = joints
             continue
         if in_inst:
             inst_lines.append(s)

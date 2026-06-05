@@ -308,9 +308,11 @@ class TestMoveJEndToEnd:
         import ftplib
         monkeypatch.setattr(ftplib, "FTP", mock_ftp_cls)
 
-        # READ_STATUS luôn trả bit Running=ON (0x02) → wait_idle timeout
+        # READ_STATUS luôn trả bit Running=ON → wait_idle timeout.
+        # Data1 bit3 (0x08) = "Running/operating" per Yaskawa HSE spec
+        # (bit1/0x02 = "1-Cycle" mode, không phải trạng thái chạy).
         def respond(*_a, **_k):
-            return _build_response(payload=b"\x02"), ("192.168.1.100", 10040)
+            return _build_response(payload=b"\x08"), ("192.168.1.100", 10040)
         mock_sock.recvfrom.side_effect = respond
 
         with pytest.raises(TimeoutError, match="did not complete"):

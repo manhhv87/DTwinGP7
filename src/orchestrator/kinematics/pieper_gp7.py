@@ -378,11 +378,18 @@ def inverse_kinematics_pieper_gp7_nearest(
     sols = inverse_kinematics_pieper_gp7(model, target_pose_world)
     if not sols:
         return None
+    # Enumerate ±360° turn variants of each base solution before picking the
+    # nearest. For joints whose range exceeds 360° (notably J6, ±360°), the
+    # genuinely-nearest configuration is often a turned variant of a base
+    # solution — without this the selector can command a needless ~180–360°
+    # wrist flip, violating the minimum-joint-jump guarantee.
+    jl = [(j.joint_min, j.joint_max) for j in model.joints]
     q_init = np.asarray(q_init_rad, dtype=float)
     best_dist = float("inf")
     best = sols[0]
     for sol in sols:
-        d = float(np.max(np.abs(np.asarray(sol) - q_init)))
-        if d < best_dist:
-            best_dist = d; best = sol
+        for var in _joint_turn_variants(sol, jl):
+            d = float(np.max(np.abs(np.asarray(var) - q_init)))
+            if d < best_dist:
+                best_dist = d; best = var
     return best
