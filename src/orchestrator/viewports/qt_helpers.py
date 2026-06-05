@@ -84,6 +84,31 @@ def draw_menu_icon(color: str = "#cccccc") -> QIcon:
     return QIcon(pix)
 
 
+def draw_open_icon(color: str = "#cccccc") -> QIcon:
+    """Open file — an open folder outline. Glyph 📂 renders as emoji → draw shape.
+
+    Used by the Program panel 'Open .JBI/.json' button beside the Job selector.
+    """
+    pix = QPixmap(16, 16)
+    pix.fill(QColor(0, 0, 0, 0))
+    p = QPainter(pix)
+    p.setRenderHint(QPainter.RenderHint.Antialiasing)
+    pen = QPen(QColor(color)); pen.setWidthF(1.2)
+    pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+    p.setPen(pen)
+    p.setBrush(Qt.BrushStyle.NoBrush)
+    # Folder back panel + tab (top-left notch).
+    p.drawLine(2, 5, 6, 5)        # tab base
+    p.drawLine(6, 5, 7, 7)        # tab slope
+    p.drawLine(7, 7, 14, 7)       # top edge after tab
+    p.drawLine(2, 5, 2, 12)       # left edge
+    # Open front flap (parallelogram) — gives the "open" look.
+    p.drawLine(2, 12, 13, 12)     # bottom edge
+    p.drawLine(14, 7, 13, 12)     # right edge
+    p.end()
+    return QIcon(pix)
+
+
 def draw_plus_icon(color: str = "#cccccc") -> QIcon:
     """Plus sign (Add) — 2 crossing strokes. Glyph '+' renders fine but drawn
     manually to stay consistent with other job icons (rename/trash don't render glyphs)."""

@@ -543,9 +543,11 @@ PULSE kích kẹp nếu trùng gripper index. Mọi lệnh vẫn xuất đúng c
 </tr>
 </table>
 
-Phân biệt định dạng: `.json` là định dạng project nội bộ (giữ nhiều job, targets và văn
-bản gốc) để mở lại trong ứng dụng; `.JBI` là định dạng INFORM nạp lên robot. Job import từ
-`.JBI` mà chưa chỉnh sửa sẽ được Export lại giống hệt file gốc đến từng byte.
+Phân biệt định dạng: `.json` là định dạng project nội bộ (giữ nhiều job, targets, cấu hình
+post-processor và văn bản gốc) để mở lại trong ứng dụng; `.JBI` là định dạng INFORM nạp lên
+robot. Job import từ `.JBI` mà chưa chỉnh sửa sẽ được Export lại giống hệt file gốc đến từng
+byte. Cấu trúc chi tiết file `.json` (schema từng lệnh): xem
+[`HUONG_DAN_LAP_TRINH.md` §12](HUONG_DAN_LAP_TRINH.md#12-định-dạng-project-json-kiến-trúc-chương-trình).
 
 ### 7.7. Chương trình đầu tiên
 
@@ -794,7 +796,10 @@ di chuyển.
    nhập IP YRC1000, tool#, FTP; bấm **Test** (heartbeat, đọc joints, kiểm tra alarm).
 2. **⚙ Run on Robot (real — HSE)** (thanh chạy) hoặc **Program → Run on Robot…**:
    - Hệ thống hiển thị dialog an toàn (xác nhận REMOTE mode, speed ≤ 10%, E-stop sẵn sàng).
-   - Trình tự thực thi: connect → upload `.JBI` qua FTP → JOB_SELECT → START → chờ hoàn tất.
+   - Trình tự thực thi: connect → **upload job đang chọn + mọi sub-job gọi qua `CALL JOB`
+     (đệ quy)** qua FTP → JOB_SELECT job chính → START → chờ hoàn tất.
+   - Nếu một `CALL JOB:X` trỏ tới job **không có** trong project, app cảnh báo trước
+     (job đó phải đã nằm sẵn trên controller, nếu không sẽ alarm khi chạy).
 3. **■ Stop** (hoặc **Program → Stop**) — dừng khẩn cấp, servo OFF.
 
 </td>

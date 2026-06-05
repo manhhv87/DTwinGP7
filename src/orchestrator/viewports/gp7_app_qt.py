@@ -123,6 +123,7 @@ from .qt_helpers import (
     draw_copy_icon as _draw_copy_icon,
     draw_menu_icon as _draw_menu_icon,
     draw_paste_icon as _draw_paste_icon,
+    draw_open_icon as _draw_open_icon,
     draw_plus_icon as _draw_plus_icon,
     draw_rename_icon as _draw_rename_icon,
     draw_trash_icon as _draw_trash_icon,
@@ -282,17 +283,18 @@ class GP7AppQt(
         self._jbi_positions: dict[str, list[float]] = {}
         # Target library: name → {"joints": [..6 deg..], "tcp_pose": [..6..]}
         self._targets: dict[str, dict] = {}
+        # Post-processor settings (INFORM .JBI generation tuning).
+        # max_speed_pct = safety cap for VJ. default_vj/v = initial modal state.
+        # Set BEFORE _project_signature() below — the signature includes them.
+        self._pp_max_speed_pct: float = 30.0
+        self._pp_default_vj: float = 10.0
+        self._pp_default_v_mms: float = 100.0
         # Dirty-check baseline: project signature at the last Save/Load.
         # closeEvent compares it to warn about unsaved changes. Empty app on open =
         # clean (won't prompt if the user hasn't added anything).
         self._saved_signature: str = self._project_signature()
         # Sim speed multiplier (1.0 = nominal). Higher → animate faster.
         self._sim_speed_mult: float = 1.0
-        # Post-processor settings (INFORM .JBI generation tuning).
-        # max_speed_pct = safety cap for VJ. default_vj/v = initial modal state.
-        self._pp_max_speed_pct: float = 30.0
-        self._pp_default_vj: float = 10.0
-        self._pp_default_v_mms: float = 100.0
         # Digital-output index that actuates the gripper (OT#n). DOUT/SetDO on this
         # index drives grasp(ON)/release(OFF) in the sim, matching the real robot.
         # Loaded from config/experiment.yaml (gripper_do_index); default 1.
@@ -1241,6 +1243,8 @@ class GP7AppQt(
         # Hand-drawn icons (QPainter) — ⟲/✕ glyphs don't render in Segoe UI so
         # buttons were previously blank. Consistent with copy/paste/menu icons.
         for icon, cb, tip in (
+            (_draw_open_icon(),   self._on_prog_open_file_dlg,
+             "Open job code file (.JBI / .json)"),
             (_draw_plus_icon(),   self._on_job_add,    "Add new job"),
             (_draw_rename_icon(), self._on_job_rename, "Rename current job"),
             (_draw_trash_icon(),  self._on_job_delete, "Delete current job"),
@@ -5567,7 +5571,15 @@ class GP7AppQt(
             if t in ("ElseIf", "Else"):        # mid-block keyword dedented 1 level
                 line_depth = max(0, depth - 1)
             indent = "    " * line_depth
-            self._prog_list.addItem(f"{i+1:>2}. {indent}{ins.describe(modal)}")
+            text = ins.describe(modal)
+            # V (linear mm/s) only affects MOVL/MOVC. When this SetSpeed governs only
+            # joint moves, V is meaningless and is NOT written to .JBI (MOVJ carries
+            # VJ= only) — so don't show a misleading V= value that would silently reset
+            # to the default on re-import.
+            if t == "SetSpeed" and not self._setspeed_v_effective(i):
+                text = (f"SET SPEED  VJ={ins.speed_joint_pct:.2f}"
+                        f"   (V n/a - applies to MOVL/MOVC only)")
+            self._prog_list.addItem(f"{i+1:>2}. {indent}{text}")
             # Opening block → increase depth for subsequent lines.
             if t in ("IfThen", "While"):
                 depth += 1
@@ -6084,7 +6096,7 @@ class GP7AppQt(
             if new is None: return
             ins.io_index, ins.io_state, ins.io_timeout_s = new
         elif t == "SetSpeed":
-            new = self._dlg_edit_setspeed(ins)
+            new = self._dlg_edit_setspeed(ins, self._setspeed_v_effective(idx))
             if new is None: return
             ins.speed_joint_pct, ins.speed_linear_mm_s = new
         elif t == "SetRounding":
@@ -6359,6 +6371,8 @@ class GP7AppQt(
         self._pp_max_speed_pct = float(sp_max.value())
         self._pp_default_vj = float(sp_vj.value())
         self._pp_default_v_mms = float(sp_v.value())
+        # Default VJ/V feed the modal tail of moves before the first SetSpeed → re-render.
+        self._refresh_program_list()
         self._set_status(
             f"Post-processor: max={self._pp_max_speed_pct:.0f}%, "
             f"VJ₀={self._pp_default_vj:.0f}%, V₀={self._pp_default_v_mms:.0f}mm/s",
@@ -6450,8 +6464,28 @@ class GP7AppQt(
         if dlg.exec() != QDialog.DialogCode.Accepted: return None
         return (ed_name.text().strip()[:32], ed_pl.text().strip()[:80])
 
-    def _dlg_edit_setspeed(self, ins: Instruction):
-        """Returns (vj_pct, v_mm_s) or None."""
+    def _setspeed_v_effective(self, idx: int) -> bool:
+        """True if the SetSpeed at self._program[idx] actually governs a linear move.
+
+        V (linear mm/s) only applies to MOVL/MOVC; MOVJ uses VJ only and carries no
+        V= tag in INFORM. So V is meaningful — and survives a .JBI round-trip — only
+        when a MOVL/MOVC follows this SetSpeed before the next SetSpeed overrides it."""
+        if not (0 <= idx < len(self._program)):
+            return True
+        for k in range(idx + 1, len(self._program)):
+            tk = self._program[k].type
+            if tk == "SetSpeed":
+                break
+            if tk in ("MoveL", "MoveC"):
+                return True
+        return False
+
+    def _dlg_edit_setspeed(self, ins: Instruction, v_effective: bool = True):
+        """Returns (vj_pct, v_mm_s) or None.
+
+        When v_effective is False (no MOVL/MOVC follows), V is disabled with a note:
+        it has no effect and cannot be stored in .JBI (MOVJ carries VJ= only), so
+        letting the user edit it would be misleading — it silently resets on reload."""
         dlg = QDialog(self); dlg.setWindowTitle("Modify SetSpeed")
         form = QFormLayout(dlg)
         sp_vj = QDoubleSpinBox(); sp_vj.setRange(1.0, 30.0); sp_vj.setSuffix(" %")
@@ -6459,6 +6493,18 @@ class GP7AppQt(
         sp_v = QDoubleSpinBox(); sp_v.setRange(1.0, 250.0); sp_v.setSuffix(" mm/s")
         sp_v.setValue(ins.speed_linear_mm_s)
         form.addRow("VJ (joint)", sp_vj); form.addRow("V (linear)", sp_v)
+        if not v_effective:
+            sp_v.setEnabled(False)
+            sp_v.setToolTip("V applies to MOVL/MOVC only. The next move is MOVJ "
+                            "(uses VJ only), so V has no effect and is not written "
+                            "to .JBI.")
+            note = QLabel("V (linear) applies to MOVL/MOVC only. No linear move "
+                          "follows this SET SPEED, so V is ignored and not saved to "
+                          ".JBI — only VJ (joint speed) is applied. Use a MOVL/MOVC "
+                          "move, or save the project as .json to keep V.")
+            note.setWordWrap(True)
+            note.setStyleSheet("color:#E0A030; font-size:11px;")
+            form.addRow(note)
         bb = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         bb.accepted.connect(dlg.accept); bb.rejected.connect(dlg.reject)
@@ -6828,6 +6874,12 @@ class GP7AppQt(
             "jobs": {
                 name: [ins.to_dict() for ins in prog]
                 for name, prog in self._jobs.items()
+            },
+            # Post-processor settings are project data → editing them marks dirty.
+            "post_processor": {
+                "max_speed_pct": self._pp_max_speed_pct,
+                "default_vj": self._pp_default_vj,
+                "default_v_mms": self._pp_default_v_mms,
             },
         }
         return json.dumps(doc, sort_keys=True)
