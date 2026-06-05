@@ -360,6 +360,40 @@ def link_frames_urdf(
     return frames
 
 
+def link_frames_batch_urdf(
+    model: URDFRobot, q_batch: np.ndarray,
+) -> dict[str, np.ndarray]:
+    """Batched `link_frames_urdf`: solve N FK problems at once via numpy batched
+    matmul. q_batch: (N, num_joints). Returns {link_name: (N, 4, 4)}.
+
+    BIT-IDENTICAL to calling link_frames_urdf per row: same _urdf_consts, same
+    matmul order ((T @ trans) @ Rot), and _axis_angle_unit_batch uses the exact
+    same Rodrigues formula as the scalar _axis_angle_unit. So callers can swap to
+    this for speed WITHOUT changing any computed geometry.
+    """
+    q_batch = np.asarray(q_batch, dtype=float)
+    if q_batch.ndim != 2:
+        raise ValueError(f"q_batch must be 2D (N, n), got shape {q_batch.shape}")
+    N, n = q_batch.shape
+    if n != model.num_joints():
+        raise ValueError(f"Expected (N, {model.num_joints()}), got {q_batch.shape}")
+
+    base, axes, trans, flange, tool0, _tooloff = _urdf_consts(model)
+    out: dict[str, np.ndarray] = {}
+    T = np.broadcast_to(base, (N, 4, 4)).copy()
+    out["base_link"] = T.copy()
+    for i, joint in enumerate(model.joints):
+        T = T @ trans[i] @ _axis_angle_unit_batch(axes[i], q_batch[:, i])
+        out[f"link_{joint.name}"] = T.copy()
+    if flange is not None:
+        T = T @ flange
+        out["link_flange"] = T.copy()
+    if tool0 is not None:
+        T = T @ tool0
+        out["link_tool0"] = T.copy()
+    return out
+
+
 # ───── GP7 chain from ros-industrial/motoman noetic-devel ─────
 
 

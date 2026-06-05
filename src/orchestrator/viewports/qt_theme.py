@@ -203,22 +203,43 @@ QGroupBox {{
     background-color: {SURFACE};
     border: 1px solid {BORDER};
     border-radius: 6px;
-    margin-top: 0px;
-    /* Extra top padding leaves room for the title, which now sits INSIDE the card
-       (subcontrol-origin: padding) instead of floating in the top margin. */
-    padding: 28px 8px 8px 8px;
+    margin-top: 14px;
+    padding: 10px 8px 8px 8px;
     font-weight: 600;
     color: {TEXT};
 }}
 QGroupBox::title {{
+    /* Title sits in the top margin (standard Qt layout — compact panels and
+       inline padding overrides are all designed around this). Transparent
+       background = no contrasting rectangle behind the text, while keeping the
+       margin geometry so nothing overlaps the group content. */
+    subcontrol-origin: margin;
+    subcontrol-position: top left;
+    padding: 0 6px;
+    left: 10px;
+    color: {ACCENT_HOVER};
+    background-color: transparent;
+}}
+
+/* Opt-in "card" variant: title sits INSIDE the card (not floating above the
+   border). Apply with widget.setObjectName("cardGroup"). NOT global — compact
+   panels that override padding inline would have the title overlap content. */
+QGroupBox#cardGroup {{
+    background-color: {SURFACE};
+    border: 1px solid {BORDER};
+    border-radius: 6px;
+    margin-top: 0px;
+    padding: 26px 8px 8px 8px;
+    font-weight: 600;
+    color: {TEXT};
+}}
+QGroupBox#cardGroup::title {{
     subcontrol-origin: padding;
     subcontrol-position: top left;
     padding: 0;
     left: 10px;
-    top: 8px;
+    top: 7px;
     color: {ACCENT_HOVER};
-    /* Title lives on top of the card body, so a transparent background blends
-       into SURFACE — no contrasting rectangle, no floating underline. */
     background-color: transparent;
 }}
 
