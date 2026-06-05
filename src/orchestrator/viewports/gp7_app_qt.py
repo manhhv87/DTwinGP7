@@ -94,7 +94,8 @@ from ..kinematics.pieper_gp7 import (
     inverse_kinematics_pieper_gp7_tagged,
 )
 from ..kinematics.urdf_chain import (
-    URDFRobot, forward_kinematics_urdf, gp7_urdf, link_frames_urdf,
+    URDFRobot, forward_kinematics_urdf, gp7_urdf, link_frames_batch_urdf,
+    link_frames_urdf,
 )
 from ...cell import CellConfig
 from ...cell.cell_models import (
@@ -752,10 +753,7 @@ class GP7AppQt(
         # 1. CARTESIAN JOG  — compact: combo row, pose row, jog row, 2-col grid
         # ──────────────────────────────────────────────────────
         grp_cart = QGroupBox("Cartesian Jog")
-        # Override default QGroupBox padding to be much tighter (defaults
-        # are 10/8/8/8 with 14px margin-top — too tall for compact panel).
-        grp_cart.setStyleSheet(
-            "QGroupBox { margin-top: 10px; padding: 6px 5px 4px 5px; }")
+        grp_cart.setObjectName("cardGroup")     # title-inside-card (qt_theme)
         cv = QVBoxLayout(grp_cart)
         cv.setContentsMargins(2, 2, 2, 2)
         cv.setSpacing(3)
@@ -1297,6 +1295,7 @@ class GP7AppQt(
 
         # ══ 2. TARGETS group (manage targets — teach/modify/goto/config) ═
         tgt_grp = QGroupBox("Targets")
+        tgt_grp.setObjectName("cardGroup")      # title-inside-card (qt_theme)
         tgt_lay = QVBoxLayout(tgt_grp); tgt_lay.setSpacing(4)
         self._tgt_list = QListWidget()
         self._tgt_list.setMaximumHeight(90)
@@ -4309,7 +4308,12 @@ class GP7AppQt(
                     logger.debug("Object SetUserMatrix error (%s): %s", name, e)
         # Update visible frame triads (joint_N, tool, flange — these depend on joints)
         self._update_dynamic_frames()
-        self._plotter.render()
+        # Caller may suspend the (expensive) VTK render to coalesce several
+        # sub-steps into a single repaint — e.g. the jog dial firing multiple
+        # steps per event. Actor matrices are still updated above; only the
+        # render is deferred to the caller.
+        if not getattr(self, "_suspend_render", False):
+            self._plotter.render()
 
     # Throttle animation render rate. 30Hz is smooth enough (eye perceives ~24Hz as film),
     # 25% fewer render() invocations than 40Hz.
@@ -4850,18 +4854,6 @@ class GP7AppQt(
         def _lin(i, n):
             return np.linspace(jl[i][0], jl[i][1], n)
 
-        def _fk_point(q):
-            fr = dict(link_frames_urdf(self._model, q))
-            if mode == "wrist":
-                for k in ("link_B", "link_T", "link_tool0"):
-                    if k in fr:
-                        T = fr[k]; break
-            elif mode == "flange":
-                T = fr["link_flange"] if "link_flange" in fr else fr["link_tool0"]
-            else:                                            # tool
-                T = fr["link_tool0"] @ self._tool_frames[self._tool_idx][1]
-            return T[:3, 3]
-
         # ── Sample the q1=0 cross-section. For each reachable point record its
         # NATURAL azimuth (atan2 at q1=0), radius and height. J1 is then applied
         # ANALYTICALLY: a point at natural azimuth a is reachable at world azimuth
@@ -4878,15 +4870,33 @@ class GP7AppQt(
                 grid = [(qL, qU, qR, qB)
                         for qL in _lin(1, 16) for qU in _lin(2, 18)
                         for qR in _lin(3, 5) for qB in _lin(4, 9)]
-            for qL, qU, qR, qB in grid:
-                p = _fk_point([0.0, qL, qU, qR, qB, 0.0])
-                x, y, z = p[0] - bx, p[1] - by, p[2] - bz
-                r = math.hypot(x, y)
-                if r < 1.0:
-                    continue
-                rec = (math.degrees(math.atan2(y, x)), r, z)
+            # Batched FK over the whole grid in one call. link_frames_batch_urdf is
+            # BIT-IDENTICAL to per-sample link_frames_urdf (same _urdf_consts, matmul
+            # order and Rodrigues) → the sampled points, and thus the envelope shape,
+            # are UNCHANGED; just ~20× faster than a Python loop of thousands of FK
+            # calls. (Verified: max abs frame diff = 0.0 vs per-sample.)
+            q_arr = np.array([[0.0, qL, qU, qR, qB, 0.0]
+                              for qL, qU, qR, qB in grid], dtype=float)
+            fr = link_frames_batch_urdf(self._model, q_arr)   # {name: (N,4,4)}
+            if mode == "wrist":
+                P = None
+                for k in ("link_B", "link_T", "link_tool0"):
+                    if k in fr:
+                        P = fr[k][:, :3, 3]; break
+            elif mode == "flange":
+                src = fr["link_flange"] if "link_flange" in fr else fr["link_tool0"]
+                P = src[:, :3, 3]
+            else:                                            # tool
+                P = (fr["link_tool0"]
+                     @ self._tool_frames[self._tool_idx][1])[:, :3, 3]
+            X = P[:, 0] - bx; Y = P[:, 1] - by; Z = P[:, 2] - bz
+            R = np.hypot(X, Y)
+            AZ = np.degrees(np.arctan2(Y, X))
+            qL_col = q_arr[:, 1]
+            for i in np.nonzero(R >= 1.0)[0]:                # skip r<1mm (on-axis)
+                rec = (float(AZ[i]), float(R[i]), float(Z[i]))
                 allp.append(rec)
-                if qL < 0.0:
+                if qL_col[i] < 0.0:
                     bwd.append(rec)
         except Exception as e:                              # noqa: BLE001
             logger.warning("Reach envelope FK failed: %s", e)
@@ -4899,22 +4909,38 @@ class GP7AppQt(
             logger.warning("Reach envelope: scipy unavailable: %s", e)
             return None
 
-        def _resample_closed(poly, n):
-            """Resample a closed (r,z) loop to n evenly arc-length-spaced points."""
-            p = np.asarray(poly, dtype=float)
-            seg = np.vstack([p, p[:1]])                      # close the loop
-            d = np.sqrt((np.diff(seg, axis=0) ** 2).sum(1))
-            cum = np.concatenate([[0.0], np.cumsum(d)])
-            total = cum[-1]
-            if total <= 0:
-                return poly
+        def _resample_by_angle(loop, n):
+            """Resample a CONVEX (r,z) loop to n points at evenly-spaced ANGLES
+            around its centroid, starting at angle 0 (+r direction).
+
+            Phase is then CONSISTENT across azimuth bins: point k always lies in
+            the same angular direction, so stitching adjacent rings never twists.
+            (Arc-length resampling started at the ConvexHull's arbitrary first
+            vertex, whose phase jumped up to ~150° between bins → twisted quad
+            strips that render as slits/holes — esp. for flange/tool whose section
+            shape varies strongly with azimuth.)"""
+            p = np.asarray(loop, dtype=float)
+            cx, cz = float(p[:, 0].mean()), float(p[:, 1].mean())
+            V = len(p)
             out = []
-            for t in np.linspace(0.0, total, n, endpoint=False):
-                k = min(max(int(np.searchsorted(cum, t) - 1), 0), len(seg) - 2)
-                span = cum[k + 1] - cum[k]
-                f = (t - cum[k]) / span if span > 0 else 0.0
-                q = seg[k] + f * (seg[k + 1] - seg[k])
-                out.append((float(q[0]), float(q[1])))
+            for k in range(n):
+                th = 2.0 * math.pi * k / n
+                dx, dz = math.cos(th), math.sin(th)
+                hit = None
+                for i in range(V):
+                    ax, az = p[i]
+                    ex, ez = p[(i + 1) % V] - p[i]
+                    det = -dx * ez + ex * dz
+                    if abs(det) < 1e-15:
+                        continue
+                    t = (-(ax - cx) * ez + ex * (az - cz)) / det
+                    s = (dx * (az - cz) - dz * (ax - cx)) / det
+                    if t >= 0.0 and -1e-9 <= s <= 1.0 + 1e-9:
+                        hit = (cx + t * dx, cz + t * dz)
+                        break
+                if hit is None:                              # numeric fallback
+                    hit = (float(p[k % V][0]), float(p[k % V][1]))
+                out.append(hit)
             return out
 
         def _dented_mesh(recs, nb=72, nsec=48):
@@ -4937,7 +4963,7 @@ class GP7AppQt(
                     rz = sel[:, 1:3]
                     try:
                         hv = rz[ConvexHull(rz).vertices]
-                        sec = _resample_closed(
+                        sec = _resample_by_angle(
                             [(rr / 1000.0, zz / 1000.0) for rr, zz in hv], nsec)
                         br = math.radians(beta)
                         ca, sa = math.cos(br), math.sin(br)
@@ -5155,8 +5181,9 @@ class GP7AppQt(
 
     # ── Circular jog dial (QDial) — rotary encoder semantics ──────────
     # Every DIAL_DEG_PER_STEP degrees of rotation = 1 jog step. Persistent position
-    # (does not snap to 0 on mouse release).
-    DIAL_DEG_PER_STEP = 30                                  # degrees/step
+    # (does not snap to 0 on mouse release). Lower = more sensitive (less dial
+    # rotation per step); 15° ⇒ 24 steps per full turn (was 30° = 12 steps/turn).
+    DIAL_DEG_PER_STEP = 15                                  # degrees/step
 
     def _on_dial_value_changed(self, v: int) -> None:
         """Compute delta angle (handles wrap 0↔359) → accumulate → fire jog each
@@ -5171,17 +5198,28 @@ class GP7AppQt(
         self._last_dial_value = v
         self._dial_accumulator += delta
 
-        # Fire jog for each STEP_THRESHOLD degrees accumulated
-        while abs(self._dial_accumulator) >= self.DIAL_DEG_PER_STEP:
-            sign = +1 if self._dial_accumulator > 0 else -1
-            self._dial_accumulator -= sign * self.DIAL_DEG_PER_STEP
-            bid = self._jog_axis_group.checkedId()
-            if bid < 0:
-                continue
-            if bid < 3:
-                self._on_translate(bid, sign)
-            else:
-                self._on_rotate(bid - 3, sign)
+        # Fire jog for each STEP_THRESHOLD degrees accumulated. Suspend per-step
+        # rendering and repaint once at the end — a fast dial spin can queue
+        # several steps in one event; rendering each separately is the main jog
+        # lag. Actor transforms still update per step; only the VTK render coalesces.
+        fired = False
+        self._suspend_render = True
+        try:
+            while abs(self._dial_accumulator) >= self.DIAL_DEG_PER_STEP:
+                sign = +1 if self._dial_accumulator > 0 else -1
+                self._dial_accumulator -= sign * self.DIAL_DEG_PER_STEP
+                bid = self._jog_axis_group.checkedId()
+                if bid < 0:
+                    continue
+                if bid < 3:
+                    self._on_translate(bid, sign)
+                else:
+                    self._on_rotate(bid - 3, sign)
+                fired = True
+        finally:
+            self._suspend_render = False
+        if fired:
+            self._plotter.render()
 
     def _set_status(self, msg: str, level: str = "info") -> None:
         # Dot color theo level (Fluent-inspired status indicator).
@@ -5206,9 +5244,19 @@ class GP7AppQt(
         if self._model is None:
             return None
         try:
-            q_rad = [math.radians(q) for q in self._joints]
-            T_world_tool0 = dict(link_frames_urdf(self._model, q_rad)).get(
-                "link_tool0")
+            # Reuse the FK that _render_scene_frame just computed for these exact
+            # joints (same cache key scheme) instead of recomputing link_frames_urdf.
+            # During jog/animation this is called right after a render, so the
+            # cache hits and we avoid a second full FK per frame.
+            jk = (id(self._model), tuple(round(q, 4) for q in self._joints))
+            cached = getattr(self, "_cached_fk", None)
+            if cached is not None and cached[0] == jk:
+                frames = cached[1]
+            else:
+                frames = dict(link_frames_urdf(
+                    self._model, [math.radians(q) for q in self._joints]))
+                self._cached_fk = (jk, frames)
+            T_world_tool0 = frames.get("link_tool0")
             if T_world_tool0 is None:
                 return None
             return T_world_tool0 @ self._tool_frames[self._tool_idx][1]

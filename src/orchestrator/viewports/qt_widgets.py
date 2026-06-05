@@ -7,7 +7,7 @@ signal bridge.
 from __future__ import annotations
 
 from PyQt6.QtCore import QObject, Qt, pyqtSignal
-from PyQt6.QtWidgets import QPushButton, QVBoxLayout, QWidget
+from PyQt6.QtWidgets import QFrame, QPushButton, QVBoxLayout, QWidget
 
 
 class CollapsibleSection(QWidget):
@@ -28,32 +28,46 @@ class CollapsibleSection(QWidget):
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
 
+        # A QFrame draws a stylesheet border RELIABLY (a plain QWidget subclass
+        # does not, even with WA_StyledBackground in some setups). This frame
+        # wraps BOTH the header bar and the content body → one box around the
+        # whole section, so the content shown to the user is clearly framed.
+        self._frame = QFrame()
+        self._frame.setObjectName("sectionFrame")
+        self._frame.setStyleSheet(
+            "QFrame#sectionFrame {"
+            "  border: 1px solid #3e3e42; border-radius: 4px;"
+            "}"
+        )
+        fl = QVBoxLayout(self._frame)
+        fl.setContentsMargins(0, 0, 0, 0)
+        fl.setSpacing(0)
+        outer.addWidget(self._frame)
+
         self._toggle_btn = QPushButton()
-        # Custom collapsible header — flat, full-width, accent border-bottom
-        # for active visual cue. Uses theme palette colors via hard-coded
-        # values (avoid circular import of qt_theme constants).
+        # Header = the card's title bar: rounded top corners to match the frame,
+        # a bottom separator line dividing it from the content body below.
         self._toggle_btn.setStyleSheet(
             "QPushButton {"
             "  text-align: left; padding: 7px 12px; "
             "  background-color: #2d2d30; color: #cccccc; "
-            "  border: 1px solid #3e3e42; border-radius: 4px; "
+            "  border: none; border-bottom: 1px solid #3e3e42; "
+            "  border-top-left-radius: 4px; border-top-right-radius: 4px; "
             "  font-weight: 600;"
             "}"
-            "QPushButton:hover {"
-            "  background-color: #3a3a3d; border-color: #0078d4;"
-            "}"
+            "QPushButton:hover { background-color: #3a3a3d; }"
         )
         self._toggle_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._update_text()
         self._toggle_btn.clicked.connect(self._toggle)
-        outer.addWidget(self._toggle_btn)
+        fl.addWidget(self._toggle_btn)
 
         self._content = QWidget()
         self._content_layout = QVBoxLayout(self._content)
         self._content_layout.setContentsMargins(8, 6, 8, 6)
         self._content_layout.setSpacing(4)
         self._content.setVisible(expanded)
-        outer.addWidget(self._content)
+        fl.addWidget(self._content)
 
     def _update_text(self) -> None:
         arrow = "▼" if self._expanded else "▶"
