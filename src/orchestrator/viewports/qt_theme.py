@@ -203,18 +203,23 @@ QGroupBox {{
     background-color: {SURFACE};
     border: 1px solid {BORDER};
     border-radius: 6px;
-    margin-top: 14px;
-    padding: 10px 8px 8px 8px;
+    margin-top: 0px;
+    /* Extra top padding leaves room for the title, which now sits INSIDE the card
+       (subcontrol-origin: padding) instead of floating in the top margin. */
+    padding: 28px 8px 8px 8px;
     font-weight: 600;
     color: {TEXT};
 }}
 QGroupBox::title {{
-    subcontrol-origin: margin;
+    subcontrol-origin: padding;
     subcontrol-position: top left;
-    padding: 0 6px;
+    padding: 0;
     left: 10px;
+    top: 8px;
     color: {ACCENT_HOVER};
-    background-color: {BG};
+    /* Title lives on top of the card body, so a transparent background blends
+       into SURFACE — no contrasting rectangle, no floating underline. */
+    background-color: transparent;
 }}
 
 /* ════════════════════════════════════════════════════════════════════════

@@ -126,8 +126,12 @@ class ProgramIOMixin:
                 tgt_raw = data.get("targets", {}) or {}
                 self._targets = {
                     str(k): {
-                        "joints": list(v["joints"]),
-                        "tcp_pose": list(v["tcp_pose"]),
+                        # .get with defaults: a target imported from a .JBI with no
+                        # robot model loaded can legitimately have an empty/absent
+                        # tcp_pose; a hard v[...] would KeyError and abort the whole
+                        # project load over one target.
+                        "joints": list(v.get("joints", [])),
+                        "tcp_pose": list(v.get("tcp_pose", [])),
                         # Preserve original .JBI var token (P-var round-trip).
                         **({"jbi_token": str(v["jbi_token"])}
                            if v.get("jbi_token") else {}),
@@ -151,8 +155,12 @@ class ProgramIOMixin:
                         str(name): [Instruction.from_dict(d) for d in prog]
                         for name, prog in data["jobs"].items()
                     }
-                    self._active_job = str(data.get("active_job",
-                                                       next(iter(self._jobs.keys()))))
+                    if not self._jobs:                          # saved empty project
+                        self._jobs = {"MAIN": []}
+                    # Don't eval next(iter(...)) as a default arg (it runs even when
+                    # 'active_job' is present, and StopIteration's on an empty dict);
+                    # clamp explicitly after the lookup.
+                    self._active_job = str(data.get("active_job", ""))
                     if self._active_job not in self._jobs:
                         self._active_job = next(iter(self._jobs.keys()))
                 else:                                          # v2
@@ -535,25 +543,43 @@ class ProgramIOMixin:
         # Sequential — IK solving (~1.4ms hot, ~10ms cold) per MoveL has GIL
         # contention when parallel; benchmark confirms threading SLOWER for sub-ms
         # numpy ops. Most jobs ≤ 50 instructions → total <200ms is acceptable.
-        n_ok = 0; errors: list[str] = []
+        n_ok = 0; errors: list[str] = []; renamed: list[str] = []
+        used: set[str] = set()
         for name in job_names:
             try:
                 # Prefer the original //NAME (keeps e.g. SPEED-1's dash) for the
                 # filename + job name; fall back to the sanitized key.
                 raw = getattr(self, "_jbi_raw", {}).get(name)
                 orig_name = (raw or {}).get("name", "")
-                stem = (orig_name or self._safe_job_name(name))[:32]
-                path = Path(out_dir) / f"{stem}.JBI"
+                stem = (orig_name or self._safe_job_name(name))[:32] or "PROG"
+                # De-dup: two distinct jobs can resolve to the same stem (32-char
+                # truncation or both falling back to the same sanitized name).
+                # Without this the second write silently clobbers the first.
+                unique = stem
+                k = 1
+                while unique.upper() in used:
+                    sfx = f"_{k}"
+                    unique = stem[:32 - len(sfx)] + sfx
+                    k += 1
+                if unique != stem:
+                    renamed.append(f"{name}→{unique}")
+                used.add(unique.upper())
+                path = Path(out_dir) / f"{unique}.JBI"
                 self._export_job_to_path(
-                    self._jobs[name], stem, path,
+                    self._jobs[name], unique, path,
                     folder_name=self._job_folders.get(name, ""), raw_key=name)
                 n_ok += 1
             except Exception as e:                          # noqa: BLE001
                 errors.append(f"{name}: {e}")
-        if errors:
+        if errors or renamed:
+            extra = ""
+            if renamed:
+                extra = f" | renamed to avoid overwrite: {', '.join(renamed[:3])}"
             self._set_status(
-                f"Exported {n_ok}/{len(job_names)} OK, {len(errors)} fail: "
-                + "; ".join(errors[:3]), level="warn")
+                f"Exported {n_ok}/{len(job_names)} OK"
+                + (f", {len(errors)} fail: " + "; ".join(errors[:3]) if errors else "")
+                + extra,
+                level="warn")
         else:
             self._set_status(
                 f"Exported {n_ok} .JBI files → {out_dir}", level="ok")

@@ -84,6 +84,7 @@ class ProgramPlaybackMixin:
             self._prog_list.setCurrentRow(idx + 1)
 
     def _on_prog_clear(self) -> None:
+        if self._guard_not_running("clear the project"): return
         total_steps = sum(len(p) for p in self._jobs.values())
         if total_steps == 0 and not self._targets:
             return
@@ -104,6 +105,22 @@ class ProgramPlaybackMixin:
         self._refresh_program_list()
         self._refresh_target_list()
         self._set_status("Project cleared (reset to MAIN/empty)", level="ok")
+
+    def _playback_running(self) -> bool:
+        """True while a playback thread is live. Structural edits (switch/add/
+        rename/delete job, edit targets) must be blocked during a run: the play
+        loop and _on_program_done both depend on _active_job / _jobs / _targets,
+        and mutating them mid-run corrupts the view-restore and target lookups."""
+        return self._prog_thread is not None and self._prog_thread.is_alive()
+
+    def _guard_not_running(self, what: str = "edit") -> bool:
+        """Return True (and warn) if a run is active — callers should early-return."""
+        if self._playback_running():
+            self._set_status(
+                f"Cannot {what} while the program is running — stop it first",
+                level="warn")
+            return True
+        return False
 
     def _on_prog_play(self) -> None:
         if self._prog_thread is not None and self._prog_thread.is_alive():
@@ -350,17 +367,25 @@ class ProgramPlaybackMixin:
                 self._signals.status.emit(
                     f"Step {i+1}: (sim) CLEAR STACK", "info")
             elif t == "ClearVar":
-                # Zero clear_count consecutive vars from var_name (-1 = ALL → 1 here).
+                # Zero `clear_count` consecutive vars from var_name; -1 = ALL
+                # (every var of the same type at/above the base index).
                 base = ins.var_name
-                cnt = ins.clear_count if ins.clear_count > 0 else 1
                 try:
                     letter, num = base[0], int(base[1:])
-                    for k in range(cnt):
-                        store.set(f"{letter}{num + k:03d}", 0)
+                    if ins.clear_count < 0:
+                        for key in list(store.as_dict().keys()):
+                            if key[0] == letter and int(key[1:]) >= num:
+                                store.set(key, 0)
+                        cnt_str = "ALL"
+                    else:
+                        cnt = ins.clear_count if ins.clear_count > 0 else 1
+                        for k in range(cnt):
+                            store.set(f"{letter}{num + k:03d}", 0)
+                        cnt_str = str(cnt)
                 except Exception:                # noqa: BLE001
-                    store.set(base, 0)
+                    store.set(base, 0); cnt_str = "1"
                 self._signals.status.emit(
-                    f"Step {i+1}: CLEAR {base} ({cnt})", "info")
+                    f"Step {i+1}: CLEAR {base} ({cnt_str})", "info")
             elif t in ("ReadGroupIn", "WriteGroupOut"):
                 # Group I/O — sim has no PLC. DIN reads 0 into the var; log only.
                 if t == "ReadGroupIn":

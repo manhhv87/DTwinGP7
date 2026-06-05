@@ -44,6 +44,15 @@ def _no_io(_idx: int) -> bool:
     return False
 
 
+def _trunc_div(a: int, b: int) -> int:
+    """Integer division truncating toward zero — matches Yaskawa controller
+    semantics. Python's `//` floors (-7 // 2 == -4); the controller gives -3."""
+    if b == 0:
+        return a                                  # caller guards div-by-zero
+    q = abs(a) // abs(b)
+    return -q if (a < 0) != (b < 0) else q
+
+
 # ───── Variables ─────
 
 
@@ -59,7 +68,11 @@ class VarStore:
         if not _RE_VAR.match(name):
             raise ValueError(
                 f"Invalid variable name: '{name}' (expected B### or I###, e.g. B000)")
-        return name
+        # Canonicalize to zero-padded 3-digit form: INFORM treats B5 / B05 / B005
+        # as aliases for the same register, so the store must key them identically
+        # (otherwise SET B5 then IF B005 read different slots, and CLEAR — which
+        # always pads to :03d — would miss an un-padded var).
+        return f"{name[0]}{int(name[1:]):03d}"
 
     def get(self, name: str) -> int:
         return self._v.get(self.validate(name), 0)
@@ -185,7 +198,7 @@ def eval_express(expr: str, store: VarStore, io_reader: IoReader = _no_io) -> in
         v = factor()
         while peek() in ("*", "/"):
             op = nxt(); r = factor()
-            v = v * r if op == "*" else (v // r if r != 0 else v)
+            v = v * r if op == "*" else (_trunc_div(v, r) if r != 0 else v)
         return v
 
     def expr_add() -> int:
@@ -221,7 +234,7 @@ def apply_setvar(
     elif op == "MUL":
         res = cur * operand
     elif op == "DIV":
-        res = cur // operand if operand != 0 else cur     # guard div-by-zero
+        res = _trunc_div(cur, operand) if operand != 0 else cur  # guard div-by-zero
     else:
         raise ValueError(f"Unsupported variable assignment operator: '{op}'")
     store.set(name, res)
