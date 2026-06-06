@@ -2,11 +2,14 @@
 probe_hse.py — quick connectivity probe for a Yaskawa YRC1000 (HSE).
 
 Usage:
-    python tools/probe_hse.py <CONTROLLER_IP>
+    python tools/probe_hse.py <CONTROLLER_IP> [ftp_user] [ftp_pass] [ftp_dir]
+
+    ftp_user/ftp_pass default to "" (anonymous); ftp_dir defaults to /MPRAM1/JBI.
 
 Checks, in order:
   1. UDP 10040 READ_STATUS  — the channel the app uses to "see" the robot.
-  2. TCP 21 (FTP)           — used to upload .JBI on "Run on Robot".
+  2. FTP 21 login + cwd + list — the actual path used to upload .JBI on
+     "Run on Robot" (verifies the credentials AND the job dir, not just the port).
   3. TCP 10040              — sanity (HSE is UDP, so this is expected to fail/refuse).
 
 Prints a clear PASS/FAIL per check so you can tell whether the controller is
@@ -14,6 +17,7 @@ answering HSE at all (vs. only ICMP ping).
 """
 from __future__ import annotations
 
+import ftplib
 import socket
 import sys
 from pathlib import Path
@@ -40,11 +44,45 @@ def _tcp_check(ip: str, port: int, timeout: float = 2.0) -> str:
         s.close()
 
 
+def _ftp_check(ip: str, user: str, password: str, job_dir: str,
+               timeout: float = 4.0) -> str:
+    """Real FTP login + cwd(job_dir) + directory listing — verifies the exact
+    path 'Run on Robot' uses (credentials AND job dir), not just port 21."""
+    ftp = ftplib.FTP()
+    try:
+        ftp.connect(ip, 21, timeout=timeout)
+        ftp.login(user, password)            # "", "" = anonymous
+        ftp.cwd(job_dir)
+        try:
+            names = ftp.nlst()
+        except Exception:                    # noqa: BLE001 — listing optional
+            names = []
+        who = user or "anonymous"
+        njbi = sum(1 for n in names if n.upper().endswith(".JBI"))
+        return (f"PASS — logged in as '{who}', cwd '{job_dir}' OK "
+                f"({len(names)} entries, {njbi} .JBI)")
+    except ftplib.error_perm as e:
+        return f"FAIL — login/cwd refused: {e} (check FTP user/pass + job dir)"
+    except (socket.timeout, OSError) as e:
+        return f"FAIL — cannot reach FTP: {e}"
+    except Exception as e:                    # noqa: BLE001
+        return f"FAIL — {e}"
+    finally:
+        try:
+            ftp.quit()
+        except Exception:                     # noqa: BLE001
+            pass
+
+
 def main() -> int:
     if len(sys.argv) < 2:
-        print("usage: python tools/probe_hse.py <CONTROLLER_IP>")
+        print("usage: python tools/probe_hse.py <CONTROLLER_IP> "
+              "[ftp_user] [ftp_pass] [ftp_dir]")
         return 2
     ip = sys.argv[1].strip()
+    ftp_user = sys.argv[2] if len(sys.argv) > 2 else ""
+    ftp_pass = sys.argv[3] if len(sys.argv) > 3 else ""
+    ftp_dir = sys.argv[4].strip() if len(sys.argv) > 4 else "/MPRAM1/JBI"
     # Force UTF-8 stdout so the script never dies on a non-ASCII char under the
     # Windows cp1252 console.
     try:
@@ -74,18 +112,22 @@ def main() -> int:
     finally:
         be.disconnect()
 
-    # 2. TCP 21 — FTP (job upload).
-    print("\n[2] TCP 21    FTP (job upload) …")
-    print(f"    {_tcp_check(ip, 21)}")
+    # 2. FTP 21 — full login + cwd + list (what Run-on-Robot actually does).
+    print("\n[2] FTP 21    login + cwd + list (job upload path) …")
+    print(f"    {_ftp_check(ip, ftp_user, ftp_pass, ftp_dir)}")
 
     # 3. TCP 10040 — HSE is UDP; this is just a sanity check.
-    print("\n[3] TCP 10040 (sanity; HSE is UDP, refusal is normal) …")
+    print("\n[3] TCP 10040 (sanity; HSE is UDP, TIMEOUT/REFUSED both normal) …")
     print(f"    {_tcp_check(ip, 10040)}")
 
     print("\nInterpretation:")
-    print("  • [1] PASS  → app should connect; check REMOTE mode for Run on Robot.")
+    print("  • [1] PASS  → app can read the robot; check REMOTE mode for Run on Robot.")
     print("  • [1] FAIL but ping OK → enable HSE Server on the YRC1000, check the")
     print("    PC firewall, and make sure only the controller-subnet NIC is up.")
+    print("  • [2] PASS  → 'Run on Robot' upload will work with these FTP creds/dir.")
+    print("  • [2] login refused → set the right FTP user/pass (pass as args).")
+    print("  • [2] cwd refused   → fix the FTP job dir (default /MPRAM1/JBI).")
+    print("  • [3] TIMEOUT/REFUSED is EXPECTED (HSE has no TCP service here).")
     return 0
 
 
