@@ -355,19 +355,29 @@ def parse_position_response(payload: bytes) -> dict[str, list[float]]:
       [32-35]  Axis 4 (R)
       [36-39]  Axis 5 (B)
       [40-43]  Axis 6 (T)
-      [44-47]  Axis 7 (if present — GP7 has only 6 axes, set to 0)
+      [44-47]  Axis 7 (ONLY if the controller has external axes)
       [48-51]  Axis 8
+
+    Axis-count is variable: a 6-axis robot with NO external axes (e.g. GP7)
+    returns only 6 axis words → 5*4 + 6*4 = 44 bytes, whereas a controller with
+    2 external axes returns 8 → 52 bytes. Parse however many axes are actually
+    present and take the first 6 (S,L,U,R,B,T).
 
     Returns:
         dict {data_type, joints_raw, ...}. Caller converts pulse → degrees
         using the GP7 pulse/degree ratio (see `pulse_to_deg()`).
     """
-    if len(payload) < 52:
-        raise HSEDecodeError(f"Position payload too short: {len(payload)} < 52 bytes")
+    _HDR = 5                                   # 5 uint32 header fields
+    _MIN_AXES = 6                              # robot axes S,L,U,R,B,T
+    min_len = (_HDR + _MIN_AXES) * 4           # 44 bytes
+    if len(payload) < min_len:
+        raise HSEDecodeError(
+            f"Position payload too short: {len(payload)} < {min_len} bytes")
 
-    fields = struct.unpack("<5I 8i", payload[:52])
+    n_axes = (len(payload) - _HDR * 4) // 4    # 6 (no ext.) or 8 (with ext. axes)
+    fields = struct.unpack(f"<{_HDR}I {n_axes}i", payload[:(_HDR + n_axes) * 4])
     data_type = fields[0]
-    joints_raw = list(fields[5:11])           # 6 axes for GP7
+    joints_raw = list(fields[_HDR:_HDR + _MIN_AXES])   # first 6 axes (S,L,U,R,B,T)
     return {
         "data_type": data_type,
         "form": fields[1],
