@@ -290,7 +290,7 @@ class TestMoveJEndToEnd:
         # FTP đã được gọi đúng
         mock_ftp_cls.assert_called_once()
         mock_ftp_inst.login.assert_called_once()
-        mock_ftp_inst.cwd.assert_called_once_with("/MPRAM1/JBI")
+        mock_ftp_inst.cwd.assert_called_once_with("/JOB")
         assert "STOR " in uploaded["cmd"]
         assert b"/JOB" in uploaded["data"]              # INFORM header
         assert b"MOVJ" in uploaded["data"]              # motion instruction

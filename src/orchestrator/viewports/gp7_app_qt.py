@@ -314,8 +314,8 @@ class GP7AppQt(
         self._hse_tool_no: int = int(getattr(rc, "tool_no", 1) or 1)
         self._hse_ftp_user: str = (getattr(rc, "ftp_user", "") or "")
         self._hse_ftp_pass: str = (getattr(rc, "ftp_pass", "") or "")
-        self._hse_ftp_dir: str = (getattr(rc, "ftp_job_dir", "/MPRAM1/JBI")
-                                    or "/MPRAM1/JBI")
+        self._hse_ftp_dir: str = (getattr(rc, "ftp_job_dir", "/JOB")
+                                    or "/JOB")
         self._hse_thread: threading.Thread | None = None
         self._hse_stop = threading.Event()
 
