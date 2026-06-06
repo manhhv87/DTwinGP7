@@ -57,18 +57,35 @@ def _ftp_check(ip: str, user: str, password: str, job_dir: str,
     try:
         ftp.connect(ip, 21, timeout=timeout)   # reads the 220 welcome banner
         ftp.login(user, password)              # "", "" = anonymous
-        ftp.cwd(job_dir)
         ftp.set_pasv(True)
-        try:
-            names = ftp.nlst()
-        except Exception:                      # noqa: BLE001 — listing optional
-            names = []
         who = user or "anonymous"
-        njbi = sum(1 for n in names if n.upper().endswith(".JBI"))
-        return (f"PASS — logged in as '{who}', cwd '{job_dir}' OK "
-                f"({len(names)} entries, {njbi} .JBI)")
+        # Login worked — show where we land + what's in the FTP root, so we can
+        # find the real job path even if `job_dir` is wrong.
+        try:
+            root_pwd = ftp.pwd()
+        except Exception:                      # noqa: BLE001
+            root_pwd = "?"
+        try:
+            root_names = ftp.nlst()
+        except Exception:                      # noqa: BLE001
+            root_names = []
+        root_jbi = sum(1 for n in root_names if n.upper().endswith(".JBI"))
+        root_show = ", ".join(root_names[:12]) + ("…" if len(root_names) > 12 else "")
+        # Now try the configured job dir.
+        try:
+            ftp.cwd(job_dir)
+            names = ftp.nlst()
+            njbi = sum(1 for n in names if n.upper().endswith(".JBI"))
+            return (f"PASS — login '{who}' OK; cwd '{job_dir}' OK "
+                    f"({len(names)} entries, {njbi} .JBI)")
+        except ftplib.error_perm as e:
+            return (f"LOGIN OK as '{who}', but cwd '{job_dir}' failed: {e}\n"
+                    f"        → FTP root is '{root_pwd}' with {len(root_names)} "
+                    f"entries ({root_jbi} .JBI): {root_show}\n"
+                    f"        → set 'FTP job dir' to the right path (try '/' or the "
+                    f"folder shown above; many YRC1000 store jobs at the root).")
     except ftplib.error_perm as e:
-        return f"FAIL — login/cwd refused: {e} (check FTP user/pass + job dir)"
+        return f"FAIL — login refused: {e} (check FTP user/pass)"
     except (socket.timeout, OSError) as e:
         return (f"FAIL — TCP 21 open but no FTP response ({e}). "
                 "→ FTP server function likely DISABLED on the YRC1000 (or banner "
