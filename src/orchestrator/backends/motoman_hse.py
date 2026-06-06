@@ -92,7 +92,7 @@ class MotomanHSEBackend:
         request_id_seed: int = 0,
         ftp_user: str = "",
         ftp_pass: str = "",
-        ftp_job_dir: str = "/MPRAM1/JBI",
+        ftp_job_dir: str = "/JOB",
         max_speed_pct: float = 20.0,
         job_name_prefix: str = "DTWIN",
         wait_completion_timeout_s: float = 30.0,
@@ -276,7 +276,7 @@ class MotomanHSEBackend:
         """Upload INFORM .JBI text to YRC1000 via FTP.
 
         YRC1000 runs an FTP server on port 21 (anonymous) by default. File is
-        stored in `ftp_job_dir` (default /MPRAM1/JBI/) so JOB_SELECT can find it.
+        stored in `ftp_job_dir` (default /JOB on YRC1000) so JOB_SELECT can find it.
 
         Args:
             job_text: INFORM content (rendered from InformJobBuilder).

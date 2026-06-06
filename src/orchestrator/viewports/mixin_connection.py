@@ -63,7 +63,7 @@ class ConnectionMixin:
             tool_no=int(sp_tool.value()),
             ftp_user=ed_user.text(),
             ftp_pass=ed_pass.text(),
-            ftp_dir=ed_dir.text().strip() or "/MPRAM1/JBI",
+            ftp_dir=ed_dir.text().strip() or "/JOB",
         ))
         bb.accepted.connect(dlg.accept); bb.rejected.connect(dlg.reject)
         form.addRow(bb)
@@ -72,13 +72,13 @@ class ConnectionMixin:
         self._hse_tool_no = int(sp_tool.value())
         self._hse_ftp_user = ed_user.text()
         self._hse_ftp_pass = ed_pass.text()
-        self._hse_ftp_dir = ed_dir.text().strip() or "/MPRAM1/JBI"
+        self._hse_ftp_dir = ed_dir.text().strip() or "/JOB"
         self._set_status(
             f"Connection: {self._hse_ip} TL#{self._hse_tool_no}", level="ok")
 
     def _test_hse_connection(
         self, ip: str, tool_no: int,
-        ftp_user: str = "", ftp_pass: str = "", ftp_dir: str = "/MPRAM1/JBI",
+        ftp_user: str = "", ftp_pass: str = "", ftp_dir: str = "/JOB",
     ) -> None:
         """Ping HSE using the provided connection params (does not touch self._hse_*).
 
