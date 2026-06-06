@@ -13,6 +13,7 @@ chạy bằng CLI xem [HUONG_DAN_SU_DUNG.md](HUONG_DAN_SU_DUNG.md) Kịch bản 
 - [§2. Kiến trúc](#2-kiến-trúc)
 - [§3. Hai chế độ: Live mirror vs Run experiment](#3-hai-chế-độ-live-mirror-vs-run-experiment)
 - [§4. Mở panel + tham số](#4-mở-panel--tham-số)
+  - [§4.1. Kết nối HSE/FTP (đã kiểm chứng trên YRC1000)](#41-kết-nối-hseftp-đã-kiểm-chứng-trên-yrc1000-thật)
 - [§5. Nguồn IK: yrc vs client (Pieper)](#5-nguồn-ik-yrc-vs-client-pieper)
 - [§6. An toàn: E-stop + alarm latch](#6-an-toàn-e-stop--alarm-latch)
 - [§7. Telemetry + kết quả](#7-telemetry--kết-quả)
@@ -136,6 +137,41 @@ Mở: menu **Digital Twin → Show Digital Twin panel** (dock **Digital Twin**, 
 > IP YRC1000 lấy từ **Robot → Connection settings…** (phải nhập trước). Cần load
 > Robot GP7 trước để có model dựng viewport.
 
+### §4.1. Kết nối HSE/FTP (đã kiểm chứng trên YRC1000 thật)
+
+Mở **Robot → Connection settings…**. Giá trị dưới đây đã verify với controller GP7
+thật (IP `192.168.125.100`) bằng `tools/probe_hse.py` — và là **mặc định điền sẵn**
+của dialog:
+
+| Tham số | Giá trị | Ghi chú |
+|---|---|---|
+| HSE IP | `192.168.125.100` | đọc trạng thái/joints qua **UDP 10040** |
+| Tool # (TL=) | khớp TOOL trên teach-pendant | `0` = mặt bích (không offset); `1` = TOOL01 (gripper) |
+| FTP user | `rcmaster` | tài khoản FTP mặc định tài liệu Yaskawa YRC1000 |
+| FTP pass | `9999999999999999` | mười sáu số 9 (đổi nếu controller đặt riêng — xem hồ sơ máy) |
+| FTP job dir | `/JOB` | thư mục job YRC1000 (**KHÔNG** phải `/MPRAM1/JBI` kiểu DX cũ) |
+
+Phần mềm dùng **2 kênh tách biệt** → controller phải **bật cả 2 chức năng**:
+- **HSE Server function** → UDP 10040 (đọc robot, JOB_SELECT, START). *(Live mirror
+  chỉ cần kênh này — read-only, không cần FTP.)*
+- **FTP server function** → TCP 21 (upload `.JBI` khi Run experiment/Run on Robot);
+  để chế độ **STANDARD** (không mã hoá — `ftplib` không nói chuyện được với FTPS).
+
+Sau khi login FTP, gốc có các thư mục theo loại file: `JOB DAT CND SYS PRM LST CSV
+LOG TXT` — job `.JBI` nằm trong `JOB`.
+
+> ⚠ Nút **Test** trong dialog **chỉ kiểm HSE** (đọc joints/alarm), KHÔNG kiểm FTP.
+> Kiểm FTP (và toàn bộ kết nối) riêng bằng probe:
+> ```
+> python tools/probe_hse.py <IP> [ftp_user] [ftp_pass] [ftp_dir]
+> # vd: python tools/probe_hse.py 192.168.125.100 rcmaster 9999999999999999 /JOB
+> ```
+> Probe kiểm 3 lớp: **[1]** UDP 10040 READ_STATUS + Joints, **[2]** FTP login + cwd +
+> list (liệt kê `.JBI`), **[3]** sanity (TCP 10040 timeout là bình thường).
+
+**Nếu FTP server cần bật/đặt tham số** (theo diễn đàn Yaskawa): Parameter → RS settings
+`RS005=1`, `RS007=2`; IO → Pseudo Input `#87015 CMD REMOTE SEL = True`.
+
 ## §5. Nguồn IK: yrc vs client (Pieper)
 
 | | `yrc` — YRC1000 onboard | `client` — Pieper analytical |
@@ -234,13 +270,19 @@ trống**, E-stop trong tay. *(Dùng calib sim nên pose có thể lệch — ch
 - [ ] **TOOL** trên teach-pendant đúng `tool_no` (cho `yrc` IK).
 - [ ] **gripper CC-Link bits** verify khớp PLC (mặc định 30010/11/50/51/52 là TODO-
       verify).
-- [ ] YRC ở **PLAY/REMOTE**, HSE Server bật, ping OK.
+- [ ] YRC ở **PLAY/REMOTE**, **HSE Server** bật, ping OK.
+- [ ] **FTP server** bật (STANDARD), job dir `/JOB`, user/pass đúng — verify bằng
+      `tools/probe_hse.py` [2] PASS (xem §4.1).
 
 ## §9. Sự cố thường gặp
 
 | Triệu chứng | Nguyên nhân / xử lý |
 |---|---|
 | "HSE not responding" | Sai IP / HSE Server chưa bật / khác mạng — kiểm Connection settings + ping |
+| Ping được nhưng app không đọc được joints | KHÔNG phải lỗi mạng. Thường: (a) HSE Server chưa bật, hoặc (b) lỗi parse vị trí (GP7 trả gói 44 byte/6 trục). Dùng `tools/probe_hse.py` để khoanh vùng: [1] PASS nghĩa là HSE OK |
+| FTP `530 Authorization failed` | Sai user/pass — dùng `rcmaster` / `9999999999999999` (16 số 9); nếu vẫn lỗi → pass đã bị đổi lúc xuất xưởng (xem hồ sơ máy / hỏi Yaskawa kèm WO#) |
+| FTP `550 ... CWD failed` | Sai **FTP job dir** — YRC1000 dùng `/JOB`, không phải `/MPRAM1/JBI` |
+| FTP "timed out" / không có banner | TCP 21 mở nhưng FTP không phản hồi → **FTP server function chưa bật** (hoặc đang ở FTPS) — bật FTP **STANDARD** trên controller |
 | "Missing calibration" khi Start experiment | Thiếu `T_base_camera.npy` — chạy `02_run_calibration.py` (real) hoặc `calibration_from_layout.py` (sim) |
 | "Missing YOLO weights" | Thiếu `models/*.pt` — dùng Perception = **Mock** để test, hoặc nạp weights |
 | Robot không di chuyển khi experiment | Kiểm YRC PLAY/REMOTE; TOOL đã setup cho `yrc`; xem log trial |
