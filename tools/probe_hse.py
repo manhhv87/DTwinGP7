@@ -45,17 +45,23 @@ def _tcp_check(ip: str, port: int, timeout: float = 2.0) -> str:
 
 
 def _ftp_check(ip: str, user: str, password: str, job_dir: str,
-               timeout: float = 4.0) -> str:
+               timeout: float = 10.0) -> str:
     """Real FTP login + cwd(job_dir) + directory listing — verifies the exact
     path 'Run on Robot' uses (credentials AND job dir), not just port 21."""
+    # First: does TCP 21 even accept a connection? Separates "port closed" from
+    # "port open but no FTP service / banner" (the latter = FTP function off/busy).
+    tcp = _tcp_check(ip, 21, timeout=timeout)
+    if not tcp.startswith("OPEN"):
+        return f"FAIL — TCP 21 {tcp}"
     ftp = ftplib.FTP()
     try:
-        ftp.connect(ip, 21, timeout=timeout)
-        ftp.login(user, password)            # "", "" = anonymous
+        ftp.connect(ip, 21, timeout=timeout)   # reads the 220 welcome banner
+        ftp.login(user, password)              # "", "" = anonymous
         ftp.cwd(job_dir)
+        ftp.set_pasv(True)
         try:
             names = ftp.nlst()
-        except Exception:                    # noqa: BLE001 — listing optional
+        except Exception:                      # noqa: BLE001 — listing optional
             names = []
         who = user or "anonymous"
         njbi = sum(1 for n in names if n.upper().endswith(".JBI"))
@@ -64,13 +70,16 @@ def _ftp_check(ip: str, user: str, password: str, job_dir: str,
     except ftplib.error_perm as e:
         return f"FAIL — login/cwd refused: {e} (check FTP user/pass + job dir)"
     except (socket.timeout, OSError) as e:
-        return f"FAIL — cannot reach FTP: {e}"
-    except Exception as e:                    # noqa: BLE001
+        return (f"FAIL — TCP 21 open but no FTP response ({e}). "
+                "→ FTP server function likely DISABLED on the YRC1000 (or banner "
+                "slow / a stale FTP session is holding the single slot — power-cycle"
+                " or close other FTP clients).")
+    except Exception as e:                     # noqa: BLE001
         return f"FAIL — {e}"
     finally:
         try:
             ftp.quit()
-        except Exception:                     # noqa: BLE001
+        except Exception:                      # noqa: BLE001
             pass
 
 
