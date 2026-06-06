@@ -309,13 +309,16 @@ class GP7AppQt(
 
         # HSE robot connection state — populated via "Connection settings…" dialog.
         # Defaults taken from cell_config.robot_connection if available, otherwise empty.
+        # Defaults pre-filled with the verified YRC1000+GP7 connection (see
+        # tools/probe_hse.py): IP 192.168.125.100, FTP rcmaster / 16×'9' (Yaskawa
+        # documented default), job dir /JOB. cell_config.robot_connection (if set)
+        # overrides any of these.
         rc = getattr(cell_config, "robot_connection", None)
-        self._hse_ip: str = (getattr(rc, "ip", "") or "")
+        self._hse_ip: str = (getattr(rc, "ip", "") or "192.168.125.100")
         self._hse_tool_no: int = int(getattr(rc, "tool_no", 1) or 1)
-        self._hse_ftp_user: str = (getattr(rc, "ftp_user", "") or "")
-        self._hse_ftp_pass: str = (getattr(rc, "ftp_pass", "") or "")
-        self._hse_ftp_dir: str = (getattr(rc, "ftp_job_dir", "/JOB")
-                                    or "/JOB")
+        self._hse_ftp_user: str = (getattr(rc, "ftp_user", "") or "rcmaster")
+        self._hse_ftp_pass: str = (getattr(rc, "ftp_pass", "") or "9999999999999999")
+        self._hse_ftp_dir: str = (getattr(rc, "ftp_job_dir", "/JOB") or "/JOB")
         self._hse_thread: threading.Thread | None = None
         self._hse_stop = threading.Event()
 
