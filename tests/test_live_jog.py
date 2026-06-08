@@ -102,6 +102,47 @@ def test_worker_exit_unchecks_toggle():
     assert s._status and s._status[-1][1] == "err"
 
 
+# ── enable guards auto-untick (the "toggle tự tắt" behaviour) ────────────────
+toggle = ConnectionMixin._on_toggle_live_jog
+
+
+def _enable_stub(**kw):
+    s = _stub(checked=True)             # user just ticked it ON
+    s._set_status = lambda msg, level="info": s._status.append((msg, level))
+    s._hse_ip = kw.get("ip", "192.168.125.100")
+    s._model = kw.get("model", object())
+    s._robot_motion_active = lambda: kw.get("busy", False)
+    s._live_jog_thread = None
+    return s
+
+
+def test_toggle_unchecks_when_no_ip():
+    s = _enable_stub(ip="")            # no IP -> refuse before any dialog
+    toggle(s, True)
+    assert s._act_live_jog.isChecked() is False
+
+def test_toggle_unchecks_when_no_model():
+    s = _enable_stub(model=None)
+    s._model = None
+    toggle(s, True)
+    assert s._act_live_jog.isChecked() is False
+
+def test_toggle_unchecks_when_busy():
+    s = _enable_stub(busy=True)        # Run/Mirror/experiment active
+    toggle(s, True)
+    assert s._act_live_jog.isChecked() is False
+
+def test_toggle_off_signals_stop_only_when_alive():
+    # Unticking with a live worker sets the stop event (worker servo-offs itself).
+    s = _stub(checked=False)
+    s._set_status = lambda msg, level="info": s._status.append((msg, level))
+    import threading as _th
+    s._live_jog_stop = _th.Event()
+    s._live_jog_thread = _FakeThread(alive=True)
+    toggle(s, False)
+    assert s._live_jog_stop.is_set() is True
+
+
 # ── teleport guard (_live_jog_max_step) ─────────────────────────────────────
 max_step = ConnectionMixin._live_jog_max_step
 LIMIT = ConnectionMixin._LIVE_JOG_MAX_STEP_DEG
