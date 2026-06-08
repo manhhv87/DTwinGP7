@@ -194,11 +194,6 @@ class GP7AppQt(
     _REACH_FLANGE = 0.927          # max flange reach from J1
     _REACH_WRIST  = 0.847          # = flange − 80mm tool0/flange offset
     _REACH_TOOL_EXTRA = 0.10       # tool offset typical ~100mm
-    # Inner dead-zone radius (mm) of the P-point envelope — the P-point cannot get
-    # closer than this to the S-axis (GP7 datasheet R_inner=233). The brute-force
-    # FK envelope would fill r→0 (URDF has no self-collision), so the reach mesh
-    # carves out this inner cylinder to match the datasheet.
-    _REACH_INNER_R_MM = 233.0
 
     def __init__(
         self,
@@ -4863,9 +4858,6 @@ class GP7AppQt(
             return cache[ckey]
 
         bx, by, bz = self._base_xyz
-        # Inner dead-zone radius (mm); getattr so this also works for the unit-test
-        # stub (a SimpleNamespace without the class constant).
-        r_inner = float(getattr(self, "_REACH_INNER_R_MM", 233.0))
         jl = [(j.joint_min, j.joint_max) for j in self._model.joints]
 
         def _lin(i, n):
@@ -4960,23 +4952,6 @@ class GP7AppQt(
                 out.append(hit)
             return out
 
-        def _clip_r_min(poly, r_min):
-            """Clip a convex (r,z) polygon (mm) to the half-plane r >= r_min,
-            inserting a vertical edge at r=r_min. Revolving the clipped section
-            carves the inner dead-zone cylinder (datasheet R_inner). Returns []
-            if the whole section is inside r_min."""
-            n = len(poly)
-            out2 = []
-            for i in range(n):
-                cr, cz = poly[i]
-                nr, nz = poly[(i + 1) % n]
-                if cr >= r_min:
-                    out2.append((cr, cz))
-                if (cr >= r_min) != (nr >= r_min) and abs(nr - cr) > 1e-9:
-                    t = (r_min - cr) / (nr - cr)
-                    out2.append((r_min, cz + t * (nz - cz)))
-            return out2
-
         def _dented_mesh(recs, nb=72, nsec=48):
             """Mathematically-faithful envelope (no wedge cut). For each world-azimuth
             bin, the reachable (r,z) cross-section = the points reachable there for
@@ -4997,16 +4972,12 @@ class GP7AppQt(
                     rz = sel[:, 1:3]
                     try:
                         hv = rz[ConvexHull(rz).vertices]
-                        # Carve the inner dead-zone: clip the section to r >= R_inner.
-                        hvc = _clip_r_min(
-                            [(float(rr), float(zz)) for rr, zz in hv], r_inner)
-                        if len(hvc) >= 3:
-                            sec = _resample_by_angle(
-                                [(rr / 1000.0, zz / 1000.0) for rr, zz in hvc], nsec)
-                            br = math.radians(beta)
-                            ca, sa = math.cos(br), math.sin(br)
-                            ring = [(bx / 1000.0 + rr * ca, by / 1000.0 + rr * sa,
-                                     bz / 1000.0 + zz) for rr, zz in sec]
+                        sec = _resample_by_angle(
+                            [(rr / 1000.0, zz / 1000.0) for rr, zz in hv], nsec)
+                        br = math.radians(beta)
+                        ca, sa = math.cos(br), math.sin(br)
+                        ring = [(bx / 1000.0 + rr * ca, by / 1000.0 + rr * sa,
+                                 bz / 1000.0 + zz) for rr, zz in sec]
                     except Exception:                   # noqa: BLE001
                         ring = None
                 rings.append(ring)
