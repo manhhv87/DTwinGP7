@@ -175,24 +175,29 @@ phôi và target. Bốn lựa chọn theo điểm ngọn: *Do not show*, *Show f
 </table>
 
 Envelope được tính bằng forward-kinematics trên mô hình URDF: tại mỗi hướng quanh trục
-J1, hệ thống lấy vùng `(r, z)` với tới được theo đúng giới hạn khớp, rồi dựng khối tròn
-xoay 360° có bán kính thay đổi theo hướng. Vì cánh tay gập được về cả hai phía mặt phẳng,
-mọi hướng đều với tới được; bề mặt móp vào (giảm bán kính) ở hướng có tầm với ngắn hơn,
-không tạo lỗ thủng.
+J1, hệ thống lấy biên ngoài `rmax(z)` và biên trong `rmin(z)` của vùng `(r, z)` với tới
+được theo đúng giới hạn khớp, rồi dựng **một khối tròn xoay 360° hình "quả thận"** — vỏ
+ngoài là tầm với tối đa, ở giữa có **hốc lõm R233** (vùng gần trục J1 mà điểm P không với
+tới tới). Biên trong được làm trơn thành một bướu lõm duy nhất khép về trục ở đỉnh/đáy
+(thay vì biên FK thô bị "thủng" lỗ chỗ gần tâm). Khớp với bản vẽ datasheet **HW1483944
+Fig 5-3(b)**.
 
 <table>
 <tr>
-<td width="360"><img src="figures/workspace_envelope.png" width="360" alt="Reach envelope outer/inner trong viewport"></td>
+<td width="360"><img src="figures/workspace_envelope.png" width="360" alt="Reach envelope hình quả thận + lõm R233"></td>
 <td valign="top">
 
-- **outer** — bao của mọi cấu hình; reach ngang tối đa ≈ 925 mm (khớp datasheet GP7),
-  móp nhẹ ở phía sau robot.
-- **inner** — vùng với tới khi khớp J2 (L) âm; nhỏ hơn outer, móp ở phía trước (do khi
-  J2 âm cánh tay vươn về phía sau).
+- **vỏ ngoài (outer)** — tầm với ngang tối đa ≈ **927 mm** (R927), đỉnh ≈ **1217 mm**,
+  đáy ≈ **−476 mm** so với mặt sàn đế (khớp datasheet GP7); móp nhẹ ở phía sau robot.
+- **lõm trong (inner void)** — hốc lõm **R233** quanh trục J1: gần trục nhất ≈ 233 mm ở
+  khoảng giữa, khép dần về trục ở đỉnh và đáy (nơi cánh tay duỗi thẳng / gập xuyên qua tâm).
 
 </td>
 </tr>
 </table>
+
+> ℹ️ Hình `workspace_envelope.png` minh hoạ — nếu là ảnh chụp bản 2-mặt cũ thì chụp lại
+> mặt mới (vỏ quả-thận + 1 void thuôn ở giữa) để khớp mô tả.
 
 **Kiểm tra độ chính xác envelope**
 
@@ -212,13 +217,14 @@ Hoặc chạy test hồi quy:
 
 | Thao tác | Kết quả mong đợi |
 |---|---|
-| Duỗi thẳng tay ra trước | cổ tay chạm mặt outer ở ≈ 925 mm |
-| Vươn ra sau xa nhất | dừng ở ≈ 804 mm — outer móp vào ở sau |
-| Đặt J2 (L) = −65° rồi duỗi | cổ tay chạm rìa inner ở sau (≈ 804 mm) |
-| J2 < 0 vươn ra trước | dừng ở ≈ 459 mm — inner móp vào ở trước |
-| Mọi tư thế hợp lệ | cổ tay luôn nằm trong/trên outer, không ra ngoài |
+| Duỗi thẳng tay ra trước | cổ tay chạm vỏ ngoài ở ≈ 927 mm (R927) |
+| Vươn ra sau xa nhất | outer móp vào ở phía sau |
+| Duỗi thẳng đứng lên | đỉnh envelope ≈ 1217 mm trên sàn đế |
+| Chúi tay xuống hết (L≈+145°) | đáy envelope ≈ −476 mm dưới sàn đế |
+| Đưa cổ tay vào sát trục ở khoảng giữa | dừng ở rìa lõm trong ≈ 233 mm từ trục (R233) |
+| Mọi tư thế hợp lệ | cổ tay luôn nằm trong khối envelope (không ra ngoài, không vào hốc lõm) |
 
-Điều kiện đúng: mọi điểm robot với tới được đều nằm trong mặt outer.
+Điều kiện đúng: mọi điểm robot với tới được đều nằm trong vỏ ngoài và ngoài hốc lõm R233.
 
 ---
 
