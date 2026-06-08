@@ -14,6 +14,7 @@ chạy bằng CLI xem [HUONG_DAN_SU_DUNG.md](HUONG_DAN_SU_DUNG.md) Kịch bản 
 - [§3. Hai chế độ: Live mirror vs Run experiment](#3-hai-chế-độ-live-mirror-vs-run-experiment)
 - [§4. Mở panel + tham số](#4-mở-panel--tham-số)
   - [§4.1. Kết nối HSE/FTP (đã kiểm chứng trên YRC1000)](#41-kết-nối-hseftp-đã-kiểm-chứng-trên-yrc1000-thật)
+  - [§4.2. Hiệu chỉnh khớp + frame cho khớp robot thật](#42-hiệu-chỉnh-khớp--frame-cho-khớp-robot-thật-đã-verify)
 - [§5. Nguồn IK: yrc vs client (Pieper)](#5-nguồn-ik-yrc-vs-client-pieper)
 - [§6. An toàn: E-stop + alarm latch](#6-an-toàn-e-stop--alarm-latch)
 - [§7. Telemetry + kết quả](#7-telemetry--kết-quả)
@@ -171,6 +172,30 @@ LOG TXT` — job `.JBI` nằm trong `JOB`.
 
 **Nếu FTP server cần bật/đặt tham số** (theo diễn đàn Yaskawa): Parameter → RS settings
 `RS005=1`, `RS007=2`; IO → Pseudo Input `#87015 CMD REMOTE SEL = True`.
+
+### §4.2. Hiệu chỉnh khớp + frame cho khớp robot thật (đã verify)
+
+Mô hình URDF gốc theo chuẩn **ROS-Industrial/RoboDK**; đã căn lại cho khớp **controller YRC1000 thật**. Các điểm cần lưu ý:
+
+**a) Tỉ lệ pulse/độ (`GP7_PULSE_PER_DEG` trong `hse_protocol.py`)** — phải đúng cho cả 6 trục, nếu sai thì joints + 3D pose lệch:
+| S | L | U | R | B | T |
+|---|---|---|---|---|---|
+| 1241.212 | 1517.037 | 1137.778 | 853.333 | 728.178 | 464.863 |
+(Nguồn: RoboDK "pulses per degree" + bảng pulse↔độ datasheet GP7. Giá trị cũ 1341.4×3/1000/1000/624 là SAI.)
+
+**b) Giới hạn trục U** = `-70 / +190` (datasheet GP7), KHÔNG phải `-116/+255` (RoboDK). Sửa ở 2 nơi: `gp7_urdf` và placeholder `_GP7_LIMITS_DEG` trong `gp7_app_qt.py`.
+
+**c) Frame tool0** = `tool0_rpy_rad=(0, π/2, 0)` (khớp TOOL00 pendant), KHÔNG phải `(π,-π/2,0)` (RoboDK, lệch 180° quanh Z). Đổi kèm `_R_J6_TOOL0` trong `pieper_gp7.py`.
+
+**d) Gốc frame BASE** = "Base (0)" cộng `GP7_CTRL_BASE_Z_MM = 154.8` mm (`control_panel.py`) — gốc BASE/ROBOT của controller cao hơn gốc URDF 154.8mm (controller KHÔNG có BASE shift; đo hằng số qua nhiều tư thế). Đây là lệch quy ước frame (ROS-I "đáy base_link" vs Yaskawa "giao 2 trục đầu"), không phải sai hình học — link lengths đã khớp datasheet.
+
+**Kết quả sau hiệu chỉnh:** FK(joints đọc từ robot) khớp pendant **BASE**: Z + Rx/Ry/Rz **chính xác**, X/Y còn ~vài mm–1cm (sai số mô hình/thời điểm đọc, chấp nhận cho twin).
+
+**Lưu ý quan trọng:**
+- App giờ dùng **quy ước pose của Yaskawa-pendant**, KHÔNG còn khớp RoboDK. Khi so sánh hãy dùng TP **BASE/ROBOT** (2 cái này trùng nhau — controller không có BASE shift).
+- Joints đọc đúng **chỉ khi nối robot thật** (live mirror qua HSE); chạy offline/sim không dùng tỉ lệ pulse nên không phản ánh.
+- Pedestal **không** ảnh hưởng joints/pose-vs-pendant (toạ độ ROBOT là robot-relative); chỉ ảnh hưởng vị trí robot tuyệt đối trong cảnh 3D (`base_xyz`) và world-frame (camera/cell).
+- Nguồn tham chiếu: ROS-Industrial issue #24 (frame ROS-I ↔ controller), YRC1000micro Operator's Manual §2.1.2, datasheet GP7.
 
 ## §5. Nguồn IK: yrc vs client (Pieper)
 
