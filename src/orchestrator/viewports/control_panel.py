@@ -106,9 +106,21 @@ def _build_tool_frames(cell_config) -> list[tuple[str, np.ndarray]]:
     return out
 
 
+# Z offset (mm) of the real YRC1000 BASE/ROBOT coordinate origin above the URDF
+# base reference. Measured constant from app-FK vs teach-pendant BASE over several
+# poses (controller has NO BASE shift configured — TP ROBOT == TP BASE). Applying
+# it to the "Base (0)" reference makes the app's Cartesian readout match the pendant.
+GP7_CTRL_BASE_Z_MM = 154.8
+
+
 def _build_ref_frames(cell_config) -> list[tuple[str, np.ndarray]]:
-    """[(name, T_base_ref)] — reference frame relative to robot base."""
-    out: list[tuple[str, np.ndarray]] = [("Base (0)", np.eye(4))]
+    """[(name, T_base_ref)] — reference frame relative to robot base.
+
+    "Base (0)" is offset +Z by GP7_CTRL_BASE_Z_MM so it coincides with the real
+    controller BASE origin (the app's URDF base sits that much lower)."""
+    _base0 = np.eye(4)
+    _base0[2, 3] = GP7_CTRL_BASE_Z_MM
+    out: list[tuple[str, np.ndarray]] = [("Base (0)", _base0)]
     if cell_config is None:
         return out
     for f in getattr(cell_config, "frames", None) or []:

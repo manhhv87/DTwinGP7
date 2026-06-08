@@ -98,10 +98,10 @@ class TestPulseConversion:
         b.add_position("p", [10.0, -5.0, 20.0, 10.0, 5.0, 5.0])
         b.movj("p")
         text = b.render()
-        # S axis 10° × 1341.4 = 13414 pulse
-        assert "C00000=13414," in text
-        # L axis -5° × 1341.4 = -6707 pulse
-        assert ",-6707," in text
+        # S axis 10° × 1241.212 = 12412 pulse
+        assert "C00000=12412," in text
+        # L axis -5° × 1517.037 = -7585 pulse
+        assert ",-7585," in text
 
     def test_zero_joints_emits_zeros(self):
         b = InformJobBuilder(name="J")

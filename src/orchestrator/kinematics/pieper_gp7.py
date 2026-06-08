@@ -35,7 +35,7 @@ GP7 URDF parameters (from gp7_urdf):
   J5 (B): origin (0, 0, 0),    axis (0, -1, 0)
   J6 (T): origin (0, 0, 0),    axis (-1, 0, 0)
   flange: (80, 0, 0)
-  tool0:  RPY(π, -π/2, 0) → R_J6_tool0 = [[0,0,1],[0,-1,0],[1,0,0]]
+  tool0:  RPY(0, π/2, 0) → R_J6_tool0 = [[0,0,1],[0,1,0],[-1,0,0]]  (YRC1000 TOOL00)
 
 Derived constants:
   A1 = 40    (shoulder X offset)
@@ -63,11 +63,12 @@ _L3 = math.sqrt(_A3_X * _A3_X + _A3_Z * _A3_Z)
 _PSI = math.atan2(_A3_Z, _A3_X)
 _D6 = 80.0
 
-# R_J6_tool0 = Ry(-π/2) · Rx(π) — fixed URDF tool0 rotation
+# R_J6_tool0 = Ry(π/2) — fixed URDF tool0 rotation. MUST match gp7_urdf
+# tool0_rpy_rad=(0, π/2, 0) (aligned to the real YRC1000 TOOL00 / pendant flange).
 _R_J6_TOOL0 = np.array([
     [0.0, 0.0, 1.0],
-    [0.0, -1.0, 0.0],
-    [1.0, 0.0, 0.0],
+    [0.0, 1.0, 0.0],
+    [-1.0, 0.0, 0.0],
 ])
 
 
