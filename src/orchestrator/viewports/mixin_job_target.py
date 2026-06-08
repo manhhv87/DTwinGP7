@@ -213,6 +213,7 @@ class JobTargetMixin:
     def _on_prog_add_move_to_target(self, kind: str) -> None:
         """kind ∈ {'MoveJ','MoveL'}. Append an instruction referencing the
         currently selected target in the list."""
+        if self._guard_not_running(f"add {kind}"): return
         idx = self._tgt_list.currentRow()
         if idx < 0 or not self._targets:
             self._set_status(

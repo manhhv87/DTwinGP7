@@ -250,14 +250,21 @@ class ProgramIOMixin:
                     folders[jname] = parsed.folder_name
                 global_pos.update(parsed.positions)          # merge P-var table
                 all_warnings.extend(parsed.warnings)
-                # Collect IN# used in conditions (for sim_io defaulting).
+                # Collect IN# used in conditions (for sim_io defaulting). Include
+                # BOTH the single condition AND every term of a compound condition
+                # (e.g. IFTHENEXP IN#(8)=ON ANDEXP IN#(9)=ON) — otherwise the 2nd+
+                # inputs stay OFF and the AND never fires in the sim.
                 for ins in instrs:
+                    toks = []
                     if ins.cond_op:
-                        for tok in (ins.cond_lhs, ins.cond_rhs):
-                            mm = re.match(r"IN#\((\d+)\)", str(tok),
-                                          re.IGNORECASE)
-                            if mm:
-                                in_indices.add(int(mm.group(1)))
+                        toks += [ins.cond_lhs, ins.cond_rhs]
+                    for term in (getattr(ins, "cond_terms", None) or []):
+                        if len(term) >= 3:
+                            toks += [term[0], term[2]]
+                    for tok in toks:
+                        mm = re.match(r"IN#\((\d+)\)", str(tok), re.IGNORECASE)
+                        if mm:
+                            in_indices.add(int(mm.group(1)))
                 # Queue every CALL JOB target as a sibling .JBI file, keyed by
                 # the CALL name so the sub-job is found at play time.
                 for ins in instrs:

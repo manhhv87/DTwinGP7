@@ -5746,11 +5746,13 @@ class GP7AppQt(
         self._refresh_program_list()
 
     def _on_prog_add_movej(self) -> None:
+        if self._guard_not_running("add MoveJ"): return
         self._program.append(Instruction(type="MoveJ", joints=list(self._joints)))
         self._refresh_program_list()
         self._set_status(f"Program +MoveJ (n={len(self._program)})", level="ok")
 
     def _on_prog_add_movel(self) -> None:
+        if self._guard_not_running("add MoveL"): return
         T = self._current_tool_world()
         if T is None: return
         x, y, z, rx, ry, rz = _matrix_to_xyz_rpy_deg(T)
