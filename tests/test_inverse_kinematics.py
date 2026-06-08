@@ -178,6 +178,29 @@ class TestEdgeCases:
         assert abs(abs(axis[1]) - 1/np.sqrt(2)) < 1e-6
         assert abs(abs(axis[2]) - 1/np.sqrt(2)) < 1e-6
 
+    def test_pose_error_batch_matches_scalar_incl_180deg(self):
+        """Regression: `_pose_error_batch` must NOT collapse a real 180° rotation
+        error to zero (false convergence). It must match the scalar `_pose_error`
+        rotation-norm for all rotations, including θ≈π."""
+        from scipy.spatial.transform import Rotation as Rot
+        from src.orchestrator.kinematics.inverse_kinematics import (
+            _pose_error, _pose_error_batch)
+        # Explicit 180° about Z (the case that previously returned 0).
+        Tt = np.eye(4)
+        Tc = np.eye(4); Tc[:3, :3] = np.array([[-1, 0, 0], [0, -1, 0], [0, 0, 1.0]])
+        b = _pose_error_batch(Tc[None], Tt)[0]
+        assert abs(np.linalg.norm(b[3:]) - np.pi) < 1e-6   # was ~0 before the fix
+        # Cross-check batch vs scalar rotation-norm over many random rotations.
+        rng = np.random.default_rng(0)
+        for _ in range(500):
+            Rc = Rot.random(random_state=rng).as_matrix()
+            Rt = Rot.random(random_state=rng).as_matrix()
+            Tc = np.eye(4); Tc[:3, :3] = Rc
+            Tt = np.eye(4); Tt[:3, :3] = Rt
+            nb = np.linalg.norm(_pose_error_batch(Tc[None], Tt)[0][3:])
+            ns = np.linalg.norm(_pose_error(Tc, Tt)[3:])
+            assert abs(nb - ns) < 1e-6
+
 
 # ─────────────────────────────────────────────────────────────────────────
 # Alternative IK algorithms (Levenberg-Marquardt, SDLS, BFGS)

@@ -321,6 +321,7 @@ class GP7AppQt(
         self._hse_ftp_dir: str = (getattr(rc, "ftp_job_dir", "/JOB") or "/JOB")
         self._hse_thread: threading.Thread | None = None
         self._hse_stop = threading.Event()
+        self._send_pose_busy: bool = False     # Phase-1 discrete send in progress (re-entrancy guard)
 
         # Phase-2 live jog → REAL robot (streaming HSE move, RoboDK-style). OFF by
         # default. The worker holds one HSE connection + servo on and chases the
@@ -6866,12 +6867,34 @@ class GP7AppQt(
                 self._model, T_target_tool0, q_init_batch,
                 max_iter=100, tol_mm=0.5, tol_rad=1e-3)
             sols_rad = [s for s in results if s is not None]
+        # SAFETY: post-FK verify every candidate before it can be applied to a
+        # target / drive the real robot. The DLS fallback can in principle report a
+        # false-converged config; re-running FK and checking the TCP pose against the
+        # request rejects any solution whose orientation/position does not match.
+        def _fk_matches(q_rad) -> bool:
+            try:
+                fr = dict(link_frames_urdf(self._model, [float(q) for q in q_rad]))
+            except Exception:                               # noqa: BLE001
+                return False
+            T = fr.get("link_tool0")
+            if T is None:
+                return False
+            d_pos = float(np.linalg.norm(T[:3, 3] - T_target_tool0[:3, 3]))
+            R = T_target_tool0[:3, :3] @ T[:3, :3].T
+            cos = float(np.clip((np.trace(R) - 1.0) * 0.5, -1.0, 1.0))
+            d_ang = math.degrees(math.acos(cos))
+            return d_pos < 1.0 and d_ang < 1.0              # 1 mm / 1°
+
         # Dedupe (Pieper returns uniquely-different configs but deduping is still safe)
         thresh = np.deg2rad(dedupe_deg)
         unique: list[np.ndarray] = []
         for s in sols_rad:
             arr = np.asarray(s)
             if any(np.max(np.abs(arr - ex)) < thresh for ex in unique):
+                continue
+            if not _fk_matches(arr):
+                logger.warning("Dropping IK solution that fails FK re-check "
+                               "(false convergence guard)")
                 continue
             unique.append(arr)
             if len(unique) >= max_solutions:

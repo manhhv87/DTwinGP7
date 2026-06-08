@@ -464,6 +464,23 @@ class TestBatchMode:
         # Vẫn dùng được sau khi exception (state đã reset)
         assert backend._batch_builder is None
 
+    def test_batch_halted_skips_dispatch(self, backend_with_mock_socket, monkeypatch):
+        """Review #6: a Stop() that lands mid-batch latches _halted → the batch
+        __exit__ must NOT upload/JOB_SELECT/START (no command after halt)."""
+        backend, mock_sock = backend_with_mock_socket
+        from unittest.mock import MagicMock
+        mock_ftp_cls = MagicMock(); mock_ftp_cls.return_value = MagicMock()
+        import ftplib
+        monkeypatch.setattr(ftplib, "FTP", mock_ftp_cls)
+
+        with backend.batch():
+            backend.MoveJ([10, 0, 0, 0, 0, 0])
+            backend._halted = True                      # simulate Stop() mid-batch
+        # No FTP upload and no HSE dispatch packets (JOB_SELECT/START) were sent.
+        mock_ftp_cls.return_value.storbinary.assert_not_called()
+        assert mock_sock.sendto.call_count == 0
+        assert backend._batch_builder is None
+
 
 class TestReadAlarm:
     def test_read_alarm_zero_no_alarm(self, backend_with_mock_socket):

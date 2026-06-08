@@ -619,10 +619,12 @@ def _pose_error_batch(
     err[:, :3] = pos_target - pos_curr.
     err[:, 3:] = axis-angle log map of R_target · R_curr^T.
 
-    NOTE: 180° corner case uses the standard formula with a safe_sin fallback guard.
-    In batched mode, individual elements near π are rare (random seeds → uniform
-    distribution of rotation, P(180°±tol) << 1%). Trade-off: speed vs
-    robustness — acceptable for enumeration aimed at "finding alternative solutions".
+    The 180° corner case is handled exactly like the scalar `_pose_error`: at θ≈π
+    the standard formula divides by sin(θ)≈0 AND the antisymmetric axis vanishes,
+    so a genuine 180° error would collapse to ZERO (false convergence). For those
+    elements the axis is recovered from M = R_err + I (column of largest norm), so
+    `rot_err` correctly equals ±π·axis. This matters because callers (DLS enumerate,
+    convergence test) must not accept a 180°-wrong orientation as converged.
     """
     N = T_curr.shape[0]
     pos_err = T_target[None, :3, 3] - T_curr[:, :3, 3]              # (N, 3)
@@ -637,11 +639,26 @@ def _pose_error_batch(
         R_err[:, 0, 2] - R_err[:, 2, 0],
         R_err[:, 1, 0] - R_err[:, 0, 1],
     ], axis=-1)                                                     # (N, 3)
-    safe_sin = np.where(np.abs(sin_theta) > 1e-9, 2.0 * sin_theta, 2.0)
+    # Standard branch (safe_sin fallback is irrelevant — near-0 and near-π
+    # elements are overwritten below).
+    safe_sin = np.where(np.abs(sin_theta) > 1e-9, 2.0 * sin_theta, 1.0)
     rot_err = axis_raw / safe_sin[:, None] * theta[:, None]
-    # Zero out where theta is near 0
-    rot_err = np.where(theta[:, None] < 1e-9, 0.0, rot_err)
-    return np.concatenate([pos_err, rot_err], axis=-1)              # (N, 6)
+    near_zero = theta < 1e-9
+    near_pi = np.abs(theta - np.pi) < 1e-6
+    if np.any(near_pi):
+        idxs = np.nonzero(near_pi)[0]
+        M = R_err[idxs] + np.eye(3)[None]                          # (k,3,3)
+        col_norms = np.linalg.norm(M, axis=1)                      # (k,3) per-column norm
+        best = np.argmax(col_norms, axis=1)                        # (k,)
+        k = np.arange(len(idxs))
+        cols = M[k, :, best]                                       # (k,3) best column
+        cn = col_norms[k, best]                                    # (k,)
+        ok = cn > 1e-9
+        axis_pi = np.where(ok[:, None], cols / np.where(ok, cn, 1.0)[:, None],
+                           np.array([1.0, 0.0, 0.0]))              # R_err=-I → default X
+        rot_err[idxs] = axis_pi * theta[idxs, None]
+    rot_err = np.where(near_zero[:, None], 0.0, rot_err)
+    return np.concatenate([pos_err, rot_err], axis=-1)             # (N, 6)
 
 
 def inverse_kinematics_batch(

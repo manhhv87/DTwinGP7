@@ -172,6 +172,9 @@ class ExperimentMixin:
         """Check common preconditions (model + IP). Returns an error message or None."""
         if self._exp_running:
             return "Digital Twin is already running"
+        if (getattr(self, "_hse_thread", None) is not None
+                and self._hse_thread.is_alive()):
+            return "A Run-on-Robot job is running — stop it first"
         if (getattr(self, "_live_jog_thread", None) is not None
                 and self._live_jog_thread.is_alive()):
             return "Live jog is ON — turn it off before mirroring / experiment"

@@ -387,7 +387,9 @@ class ConnectionMixin:
         run_active = (self._hse_thread is not None and self._hse_thread.is_alive())
         jog_active = (getattr(self, "_live_jog_thread", None) is not None
                       and self._live_jog_thread.is_alive())
-        return bool(run_active or jog_active or getattr(self, "_exp_running", False))
+        send_busy = bool(getattr(self, "_send_pose_busy", False))
+        return bool(run_active or jog_active or send_busy
+                    or getattr(self, "_exp_running", False))
 
     def _on_send_pose_to_robot(self) -> None:
         """Phase-1 direct control (RoboDK-style, discrete): send the app's CURRENT
@@ -415,6 +417,11 @@ class ConnectionMixin:
             QMessageBox.StandardButton.Cancel)
         if r != QMessageBox.StandardButton.Yes:
             return
+        # Re-entrancy guard: this runs synchronously on the GUI thread and pumps
+        # the event loop (processEvents / blocking move), so mark the robot busy so
+        # a queued Send-pose / Live-jog / experiment trigger cannot start a second
+        # motion mid-send. Cleared in finally.
+        self._send_pose_busy = True
         backend = MotomanHSEBackend(
             ip=self._hse_ip, timeout_s=3.0, tool_no=self._hse_tool_no)
         try:
@@ -449,6 +456,7 @@ class ConnectionMixin:
             self._set_status(f"Send-pose error: {e}", level="err")
             QMessageBox.critical(self, "Send pose error", str(e))
         finally:
+            self._send_pose_busy = False
             try:
                 backend.disconnect()
             except Exception:                            # noqa: BLE001
