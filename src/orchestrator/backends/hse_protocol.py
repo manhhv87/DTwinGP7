@@ -388,17 +388,18 @@ def parse_position_response(payload: bytes) -> dict[str, list[float]]:
     }
 
 
-# Pulse/degree conversion ratio for Yaskawa GP7 (datasheet).
-# Each axis has a different encoder ratio — these are the default values
-# (Yaskawa GP7-A00 controller pack). Verify against the real controller via
-# parameter file (PULSE_PER_DEG in SF#xxx).
+# Pulse/degree conversion ratio for Yaskawa GP7.
+# VERIFIED against the real YRC1000+GP7 (RoboDK "pulses per degree" report +
+# the GP7 datasheet pulse↔degree tables, cross-checked with live TP PULSE vs
+# the app's joint readout). The previous values (1341.4×3 / 1000 / 1000 / 624)
+# were wrong on ALL SIX axes → joints (and thus the mirrored 3D pose) were off.
 GP7_PULSE_PER_DEG: tuple[float, ...] = (
-    1341.4,  # S axis
-    1341.4,  # L axis
-    1341.4,  # U axis
-    1000.0,  # R axis
-    1000.0,  # B axis
-    624.0,   # T axis
+    1241.212,  # S axis
+    1517.037,  # L axis
+    1137.778,  # U axis
+    853.333,   # R axis
+    728.178,   # B axis
+    464.863,   # T axis
 )
 
 
