@@ -126,6 +126,10 @@ class MotomanHSEBackend:
         self._batch_builder: InformJobBuilder | None = None
         self._batch_pos_counter = 0
         self._batch_name = ""
+        # Halt latch: Stop() sets it, servo_on() clears it. A batch dispatch
+        # (upload+JOB_SELECT+START) checks it so a Stop() that lands mid-batch
+        # cannot issue a START after the halt.
+        self._halted = False
 
         # Ultra-fast P-var mode state (M3++)
         self._ultra_fast_mode = False
@@ -209,6 +213,9 @@ class MotomanHSEBackend:
             logger.error("HSE response decode error, raw bytes: %s", raw.hex())
             raise
 
+        # NOTE: request_id is WARNED on but NOT enforced — the YRC1000 does not
+        # reliably echo it, so discarding mismatches would drop valid replies. The
+        # _drain_socket() on the timeout path is the actual stale-datagram guard.
         if resp.request_id != request_id:
             logger.warning(
                 "HSE request_id mismatch: sent=%d got=%d", request_id, resp.request_id
@@ -333,6 +340,7 @@ class MotomanHSEBackend:
             service=Service.SET_ATTRIBUTE_SINGLE,
             payload=struct.pack("<I", 1),       # 1 = servo ON
         )
+        self._halted = False                    # resuming → clear the halt latch
         logger.info("HSE servo ON sent to YRC1000")
 
     # ─── Direct real-time motion (RoboDK-style, NO job upload) ───
@@ -587,6 +595,10 @@ class MotomanHSEBackend:
         """Render buffer → P-var template + WRITE_POS_VARs + JOB_START."""
         if not self._pvar_batch_buffer:
             return
+        # SAFETY: skip dispatch if a Stop() halted motion during the batch.
+        if self._halted:
+            logger.warning("Ultra-fast batch dropped: motion halted (Stop) during batch")
+            return
 
         signature, motion_kinds, close_at, open_at = self._build_trial_signature()
         num_pos = sum(1 for op, _ in self._pvar_batch_buffer if op in ("movj", "movl"))
@@ -689,6 +701,12 @@ class MotomanHSEBackend:
         # If batch has no instructions besides a comment → skip upload
         if not builder._positions:
             logger.debug("Batch '%s' empty (no motion), skip upload", name)
+            return
+        # SAFETY: a Stop() that landed mid-batch latched _halted — do NOT dispatch a
+        # START after a halt (servo is off; this prevents the documented
+        # "no commands after hold" invariant from being violated by a racing batch).
+        if self._halted:
+            logger.warning("Batch '%s' dropped: motion halted (Stop) during batch", name)
             return
 
         text = builder.render()
@@ -981,6 +999,7 @@ class MotomanHSEBackend:
         SAFETY: this is software stop only — verify the value/instance against the
         actual controller; never rely on it in place of a physical E-stop.
         """
+        self._halted = True                       # latch: block any pending batch dispatch
         try:
             import struct as _struct
             self._send_request(

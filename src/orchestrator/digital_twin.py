@@ -138,7 +138,20 @@ class DigitalTwinMirror:
         if self.telemetry is not None:
             self.telemetry.open()
         self._stop_flag.clear()
-        self._motion_halted.clear()     # (re)start → allow motion again
+        # SAFETY: do NOT silently re-enable motion if a fault is still active. Only
+        # clear the motion-halt latch when there is no active alarm; under a
+        # persistent fault the operator must clear it on the teach pendant first,
+        # then restart the mirror. Resetting _auto_stopped on a clean restart re-arms
+        # auto-stop. (Uses the last-polled alarm; the immediate first poll refreshes
+        # it, so a stale-cached alarm at most costs one extra restart — fail-safe.)
+        if self.current_alarm().code != 0:
+            logger.warning(
+                "start_mirror: alarm %d still active — motion stays HALTED "
+                "(clear it on the teach pendant, then restart the mirror)",
+                self.current_alarm().code)
+        else:
+            self._motion_halted.clear()     # clean (re)start → allow motion again
+            self._auto_stopped = False
         # Fire alarm poll on first tick (0.0 < monotonic), helps short tests pass
         # + practically sensible: check alarm immediately at start to know initial state.
         self._next_alarm_poll_t = 0.0

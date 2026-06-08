@@ -169,3 +169,29 @@ def test_teleport_blocked_by_guard():
 
 def test_limit_is_sane():
     assert 5.0 <= LIMIT <= 90.0          # generous for jog, blocks teleports
+
+
+# ── motion-source guards (review batch-1 fixes) ─────────────────────────────
+def test_motion_active_counts_send_pose_busy():
+    s = _stub(alive=False)               # no live-jog thread
+    s._send_pose_busy = False
+    assert motion_active(s) is False
+    s._send_pose_busy = True             # discrete Send-pose in progress
+    assert motion_active(s) is True
+
+
+def test_validate_dt_common_blocks_when_run_on_robot_active():
+    # HIGH-1: experiment/mirror validator must refuse while a Run-on-Robot job runs.
+    from src.orchestrator.viewports.mixin_experiment import ExperimentMixin
+    validate = ExperimentMixin._validate_dt_common
+    s = types.SimpleNamespace(
+        _exp_running=False,
+        _hse_thread=_FakeThread(alive=True),     # Run-on-Robot worker alive
+        _live_jog_thread=None,
+        _model=object(), _hse_ip="192.168.125.100",
+    )
+    err = validate(s)
+    assert err is not None and "Run-on-Robot" in err
+
+    s._hse_thread = _FakeThread(alive=False)      # nothing running → passes
+    assert validate(s) is None
