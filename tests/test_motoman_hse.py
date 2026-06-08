@@ -546,3 +546,55 @@ class TestHomeJoints:
         backend = MotomanHSEBackend(ip="x")
         with pytest.raises(ValueError):
             backend.set_home_joints([1.0, 2.0, 3.0])
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# Direct real-time motion (MOVE_PULSE 0x8B) + servo on
+# ─────────────────────────────────────────────────────────────────────────
+
+
+class TestDirectMove:
+    def test_move_pulse_encodes_88_byte_payload(self, backend_with_mock_socket):
+        backend, mock_sock = backend_with_mock_socket
+        mock_sock.recvfrom.return_value = (
+            _build_response(), ("192.168.1.100", 10040))
+        backend.move_pulse([1000, -2000, 3000, 4000, -5000, 6000],
+                           speed_pct=5.0, tool_no=1)
+        packet, _ = mock_sock.sendto.call_args[0]
+        cmd = struct.unpack("<H", packet[24:26])[0]
+        inst = struct.unpack("<H", packet[26:28])[0]
+        service = packet[29]
+        payload = packet[HSE_HEADER_SIZE:]
+        assert cmd == 0x8B                      # MOVE_PULSE
+        assert inst == 1                        # joint absolute
+        assert service == 0x02                  # SET_ATTRIBUTE_ALL
+        assert len(payload) == 88
+        robot, station, sclass, speed = struct.unpack("<4I", payload[:16])
+        pulses = struct.unpack("<7i", payload[16:44])
+        reserved, tool = struct.unpack("<2I", payload[44:52])
+        assert robot == 1 and station == 0
+        assert sclass == 0                      # PERCENT
+        assert speed == 500                     # 5.00 % in 0.01% units
+        assert pulses == (1000, -2000, 3000, 4000, -5000, 6000, 0)
+        assert reserved == 0 and tool == 1
+
+    def test_move_joints_converts_deg_to_pulse(self, backend_with_mock_socket):
+        backend, mock_sock = backend_with_mock_socket
+        mock_sock.recvfrom.return_value = (
+            _build_response(), ("192.168.1.100", 10040))
+        backend.move_joints([10.0, 0, 0, 0, 0, 0], speed_pct=5.0)
+        packet, _ = mock_sock.sendto.call_args[0]
+        payload = packet[HSE_HEADER_SIZE:]
+        s_pulse = struct.unpack("<i", payload[16:20])[0]
+        assert s_pulse == round(10.0 * 1241.212)   # 12412
+
+    def test_servo_on_sends_power_type_2_switch_1(self, backend_with_mock_socket):
+        backend, mock_sock = backend_with_mock_socket
+        mock_sock.recvfrom.return_value = (
+            _build_response(), ("192.168.1.100", 10040))
+        backend.servo_on()
+        packet, _ = mock_sock.sendto.call_args[0]
+        cmd = struct.unpack("<H", packet[24:26])[0]
+        inst = struct.unpack("<H", packet[26:28])[0]
+        value = struct.unpack("<I", packet[HSE_HEADER_SIZE:])[0]
+        assert cmd == 0x83 and inst == 2 and value == 1

@@ -335,6 +335,46 @@ class MotomanHSEBackend:
         )
         logger.info("HSE servo ON sent to YRC1000")
 
+    # ─── Direct real-time motion (RoboDK-style, NO job upload) ───
+    # move_type instances (per Yaskawa HSE / fs100): 1 = joint absolute,
+    # 2 = linear absolute, 3 = linear incremental. speed_class 0 = percent.
+    def move_pulse(self, pulses: list[int], speed_pct: float = 5.0,
+                   move_type: int = 1, tool_no: int | None = None) -> None:
+        """Direct MOVE to ABSOLUTE joint PULSE target via HSE (0x8B) — no FTP/job.
+        This is how online jogging works (cf. RoboDK MotomanHSE driver).
+
+        Requires servo ON + REMOTE mode. speed_pct is % of max joint speed.
+        SAFETY: real motion — keep speed low and a hand on the E-stop. Payload
+        layout follows the FS100 HSE reference (88 bytes).
+        """
+        if tool_no is None:
+            tool_no = self.tool_no
+        p = list(pulses)[:7] + [0] * (7 - len(pulses))      # pad to 7 axes
+        speed = int(max(1, min(10000, round(speed_pct * 100))))  # 0.01% units
+        payload = (
+            struct.pack("<I", 1)            # robot_no
+            + struct.pack("<I", 0)          # station_no
+            + struct.pack("<I", 0)          # speed_class = PERCENT
+            + struct.pack("<I", speed)      # speed (0.01 %)
+            + struct.pack("<7i", *p)        # 7 axis pulses
+            + struct.pack("<I", 0)          # reserved
+            + struct.pack("<I", int(tool_no))   # tool_no
+            + bytes(36)                     # padding → 88 bytes total
+        )
+        self._send_request(
+            Command.MOVE_PULSE, instance=int(move_type), attribute=1,
+            service=Service.SET_ATTRIBUTE_ALL, payload=payload,
+        )
+        logger.debug("HSE MOVE_PULSE type=%d speed=%.1f%% pulses=%s",
+                     move_type, speed_pct, p[:6])
+
+    def move_joints(self, joints_deg: list[float], speed_pct: float = 5.0) -> None:
+        """Direct MOVE to absolute joint angles (deg) — converts to pulses with
+        GP7_PULSE_PER_DEG and calls move_pulse. For real-time joint jog."""
+        from .hse_protocol import GP7_PULSE_PER_DEG
+        pulses = [int(round(d * r)) for d, r in zip(joints_deg, GP7_PULSE_PER_DEG)]
+        self.move_pulse(pulses, speed_pct=speed_pct, move_type=1)
+
     def read_status_running(self) -> bool:
         """READ_STATUS (0x72): returns True if robot is executing a job."""
         resp = self._send_request(

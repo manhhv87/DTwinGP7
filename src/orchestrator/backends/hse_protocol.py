@@ -75,6 +75,8 @@ class Command(IntEnum):
     HOLD_SERVO = 0x83              # servo on/off
     CYCLE = 0x84                   # cycle mode (1=step, 2=cycle, 3=auto)
     START = 0x86                   # start job (after JOB_SELECT)
+    MOVE_CARTESIAN = 0x8A          # direct real-time move (Cartesian target)
+    MOVE_PULSE = 0x8B              # direct real-time move (joint pulse target)
     # P-variable read/write (M3++ ultra-fast mode)
     READ_POS_VAR = 0x7F            # read P-variable (instance = P-index)
     WRITE_POS_VAR = 0x7F            # same command, service SET_ATTRIBUTE_ALL
