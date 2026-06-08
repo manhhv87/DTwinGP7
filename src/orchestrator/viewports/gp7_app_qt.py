@@ -4844,11 +4844,17 @@ class GP7AppQt(
         (r,z) cross-section is taken from the points reachable there for some
         q1∈[-170°,+170°]. The radius dents inward where max reach is reduced. There is
         NO binary hole — every azimuth is reachable (the arm folds to either side of
-        its plane); only the radius shrinks. OUTER = max reach over all configs (dents
-        mildly behind). INNER = reach with J2(L)<0 (RoboDK's "reach when joint 2
-        negative"), which reaches backward → dents in FRONT, opposite the outer dent.
-        Verified by FK, not RoboDK mimicry. FK output mm; scene metres (÷1000).
-        Cached by (model, mode, tool, base).
+        its plane); only the radius shrinks.
+
+          • OUTER = max reach over all configs (outer kidney shell).
+          • INNER = the R233 concave VOID wall — the MIN reachable radius at each
+            height. This is the central dent of the single envelope (matches the
+            datasheet HW1483944 Fig 5-3(b) inner R233 arc): a spindle that pinches to
+            the J1 axis at top & bottom (where the arm folds through the centre) and
+            bulges out in the mid-band. NOT the old "J2<0" surface.
+
+        Verified by FK against the datasheet (top 1217, bottom 476, R927, R233).
+        FK output mm; scene metres (÷1000). Cached by (model, mode, tool, base).
         """
         if self._model is None:
             return None
@@ -4870,7 +4876,7 @@ class GP7AppQt(
         # reach overall), backward (J2<0) → INNER ("reach when joint 2 is negative",
         # per RoboDK). ──
         j1_half = math.degrees(min(-jl[0][0], jl[0][1]))     # 170° for GP7
-        allp, bwd = [], []                                   # (natural_az, r, z) mm
+        allp = []                                            # (natural_az, r, z) mm
         try:
             if mode == "wrist":
                 grid = [(qL, qU, 0.0, 0.0)
@@ -4901,86 +4907,90 @@ class GP7AppQt(
             X = P[:, 0] - bx; Y = P[:, 1] - by; Z = P[:, 2] - bz
             R = np.hypot(X, Y)
             AZ = np.degrees(np.arctan2(Y, X))
-            qL_col = q_arr[:, 1]
             for i in np.nonzero(R >= 1.0)[0]:                # skip r<1mm (on-axis)
-                rec = (float(AZ[i]), float(R[i]), float(Z[i]))
-                allp.append(rec)
-                if qL_col[i] < 0.0:
-                    bwd.append(rec)
+                allp.append((float(AZ[i]), float(R[i]), float(Z[i])))
         except Exception as e:                              # noqa: BLE001
             logger.warning("Reach envelope FK failed: %s", e)
             return None
         if len(allp) < 8:
             return None
-        try:
-            from scipy.spatial import ConvexHull
-        except Exception as e:                              # noqa: BLE001
-            logger.warning("Reach envelope: scipy unavailable: %s", e)
-            return None
 
-        def _resample_by_angle(loop, n):
-            """Resample a CONVEX (r,z) loop to n points at evenly-spaced ANGLES
-            around its centroid, starting at angle 0 (+r direction).
+        def _kidney_mesh(recs, nb=72, nz=44):
+            """Single CLOSED reach envelope WITH the inner concave void (the datasheet
+            HW1483944 Fig 5-3(b) R233 dent), as a surface of revolution about the J1
+            axis. For each world-azimuth bin the reachable (r,z) cross-section is the
+            band between the OUTER boundary rmax(z) and the INNER boundary rmin(z)
+            (the void near the central axis). The closed outline = outer boundary
+            (ascending z) then inner boundary (descending z); revolving it sweeps the
+            full kidney shell — outer wall, inner R233 dent, and the top/bottom rims
+            where they meet. The inner boundary is the SMOOTHED concave cap of the FK
+            min-reach (see _concave_cap) → one clean R233 bulge, not a stack of lenses.
 
-            Phase is then CONSISTENT across azimuth bins: point k always lies in
-            the same angular direction, so stitching adjacent rings never twists.
-            (Arc-length resampling started at the ConvexHull's arbitrary first
-            vertex, whose phase jumped up to ~150° between bins → twisted quad
-            strips that render as slits/holes — esp. for flange/tool whose section
-            shape varies strongly with azimuth.)"""
-            p = np.asarray(loop, dtype=float)
-            cx, cz = float(p[:, 0].mean()), float(p[:, 1].mean())
-            V = len(p)
-            out = []
-            for k in range(n):
-                th = 2.0 * math.pi * k / n
-                dx, dz = math.cos(th), math.sin(th)
-                hit = None
-                for i in range(V):
-                    ax, az = p[i]
-                    ex, ez = p[(i + 1) % V] - p[i]
-                    det = -dx * ez + ex * dz
-                    if abs(det) < 1e-15:
-                        continue
-                    t = (-(ax - cx) * ez + ex * (az - cz)) / det
-                    s = (dx * (az - cz) - dz * (ax - cx)) / det
-                    if t >= 0.0 and -1e-9 <= s <= 1.0 + 1e-9:
-                        hit = (cx + t * dx, cz + t * dz)
-                        break
-                if hit is None:                              # numeric fallback
-                    hit = (float(p[k % V][0]), float(p[k % V][1]))
-                out.append(hit)
-            return out
-
-        def _dented_mesh(recs, nb=72, nsec=48):
-            """Mathematically-faithful envelope (no wedge cut). For each world-azimuth
-            bin, the reachable (r,z) cross-section = the points reachable there for
-            some q1∈[-170°,+170°]. The radius DENTS inward where max reach is reduced
-            (e.g. the forward reach behind the robot, or the J2<0 reach in front), so
-            the surface stays a closed 360° dented ball — exactly the FK envelope."""
+            Phase is consistent across bins because point k is ALWAYS the same
+            fractional height level → adjacent rings stitch without twisting (the
+            reason the old convex-hull arc-length resample needed _resample_by_angle).
+            Per-azimuth z-range is used (not a global one) so the rear dent — where the
+            arm reaches neither as far NOR as high/low — shrinks correctly."""
             a = np.asarray(recs, dtype=float)
             if len(a) < 8:
                 return None
-            rings, off, pts = [], [None] * nb, []
+            nsec = 2 * nz
+
+            def _concave_cap(zc, r):
+                """Upper convex hull of (zc, r) — the smallest CONCAVE curve ≥ r at
+                every level. Turns the noisy FK min-reach (which spikes to the axis
+                wherever the wrist folds through the centre) into ONE smooth inner
+                bulge ≈ R233, pinching at top & bottom — the idealised datasheet dent
+                instead of a stack of lenses. Monotone chain, no scipy."""
+                hull = []
+                for x, y in sorted(zip([float(t) for t in zc],
+                                       [float(t) for t in r])):
+                    while len(hull) >= 2:
+                        (x1, y1), (x2, y2) = hull[-2], hull[-1]
+                        if (x2 - x1) * (y - y1) - (y2 - y1) * (x - x1) >= 0.0:
+                            hull.pop()
+                        else:
+                            break
+                    hull.append((x, y))
+                cap = np.interp(zc, [h[0] for h in hull], [h[1] for h in hull])
+                if len(cap) >= 5:                         # round the peak
+                    k = np.array([1., 2., 3., 2., 1.]); k /= k.sum()
+                    cap = np.convolve(cap, k, mode="same")
+                return cap
+
+            rings, off, pts = [None] * nb, [None] * nb, []
             for b in range(nb):
                 beta = 360.0 * b / nb
                 d = np.abs(((a[:, 0] - beta + 180.0) % 360.0) - 180.0)
                 sel = a[d <= j1_half + 1e-6]            # reachable at this azimuth
-                ring = None
-                if len(sel) >= 3 and float(sel[:, 2].max()) - float(
-                        sel[:, 2].min()) >= 1.0:
-                    rz = sel[:, 1:3]
-                    try:
-                        hv = rz[ConvexHull(rz).vertices]
-                        sec = _resample_by_angle(
-                            [(rr / 1000.0, zz / 1000.0) for rr, zz in hv], nsec)
-                        br = math.radians(beta)
-                        ca, sa = math.cos(br), math.sin(br)
-                        ring = [(bx / 1000.0 + rr * ca, by / 1000.0 + rr * sa,
-                                 bz / 1000.0 + zz) for rr, zz in sec]
-                    except Exception:                   # noqa: BLE001
-                        ring = None
-                rings.append(ring)
+                if len(sel) < 3:
+                    continue
+                zlo, zhi = float(sel[:, 2].min()), float(sel[:, 2].max())
+                if zhi - zlo < 1.0:
+                    continue
+                edges = np.linspace(zlo, zhi, nz + 1)
+                zc = 0.5 * (edges[:-1] + edges[1:])
+                zc[0] = zlo; zc[-1] = zhi          # reach true extremes (no half-bin inset)
+                idx = np.clip(np.digitize(sel[:, 2], edges) - 1, 0, nz - 1)
+                rmin = np.full(nz, np.nan); rmax = np.full(nz, np.nan)
+                for k in range(nz):
+                    rs = sel[idx == k, 1]
+                    if len(rs):
+                        rmin[k] = float(rs.min()); rmax[k] = float(rs.max())
+                v = ~np.isnan(rmax)
+                if int(v.sum()) < 2:
+                    continue
+                rmin = np.interp(zc, zc[v], rmin[v])      # fill empty levels
+                rmax = np.interp(zc, zc[v], rmax[v])
+                r_inner = _concave_cap(zc, rmin)          # one smooth R233 bulge
+                r_inner = np.clip(np.minimum(r_inner, rmax), 0.0, None)
+                loop_r = list(rmax) + list(r_inner[::-1])  # outer up, inner down
+                loop_z = list(zc) + list(zc[::-1])
+                br = math.radians(beta); ca, sa = math.cos(br), math.sin(br)
+                rings[b] = [(bx / 1000.0 + (rr / 1000.0) * ca,
+                             by / 1000.0 + (rr / 1000.0) * sa,
+                             bz / 1000.0 + zz / 1000.0)
+                            for rr, zz in zip(loop_r, loop_z)]
             for b in range(nb):
                 if rings[b] is not None:
                     off[b] = len(pts); pts.extend(rings[b])
@@ -4997,13 +5007,13 @@ class GP7AppQt(
                     faces.extend([4, o0 + j, o1 + j, o1 + jn, o0 + jn])
             return pv.PolyData(np.array(pts), faces)
 
-        # OUTER = max reach over ALL configs (dents mildly behind, where only folded
-        # configs reach). INNER = reach with J2(L)<0, which points backward → dents in
-        # FRONT, opposite the outer dent. Both verified by FK (not RoboDK mimicry).
-        outer_mesh = _dented_mesh(allp)
+        # ONE closed envelope with the R233 inner dent (datasheet HW1483944 Fig
+        # 5-3(b)). No separate inner surface — the void is carved into the single
+        # kidney shell. Verified by FK (top 1217, bottom 476, R927, inner R233).
+        outer_mesh = _kidney_mesh(allp)
         if outer_mesh is None:
             return None
-        inner_mesh = _dented_mesh(bwd) if len(bwd) >= 8 else None
+        inner_mesh = None
 
         result = (outer_mesh, inner_mesh)
         if not hasattr(self, "_reach_envelope_cache"):
