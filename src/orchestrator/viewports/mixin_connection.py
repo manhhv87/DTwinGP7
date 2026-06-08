@@ -356,6 +356,59 @@ class ConnectionMixin:
             except Exception:                               # noqa: BLE001
                 pass
 
+    def _on_send_pose_to_robot(self) -> None:
+        """Phase-1 direct control (RoboDK-style, discrete): send the app's CURRENT
+        joints to the REAL robot via HSE MOVE (0x8B, no job upload). One move per
+        click. Robot MUST be in REMOTE mode. ⚠ REAL MOTION."""
+        if not self._hse_ip:
+            self._set_status("HSE IP not configured — Robot → Connection settings",
+                             level="warn"); return
+        if getattr(self, "_model", None) is None:
+            self._set_status("Robot not loaded", level="warn"); return
+        joints = [round(float(q), 3) for q in self._joints]
+        speed_pct = min(float(getattr(self, "_pp_max_speed_pct", 10.0)), 10.0)
+        r = QMessageBox.warning(
+            self, "Send pose to REAL robot",
+            f"<b>⚠ THE ROBOT WILL MOVE FOR REAL</b><br><br>"
+            f"Target joints (deg):<br><code>{joints}</code><br>"
+            f"Speed: {speed_pct:.0f}%  ·  HSE: <code>{self._hse_ip}</code><br><br>"
+            f"Verify: YRC1000 in <b>REMOTE</b> mode, workspace clear, "
+            f"hand on the <b>E-stop</b>.<br><br>Continue?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Cancel)
+        if r != QMessageBox.StandardButton.Yes:
+            return
+        backend = MotomanHSEBackend(
+            ip=self._hse_ip, timeout_s=3.0, tool_no=self._hse_tool_no)
+        try:
+            backend.connect()
+            if not backend.Valid():
+                self._set_status("Robot: HSE not responding", level="err"); return
+            code, _sub = backend.read_alarm()
+            if code != 0:
+                self._set_status(
+                    f"Robot: ALARM 0x{code:04X} — reset on TP first", level="err")
+                return
+            self._set_status("Robot: servo ON…", level="info")
+            QApplication.processEvents()
+            try:
+                backend.servo_on()
+                import time as _t; _t.sleep(1.0)        # let servos engage
+            except Exception as e:                       # noqa: BLE001
+                self._set_status(
+                    f"servo-on failed ({e}) — check REMOTE mode", level="warn")
+            backend.move_joints(joints, speed_pct=speed_pct)
+            self._set_status(
+                f"Robot: moving to current pose @ {speed_pct:.0f}%", level="ok")
+        except Exception as e:                           # noqa: BLE001
+            self._set_status(f"Send-pose error: {e}", level="err")
+            QMessageBox.critical(self, "Send pose error", str(e))
+        finally:
+            try:
+                backend.disconnect()
+            except Exception:                            # noqa: BLE001
+                pass
+
     def _on_stop_all(self) -> None:
         """Dual-purpose stop: sim playback + robot job (servo OFF if HSE is active)."""
         # Sim stop

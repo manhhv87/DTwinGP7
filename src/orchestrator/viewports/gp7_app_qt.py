@@ -664,6 +664,12 @@ class GP7AppQt(
         act_conn = QAction("&Connection settings... (HSE IP)", self)
         act_conn.triggered.connect(self._on_show_connection_settings)
         m_robot.addAction(act_conn)
+        m_robot.addSeparator()
+        # Direct control (Phase 1, discrete): send the current jogged pose to the
+        # REAL robot via HSE MOVE. ⚠ real motion — REMOTE mode + E-stop required.
+        act_send_pose = QAction("⬇ Send current pose to REAL robot (HSE move)", self)
+        act_send_pose.triggered.connect(self._on_send_pose_to_robot)
+        m_robot.addAction(act_send_pose)
 
         # ── PROGRAM ── Play / Pause / Stop / Run on Robot + ops
         # Program panel moved to View → Window submenu.
