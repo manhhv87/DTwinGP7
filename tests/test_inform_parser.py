@@ -137,8 +137,8 @@ class TestRobustness:
         assert pj.warnings == []
         assert len(pj.instructions[0].joints_deg) == 6
         # P001 (//INST) resolves to P00001 (//POS) — padding-independent.
-        # 55242 pulses / GP7 axis-1 ratio ≈ 41.2°.
-        assert abs(pj.instructions[0].joints_deg[0] - 41.2) < 1.0
+        # 55242 pulses / GP7 axis-1 ratio (1241.212) ≈ 44.5°.
+        assert abs(pj.instructions[0].joints_deg[0] - 44.5) < 1.0
         # pos_key exposes the canonical key for shared-target mapping.
         assert pj.instructions[0].pos_key == "P1"
         assert pj.instructions[1].pos_key == "P2"

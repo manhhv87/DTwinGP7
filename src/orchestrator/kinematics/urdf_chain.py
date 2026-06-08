@@ -444,5 +444,9 @@ def gp7_urdf(
         base_rpy_rad=base_rpy_rad,
         tool_offset_mm=tool_offset_mm,
         flange_xyz_mm=(80.0, 0.0, 0.0),                 # URDF fixed joint 6t-flange
-        tool0_rpy_rad=(np.pi, -np.pi / 2, 0.0),          # URDF fixed joint flange-tool0
+        # flange→tool0 rotation. Was (π, -π/2, 0) (RoboDK convention); changed to
+        # (0, π/2, 0) = that frame rotated 180° about Z so the tool0/flange frame
+        # matches the REAL YRC1000 TOOL00 (verified: app orientation then equals
+        # the teach-pendant exactly). Keep pieper _R_J6_TOOL0 in sync.
+        tool0_rpy_rad=(0.0, np.pi / 2, 0.0),
     )
