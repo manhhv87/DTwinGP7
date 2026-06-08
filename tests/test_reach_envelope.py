@@ -198,16 +198,56 @@ class TestWorkspaceMatchesFK:
             fk = self._fk_maxr(m, az, lambda q: True)
             assert abs(mesh - fk) < 90, f"outer az={az}: mesh {mesh:.0f} vs FK {fk:.0f}"
 
-    def test_inner_matches_fk_j2_negative(self):
-        m, _, inner = self._meshes()
-        for az in (0, 90, 180, 270):
-            mesh = self._mesh_maxr(inner, az)
-            fk = self._fk_maxr(m, az, lambda q: q < 0)
-            assert abs(mesh - fk) < 90, f"inner az={az}: mesh {mesh:.0f} vs FK {fk:.0f}"
+    @staticmethod
+    def _mesh_minr_band(mesh, zlo_mm, zhi_mm):
+        P = mesh.points
+        z = P[:, 2] * 1000.0
+        r = np.hypot(P[:, 0], P[:, 1]) * 1000.0
+        sel = r[(z >= zlo_mm) & (z <= zhi_mm)]
+        return float(sel.min()) if len(sel) else 0.0
 
-    def test_dents_are_opposite(self):
-        # outer reaches farther in front than behind (dent at rear); inner is the
-        # mirror — farther behind than in front (dent at front). Opposite by physics.
-        m, outer, inner = self._meshes()
+    @staticmethod
+    def _fk_minr_band(model, zlo_mm, zhi_mm):
+        import math
+        from src.orchestrator.kinematics.urdf_chain import link_frames_urdf
+        jl = [(j.joint_min, j.joint_max) for j in model.joints]
+        best = 1e9
+        for q1 in np.linspace(jl[0][0], jl[0][1], 24):
+            for qL in np.linspace(jl[1][0], jl[1][1], 30):
+                for qU in np.linspace(jl[2][0], jl[2][1], 36):
+                    p = dict(link_frames_urdf(model, [q1, qL, qU, 0, 0, 0]))["link_B"][:3, 3]
+                    if zlo_mm <= p[2] <= zhi_mm:
+                        r = math.hypot(p[0], p[1])
+                        if 1.0 <= r < best:
+                            best = r
+        return best if best < 1e9 else 0.0
+
+    def test_single_envelope_no_separate_inner(self):
+        # The void is now carved into ONE kidney mesh — no second inner surface.
+        _, outer, inner = self._meshes()
+        assert outer is not None and inner is None
+
+    def test_inner_void_r233(self):
+        # The single kidney has the datasheet inner concave dent: in the mid-height
+        # band the closest approach to the J1 axis (~R233) sits far inside the outer
+        # reach and matches the FK min-reach there.
+        m, kidney, _ = self._meshes()
+        band = (-40.0, 40.0)                 # raw FK z band straddling the R233 bulge
+        mesh = self._mesh_minr_band(kidney, *band)
+        fk = self._fk_minr_band(m, *band)
+        assert abs(mesh - fk) < 60, f"void wall {mesh:.0f} vs FK {fk:.0f}"
+        assert 160 < mesh < 300, f"inner dent {mesh:.0f} not near datasheet R233"
+        assert self._mesh_maxr(kidney, 0) - mesh > 400, "dent must be inside outer shell"
+
+    def test_envelope_vertical_extent(self):
+        # Kidney top/bottom match datasheet (wrist P-point: +887 / -806 mm rel L-axis;
+        # = 1217 / -476 rel floor). Tolerance covers the nz height-binning.
+        _, kidney, _ = self._meshes()
+        z = kidney.points[:, 2] * 1000.0
+        assert abs(z.max() - 887) < 45, f"top {z.max():.0f} vs 887"
+        assert abs(z.min() - (-806)) < 45, f"bottom {z.min():.0f} vs -806"
+
+    def test_outer_dent(self):
+        # outer reaches farther in front than behind (dent at rear) — physics.
+        m, outer, _ = self._meshes()
         assert self._mesh_maxr(outer, 0) > self._mesh_maxr(outer, 180) + 50
-        assert self._mesh_maxr(inner, 180) > self._mesh_maxr(inner, 0) + 50
