@@ -47,6 +47,11 @@ def interpolate_joints(
         raise ValueError("Need at least 2 waypoints to interpolate")
     if dt <= 0:
         raise ValueError(f"dt must be > 0, got {dt}")
+    if max_joint_speed_deg_s <= 0:
+        # speed 0 → duration = max_dq/0 = inf → int(ceil(inf)) raises OverflowError;
+        # negative → bogus 1-step negative-time trajectory. Fail clearly instead.
+        raise ValueError(
+            f"max_joint_speed_deg_s must be > 0, got {max_joint_speed_deg_s}")
 
     speed_rad_s = np.deg2rad(max_joint_speed_deg_s)
     samples: list[TrajectorySample] = []

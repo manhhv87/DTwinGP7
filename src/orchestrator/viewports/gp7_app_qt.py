@@ -322,6 +322,10 @@ class GP7AppQt(
         self._hse_thread: threading.Thread | None = None
         self._hse_stop = threading.Event()
         self._send_pose_busy: bool = False     # Phase-1 discrete send in progress (re-entrancy guard)
+        # Sim move animation (Home / Zero / Align) — tracked so it can be cancelled
+        # before a new move and joined on app close (no untracked teleport threads).
+        self._anim_thread: threading.Thread | None = None
+        self._anim_stop = threading.Event()
 
         # Phase-2 live jog → REAL robot (streaming HSE move, RoboDK-style). OFF by
         # default. The worker holds one HSE connection + servo on and chases the
@@ -5430,12 +5434,30 @@ class GP7AppQt(
         self._stream_live_jog()                         # Phase-2: → REAL robot if ON
         self._set_status(f"J{idx+1} = {value_deg:+.2f} deg")
 
+    def _start_animation(self, joints_deg: list[float], label: str) -> bool:
+        """Start a single TRACKED sim animation. Cancels any in-flight animation
+        first and refuses while Live jog is ON (an untracked sim teleport would
+        desync from the real robot). Returns True if started."""
+        if (getattr(self, "_act_live_jog", None) is not None
+                and self._act_live_jog.isChecked()):
+            self._set_status(f"{label}: turn Live jog OFF first", level="warn")
+            return False
+        prev = self._anim_thread
+        if prev is not None and prev.is_alive():
+            self._anim_stop.set()
+            prev.join(timeout=1.0)
+        self._anim_stop = threading.Event()
+        self._anim_thread = threading.Thread(
+            target=self._animate_to, args=(list(joints_deg),),
+            kwargs={"stop_event": self._anim_stop}, daemon=True)
+        self._anim_thread.start()
+        return True
+
     def _on_home(self) -> None:
         if self._model is None:
             self._set_status("Robot not loaded", level="warn"); return
-        threading.Thread(target=self._animate_to,
-                          args=(list(self._home_joints),), daemon=True).start()
-        self._set_status("Move: Home", level="ok")
+        if self._start_animation(list(self._home_joints), "Home"):
+            self._set_status("Move: Home", level="ok")
 
     # Below this orientation change (deg) the tool is already aligned → no move.
     _ALIGN_MIN_ANGLE_DEG = 0.5
@@ -5509,18 +5531,16 @@ class GP7AppQt(
                 "Align: no IK solution for the aligned orientation", level="warn")
             return
         joints_deg = [math.degrees(q) for q in sol]
-        threading.Thread(target=self._animate_to,
-                          args=(joints_deg,), daemon=True).start()
-        self._set_status(
-            f"Align → tool ⟂ '{self._ref_frames[self._ref_idx][0]}' "
-            f"(Δ={ang:.0f}°)", level="ok")
+        if self._start_animation(joints_deg, "Align"):
+            self._set_status(
+                f"Align → tool ⟂ '{self._ref_frames[self._ref_idx][0]}' "
+                f"(Δ={ang:.0f}°)", level="ok")
 
     def _on_zero(self) -> None:
         if self._model is None:
             self._set_status("Robot not loaded", level="warn"); return
-        threading.Thread(target=self._animate_to,
-                          args=([0.0] * 6,), daemon=True).start()
-        self._set_status("Move: Zero", level="ok")
+        if self._start_animation([0.0] * 6, "Zero"):
+            self._set_status("Move: Zero", level="ok")
 
     def _on_tool_changed(self, idx: int) -> None:
         self._tool_idx = int(idx); self._refresh_pose_readout()
@@ -7031,6 +7051,13 @@ class GP7AppQt(
         self._cam_closing = True
         self._prog_stop.set()
         self._exp_stop.set()
+        # Stop the sim move animation (Home/Zero/Align) so it cannot emit into a
+        # tearing-down VTK plotter.
+        if getattr(self, "_anim_stop", None) is not None:
+            self._anim_stop.set()
+            at = getattr(self, "_anim_thread", None)
+            if at is not None and at.is_alive():
+                at.join(timeout=1.0)
         # Halt any REAL-robot motion + servo-off before exit.
         self._hse_stop.set()                                 # Run-on-Robot job
         if getattr(self, "_live_jog_stop", None) is not None:

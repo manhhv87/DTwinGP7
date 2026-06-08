@@ -62,10 +62,21 @@ class PerceptionNode:
         logger.info("PerceptionNode started")
 
     def stop(self) -> None:
-        """Stop the loop and the camera."""
+        """Stop the loop and the camera.
+
+        The worker can be blocked inside camera.get_frame() (RealSense
+        wait_for_frames ~2s + filters), so the join timeout is set LARGER than the
+        frame timeout and camera.stop() is skipped if the worker is still alive —
+        calling pipeline.stop() concurrently with wait_for_frames is unsafe in
+        librealsense (would crash/hang the device)."""
         self._running = False
         if self._thread is not None:
-            self._thread.join(timeout=2.0)
+            self._thread.join(timeout=3.5)          # > camera frame timeout (~2s)
+            if self._thread.is_alive():
+                logger.warning("PerceptionNode worker still running after join — "
+                               "skipping camera.stop() to avoid a concurrent "
+                               "wait_for_frames/pipeline.stop() race")
+                return
         self.camera.stop()
         logger.info("PerceptionNode stopped")
 

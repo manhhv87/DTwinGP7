@@ -9,7 +9,9 @@ Frame conversion utilities for HSE Cartesian motion path.
   - USER FRAME: optional, defined via YRC1000 teach pendant (not yet used)
 
 Rotation convention: Yaskawa HSE BASE coordinate uses **XYZ-fixed** Tait-Bryan
-(= ZYX intrinsic): R = Rx(Rx) · Ry(Ry) · Rz(Rz) applied in sequence.
+(= ZYX intrinsic). The composed matrix is **R = Rz · Ry · Rx** (extrinsic XYZ),
+exactly as implemented in `rpy_yaskawa_to_matrix`. ⚠ Do NOT "correct" this to
+Rx·Ry·Rz to match an old docstring — that would mirror every commanded orientation.
 
 Reference:
   - Yaskawa INFORM Language Manual (RE-CKI-A464), §Cartesian Position

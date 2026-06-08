@@ -58,8 +58,6 @@ class TelemetryLogger:
         alarm: int | None = None,
     ) -> None:
         """Write one state row. Thread-safe."""
-        if self._writer is None:
-            return
         if len(joints) != 6:
             logger.warning("Telemetry joints has %d elements, expected 6", len(joints))
             return
@@ -69,23 +67,30 @@ class TelemetryLogger:
             "" if running is None else int(running),
             "" if alarm is None else int(alarm),
         )
+        # Check + write INSIDE the lock so a concurrent close() (which nulls _writer
+        # under the same lock) cannot let us writerow() into a just-closed file.
         with self._lock:
+            if self._writer is None:
+                return
             self._writer.writerow(row)
             self._row_count += 1
 
     def flush(self) -> None:
         """Force flush — call periodically if the buffer lags too long (e.g. once per second)."""
-        if self._fp is not None:
-            self._fp.flush()
+        with self._lock:
+            if self._fp is not None:
+                self._fp.flush()
 
     def close(self) -> None:
         """Close the file. Idempotent."""
-        if self._fp is not None:
-            with self._lock:
-                self._fp.flush()
-                self._fp.close()
+        with self._lock:
+            if self._fp is None:
+                return
+            self._fp.flush()
+            self._fp.close()
             self._fp = None
-            logger.info("Telemetry closed: %d rows → %s", self._row_count, self.csv_path)
+            self._writer = None          # block any concurrent log_state row
+        logger.info("Telemetry closed: %d rows → %s", self._row_count, self.csv_path)
 
     def __enter__(self) -> "TelemetryLogger":
         self.open()

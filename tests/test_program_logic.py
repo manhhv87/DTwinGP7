@@ -895,7 +895,9 @@ class TestAlignToReferenceFrame:
             _current_tool_world=lambda: T_cur,
             _solve_cartesian=lambda T, seeded=True: (
                 captured.setdefault("target", T), list(ik_result))[1],
-            _animate_to=lambda j: captured.setdefault("joints", list(j)),
+            _act_live_jog=None,
+            _start_animation=lambda j, label: (
+                captured.setdefault("joints", list(j)), True)[1],
             _set_status=lambda msg, level="ok": captured.setdefault("status", (msg, level)),
         )
         # bind methods that call self

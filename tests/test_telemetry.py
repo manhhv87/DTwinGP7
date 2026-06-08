@@ -88,3 +88,16 @@ class TestTelemetryLogger:
         log.log_state([1] * 6)                      # không raise
         # File chưa tồn tại vì chưa open
         assert not (tmp_path / "tel.csv").exists()
+
+    def test_log_after_close_no_writerow_on_closed_file(self, tmp_path):
+        # Regression: close() nulls _writer under the lock so a racing log_state()
+        # drops the row instead of writing to a closed file (ValueError).
+        log = TelemetryLogger(tmp_path / "tel.csv")
+        log.open()
+        log.log_state([1] * 6)
+        log.close()
+        log.log_state([2] * 6)                      # must NOT raise
+        log.flush()                                 # must NOT raise after close
+        with open(tmp_path / "tel.csv", newline="") as f:
+            rows = list(csv.reader(f))
+        assert len(rows) == 1 + 1                   # header + the single pre-close row
