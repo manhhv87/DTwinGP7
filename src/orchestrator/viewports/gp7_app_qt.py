@@ -4800,19 +4800,19 @@ class GP7AppQt(
     # Parameters dialog
     # ══════════════════════════════════════════════════════════════════
     def _show_parameters_dlg(self) -> None:
-        from PyQt6.QtWidgets import QDialog, QTextEdit
+        from PyQt6.QtWidgets import QDialog
         if self._model is None:
             self._set_status("Robot not loaded — File → Load Robot GP7", "warn")
             return
         dlg = QDialog(self)
         dlg.setWindowTitle("Robot parameters (read-only)")
-        dlg.resize(700, 560)
         lay = QVBoxLayout(dlg)
-        text = QTextEdit(); text.setReadOnly(True)
+        lay.setContentsMargins(16, 16, 16, 12)
+        lay.setSpacing(12)
         robot_name = (getattr(self._cell_config.robot, "name", "GP7")
                       if self._cell_config is not None else "GP7")
         lines = [
-            f"<h3>{robot_name}</h3>",
+            f"<h3 style='margin:0 0 6px 0;'>{robot_name}</h3>",
             f"<b>Base:</b> xyz = {list(self._base_xyz)} mm<br><br>",
             f"<b>URDF joints ({len(self._model.joints)}):</b>",
             "<table border='1' cellpadding='6' cellspacing='0'>",
@@ -4834,11 +4834,16 @@ class GP7AppQt(
                      f"{[round(v, 4) for v in self._model.tool0_rpy_rad]}<br>")
         lines.append(f"<b>Home joints (deg):</b> "
                      + ", ".join(f"{q:+7.2f}" for q in self._home_joints) + "<br><br>")
-        lines.append("<b>Verification:</b> FK match RoboDK SolveFK to 0.00 mm.<br>")
-        text.setHtml("".join(lines))
-        lay.addWidget(text)
-        ok = QPushButton("Close"); ok.clicked.connect(dlg.accept)
+        lines.append("<b>Verification:</b> FK match RoboDK SolveFK to 0.00 mm.")
+        # QLabel sizes to its content (no scroll area) → dialog fits the table with
+        # no wasted vertical space (the old QTextEdit was a fixed 700×560 box).
+        body = QLabel("".join(lines))
+        body.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        lay.addWidget(body)
+        ok = QPushButton("Close"); ok.setMinimumHeight(32)
+        ok.clicked.connect(dlg.accept)
         lay.addWidget(ok)
+        dlg.adjustSize()                        # shrink-wrap to content
         dlg.exec()
 
     # ══════════════════════════════════════════════════════════════════
