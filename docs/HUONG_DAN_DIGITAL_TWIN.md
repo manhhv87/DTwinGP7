@@ -299,6 +299,22 @@ trống**, E-stop trong tay. *(Dùng calib sim nên pose có thể lệch — ch
 - [ ] **FTP server** bật (STANDARD), job dir `/JOB`, user/pass đúng — verify bằng
       `tools/probe_hse.py` [2] PASS (xem §4.1).
 
+### §8.1. Điều khiển trực tiếp thủ công (Send pose / Live jog) — không cần job
+
+Ngoài luồng tự động 3 bậc ở trên, có thể **điều khiển tay** robot thật trực tiếp qua HSE
+MOVE (không nạp `.JBI`), kiểu RoboDK. Dùng để căn chỉnh nhanh / dạy điểm trên robot thật:
+
+- **Phase 1 — Send pose (rời rạc):** jog robot ảo tới tư thế → **Robot → ⬇ Send current
+  pose to REAL robot** → xác nhận → robot đi tới pose đó một lần.
+- **Phase 2 — Live jog (liên tục):** **Robot → ◀▶ Live jog → REAL robot** (bật) → app đồng
+  bộ ảo về pose thật, rồi mọi jog stream xuống robot ~8 Hz. Chặn bước nhảy > 30° và tự
+  servo-OFF khi tắt/Stop/alarm.
+
+Điều kiện & an toàn giống Bước 2/3: **REMOTE mode, workspace trống, tay trên E-stop,
+speed ≤ 10%**. Chi tiết thao tác + ảnh: [`HUONG_DAN_GUI.md` §11.3](HUONG_DAN_GUI.md).
+Direct control bị chặn lẫn nhau với Live mirror / Experiment / Run on Robot (không chạy
+đồng thời). ⚠ Streaming **chưa kiểm chứng trên robot thật** — thử jog nhỏ/chậm trước.
+
 ## §9. Sự cố thường gặp
 
 | Triệu chứng | Nguyên nhân / xử lý |
@@ -314,6 +330,8 @@ trống**, E-stop trong tay. *(Dùng calib sim nên pose có thể lệch — ch
 | Gripper không kẹp / "gripper_timeout" | CC-Link bits sai mapping — verify với PLC/TP |
 | Viewport không mượt | Mirror Hz quá cao so với khả năng render — giảm Mirror Hz (telemetry vẫn 10 Hz) |
 | Gắp trượt (Mock dry-run) | Bình thường — dry-run dùng calib sim; chỉ kiểm luồng/an toàn |
+| Live jog "jog step > 30° BLOCKED" | Pose ảo đã teleport (paste/Home/load target) khi đang live jog — tắt rồi bật lại toggle để đồng bộ lại pose thực |
+| Bật Live jog báo "Robot busy" | Đang chạy Run on Robot / Live mirror / experiment — dừng cái đó trước (không chạy đồng thời) |
 
 ---
 

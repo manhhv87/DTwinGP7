@@ -748,6 +748,10 @@ di chuyển.
 - **Parameters (URDF/DH)...** — xem tham số động học (link, joint, limit).
 - **Teach on surface** `Ctrl+Shift+T` — bật chế độ click mesh tạo target (§9).
 - **Connection settings... (HSE IP)** — cấu hình và kiểm tra kết nối YRC1000 (§11).
+- **⬇ Send current pose to REAL robot (HSE move)** — điều khiển trực tiếp *rời rạc*
+  (Phase 1): gửi pose hiện tại xuống robot thật, 1 lần/lần bấm (§11.3).
+- **◀▶ Live jog → REAL robot (streaming HSE)** — điều khiển trực tiếp *liên tục*
+  (Phase 2): bật để mọi thao tác jog stream xuống robot thật như RoboDK (§11.3).
 
 </td>
 </tr>
@@ -848,6 +852,93 @@ Sau khi bấm **⏹ Stop Digital Twin**, robot dừng và không nhận thêm l�
 khởi động lại; ứng dụng cũng tự dừng khi gặp alarm nghiêm trọng. Chế độ Mock dry-run vẫn khiến
 robot di chuyển tới pose tính từ detection giả, do đó cần đảm bảo workspace trống. Kết quả
 và telemetry được ghi vào thư mục `results/`.
+
+### 11.3. Điều khiển trực tiếp robot thật (không cần job) — Send pose & Live jog
+
+Ngoài cách **Run on Robot** (nạp `.JBI` rồi chạy), app có **2 chế độ điều khiển trực
+tiếp** qua HSE MOVE (lệnh `0x8B`, **không nạp job**), kiểu RoboDK online control. Dùng để
+**căn chỉnh nhanh / dạy điểm trên robot thật** mà không phải viết job.
+
+Cả hai đều nằm trong menu **Robot** (xem ảnh menu ở §10):
+
+| | **Phase 1 — Send pose** | **Phase 2 — Live jog** |
+|---|---|---|
+| Menu | ⬇ Send current pose to REAL robot | ◀▶ Live jog → REAL robot (toggle) |
+| Kiểu | **Rời rạc** — 1 lệnh/lần bấm | **Liên tục** — stream ~8 Hz khi jog |
+| Dùng khi | Đưa robot tới đúng 1 tư thế đã jog sẵn | Rà/căn robot thật theo thời gian thực |
+| Servo | Bật khi gửi, giữ on sau đó | Bật khi ON, **OFF khi tắt toggle/Stop** |
+
+> ⚠️ **AN TOÀN — đọc trước khi dùng.** Cả hai là **chuyển động thật**. Bắt buộc:
+> - YRC1000 ở **REMOTE mode**, **HSE Server** bật, đã setup **TOOL**.
+> - **Workspace trống**, tay luôn trên **E-stop** vật lý.
+> - Tốc độ giới hạn **≤ 10%** (cap cứng trong code).
+> - Streaming (Phase 2) **chưa kiểm chứng trên robot thật** → thử jog **nhỏ & chậm** trước.
+> - Dừng bất kỳ lúc nào: tắt toggle · **Program → Stop** (`■`) · đóng app → đều **servo OFF**.
+> - 3 nguồn lệnh (Send/Live jog · Run on Robot · Mirror/Experiment) **chặn lẫn nhau** —
+>   chỉ 1 cái chạy tại một thời điểm.
+
+#### a) Phase 1 — Send pose (rời rạc)
+
+<table>
+<tr>
+<td width="300"><img src="figures/dlg_send_pose.png" width="300" alt="Dialog Send pose to REAL robot"></td>
+<td valign="top">
+
+**Các bước:**
+1. Jog robot **ảo** (Cartesian/joint) tới tư thế mong muốn (kiểm IK/limit trong viewport).
+2. **Robot → ⬇ Send current pose to REAL robot (HSE move)**.
+3. Dialog an toàn hiện **joints đích (deg) + speed + IP** → kiểm rồi bấm **Yes**.
+4. Trình tự: connect → kiểm alarm → **servo ON** → **MOVE** (point-to-point @ ≤10%) → ngắt.
+5. Robot đi tới pose đó **một lần**. Muốn pose khác: jog tiếp rồi bấm lại.
+
+Bị chặn (báo "Robot busy"/"Live jog ON") nếu đang Run on Robot / Live jog / experiment.
+
+</td>
+</tr>
+</table>
+
+#### b) Phase 2 — Live jog (liên tục, streaming)
+
+<table>
+<tr>
+<td width="300"><img src="figures/dlg_live_jog.png" width="300" alt="Dialog Live jog xác nhận"></td>
+<td valign="top">
+
+**Các bước:**
+1. **Robot → ◀▶ Live jog → REAL robot (streaming HSE)** — tích vào (toggle ON).
+2. Dialog an toàn → **Yes**.
+3. App **đọc joints thật** và **đồng bộ robot ảo về đúng pose thật** (nên cú jog đầu là
+   bước nhỏ, **không** nhảy từ pose ảo bất kỳ).
+4. Từ đó **mọi thao tác jog** (knob/dial Cartesian, các joint slider) được **stream xuống
+   robot thật ~8 Hz** — robot bám theo như online jog của RoboDK.
+5. Tắt toggle (hoặc **Stop**) → **servo OFF**.
+
+**Cơ chế an toàn của streaming:**
+- **Coalesced** (chỉ gửi pose mới nhất) → jog nhanh cỡ nào cũng **không dồn lệnh**.
+- **Chặn bước nhảy > 30°**: nếu pose ảo bị "teleport" (paste/Home/load target) khi đang
+  live jog → lệnh bị **chặn**, báo *"toggle off/on để đồng bộ lại"* (an toàn, không phóng robot).
+- **Poll alarm** định kỳ; gặp alarm hoặc lỗi gửi → **servo OFF + tự bỏ tick** toggle.
+
+</td>
+</tr>
+</table>
+
+**Thông báo trạng thái thường gặp** (góc dưới cửa sổ):
+
+| Thông báo | Ý nghĩa |
+|---|---|
+| `LIVE JOG ON @ 10% — synced to real pose` | Đã bật + đồng bộ xong, sẵn sàng jog |
+| `jog step NN° > 30° BLOCKED (sim out of sync…)` | Pose ảo nhảy lớn — tắt/bật lại toggle để đồng bộ |
+| `Robot busy (Run / Mirror / experiment)…` | Đang có nguồn lệnh khác — dừng nó trước |
+| `move failed (…) — servo OFF, live jog OFF` | Lỗi gửi MOVE — đã servo OFF; kiểm REMOTE/mạng |
+| `ALARM 0x…during jog — servo OFF` | Controller báo alarm — reset trên TP |
+
+#### c) Xem tham số động học
+
+Bất kỳ lúc nào, **Robot → Parameters (URDF/DH)...** mở bảng tham số (link, trục, giới hạn
+khớp, flange, tool0) — tiện đối chiếu giá trị joints khi điều khiển trực tiếp.
+
+<p align="center"><img src="figures/dlg_robot_params.png" width="380" alt="Dialog Robot parameters (URDF/DH)"></p>
 
 ---
 
