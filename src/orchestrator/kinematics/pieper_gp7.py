@@ -269,8 +269,8 @@ def inverse_kinematics_pieper_gp7(
     # Joint limits
     jl = [(j.joint_min, j.joint_max) for j in model.joints]
 
-    # R_world_J6 = R_world_tool0 · R_J6_tool0^T
-    # R_J6_tool0 is symmetric (its own transpose) → R_world_J6 = R_S · R_J6_tool0
+    # R_world_J6 = R_world_tool0 · R_J6_tool0^T. (Note: _R_J6_TOOL0 is NOT
+    # symmetric after the tool0=(0,π/2,0) change — the .T below is required.)
     R_J6_in_S = R_S @ _R_J6_TOOL0.T
 
     solutions: list[list[float]] = []

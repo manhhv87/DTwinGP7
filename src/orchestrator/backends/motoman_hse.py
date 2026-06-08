@@ -349,6 +349,13 @@ class MotomanHSEBackend:
         """
         if tool_no is None:
             tool_no = self.tool_no
+        # SAFETY: reject malformed input — a short pulse list would pad missing
+        # axes to encoder-0 and drive them there (big unexpected move).
+        if len(pulses) not in (6, 7):
+            raise ValueError(
+                f"move_pulse needs 6 (or 7 w/ ext axis) pulses, got {len(pulses)}")
+        if speed_pct <= 0.0:
+            raise ValueError(f"move_pulse speed_pct must be > 0, got {speed_pct}")
         p = list(pulses)[:7] + [0] * (7 - len(pulses))      # pad to 7 axes
         speed = int(max(1, min(10000, round(speed_pct * 100))))  # 0.01% units
         payload = (
@@ -372,6 +379,9 @@ class MotomanHSEBackend:
         """Direct MOVE to absolute joint angles (deg) — converts to pulses with
         GP7_PULSE_PER_DEG and calls move_pulse. For real-time joint jog."""
         from .hse_protocol import GP7_PULSE_PER_DEG
+        if len(joints_deg) != len(GP7_PULSE_PER_DEG):
+            raise ValueError(
+                f"move_joints needs {len(GP7_PULSE_PER_DEG)} angles, got {len(joints_deg)}")
         pulses = [int(round(d * r)) for d, r in zip(joints_deg, GP7_PULSE_PER_DEG)]
         self.move_pulse(pulses, speed_pct=speed_pct, move_type=1)
 

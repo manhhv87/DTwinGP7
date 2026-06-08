@@ -598,3 +598,18 @@ class TestDirectMove:
         inst = struct.unpack("<H", packet[26:28])[0]
         value = struct.unpack("<I", packet[HSE_HEADER_SIZE:])[0]
         assert cmd == 0x83 and inst == 2 and value == 1
+
+    def test_move_pulse_rejects_wrong_axis_count(self, backend_with_mock_socket):
+        backend, _ = backend_with_mock_socket
+        with pytest.raises(ValueError):
+            backend.move_pulse([1, 2, 3], speed_pct=5.0)      # only 3 axes
+
+    def test_move_pulse_rejects_nonpositive_speed(self, backend_with_mock_socket):
+        backend, _ = backend_with_mock_socket
+        with pytest.raises(ValueError):
+            backend.move_pulse([0, 0, 0, 0, 0, 0], speed_pct=0.0)
+
+    def test_move_joints_rejects_wrong_count(self, backend_with_mock_socket):
+        backend, _ = backend_with_mock_socket
+        with pytest.raises(ValueError):
+            backend.move_joints([10.0, 0, 0], speed_pct=5.0)   # only 3 joints
