@@ -378,10 +378,17 @@ class Orchestrator:
         if not target_T_world_list:
             return None
 
-        # Build joint waypoints (radians) — current first, then each target via IK
+        # Build joint waypoints (radians) — current first, then each target via IK.
+        # CRITICAL: apply the SAME ±360° wrap that execution (_move_j/_l_via_ik) does,
+        # against a RUNNING previous-joint state, so the validated trajectory is the
+        # one actually commanded (a raw IK value near a limit can wrap to an
+        # out-of-limit command otherwise — safety layer would validate a different
+        # trajectory than the one executed).
         waypoints_rad: list[list[float]] = []
+        prev_deg: list[float] | None = None
         if self._current_joints is not None:
-            waypoints_rad.append([np.deg2rad(q) for q in self._current_joints])
+            prev_deg = [float(q) for q in self._current_joints]
+            waypoints_rad.append([np.deg2rad(q) for q in prev_deg])
         for T in target_T_world_list:
             joints_deg = self._solve_ik_client(T)
             if joints_deg is None:
@@ -389,6 +396,8 @@ class Orchestrator:
                 logger.debug("Predictive safety skip: IK fail at world %s",
                              T[:3, 3].round(1).tolist())
                 return None
+            joints_deg = self._wrap_joints_toward(joints_deg, prev_deg)
+            prev_deg = joints_deg
             waypoints_rad.append([np.deg2rad(q) for q in joints_deg])
 
         return self._predict_safety(waypoints_rad)
@@ -411,6 +420,25 @@ class Orchestrator:
                 return None
         return None
 
+    @staticmethod
+    def _wrap_joints_toward(target_joints, prev_joints):
+        """Wrap each target joint ±360° to be closest to `prev_joints` (shortest
+        path). Shared by execution (`_normalize_target_joints`) and predictive
+        safety so both reason about the SAME commanded joints."""
+        if prev_joints is None or target_joints is None:
+            return target_joints
+        result = list(target_joints)
+        n = min(len(result), len(prev_joints))
+        for i in range(n):
+            cur = float(prev_joints[i])
+            tgt = float(result[i])
+            while tgt - cur > 180.0:
+                tgt -= 360.0
+            while tgt - cur < -180.0:
+                tgt += 360.0
+            result[i] = tgt
+        return result
+
     def _normalize_target_joints(self, target_joints):
         """Wrap each target joint ±360° to be closest to `_current_joints`.
 
@@ -422,19 +450,7 @@ class Orchestrator:
         representations of the same orientation — normalization is mandatory to
         avoid full-rotation artifacts.
         """
-        if self._current_joints is None or target_joints is None:
-            return target_joints
-        result = list(target_joints)
-        n = min(len(result), len(self._current_joints))
-        for i in range(n):
-            cur = float(self._current_joints[i])
-            tgt = float(result[i])
-            while tgt - cur > 180.0:
-                tgt -= 360.0
-            while tgt - cur < -180.0:
-                tgt += 360.0
-            result[i] = tgt
-        return result
+        return self._wrap_joints_toward(target_joints, self._current_joints)
 
     def _solve_ik_client(self, target_T_world: np.ndarray) -> list[float] | None:
         """Client-side IK: **Pieper analytical** (nearest-branch) → DLS fallback.

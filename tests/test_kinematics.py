@@ -139,6 +139,14 @@ class TestInterpolate:
         with pytest.raises(ValueError, match="dt"):
             interpolate_joints([[0] * 6, [0.1] * 6], dt=0)
 
+    def test_nonpositive_speed_raises(self):
+        # Regression: speed 0 used to OverflowError (duration = dq/0 = inf);
+        # negative gave a bogus negative-time trajectory. Now a clear ValueError.
+        with pytest.raises(ValueError, match="max_joint_speed"):
+            interpolate_joints([[0] * 6, [0.1] * 6], dt=0.05, max_joint_speed_deg_s=0)
+        with pytest.raises(ValueError, match="max_joint_speed"):
+            interpolate_joints([[0] * 6, [0.1] * 6], dt=0.05, max_joint_speed_deg_s=-5)
+
     def test_identical_waypoints_skipped(self):
         wp = [[0] * 6, [0] * 6, [0.5] * 6]
         samples = interpolate_joints(wp, dt=0.05, max_joint_speed_deg_s=30)

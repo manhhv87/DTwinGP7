@@ -123,7 +123,9 @@ class CalibrationSession:
 
         Args:
             gray: Grayscale image containing ChArUco board.
-            T_gripper2base: End-effector pose in base frame (meters), from robot.Pose().
+            T_gripper2base: End-effector pose in base frame (translation in **mm**,
+                consistent with estimate_pose's tvec*1000 and solve_hand_eye). NOT
+                meters — feeding metres here gives a 1000x-wrong hand-eye result.
             camera_matrix: 3x3 intrinsic matrix.
             dist_coeffs: Distortion coefficients.
 
