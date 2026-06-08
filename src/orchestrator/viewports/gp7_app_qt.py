@@ -322,6 +322,15 @@ class GP7AppQt(
         self._hse_thread: threading.Thread | None = None
         self._hse_stop = threading.Event()
 
+        # Phase-2 live jog → REAL robot (streaming HSE move, RoboDK-style). OFF by
+        # default. The worker holds one HSE connection + servo on and chases the
+        # latest jogged joints (latest-value-wins, coalesced). ⚠ REAL MOTION.
+        self._live_jog_thread: threading.Thread | None = None
+        self._live_jog_stop = threading.Event()
+        self._live_jog_lock = threading.Lock()
+        self._live_jog_target: list[float] | None = None   # latest jogged joints (deg)
+        self._live_jog_dirty: bool = False                 # new target pending send
+
         # Camera (D455) state — live capture + vision-guided control (CameraMixin).
         self._cam_thread: threading.Thread | None = None
         self._cam_stop = threading.Event()
@@ -357,6 +366,7 @@ class GP7AppQt(
         self._signals.camera_result.connect(self._on_camera_result)
         self._signals.exp_progress.connect(self._on_exp_progress)
         self._signals.exp_done.connect(self._on_exp_done)
+        self._signals.live_jog_off.connect(self._on_live_jog_worker_exit)
 
         # Build UI (fast — Qt widget construction only)
         self._build_viewport()
@@ -670,6 +680,15 @@ class GP7AppQt(
         act_send_pose = QAction("⬇ Send current pose to REAL robot (HSE move)", self)
         act_send_pose.triggered.connect(self._on_send_pose_to_robot)
         m_robot.addAction(act_send_pose)
+        # Direct control (Phase 2, streaming): while ON, every jog (Cartesian / dial
+        # / joint sliders) streams to the REAL robot at ~8 Hz (RoboDK-style online
+        # jog). ⚠ continuous real motion — REMOTE mode + E-stop required.
+        self._act_live_jog = QAction(
+            "◀▶ Live jog → REAL robot (streaming HSE)", self)
+        self._act_live_jog.setCheckable(True)
+        self._act_live_jog.setChecked(False)
+        self._act_live_jog.toggled.connect(self._on_toggle_live_jog)
+        m_robot.addAction(self._act_live_jog)
 
         # ── PROGRAM ── Play / Pause / Stop / Run on Robot + ops
         # Program panel moved to View → Window submenu.
@@ -5348,6 +5367,7 @@ class GP7AppQt(
         sol = self._solve_cartesian(target_at(1.0), seeded=False)
         if sol is not None:
             self._apply_joints_main([math.degrees(q) for q in sol])
+            self._stream_live_jog()                     # Phase-2: → REAL robot if ON
             w_new = manipulability(self._model, sol)
             if min(w_now, w_new) < self._W_SINGULAR:
                 self._set_status(
@@ -5377,6 +5397,7 @@ class GP7AppQt(
                 level="err")
             return
         self._apply_joints_main([math.degrees(q) for q in best])
+        self._stream_live_jog()                         # Phase-2: → REAL robot if ON
         blk = self._limit_blocker(best) or "workspace boundary / singularity"
         self._set_status(
             f"{label} {lo_f*full_amount:.1f}/{full_amount:.1f}{unit} — "
@@ -5400,6 +5421,7 @@ class GP7AppQt(
     def _on_joint_slider(self, idx: int, value_deg: float) -> None:
         j = list(self._joints); j[idx] = value_deg
         self._apply_joints_main(j)
+        self._stream_live_jog()                         # Phase-2: → REAL robot if ON
         self._set_status(f"J{idx+1} = {value_deg:+.2f} deg")
 
     def _on_home(self) -> None:
@@ -6979,6 +7001,13 @@ class GP7AppQt(
         self._cam_closing = True
         self._prog_stop.set()
         self._exp_stop.set()
+        # Halt any REAL-robot motion + servo-off before exit.
+        self._hse_stop.set()                                 # Run-on-Robot job
+        if getattr(self, "_live_jog_stop", None) is not None:
+            self._live_jog_stop.set()                        # Phase-2 live jog
+            t = getattr(self, "_live_jog_thread", None)
+            if t is not None and t.is_alive():
+                t.join(timeout=2.0)                          # let worker servo-OFF
         try:
             if getattr(self, "_twin", None) is not None:
                 self._twin.stop_mirror()

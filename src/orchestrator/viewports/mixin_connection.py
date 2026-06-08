@@ -26,6 +26,11 @@ from ..backends.motoman_hse import MotomanHSEBackend
 class ConnectionMixin:
     """HSE connection + Run on Robot lifecycle (settings, test, upload, stop)."""
 
+    # Phase-2 live jog: max per-send joint move (deg). A jog increment is small;
+    # a bigger jump = the sim teleported (paste / Home) while live jog was ON →
+    # blocked so the real robot never makes a surprise fast move. See _live_jog_worker.
+    _LIVE_JOG_MAX_STEP_DEG = 30.0
+
     def _on_show_connection_settings(self) -> None:
         """Dialog edit HSE connection — IP, tool_no, FTP creds.
 
@@ -214,6 +219,10 @@ class ConnectionMixin:
         if self._hse_thread is not None and self._hse_thread.is_alive():
             self._set_status("Robot is running a job — wait for it to finish or Stop",
                               level="warn"); return
+        if (getattr(self, "_live_jog_thread", None) is not None
+                and self._live_jog_thread.is_alive()):
+            self._set_status("Live jog is ON — turn it off before running a job",
+                              level="warn"); return
         if getattr(self, "_exp_running", False):
             self._set_status("Digital Twin experiment is running — stop it first",
                               level="warn"); return
@@ -372,10 +381,13 @@ class ConnectionMixin:
                 pass
 
     def _robot_motion_active(self) -> bool:
-        """True if the real robot is being commanded by Run-on-Robot OR a Digital
-        Twin experiment — used to prevent overlapping motion from two sources."""
+        """True if the real robot is being commanded by Run-on-Robot, Phase-2 live
+        jog, OR a Digital Twin experiment/mirror — used to prevent overlapping
+        motion from two sources."""
         run_active = (self._hse_thread is not None and self._hse_thread.is_alive())
-        return bool(run_active or getattr(self, "_exp_running", False))
+        jog_active = (getattr(self, "_live_jog_thread", None) is not None
+                      and self._live_jog_thread.is_alive())
+        return bool(run_active or jog_active or getattr(self, "_exp_running", False))
 
     def _on_send_pose_to_robot(self) -> None:
         """Phase-1 direct control (RoboDK-style, discrete): send the app's CURRENT
@@ -434,15 +446,210 @@ class ConnectionMixin:
             except Exception:                            # noqa: BLE001
                 pass
 
+    # ══════════════════════════════════════════════════════════════════
+    # Phase-2 — streaming live jog → REAL robot (RoboDK-style online jog)
+    # ══════════════════════════════════════════════════════════════════
+    def _on_toggle_live_jog(self, checked: bool) -> None:
+        """Toggle Phase-2 live jog. While ON, every user jog streams to the REAL
+        robot via HSE MOVE at ~8 Hz (latest-value-wins). ⚠ continuous REAL motion.
+        Robot MUST be in REMOTE mode."""
+        if not checked:
+            if (self._live_jog_thread is not None
+                    and self._live_jog_thread.is_alive()):
+                self._live_jog_stop.set()
+                self._set_status("Robot: live jog stopping (servo OFF)…", level="warn")
+            return
+        # ── Enabling: guard then confirm ──
+        def _refuse(msg: str) -> None:
+            self._set_status(msg, level="warn")
+            self._act_live_jog.blockSignals(True)
+            self._act_live_jog.setChecked(False)
+            self._act_live_jog.blockSignals(False)
+
+        if not self._hse_ip:
+            return _refuse("HSE IP not configured — Robot → Connection settings")
+        if getattr(self, "_model", None) is None:
+            return _refuse("Robot not loaded")
+        if self._robot_motion_active():
+            return _refuse("Robot busy (Run / Mirror / experiment) — stop it first")
+        if (self._live_jog_thread is not None
+                and self._live_jog_thread.is_alive()):
+            return
+        speed_pct = min(float(getattr(self, "_pp_max_speed_pct", 10.0)), 10.0)
+        r = QMessageBox.warning(
+            self, "Live jog on REAL robot",
+            f"<b>⚠ THE ROBOT WILL MOVE FOR REAL, CONTINUOUSLY</b><br><br>"
+            f"While ON, every jog (Cartesian / dial / joint sliders) streams to the "
+            f"real robot via HSE at ~8 Hz, speed <b>{speed_pct:.0f}%</b>.<br><br>"
+            f"HSE: <code>{self._hse_ip}</code><br>"
+            f"Require: YRC1000 in <b>REMOTE</b>, workspace clear, hand on the "
+            f"<b>E-stop</b>.<br><br>"
+            f"⚠ Streaming is <b>not yet hardware-verified</b> — start with small, "
+            f"slow jogs. Turn the toggle OFF (or Stop) to servo-off.<br><br>"
+            f"Enable live jog?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Cancel)
+        if r != QMessageBox.StandardButton.Yes:
+            return _refuse("Live jog cancelled")
+        # Seed target = current pose; do NOT move on enable (wait for the first jog).
+        with self._live_jog_lock:
+            self._live_jog_target = [float(q) for q in self._joints]
+            self._live_jog_dirty = False
+        self._live_jog_stop.clear()
+        self._live_jog_thread = threading.Thread(
+            target=self._live_jog_worker, daemon=True)
+        self._live_jog_thread.start()
+
+    @staticmethod
+    def _live_jog_max_step(target: "list[float]", last_sent: "list[float]") -> float:
+        """Largest per-joint move (deg) streaming `target` would command vs the last
+        sent pose. The worker BLOCKS the send if this exceeds _LIVE_JOG_MAX_STEP_DEG
+        (teleport guard)."""
+        return max((abs(t - s) for t, s in zip(target, last_sent)), default=0.0)
+
+    def _stream_live_jog(self) -> None:
+        """Push the current jogged joints to the live-jog worker (latest-value-wins,
+        coalesced). No-op unless Phase-2 live jog is ON. Called from user jog
+        handlers (Cartesian jog + joint sliders) on the main thread."""
+        act = getattr(self, "_act_live_jog", None)
+        if act is None or not act.isChecked():
+            return
+        if (self._live_jog_thread is None
+                or not self._live_jog_thread.is_alive()):
+            return
+        with self._live_jog_lock:
+            self._live_jog_target = [float(q) for q in self._joints]
+            self._live_jog_dirty = True
+
+    def _live_jog_worker(self) -> None:
+        """Hold ONE HSE connection + servo on, then chase the latest jogged joints
+        at a throttled rate until the toggle is turned off. Sends only when the
+        target changed (coalesced) so fast jogging never queues commands. ⚠ REAL
+        MOTION. On any abnormal exit: servo-OFF + uncheck the toggle (main thread)."""
+        import time as _t
+        backend = MotomanHSEBackend(
+            ip=self._hse_ip, timeout_s=2.0, tool_no=self._hse_tool_no)
+        speed_pct = min(float(getattr(self, "_pp_max_speed_pct", 10.0)), 10.0)
+        period = 0.12                    # ~8 Hz send rate
+        alarm_every = 12                 # poll alarm ~ every 1.5 s of sends
+        n = 0
+        last_sent: "list[float] | None" = None
+        try:
+            backend.connect()
+            if not backend.Valid():
+                self._signals.live_jog_off.emit(
+                    "Robot: HSE not responding — live jog OFF"); return
+            code, sub = backend.read_alarm()
+            if code != 0:
+                self._signals.live_jog_off.emit(
+                    f"Robot: ALARM 0x{code:04X} — reset on TP first; live jog OFF")
+                return
+            self._signals.status.emit("Robot: servo ON…", "info")
+            try:
+                backend.servo_on(); _t.sleep(1.0)        # let servos engage
+            except Exception as e:                       # noqa: BLE001
+                self._signals.status.emit(
+                    f"Robot: servo-on failed ({e}) — check REMOTE mode", "warn")
+            if self._live_jog_stop.is_set():
+                try: backend.Stop()
+                except Exception: pass                   # noqa: BLE001
+                self._signals.status.emit("Robot: live jog OFF — servo OFF", "warn")
+                return
+            # SAFETY (sim↔real sync): the sim pose may differ from where the REAL
+            # robot actually is. Read the real joints and SYNC the sim to them so the
+            # first jog is a small increment FROM the real pose — never a teleport
+            # from an arbitrary sim pose. (RoboDK does the same before online jog.)
+            try:
+                q_real = [float(q) for q in backend.Joints()]
+            except Exception as e:                       # noqa: BLE001
+                try: backend.Stop()
+                except Exception: pass                   # noqa: BLE001
+                self._signals.live_jog_off.emit(
+                    f"Robot: can't read current joints ({e}) — live jog OFF")
+                return
+            last_sent = q_real
+            self._signals.joints_update.emit(list(q_real))   # sim → real pose
+            self._signals.status.emit(
+                f"Robot: LIVE JOG ON @ {speed_pct:.0f}% — synced to real pose; "
+                f"jog to drive the robot", "ok")
+            while not self._live_jog_stop.is_set():
+                target = None
+                with self._live_jog_lock:
+                    if self._live_jog_dirty and self._live_jog_target is not None:
+                        target = list(self._live_jog_target)
+                        self._live_jog_dirty = False
+                if target is not None and target != last_sent:
+                    # SAFETY (max-step): a big jump from the last sent target means
+                    # the sim teleported (paste / Home / load target) while live jog
+                    # was ON — do NOT stream it as a fast move. Block + ask to re-sync.
+                    step = self._live_jog_max_step(target, last_sent)
+                    if step > self._LIVE_JOG_MAX_STEP_DEG:
+                        self._signals.status.emit(
+                            f"Robot: jog step {step:.0f}° > "
+                            f"{self._LIVE_JOG_MAX_STEP_DEG:.0f}° BLOCKED (sim out of "
+                            f"sync — toggle live jog off/on to re-sync)", "warn")
+                        _t.sleep(period)
+                        continue
+                    try:
+                        backend.move_joints(
+                            [round(q, 3) for q in target], speed_pct=speed_pct)
+                        last_sent = target
+                    except Exception as e:               # noqa: BLE001
+                        try: backend.Stop()
+                        except Exception: pass           # noqa: BLE001
+                        self._signals.live_jog_off.emit(
+                            f"Robot: move failed ({e}) — servo OFF, live jog OFF")
+                        return
+                    n += 1
+                    if n % alarm_every == 0:
+                        try:
+                            code, _s = backend.read_alarm()
+                            if code != 0:
+                                backend.Stop()
+                                self._signals.live_jog_off.emit(
+                                    f"Robot: ALARM 0x{code:04X} during jog — servo OFF")
+                                return
+                        except Exception:                # noqa: BLE001
+                            pass
+                _t.sleep(period)
+            # Normal stop (toggle OFF / Stop-all / app close).
+            try: backend.Stop()
+            except Exception: pass                       # noqa: BLE001
+            self._signals.status.emit("Robot: live jog OFF — servo OFF", "warn")
+        except Exception as e:                           # noqa: BLE001
+            try: backend.Stop()
+            except Exception: pass                       # noqa: BLE001
+            self._signals.live_jog_off.emit(f"Robot live-jog error: {e}")
+        finally:
+            try: backend.disconnect()
+            except Exception: pass                       # noqa: BLE001
+
+    def _on_live_jog_worker_exit(self, msg: str) -> None:
+        """Main-thread slot: worker exited abnormally → uncheck toggle + report."""
+        act = getattr(self, "_act_live_jog", None)
+        if act is not None:
+            act.blockSignals(True)
+            act.setChecked(False)
+            act.blockSignals(False)
+        self._set_status(msg, level="err")
+
     def _on_stop_all(self) -> None:
         """Stop EVERYTHING that can move the robot: sim playback, Run-on-Robot job,
-        and a Digital Twin experiment (all servo-off / latched)."""
+        Phase-2 live jog, and a Digital Twin experiment (all servo-off / latched)."""
         # Sim stop
         self._on_prog_stop()
         # Robot stop — Run on Robot worker
         if self._hse_thread is not None and self._hse_thread.is_alive():
             self._hse_stop.set()
             self._set_status("Robot: STOP signaled (will servo-off)", level="warn")
+        # Robot stop — Phase-2 live jog
+        if (getattr(self, "_live_jog_thread", None) is not None
+                and self._live_jog_thread.is_alive()):
+            self._live_jog_stop.set()
+            act = getattr(self, "_act_live_jog", None)
+            if act is not None:
+                act.blockSignals(True); act.setChecked(False); act.blockSignals(False)
+            self._set_status("Robot: live jog STOP (servo-off)", level="warn")
         # Robot stop — Digital Twin experiment (autonomous motion). Without this,
         # the global Stop silently fails to halt a running experiment.
         if getattr(self, "_exp_running", False) and hasattr(self, "_on_stop_experiment"):

@@ -105,3 +105,4 @@ class WorkerSignals(QObject):
     sim_reset     = pyqtSignal()            # SimEvent 'reset_objects' → objects return to initial positions
     exp_progress  = pyqtSignal(int, object)  # (trials completed, stats dict) — Digital Twin experiment
     exp_done      = pyqtSignal(object)       # stats dict — mirror/experiment finished → re-enable UI
+    live_jog_off  = pyqtSignal(str)          # Phase-2 live jog worker exited abnormally → uncheck toggle + show msg
