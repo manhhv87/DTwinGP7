@@ -20,12 +20,17 @@ from pathlib import Path
 
 import numpy as np
 
+try:                                   # Windows console hay là cp1252 → ép UTF-8
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+except Exception:                      # noqa: BLE001
+    pass
+
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 FIG = ROOT / "docs" / "figures"
 FIG.mkdir(parents=True, exist_ok=True)
 
-from PyQt6.QtCore import Qt, QTimer                            # noqa: E402
+from PyQt6.QtCore import QPoint, Qt, QTimer                    # noqa: E402
 from PyQt6.QtGui import QGuiApplication, QPainter, QPixmap     # noqa: E402
 from PyQt6.QtWidgets import QApplication                       # noqa: E402
 
@@ -307,6 +312,36 @@ def main() -> int:
         except Exception as e:                                # noqa: BLE001
             todo.append(f"teach_on_surface.png (lỗi: {e})")
     _cap_teach()
+
+    # ── Direct-control (Phase 1/2) UI: Robot menu + safety dialogs ──────────
+    def _grab_menu(title, name):
+        """Pop up a top-level menu by title and grab it (for documenting new menu
+        actions like Send-pose / Live-jog)."""
+        try:
+            mb = win.menuBar()
+            menu = next((a.menu() for a in mb.actions()
+                         if a.text().replace("&", "") == title and a.menu()), None)
+            if menu is None:
+                todo.append(f"{name} (menu '{title}' không thấy)"); return
+            menu.popup(win.mapToGlobal(QPoint(20, 50))); _pump(app, 300)
+            pm = _grab_hires(menu); menu.close()
+            if pm.isNull() or pm.width() < 5:
+                todo.append(f"{name} (grab rỗng)"); return
+            pm.save(str(FIG / name)); done.append(name)
+        except Exception as e:                                 # noqa: BLE001
+            todo.append(f"{name} (lỗi: {e})")
+
+    # menu_robot: menu Robot mở, thấy "Send current pose…" + "Live jog…"
+    _grab_menu("Robot", "menu_robot.png")
+    # dlg_send_pose: hộp thoại an toàn Phase-1 (gửi pose hiện tại xuống robot thật)
+    _grab_modal(win._on_send_pose_to_robot, "dlg_send_pose.png")
+    # dlg_live_jog: hộp thoại an toàn Phase-2 (bật live jog streaming)
+    _grab_modal(lambda: win._act_live_jog.setChecked(True), "dlg_live_jog.png")
+    win._act_live_jog.blockSignals(True)        # đảm bảo toggle về OFF sau khi chụp
+    win._act_live_jog.setChecked(False)
+    win._act_live_jog.blockSignals(False)
+    # dlg_robot_params: bảng tham số robot (URDF joints) — đã co gọn theo nội dung
+    _grab_modal(win._show_parameters_dlg, "dlg_robot_params.png")
 
     print("\n=== SUMMARY ===", flush=True)
     print("Đã chụp:", ", ".join(done) or "(không có)")
