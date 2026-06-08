@@ -227,7 +227,10 @@ class Instruction:
             return f"DIN  {self.var_name} {self.io_group_kind}#({self.io_group})"
         if t == "WriteGroupOut":
             return f"DOUT  OG#({self.io_group}) {self.var_name}"
-        exp = "EXP" if self.cond_exp else ""     # IFTHENEXP/ELSEIFEXP/WHILEEXP
+        # Compound conditions always join with ANDEXP/OREXP, so the keyword must be
+        # the EXP form too — else "IFTHEN ... ANDEXP ..." (plain kw + EXP joiner) is
+        # invalid INFORM and the controller rejects it.
+        exp = "EXP" if (self.cond_exp or self.cond_terms) else ""
         if t == "IfThen":
             return f"IFTHEN{exp}  {self._cond_str()}"
         if t == "ElseIf":
@@ -365,13 +368,13 @@ class Instruction:
                        tcp_pose_mid=list(d.get("tcp_pose_mid", [])),
                        tcp_pose=list(d.get("tcp_pose", [])))
         if t == "SetGripper":
-            return cls(type=t, gripper_close=bool(d["close"]))
+            return cls(type=t, gripper_close=bool(d.get("close", True)))
         if t == "SetDO":
             return cls(type=t,
                        do_index=int(d.get("do_index", 1)),
                        do_state=bool(d.get("do_state", True)))
         if t == "Wait":
-            return cls(type=t, wait_seconds=float(d["seconds"]))
+            return cls(type=t, wait_seconds=float(d.get("seconds", 0.0)))
         if t == "WaitIO":
             return cls(type=t,
                        io_index=int(d.get("io_index", 1)),

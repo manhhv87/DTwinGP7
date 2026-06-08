@@ -197,6 +197,23 @@ class TestCompoundCondition:
         assert eval_instr_condition(ins, s, lambda i: i == 8) is True
         assert eval_instr_condition(ins, s, lambda i: False) is False
 
+    def test_compound_condition_uses_exp_keyword(self):
+        # Regression: a variable-only compound must emit the EXP keyword (matches the
+        # ANDEXP joiner) — IFTHEN/WHILE + ANDEXP is invalid INFORM.
+        for typ, kw in (("IfThen", "IFTHENEXP"), ("While", "WHILEEXP")):
+            ins = Instruction(type=typ, cond_exp=False,
+                              cond_terms=[("I010", "<>", "11"), ("B010", "<>", "12")],
+                              cond_join="AND")
+            line = ins.describe()
+            assert line.startswith(kw + " ")
+            assert " ANDEXP " in line
+
+    def test_from_dict_missing_optional_keys_no_keyerror(self):
+        # Regression: Wait without "seconds" / SetGripper without "close" must not
+        # raise KeyError (which aborted the whole project load).
+        assert Instruction.from_dict({"type": "Wait"}).wait_seconds == 0.0
+        assert Instruction.from_dict({"type": "SetGripper"}).gripper_close is True
+
 
 # ───── Labels & validation ─────
 
@@ -669,7 +686,7 @@ class TestAllTypesCoverage:
         txt = out.read_bytes().decode("utf-8")
         # Spot-check the tricky lines, then confirm a clean re-parse.
         assert "IFTHENEXP IN#(8)=ON " in txt          # I/O cond → EXP + trailing space
-        assert "WHILE I000<3 ANDEXP B010<>12" in txt  # compound condition
+        assert "WHILEEXP I000<3 ANDEXP B010<>12" in txt  # compound → EXP keyword
         assert "SET I001 EXPRESS 5 * B005" in txt     # arithmetic expression
         assert "CLEAR STACK" in txt and "CLEAR I010 2" in txt
         assert "DIN B005 IG#(2)" in txt and "DOUT OG#(2) B005" in txt

@@ -396,7 +396,11 @@ class TestExtendedLGCodegen:
         b.if_then(("", "", ""),
                   terms=[("I010", "<>", "11"), ("B010", "<>", "12")], join="AND")
         b.end_if()
-        assert "IFTHEN I010<>11 ANDEXP B010<>12" in b.render()
+        # Compound keyword MUST be the EXP form to match the ANDEXP joiner — real
+        # TP exports (examples/LG/HOME.JBI:38) emit IFTHENEXP for variable compounds.
+        out = b.render()
+        assert "IFTHENEXP I010<>11 ANDEXP B010<>12" in out
+        assert "IFTHEN I010<>11 ANDEXP" not in out      # not the invalid plain form
 
     def test_exp_flag_forces_ifthenexp_on_variable_cond(self):
         """exp=True emits IFTHENEXP even for a variable condition (preserves the

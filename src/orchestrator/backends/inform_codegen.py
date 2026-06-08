@@ -414,11 +414,14 @@ class InformJobBuilder:
         ANDEXP/OREXP. The EXP form (I/O conditions, or force_exp) gets a trailing
         space, matching Yaskawa teach-pendant output."""
         if terms:
-            io = force_exp or any(cls._is_io_cond(t) for t in terms)
-            kw = base + ("EXP" if io else "")
+            # The compound joiner is ALWAYS ANDEXP/OREXP, so the keyword MUST be the
+            # EXP form too — otherwise a pure-variable compound emits an invalid
+            # "IFTHEN ... ANDEXP ..." (plain keyword + EXP joiner) that the
+            # controller rejects. Real TP exports always pair IFTHENEXP with ANDEXP.
+            kw = base + "EXP"
             joiner = f" {join or 'AND'}EXP "
             body = joiner.join(cls._fmt_cond(*t) for t in terms)
-            return f"{kw} {body}" + (" " if kw.endswith("EXP") else "")
+            return f"{kw} {body} "                       # EXP form → trailing space
         kw = cls._cond_keyword(base, cond, force_exp)
         line = f"{kw} {cls._fmt_cond(*cond)}"
         return line + " " if kw.endswith("EXP") else line

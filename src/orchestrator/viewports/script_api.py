@@ -24,6 +24,15 @@ class ScriptProgramAPI:
     def __init__(self, app: "GP7AppQt") -> None:
         self._app = app
 
+    def _append(self, ins: Instruction) -> None:
+        """Append one instruction, refusing while playback is running — the play
+        loop iterates the (possibly CALL JOB) instruction list live, so a concurrent
+        append would corrupt that iteration."""
+        if self._app._playback_running():
+            raise RuntimeError(
+                "Cannot modify the program while it is running — stop playback first")
+        self._app._program.append(ins)
+
     @property
     def targets(self) -> dict:
         """Read-only view of the target library."""
@@ -37,51 +46,44 @@ class ScriptProgramAPI:
         """MoveJ with joints (6 deg)."""
         if len(joints) != 6:
             raise ValueError(f"joints must have 6 elements, got {len(joints)}")
-        self._app._program.append(
-            Instruction(type="MoveJ", joints=[float(q) for q in joints]))
+        self._append(Instruction(type="MoveJ", joints=[float(q) for q in joints]))
 
     def add_movel(self, tcp_pose: list[float]) -> None:
         """MoveL with TCP pose [X,Y,Z mm, Rx,Ry,Rz deg] (WORLD frame)."""
         if len(tcp_pose) != 6:
             raise ValueError(f"tcp_pose must have 6 elements, got {len(tcp_pose)}")
-        self._app._program.append(
-            Instruction(type="MoveL", tcp_pose=[float(v) for v in tcp_pose]))
+        self._append(Instruction(type="MoveL", tcp_pose=[float(v) for v in tcp_pose]))
 
     def add_movej_to(self, target_name: str) -> None:
         """MoveJ → named target."""
         if target_name not in self._app._targets:
             raise KeyError(f"Target '{target_name}' does not exist")
-        self._app._program.append(
-            Instruction(type="MoveJ", target_name=target_name))
+        self._append(Instruction(type="MoveJ", target_name=target_name))
 
     def add_movel_to(self, target_name: str) -> None:
         """MoveL → named target."""
         if target_name not in self._app._targets:
             raise KeyError(f"Target '{target_name}' does not exist")
-        self._app._program.append(
-            Instruction(type="MoveL", target_name=target_name))
+        self._append(Instruction(type="MoveL", target_name=target_name))
 
     def add_grip(self, close: bool) -> None:
         """SetGripper. close=True → CLOSE / False → OPEN."""
-        self._app._program.append(
-            Instruction(type="SetGripper", gripper_close=bool(close)))
+        self._append(Instruction(type="SetGripper", gripper_close=bool(close)))
 
     def add_wait(self, seconds: float) -> None:
-        self._app._program.append(
-            Instruction(type="Wait", wait_seconds=float(seconds)))
+        self._append(Instruction(type="Wait", wait_seconds=float(seconds)))
 
     def add_setspeed(self, vj_pct: float, v_mm_s: float) -> None:
-        self._app._program.append(Instruction(
+        self._append(Instruction(
             type="SetSpeed",
             speed_joint_pct=float(vj_pct),
             speed_linear_mm_s=float(v_mm_s)))
 
     def add_msg(self, text: str) -> None:
-        self._app._program.append(
-            Instruction(type="ShowMessage", message=str(text)[:32]))
+        self._append(Instruction(type="ShowMessage", message=str(text)[:32]))
 
     def add_call(self, job_name: str) -> None:
         safe = "".join(c for c in str(job_name) if c.isalnum() or c == "_")[:32].upper()
         if not safe:
             raise ValueError(f"job_name is invalid: '{job_name}'")
-        self._app._program.append(Instruction(type="CallJob", job_name=safe))
+        self._append(Instruction(type="CallJob", job_name=safe))
