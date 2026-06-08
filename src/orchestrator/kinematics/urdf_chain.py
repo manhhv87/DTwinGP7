@@ -426,7 +426,7 @@ def gp7_urdf(
                   joint_min=deg(-65),  joint_max=deg(145)),
         URDFJoint(name="U", origin_mm=(0.0, 0.0, 445.0),
                   axis=(0.0, -1.0, 0.0),
-                  joint_min=deg(-116), joint_max=deg(255)),
+                  joint_min=deg(-70), joint_max=deg(190)),   # GP7 datasheet
         URDFJoint(name="R", origin_mm=(440.0, 0.0, 40.0),
                   axis=(-1.0, 0.0, 0.0),
                   joint_min=deg(-190), joint_max=deg(190)),
