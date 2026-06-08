@@ -920,8 +920,8 @@ class GP7AppQt(
         # When building the jog dock, the robot may NOT yet be loaded (deferred).
         # Use GP7 datasheet limits as placeholders; after _load_robot_gp7 runs,
         # sliders will apply the correct values (range UNCHANGED since it is the same GP7).
-        _GP7_LIMITS_DEG = [(-170, 170), (-65, 145), (-116, 255),
-                           (-190, 190), (-135, 135), (-360, 360)]
+        _GP7_LIMITS_DEG = [(-170, 170), (-65, 145), (-70, 190),
+                           (-190, 190), (-135, 135), (-360, 360)]   # GP7 datasheet
         if self._model is not None:
             joints_iter = [(math.degrees(j.joint_min), math.degrees(j.joint_max))
                            for j in self._model.joints]
