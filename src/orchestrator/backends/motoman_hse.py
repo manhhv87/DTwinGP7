@@ -320,6 +320,21 @@ class MotomanHSEBackend:
         )
         logger.debug("JOB_START")
 
+    def servo_on(self) -> None:
+        """Turn servo power ON via HOLD_SERVO (0x83), instance 2 (servo-ON control),
+        data 1 = ON (mirror of Stop()'s 2 = OFF). Required before START in REMOTE
+        mode (the mode key switch on the TP must be set to REMOTE separately).
+
+        SAFETY/VERIFY: value/instance per Yaskawa HSE spec, not yet confirmed on
+        hardware — if START still fails after this, capture the controller error.
+        """
+        self._send_request(
+            Command.HOLD_SERVO, instance=2, attribute=1,
+            service=Service.SET_ATTRIBUTE_SINGLE,
+            payload=struct.pack("<I", 1),       # 1 = servo ON
+        )
+        logger.info("HSE servo ON sent to YRC1000")
+
     def read_status_running(self) -> bool:
         """READ_STATUS (0x72): returns True if robot is executing a job."""
         resp = self._send_request(

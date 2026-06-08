@@ -306,11 +306,22 @@ class ConnectionMixin:
                 backend.upload_job(jtext, jname)
             if self._hse_stop.is_set():
                 self._signals.status.emit("Robot: aborted before start", "warn"); return
+            import time as _time
+            # Servo ON (START requires servo power + REMOTE mode). REMOTE must be
+            # set on the TP key switch; servo we command here. Warn (don't abort)
+            # if it fails — START below will surface the definitive controller error.
+            self._signals.status.emit("Robot: servo ON…", "info")
+            try:
+                backend.servo_on()
+                _time.sleep(1.0)                     # let servos engage before START
+            except Exception as e:                   # noqa: BLE001
+                self._signals.status.emit(
+                    f"Robot: servo-on failed ({e}) — check REMOTE mode on the TP",
+                    "warn")
             self._signals.status.emit(f"Robot: JOB_SELECT + START '{main_name}'…", "info")
             backend.job_select(main_name)
             backend.job_start()
             # Poll status until idle or stop
-            import time as _time
             t_start = _time.monotonic()
             poll_dt = 0.3
             timeout = backend.wait_completion_timeout_s
