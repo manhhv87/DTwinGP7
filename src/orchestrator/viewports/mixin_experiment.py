@@ -65,6 +65,7 @@ class ExperimentMixin:
 
         # ── Mirror/telemetry rates (shared by both modes) ─────────────────
         gb = QGroupBox("Digital Twin — real robot (HSE)")
+        gb.setObjectName("cardGroup")           # title-inside-card (qt_theme)
         form = QFormLayout(gb)
         self._exp_mirror_hz = QDoubleSpinBox()
         self._exp_mirror_hz.setRange(0.5, 10.0)
@@ -80,6 +81,7 @@ class ExperimentMixin:
 
         # ── Experiment parameters (used by the Start experiment button) ───
         self._exp_group = QGroupBox("Experiment parameters (autonomous pick-place)")
+        self._exp_group.setObjectName("cardGroup")   # title-inside-card (qt_theme)
         eform = QFormLayout(self._exp_group)
         self._exp_trials = QSpinBox()
         self._exp_trials.setRange(1, 1000)
