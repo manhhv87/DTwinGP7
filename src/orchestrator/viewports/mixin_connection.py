@@ -426,6 +426,14 @@ class ConnectionMixin:
                 self._set_status(
                     f"Robot: ALARM 0x{code:04X} — reset on TP first", level="err")
                 return
+            # SAFETY: refuse if a job is already executing on the controller.
+            try:
+                if backend.read_status_running():
+                    self._set_status(
+                        "Robot is RUNNING a job — stop it on the TP first", level="warn")
+                    return
+            except Exception:                            # noqa: BLE001
+                pass
             self._set_status("Robot: servo ON…", level="info")
             QApplication.processEvents()
             try:
@@ -544,6 +552,16 @@ class ConnectionMixin:
                 self._signals.live_jog_off.emit(
                     f"Robot: ALARM 0x{code:04X} — reset on TP first; live jog OFF")
                 return
+            # SAFETY: refuse if a job is already executing on the controller — don't
+            # fight TP playback / another motion source.
+            try:
+                if backend.read_status_running():
+                    self._signals.live_jog_off.emit(
+                        "Robot: a job is RUNNING on the controller — stop it first; "
+                        "live jog OFF")
+                    return
+            except Exception:                            # noqa: BLE001
+                pass
             self._signals.status.emit("Robot: servo ON…", "info")
             try:
                 backend.servo_on(); _t.sleep(1.0)        # let servos engage
