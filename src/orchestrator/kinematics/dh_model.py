@@ -116,7 +116,7 @@ def gp7_default(
         # U (J3): elbow — same axis as L (no twist)
         DHLink(a=a2,     alpha=0.0,        d=0.0,
                theta_offset=0.0,
-               joint_min=deg(-116), joint_max=deg(255)),
+               joint_min=deg(-70), joint_max=deg(190)),   # GP7 datasheet (was -116/+255)
         # R (J4): wrist roll — twist axis to forearm
         DHLink(a=0.0,    alpha=deg(-90),   d=d4,
                theta_offset=0.0,

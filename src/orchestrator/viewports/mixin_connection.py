@@ -214,6 +214,9 @@ class ConnectionMixin:
         if self._hse_thread is not None and self._hse_thread.is_alive():
             self._set_status("Robot is running a job — wait for it to finish or Stop",
                               level="warn"); return
+        if getattr(self, "_exp_running", False):
+            self._set_status("Digital Twin experiment is running — stop it first",
+                              level="warn"); return
         # Collect active job + ALL sub-jobs reachable via CALL JOB (any depth).
         order, missing = self._collect_run_jobs()
         if missing:
@@ -318,10 +321,17 @@ class ConnectionMixin:
                 self._signals.status.emit(
                     f"Robot: servo-on failed ({e}) — check REMOTE mode on the TP",
                     "warn")
+            # Stop requested during the servo-engage window → abort BEFORE START
+            # (otherwise the robot briefly starts moving before the poll loop stops it).
+            if self._hse_stop.is_set():
+                try: backend.Stop()
+                except Exception: pass               # noqa: BLE001
+                self._signals.status.emit("Robot: aborted before start", "warn"); return
             self._signals.status.emit(f"Robot: JOB_SELECT + START '{main_name}'…", "info")
             backend.job_select(main_name)
             backend.job_start()
-            # Poll status until idle or stop
+            # Poll status until idle or stop. On ANY abnormal exit (stop / poll
+            # error / timeout) servo-OFF first so a still-moving robot is halted.
             t_start = _time.monotonic()
             poll_dt = 0.3
             timeout = backend.wait_completion_timeout_s
@@ -333,12 +343,17 @@ class ConnectionMixin:
                 try:
                     running = backend.read_status_running()
                 except Exception as e:                      # noqa: BLE001
+                    try: backend.Stop()                     # halt — we lost status
+                    except Exception: pass                  # noqa: BLE001
                     self._signals.status.emit(
-                        f"Robot: status poll error: {e}", "warn"); break
+                        f"Robot: status poll error: {e} — servo OFF", "err"); return
                 if not running: break
                 if _time.monotonic() - t_start > timeout:
+                    try: backend.Stop()                     # halt on timeout
+                    except Exception: pass                  # noqa: BLE001
                     self._signals.status.emit(
-                        f"Robot: timeout {timeout:.0f}s — check TP", "err"); return
+                        f"Robot: timeout {timeout:.0f}s — servo OFF, check TP", "err")
+                    return
                 _time.sleep(poll_dt)
             # Done — alarm post-check
             code, sub = backend.read_alarm()
@@ -356,6 +371,12 @@ class ConnectionMixin:
             except Exception:                               # noqa: BLE001
                 pass
 
+    def _robot_motion_active(self) -> bool:
+        """True if the real robot is being commanded by Run-on-Robot OR a Digital
+        Twin experiment — used to prevent overlapping motion from two sources."""
+        run_active = (self._hse_thread is not None and self._hse_thread.is_alive())
+        return bool(run_active or getattr(self, "_exp_running", False))
+
     def _on_send_pose_to_robot(self) -> None:
         """Phase-1 direct control (RoboDK-style, discrete): send the app's CURRENT
         joints to the REAL robot via HSE MOVE (0x8B, no job upload). One move per
@@ -365,6 +386,10 @@ class ConnectionMixin:
                              level="warn"); return
         if getattr(self, "_model", None) is None:
             self._set_status("Robot not loaded", level="warn"); return
+        if self._robot_motion_active():
+            self._set_status(
+                "Robot already busy (Run on Robot / Digital Twin) — stop it first",
+                level="warn"); return
         joints = [round(float(q), 3) for q in self._joints]
         speed_pct = min(float(getattr(self, "_pp_max_speed_pct", 10.0)), 10.0)
         r = QMessageBox.warning(
@@ -410,10 +435,16 @@ class ConnectionMixin:
                 pass
 
     def _on_stop_all(self) -> None:
-        """Dual-purpose stop: sim playback + robot job (servo OFF if HSE is active)."""
+        """Stop EVERYTHING that can move the robot: sim playback, Run-on-Robot job,
+        and a Digital Twin experiment (all servo-off / latched)."""
         # Sim stop
         self._on_prog_stop()
-        # Robot stop
+        # Robot stop — Run on Robot worker
         if self._hse_thread is not None and self._hse_thread.is_alive():
             self._hse_stop.set()
             self._set_status("Robot: STOP signaled (will servo-off)", level="warn")
+        # Robot stop — Digital Twin experiment (autonomous motion). Without this,
+        # the global Stop silently fails to halt a running experiment.
+        if getattr(self, "_exp_running", False) and hasattr(self, "_on_stop_experiment"):
+            self._on_stop_experiment()
+            self._set_status("Digital Twin: STOP signaled (servo-off)", level="warn")
