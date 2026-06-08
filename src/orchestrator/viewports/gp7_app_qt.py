@@ -4863,6 +4863,9 @@ class GP7AppQt(
             return cache[ckey]
 
         bx, by, bz = self._base_xyz
+        # Inner dead-zone radius (mm); getattr so this also works for the unit-test
+        # stub (a SimpleNamespace without the class constant).
+        r_inner = float(getattr(self, "_REACH_INNER_R_MM", 233.0))
         jl = [(j.joint_min, j.joint_max) for j in self._model.joints]
 
         def _lin(i, n):
@@ -4996,8 +4999,7 @@ class GP7AppQt(
                         hv = rz[ConvexHull(rz).vertices]
                         # Carve the inner dead-zone: clip the section to r >= R_inner.
                         hvc = _clip_r_min(
-                            [(float(rr), float(zz)) for rr, zz in hv],
-                            self._REACH_INNER_R_MM)
+                            [(float(rr), float(zz)) for rr, zz in hv], r_inner)
                         if len(hvc) >= 3:
                             sec = _resample_by_angle(
                                 [(rr / 1000.0, zz / 1000.0) for rr, zz in hvc], nsec)
