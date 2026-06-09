@@ -416,44 +416,60 @@ class ConnectionMixin:
             QMessageBox.StandardButton.Cancel)
         if r != QMessageBox.StandardButton.Yes:
             return
-        # Re-entrancy guard: this runs synchronously on the GUI thread and pumps
-        # the event loop (processEvents / blocking move), so mark the robot busy so
-        # a queued Send-pose / Live-jog / experiment trigger cannot start a second
-        # motion mid-send. Cleared in finally.
+        # Run on a WORKER thread so the GUI stays responsive (no event-loop hang /
+        # frozen Stop during servo-engage + move). _send_pose_busy marks the robot
+        # busy in _robot_motion_active(); _send_pose_stop lets Stop-all abort it.
         self._send_pose_busy = True
+        self._send_pose_stop.clear()
+        threading.Thread(
+            target=self._send_pose_worker, args=(joints, speed_pct), daemon=True).start()
+        self._set_status("Robot: sending pose…", level="info")
+
+    def _send_pose_worker(self, joints: "list[float]", speed_pct: float) -> None:
+        """Worker: connect → alarm/running pre-checks → servo on → MOVE → disconnect.
+        Status via signals (main thread). ⚠ REAL MOTION."""
+        import time as _t
         backend = MotomanHSEBackend(
             ip=self._hse_ip, timeout_s=3.0, tool_no=self._hse_tool_no)
         try:
             backend.connect()
             if not backend.Valid():
-                self._set_status("Robot: HSE not responding", level="err"); return
+                self._signals.status.emit("Robot: HSE not responding", "err"); return
             code, _sub = backend.read_alarm()
             if code != 0:
-                self._set_status(
-                    f"Robot: ALARM 0x{code:04X} — reset on TP first", level="err")
-                return
-            # SAFETY: refuse if a job is already executing on the controller.
+                self._signals.status.emit(
+                    f"Robot: ALARM 0x{code:04X} — reset on TP first", "err"); return
             try:
                 if backend.read_status_running():
-                    self._set_status(
-                        "Robot is RUNNING a job — stop it on the TP first", level="warn")
+                    self._signals.status.emit(
+                        "Robot is RUNNING a job — stop it on the TP first", "warn")
                     return
             except Exception:                            # noqa: BLE001
                 pass
-            self._set_status("Robot: servo ON…", level="info")
-            QApplication.processEvents()
+            if self._send_pose_stop.is_set():
+                self._signals.status.emit("Send pose: aborted", "warn"); return
+            self._signals.status.emit("Robot: servo ON…", "info")
             try:
                 backend.servo_on()
-                import time as _t; _t.sleep(1.0)        # let servos engage
             except Exception as e:                       # noqa: BLE001
-                self._set_status(
-                    f"servo-on failed ({e}) — check REMOTE mode", level="warn")
+                self._signals.status.emit(
+                    f"servo-on failed ({e}) — check REMOTE mode", "warn")
+            for _ in range(10):                          # ~1s servo engage, interruptible
+                if self._send_pose_stop.is_set():
+                    break
+                _t.sleep(0.1)
+            if self._send_pose_stop.is_set():
+                try: backend.Stop()
+                except Exception: pass                   # noqa: BLE001
+                self._signals.status.emit("Send pose: aborted — servo OFF", "warn")
+                return
             backend.move_joints(joints, speed_pct=speed_pct)
-            self._set_status(
-                f"Robot: moving to current pose @ {speed_pct:.0f}%", level="ok")
+            self._signals.status.emit(
+                f"Robot: moving to current pose @ {speed_pct:.0f}%", "ok")
         except Exception as e:                           # noqa: BLE001
-            self._set_status(f"Send-pose error: {e}", level="err")
-            QMessageBox.critical(self, "Send pose error", str(e))
+            try: backend.Stop()
+            except Exception: pass                       # noqa: BLE001
+            self._signals.status.emit(f"Send-pose error: {e}", "err")
         finally:
             self._send_pose_busy = False
             try:
@@ -547,7 +563,9 @@ class ConnectionMixin:
         speed_pct = min(float(getattr(self, "_pp_max_speed_pct", 10.0)), 10.0)
         period = 0.12                    # ~8 Hz send rate
         alarm_every = 12                 # poll alarm ~ every 1.5 s of sends
+        max_move_fails = 5               # tolerate transient MOVE rejects before bailing
         n = 0
+        fail_streak = 0
         last_sent: "list[float] | None" = None
         try:
             backend.connect()
@@ -625,12 +643,29 @@ class ConnectionMixin:
                         backend.move_joints(
                             [round(q, 3) for q in target], speed_pct=speed_pct)
                         last_sent = target
+                        fail_streak = 0
                     except Exception as e:               # noqa: BLE001
-                        try: backend.Stop()
-                        except Exception: pass           # noqa: BLE001
-                        self._signals.live_jog_off.emit(
-                            f"Robot: move failed ({e}) — servo OFF, live jog OFF")
-                        return
+                        # The controller can intermittently reject a streamed MOVE
+                        # (busy/timing). Don't kill the whole live-jog on a single
+                        # reject — keep the session alive and retry; only servo-OFF
+                        # and bail after several CONSECUTIVE failures (real fault).
+                        fail_streak += 1
+                        self._signals.status.emit(
+                            f"Robot: move rejected ({fail_streak}/{max_move_fails}): {e}",
+                            "warn")
+                        if fail_streak >= max_move_fails:
+                            try: backend.Stop()
+                            except Exception: pass       # noqa: BLE001
+                            self._signals.live_jog_off.emit(
+                                f"Robot: {fail_streak} consecutive moves failed — "
+                                f"servo OFF, live jog OFF")
+                            return
+                        # keep this target dirty-equivalent so we retry next tick
+                        with self._live_jog_lock:
+                            self._live_jog_target = list(target)
+                            self._live_jog_dirty = True
+                        _t.sleep(period)
+                        continue
                     n += 1
                     if n % alarm_every == 0:
                         try:
@@ -681,6 +716,10 @@ class ConnectionMixin:
             if act is not None:
                 act.blockSignals(True); act.setChecked(False); act.blockSignals(False)
             self._set_status("Robot: live jog STOP (servo-off)", level="warn")
+        # Robot stop — Phase-1 discrete send-pose
+        if getattr(self, "_send_pose_busy", False):
+            self._send_pose_stop.set()
+            self._set_status("Robot: send-pose STOP signaled (servo-off)", level="warn")
         # Robot stop — Digital Twin experiment (autonomous motion). Without this,
         # the global Stop silently fails to halt a running experiment.
         if getattr(self, "_exp_running", False) and hasattr(self, "_on_stop_experiment"):
