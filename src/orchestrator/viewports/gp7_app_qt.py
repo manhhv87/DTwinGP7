@@ -4424,6 +4424,29 @@ class GP7AppQt(
             T_ref_tool = np.linalg.inv(T_world_ref) @ T_world_tool
             self._fill_pose_row(self._tcp_pose_lbls, T_ref_tool)
 
+    def _pendant_pose(self) -> tuple[float, float, float, float, float, float] | None:
+        """Current TCP expressed exactly as the YRC1000 teach-pendant shows it, so the
+        operator can cross-check the app against the TP 1:1.
+
+        Verified against a real GP7 send-pose measurement:
+          • Position = TCP in the robot BASE frame (origin = _base_xyz; the pendant
+            uses this un-offset base — NOT the app's "Base (0)" +154.8 view frame).
+          • Orientation = base-frame orientation · Rz(180° about the TOOL Z) — the app
+            tool0 frame and the controller TOOL frame differ by exactly that (proven:
+            R_pendant = R_app·Rz180 to 0.001°). Tool Z (approach) is identical; only
+            the roll naming flips.
+        Returns (x,y,z mm, rx,ry,rz deg) or None.
+        """
+        T_world_tool = self._current_tool_world()
+        if T_world_tool is None:
+            return None
+        T_world_base = np.eye(4); T_world_base[:3, 3] = self._base_xyz
+        T_base_tool = np.linalg.inv(T_world_base) @ T_world_tool
+        Rz180 = np.array([[-1.0, 0.0, 0.0], [0.0, -1.0, 0.0], [0.0, 0.0, 1.0]])
+        T_pend = T_base_tool.copy()
+        T_pend[:3, :3] = T_base_tool[:3, :3] @ Rz180
+        return _matrix_to_xyz_rpy_deg(T_pend)
+
     # ── Other configurations (IK solutions) ───────────────────────────
     @staticmethod
     def _solution_turns(joints_deg: list[float]) -> list[int]:
