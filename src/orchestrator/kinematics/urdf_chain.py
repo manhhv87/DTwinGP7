@@ -94,7 +94,7 @@ def _axis_angle_unit(axis_unit: tuple[float, float, float], q: float) -> np.ndar
     ])
 
 
-@lru_cache(maxsize=None)
+@lru_cache(maxsize=64)      # bounded: distinct models (e.g. per base-pose edit) don't accumulate forever
 def _urdf_consts(model: "URDFRobot"):
     """FK constants that do not depend on joint angle — cached once per model.
 

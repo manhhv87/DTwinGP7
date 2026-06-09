@@ -69,13 +69,16 @@ def validate_poses(poses_gripper2base: list[np.ndarray]) -> None:
             f"At least {MIN_POSES} poses required (25+ ideal), got {n}."
         )
 
-    # Measure rotation spread: angular deviation between the first pose and the rest.
-    R0 = poses_gripper2base[0][:3, :3]
+    # Measure rotation spread as the max PAIRWISE angular deviation (not just vs the
+    # first pose) — an outlier first pose could otherwise mask a rotation-deficient
+    # set (all the rest mutually near-identical).
+    Rs = [T[:3, :3] for T in poses_gripper2base]
     angles = []
-    for T in poses_gripper2base[1:]:
-        dR = R0.T @ T[:3, :3]
-        cos_a = np.clip((np.trace(dR) - 1) / 2, -1, 1)
-        angles.append(np.degrees(np.arccos(cos_a)))
+    for i in range(len(Rs)):
+        for j in range(i + 1, len(Rs)):
+            dR = Rs[i].T @ Rs[j]
+            cos_a = np.clip((np.trace(dR) - 1) / 2, -1, 1)
+            angles.append(np.degrees(np.arccos(cos_a)))
     if angles and max(angles) < 15.0:
         logger.warning(
             "Pose rotations are too similar (max deviation %.1f°). "

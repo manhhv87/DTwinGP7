@@ -95,6 +95,11 @@ def mask_pca_yaw(mask: np.ndarray) -> float:
     # 2x2 covariance matrix → eigenvector corresponding to the largest eigenvalue.
     cov = np.cov(pts, rowvar=False)
     eigvals, eigvecs = np.linalg.eigh(cov)
+    # Near-circular mask (eigenvalues nearly equal) → the major axis is arbitrary and
+    # flips frame-to-frame. Return 0.0 (low-confidence yaw) instead of noise.
+    lo, hi = float(np.min(eigvals)), float(np.max(eigvals))
+    if hi <= 1e-9 or (lo / hi) > 0.85:
+        return 0.0
     major_axis = eigvecs[:, np.argmax(eigvals)]
 
     yaw = np.arctan2(major_axis[1], major_axis[0])

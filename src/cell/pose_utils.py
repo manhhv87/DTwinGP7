@@ -75,7 +75,9 @@ def matrix_to_rpy_xyz(T: np.ndarray) -> tuple[list[float], list[float]]:
     xyz_mm = T[:3, 3].tolist()
 
     R = T[:3, :3]
-    pitch = np.arcsin(-R[2, 0])
+    # Clamp before arcsin: a slightly non-orthonormal R (FK/calibration drift) can
+    # make |R[2,0]|>1 → arcsin returns NaN and poisons the whole pose.
+    pitch = np.arcsin(np.clip(-R[2, 0], -1.0, 1.0))
     if np.cos(pitch) > 1e-6:
         roll = np.arctan2(R[2, 1], R[2, 2])
         yaw = np.arctan2(R[1, 0], R[0, 0])

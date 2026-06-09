@@ -15,7 +15,7 @@ import numpy as np
 from .dh_model import DHLink, RobotDHModel
 
 
-@lru_cache(maxsize=None)
+@lru_cache(maxsize=256)     # bounded (6 links/model; distinct models don't pile up)
 def _dh_link_consts(link: DHLink) -> tuple[float, float, float, np.ndarray]:
     """Constants for one link that do NOT depend on joint angle — cached once.
 
@@ -35,7 +35,7 @@ def _dh_link_consts(link: DHLink) -> tuple[float, float, float, np.ndarray]:
     return ca, sa, link.theta_offset, tpl
 
 
-@lru_cache(maxsize=None)
+@lru_cache(maxsize=64)      # bounded per distinct model
 def _base_transform_cached(model: RobotDHModel) -> np.ndarray:
     """Base transform cache (depends only on base_xyz/base_rpy of the model)."""
     return _base_transform(model)

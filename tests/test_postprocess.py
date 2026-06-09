@@ -67,6 +67,15 @@ class TestMaskPcaYaw:
         mask = rect_mask((480, 640), (315, 50, 325, 430))   # dài theo y
         assert abs(mask_pca_yaw(mask)) == pytest.approx(np.pi / 2, abs=0.05)
 
+    def test_near_circular_mask_yaw_low_confidence(self):
+        # Regression: near-circular mask → major axis is arbitrary/noisy → return 0.0
+        # (low-confidence) instead of a yaw that flips frame-to-frame.
+        yy, xx = np.ogrid[:200, :200]
+        disk = ((xx - 100) ** 2 + (yy - 100) ** 2) <= 40 ** 2
+        mask = np.zeros((200, 200), dtype=np.uint8)
+        mask[disk] = 1
+        assert mask_pca_yaw(mask) == 0.0
+
 
 class TestDeprojectPixel:
     def test_principal_point_maps_to_axis(self):

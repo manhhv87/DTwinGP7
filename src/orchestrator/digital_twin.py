@@ -395,6 +395,14 @@ class DigitalTwinMirror:
             raise RuntimeError(
                 "Digital Twin halted (Stop/alarm) — motion command refused")
 
+    def _note_drift_disabled(self) -> None:
+        """Log once: in YRC Cartesian mode the controller does its own IK so the
+        commanded joints are unknown client-side → drift detection cannot run."""
+        if not getattr(self, "_drift_disabled_warned", False):
+            self._drift_disabled_warned = True
+            logger.warning("Drift detection disabled in YRC Cartesian mode "
+                           "(commanded joints unknown client-side).")
+
     def MoveJ(self, target: Any) -> None:
         self._check_not_halted()
         # Cartesian pass-through for HSE backend when target is a 4x4 pose
@@ -402,6 +410,7 @@ class DigitalTwinMirror:
                 and self._backend_supports_cartesian()):
             with self._lock:
                 self._last_commanded = None         # joints not known in advance
+            self._note_drift_disabled()
             self.backend.MoveJ(target)
             return
         joints = self._target_to_joints(target)
@@ -415,6 +424,7 @@ class DigitalTwinMirror:
                 and self._backend_supports_cartesian()):
             with self._lock:
                 self._last_commanded = None
+            self._note_drift_disabled()
             self.backend.MoveL(target)
             return
         joints = self._target_to_joints(target)

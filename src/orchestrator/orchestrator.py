@@ -151,10 +151,12 @@ class Orchestrator:
 
         Returns an empty list if no objects are present.
         """
-        objects = det_msg.get("objects", [])
-        for o in objects:
+        # Work on shallow copies (with pose_base added) and a new list — do NOT
+        # mutate or re-sort the producer-owned detection dicts/list in place.
+        objects = []
+        for o in det_msg.get("objects", []):
             xyz_cam = np.array(o["pose_camera"][:3], dtype=float)
-            o["pose_base"] = camera_to_base(xyz_cam, self.T_BC)
+            objects.append({**o, "pose_base": camera_to_base(xyz_cam, self.T_BC)})
         # Object with highest Z (closest to camera / on top) is grasped first.
         objects.sort(key=lambda o: o["pose_base"][2], reverse=True)
         return objects

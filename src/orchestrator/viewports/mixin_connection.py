@@ -121,15 +121,14 @@ class ConnectionMixin:
                         f"Connected but deep probe fail: {e}", level="warn")
             else:
                 self._set_status(
-                    f"Connection FAIL — check HSE Server is enabled",
-                    level="err")
+                    "Connection FAIL — check HSE Server is enabled", level="err")
                 QMessageBox.warning(
                     self, "Connection failed",
                     f"YRC1000 {ip} did not respond to READ_STATUS.\n"
                     "Verify:\n"
-                    " • Ping {ip} OK?\n"
+                    f" • Ping {ip} OK?\n"
                     " • HSE Server function enabled in Maintenance mode?\n"
-                    " • PC on the same subnet as the YRC1000?".format(ip=ip))
+                    " • PC on the same subnet as the YRC1000?")
         except Exception as e:                              # noqa: BLE001
             self._set_status(f"Connection error: {e}", level="err")
             QMessageBox.critical(self, "Connection error", str(e))
@@ -594,6 +593,12 @@ class ConnectionMixin:
                     f"Robot: can't read current joints ({e}) — live jog OFF")
                 return
             last_sent = q_real
+            # Drop any stale target a jog set during the connect/servo window so the
+            # first streamed move is a fresh increment from the synced real pose, not
+            # an old sim-pose delta.
+            with self._live_jog_lock:
+                self._live_jog_target = list(q_real)
+                self._live_jog_dirty = False
             self._signals.joints_update.emit(list(q_real))   # sim → real pose
             self._signals.status.emit(
                 f"Robot: LIVE JOG ON @ {speed_pct:.0f}% — synced to real pose; "

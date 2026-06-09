@@ -199,7 +199,7 @@ class CameraIntrinsics(BaseModel):
             return math.degrees(
                 2.0 * math.atan(math.tan(math.radians(hfov_deg) / 2.0) * h / w))
 
-        if self.fx and self.fy:
+        if self.fx is not None and self.fy is not None and self.fx > 0 and self.fy > 0:
             hfov = math.degrees(2.0 * math.atan(w / (2.0 * self.fx)))
             vfov = math.degrees(2.0 * math.atan(h / (2.0 * self.fy)))
             return hfov, vfov
