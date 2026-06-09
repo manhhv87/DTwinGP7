@@ -300,7 +300,26 @@ class MotomanHSEBackend:
             ftp.connect(self.ip, 21, timeout=self.timeout_s)
             ftp.login(self.ftp_user, self.ftp_pass)
             ftp.cwd(self.ftp_job_dir)
-            ftp.storbinary(f"STOR {filename}", io.BytesIO(data))
+            # YRC1000 FTP refuses to STOR over an existing file ("503 Bad sequence of
+            # commands. Can't overwrite JOB-file") — delete it first. A 550 (no such
+            # file) is expected/fine. The controller will NOT delete the currently
+            # SELECTED job, so if delete is refused, give a clear teach-pendant hint.
+            try:
+                ftp.delete(filename)
+            except ftplib.error_perm as e:
+                if not str(e).strip().startswith("550"):
+                    raise RuntimeError(
+                        f"Cannot overwrite '{filename}' on the controller "
+                        f"({str(e).strip()}). It is likely the CURRENTLY-SELECTED job "
+                        f"— select a different job (or CANCEL/RESET) on the teach "
+                        f"pendant, then Run on Robot again.") from e
+            try:
+                ftp.storbinary(f"STOR {filename}", io.BytesIO(data))
+            except ftplib.error_perm as e:
+                raise RuntimeError(
+                    f"FTP upload of '{filename}' refused ({str(e).strip()}). If it is "
+                    f"the active job, deselect it on the teach pendant; also check it "
+                    f"is not write-protected.") from e
         finally:
             try:
                 ftp.quit()
