@@ -404,6 +404,19 @@ GP7_PULSE_PER_DEG: tuple[float, ...] = (
     464.863,   # T axis
 )
 
+# GP7 per-axis soft limits (deg), Yaskawa datasheet HW1483944 Fig 5-4. Used by
+# move_joints as defense-in-depth: the GUI sliders already bound jog targets, but
+# the lowest motion primitive should refuse an out-of-limit absolute target rather
+# than rely solely on the controller's soft-limit alarm.
+GP7_JOINT_LIMITS_DEG: tuple[tuple[float, float], ...] = (
+    (-170.0, 170.0),   # S
+    (-65.0, 145.0),    # L
+    (-70.0, 190.0),    # U
+    (-190.0, 190.0),   # R
+    (-135.0, 135.0),   # B
+    (-360.0, 360.0),   # T
+)
+
 
 def pulse_to_deg(joints_pulse: list[int],
                  ratio: tuple[float, ...] = GP7_PULSE_PER_DEG) -> list[float]:

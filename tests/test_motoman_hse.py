@@ -630,3 +630,19 @@ class TestDirectMove:
         backend, _ = backend_with_mock_socket
         with pytest.raises(ValueError):
             backend.move_joints([10.0, 0, 0], speed_pct=5.0)   # only 3 joints
+
+    def test_move_joints_rejects_out_of_limit(self, backend_with_mock_socket):
+        # Defense-in-depth: an out-of-limit absolute target is refused (S limit ±170).
+        backend, _ = backend_with_mock_socket
+        with pytest.raises(ValueError, match="outside GP7 limit"):
+            backend.move_joints([200.0, 0, 0, 0, 0, 0], speed_pct=5.0)
+
+    def test_move_pulse_caps_speed_at_max_speed_pct(self, backend_with_mock_socket):
+        # Direct-path speed is capped to the configured max even if the caller asks more.
+        backend, mock_sock = backend_with_mock_socket
+        backend.max_speed_pct = 10.0
+        mock_sock.recvfrom.return_value = (_build_response(), ("192.168.1.100", 10040))
+        backend.move_pulse([0, 0, 0, 0, 0, 0], speed_pct=80.0)   # request 80%
+        packet, _ = mock_sock.sendto.call_args[0]
+        speed = struct.unpack("<I", packet[HSE_HEADER_SIZE + 12:HSE_HEADER_SIZE + 16])[0]
+        assert speed == 1000                    # capped to 10.00% (not 8000)

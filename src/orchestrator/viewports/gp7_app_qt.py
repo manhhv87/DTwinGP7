@@ -4888,7 +4888,12 @@ class GP7AppQt(
         if self._model is None:
             return None
         cache = getattr(self, "_reach_envelope_cache", {})
-        ckey = (id(self._model), mode, self._tool_idx, tuple(self._base_xyz))
+        # Include the tool offset MATRIX (not just its index) — the 'tool' envelope
+        # depends on the TCP offset, so editing a gripper's offset (same index) must
+        # invalidate the cached mesh.
+        _tool_T = self._tool_frames[self._tool_idx][1]
+        _tool_sig = tuple(np.round(np.asarray(_tool_T, float).ravel(), 3))
+        ckey = (id(self._model), mode, self._tool_idx, tuple(self._base_xyz), _tool_sig)
         if ckey in cache:
             return cache[ckey]
 
@@ -5065,7 +5070,14 @@ class GP7AppQt(
             return
         try:
             meshes = self._compute_reach_envelope_mesh(mode)
-            if meshes is None: return
+            if meshes is None:
+                # None = FK/build failed or too few points; surface it instead of a
+                # silent no-op (the prior actors were already removed above).
+                self._set_status(
+                    f"Workspace ({mode}): could not build reach envelope "
+                    f"(see log)", level="warn")
+                self._plotter.render()
+                return
             outer_mesh, inner_mesh = meshes
             self._plotter.add_mesh(
                 outer_mesh,
@@ -5116,8 +5128,9 @@ class GP7AppQt(
     def _frame_world_matrix(self, key: str) -> np.ndarray | None:
         """Compute world transform (meters) for frame key. Returns None if N/A.
 
-        Perf P2: reuse self._cached_frames if joints state matches (already computed
-        in _render_scene_frame same tick) — avoids recomputing the FK chain.
+        Perf: reuse the JOINT-KEYED FK cache (_cached_fk) iff it matches the current
+        joints — recompute on mismatch so a caller that changed joints without a
+        render never draws a stale triad.
         """
         # Base = robot base position (no rotation)
         T_world_base = np.eye(4); T_world_base[:3, 3] = self._base_xyz
@@ -5132,12 +5145,16 @@ class GP7AppQt(
         # Dynamic frames depending on current joints
         if self._model is None:
             return None
-        # Try cache first (set by _render_scene_frame same tick)
-        frames = getattr(self, "_cached_frames", None)
-        if frames is None:
+        # Try the joint-keyed FK cache; recompute (and refresh it) on mismatch.
+        jk = (id(self._model), tuple(round(q, 4) for q in self._joints))
+        cached = getattr(self, "_cached_fk", None)
+        if cached is not None and cached[0] == jk:
+            frames = cached[1]
+        else:
             try:
                 q_rad = [math.radians(q) for q in self._joints]
                 frames = dict(link_frames_urdf(self._model, q_rad))
+                self._cached_fk = (jk, frames)
             except Exception:                              # noqa: BLE001
                 return None
         if key == "flange":

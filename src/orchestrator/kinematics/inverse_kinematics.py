@@ -216,8 +216,10 @@ def inverse_kinematics(
         Joints (radian) list of 6 elements if converged, None if failed.
 
     Notes:
-        - Joint limits are clipped each iter — if the true solution lies outside limits,
-          IK will converge to the nearest boundary point.
+        - Joint limits are clipped each iter; the pose is then re-checked against
+          tolerance. If the true solution lies outside limits the clipped pose does
+          NOT meet tolerance, so this returns **None** (it does NOT return a
+          best-effort boundary point — callers must treat None as "unreachable").
         - Multi-solution: returns only 1 solution near q_init. To pick a different
           branch, retry with a different q_init.
     """
@@ -317,7 +319,8 @@ def inverse_kinematics_seeded(
     rng = np.random.RandomState(seed)
 
     seeds: list[np.ndarray] = []
-    # (a) Deterministic perturbations around q_init — nearby solutions, tried first.
+    # (a) Pseudo-random perturbations around q_init (fixed-seed reproducible, NOT
+    #     per-axis deterministic) — nearby solutions, tried first.
     for d_deg in (15.0, 30.0, 60.0, 90.0):
         d = np.deg2rad(d_deg)
         seeds.append(np.clip(q0 + rng.uniform(-d, d, len(q0)), q_min, q_max))

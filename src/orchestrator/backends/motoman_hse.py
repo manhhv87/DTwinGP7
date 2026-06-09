@@ -306,6 +306,10 @@ class MotomanHSEBackend:
                 ftp.quit()
             except Exception:                       # noqa: BLE001
                 pass
+            try:
+                ftp.close()                         # always release the socket even
+            except Exception:                       # if quit() failed (broken conn)
+                pass                                # noqa: BLE001
 
     def job_select(self, job_name: str) -> None:
         """JOB_SELECT (0x87): selects the uploaded job as current. Must be called before START."""
@@ -364,6 +368,9 @@ class MotomanHSEBackend:
                 f"move_pulse needs 6 (or 7 w/ ext axis) pulses, got {len(pulses)}")
         if speed_pct <= 0.0:
             raise ValueError(f"move_pulse speed_pct must be > 0, got {speed_pct}")
+        # SAFETY: cap to the configured max even on the direct (no-job) path — the
+        # INFORM codegen path already applies max_speed_pct, the direct path did not.
+        speed_pct = min(float(speed_pct), float(self.max_speed_pct))
         p = list(pulses)[:7] + [0] * (7 - len(pulses))      # pad to 7 axes
         speed = int(max(1, min(10000, round(speed_pct * 100))))  # 0.01% units
         payload = (
@@ -386,10 +393,17 @@ class MotomanHSEBackend:
     def move_joints(self, joints_deg: list[float], speed_pct: float = 5.0) -> None:
         """Direct MOVE to absolute joint angles (deg) — converts to pulses with
         GP7_PULSE_PER_DEG and calls move_pulse. For real-time joint jog."""
-        from .hse_protocol import GP7_PULSE_PER_DEG
+        from .hse_protocol import GP7_JOINT_LIMITS_DEG, GP7_PULSE_PER_DEG
         if len(joints_deg) != len(GP7_PULSE_PER_DEG):
             raise ValueError(
                 f"move_joints needs {len(GP7_PULSE_PER_DEG)} angles, got {len(joints_deg)}")
+        # SAFETY (defense-in-depth): refuse an out-of-limit absolute target — don't
+        # rely solely on GUI slider bounds + the controller's soft-limit alarm.
+        for i, (d, (lo, hi)) in enumerate(zip(joints_deg, GP7_JOINT_LIMITS_DEG)):
+            if not (lo - 1e-6 <= float(d) <= hi + 1e-6):
+                raise ValueError(
+                    f"move_joints: axis {i} = {float(d):.2f}° outside GP7 limit "
+                    f"[{lo:.0f}, {hi:.0f}]")
         pulses = [int(round(d * r)) for d, r in zip(joints_deg, GP7_PULSE_PER_DEG)]
         self.move_pulse(pulses, speed_pct=speed_pct, move_type=1)
 
@@ -431,6 +445,12 @@ class MotomanHSEBackend:
             raise ValueError(f"P-variable index 0-127, got {p_index}")
         if len(joints_deg) != 6:
             raise ValueError(f"Expected 6 joints, got {len(joints_deg)}")
+        # Validate tool/frame like encode_cartesian_position does — an out-of-range
+        # value would pack a wrong TCP/frame for a real move (or struct.error if <0).
+        if not (0 <= tool_no <= 63):
+            raise ValueError(f"tool_no must be 0-63, got {tool_no}")
+        if not (0 <= user_frame <= 63):
+            raise ValueError(f"user_frame must be 0-63, got {user_frame}")
 
         # Convert deg → pulse (same ratio as INFORM C-variable)
         from .hse_protocol import GP7_PULSE_PER_DEG
@@ -987,7 +1007,7 @@ class MotomanHSEBackend:
             linear_mm_s, joint_deg_s,
         )
 
-    def Stop(self) -> None:
+    def Stop(self) -> bool:
         """Emergency stop: turns off servo on YRC1000.
 
         HOLD_SERVO (0x83), instance 2 = Servo-ON control, data part 1=ON / 2=OFF
@@ -1008,5 +1028,7 @@ class MotomanHSEBackend:
                 payload=_struct.pack("<I", 2),    # 2 = servo OFF (1 = ON)
             )
             logger.warning("HSE Stop(): servo OFF sent to YRC1000")
+            return True
         except Exception as e:                    # noqa: BLE001
             logger.error("HSE Stop() error: %s — use physical E-stop!", e)
+            return False     # caller may escalate; never relied on vs physical E-stop

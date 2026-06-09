@@ -27,6 +27,23 @@ Typography:
 """
 from __future__ import annotations
 
+import atexit
+import os
+
+# Temp glyph PNGs generated for QSS `image: url(...)` — tracked + unlinked at exit
+# so each process launch does not leave orphan files in the temp dir.
+_GLYPH_TMP_PATHS: list[str] = []
+
+
+@atexit.register
+def _cleanup_glyph_tmps() -> None:
+    for _pth in _GLYPH_TMP_PATHS:
+        try:
+            os.unlink(_pth)
+        except Exception:                          # noqa: BLE001
+            pass
+
+
 # Color constants — re-exportable for widgets that need inline color (e.g.
 # label background keyed to status level).
 BG          = "#1e1e1e"
@@ -583,6 +600,7 @@ def _paint_glyph_png(glyph: str, color: str = TEXT,
     tmp = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
     tmp.close()
     pix.save(tmp.name)
+    _GLYPH_TMP_PATHS.append(tmp.name)               # cleaned up at exit
     return tmp.name.replace("\\", "/")              # QSS url() requires forward slashes
 
 

@@ -37,22 +37,31 @@ class D455Camera:
         cfg.enable_stream(rs.stream.color, *color_size, rs.format.bgr8, fps)
         cfg.enable_stream(rs.stream.depth, *depth_size, rs.format.z16, fps)
         self.profile = self.pipeline.start(cfg)
+        # If any post-start setup fails, stop the pipeline before propagating —
+        # otherwise the started pipeline + claimed USB device leak (the caller falls
+        # back to Mock and the device stays locked until process exit).
+        try:
+            self.align = rs.align(rs.stream.color)
+            self.spatial = rs.spatial_filter()
+            self.temporal = rs.temporal_filter()
+            self.hole_filling = rs.hole_filling_filter()
 
-        self.align = rs.align(rs.stream.color)
-        self.spatial = rs.spatial_filter()
-        self.temporal = rs.temporal_filter()
-        self.hole_filling = rs.hole_filling_filter()
-
-        color_stream = self.profile.get_stream(rs.stream.color)
-        intr = color_stream.as_video_stream_profile().get_intrinsics()
-        self.intrinsics = {
-            "fx": intr.fx, "fy": intr.fy,
-            "ppx": intr.ppx, "ppy": intr.ppy,
-            "width": intr.width, "height": intr.height,
-        }
-        self.depth_scale = (
-            self.profile.get_device().first_depth_sensor().get_depth_scale()
-        )
+            color_stream = self.profile.get_stream(rs.stream.color)
+            intr = color_stream.as_video_stream_profile().get_intrinsics()
+            self.intrinsics = {
+                "fx": intr.fx, "fy": intr.fy,
+                "ppx": intr.ppx, "ppy": intr.ppy,
+                "width": intr.width, "height": intr.height,
+            }
+            self.depth_scale = (
+                self.profile.get_device().first_depth_sensor().get_depth_scale()
+            )
+        except Exception:
+            try:
+                self.pipeline.stop()
+            except Exception:                          # noqa: BLE001
+                pass
+            raise
         logger.info("D455 started — intrinsics fx=%.1f fy=%.1f", intr.fx, intr.fy)
 
     def get_frame(self) -> tuple[np.ndarray | None, np.ndarray | None]:
