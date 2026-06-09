@@ -887,11 +887,21 @@ Cả hai đều nằm trong menu **Robot** (xem ảnh menu ở §10):
 **Các bước:**
 1. Jog robot **ảo** (Cartesian/joint) tới tư thế mong muốn (kiểm IK/limit trong viewport).
 2. **Robot → ⬇ Send current pose to REAL robot (HSE move)**.
-3. Dialog an toàn hiện **joints đích (deg) + speed + IP** → kiểm rồi bấm **Yes**.
-4. Trình tự: connect → kiểm alarm → **servo ON** → **MOVE** (point-to-point @ ≤10%) → ngắt.
+3. Dialog an toàn hiện **joints đích (deg)**, **dòng "YRC pendant frame"** (X/Y/Z/Rx/Ry/Rz),
+   **speed + IP** → kiểm rồi bấm **Yes**. (Chạy trên worker thread → UI không treo.)
+4. Trình tự: connect → kiểm alarm/job → **servo ON** → **MOVE** (point-to-point @ ≤10%) → ngắt.
 5. Robot đi tới pose đó **một lần**. Muốn pose khác: jog tiếp rồi bấm lại.
 
 Bị chặn (báo "Robot busy"/"Live jog ON") nếu đang Run on Robot / Live jog / experiment.
+
+> 💡 **Đối chiếu với teach pendant.** Dòng **"YRC pendant frame"** hiển thị pose trong
+> đúng frame của controller (**BASE + quy ước TOOL**) nên **khớp 1:1 với CURRENT POSITION
+> trên pendant** (đã verify HW: ≤0.1mm/0.02°). Lưu ý các giá trị này **khác** với readout
+> Cartesian thường của app: app mặc định hiển thị ở frame **"Base (0)"** (lệch +154.8mm theo
+> Z) và quy ước **tool0** (lệch 180° quanh trục tool). Đây chỉ là **khác cách biểu diễn
+> frame** — `move_joints` gửi joints trực tiếp nên **robot luôn tới đúng pose vật lý**.
+> *Joints = 0 vẫn cho pose Cartesian khác 0 (vd X560 Z485) vì đó là forward-kinematics của
+> tư thế Zero — bình thường.*
 
 </td>
 </tr>

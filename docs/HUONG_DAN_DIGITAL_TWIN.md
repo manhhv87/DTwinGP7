@@ -332,6 +332,9 @@ Direct control bị chặn lẫn nhau với Live mirror / Experiment / Run on Ro
 | Gắp trượt (Mock dry-run) | Bình thường — dry-run dùng calib sim; chỉ kiểm luồng/an toàn |
 | Live jog "jog step > 30° BLOCKED" | Pose ảo đã teleport (paste/Home/load target) khi đang live jog — tắt rồi bật lại toggle để đồng bộ lại pose thực |
 | Bật Live jog báo "Robot busy" | Đang chạy Run on Robot / Live mirror / experiment — dừng cái đó trước (không chạy đồng thời) |
+| Toạ độ app "lệch" so với pendant (vd Z hơn 154.8mm, orientation 180°) | **Không phải lỗi** — chỉ khác frame hiển thị. Robot tới đúng pose (gửi joints trực tiếp). Xem dòng **"YRC pendant frame"** trong dialog Send-pose → khớp pendant 1:1. App mặc định hiển thị ở frame "Base (0)" (+154.8) + quy ước tool0 |
+| Joints = 0 nhưng pose Cartesian khác 0 | Bình thường — đó là forward-kinematics của tư thế Zero (tay duỗi tới ~X560, Z485) |
+| Live jog "chập chờn / tự ngắt dù servo on" | Controller thỉnh thoảng từ chối lệnh MOVE streaming. App đã chịu 5 lần reject liên tiếp trước khi ngắt; nếu vẫn đứt → giảm tần số jog / kiểm REMOTE + mạng |
 
 ---
 
