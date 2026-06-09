@@ -322,6 +322,7 @@ class GP7AppQt(
         self._hse_thread: threading.Thread | None = None
         self._hse_stop = threading.Event()
         self._send_pose_busy: bool = False     # Phase-1 discrete send in progress (re-entrancy guard)
+        self._send_pose_stop = threading.Event()   # abort the discrete send (Stop-all)
         # Sim move animation (Home / Zero / Align) — tracked so it can be cancelled
         # before a new move and joined on app close (no untracked teleport threads).
         self._anim_thread: threading.Thread | None = None
@@ -7077,6 +7078,8 @@ class GP7AppQt(
                 at.join(timeout=1.0)
         # Halt any REAL-robot motion + servo-off before exit.
         self._hse_stop.set()                                 # Run-on-Robot job
+        if getattr(self, "_send_pose_stop", None) is not None:
+            self._send_pose_stop.set()                       # Phase-1 discrete send
         if getattr(self, "_live_jog_stop", None) is not None:
             self._live_jog_stop.set()                        # Phase-2 live jog
             t = getattr(self, "_live_jog_thread", None)
