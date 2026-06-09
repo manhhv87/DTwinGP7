@@ -201,11 +201,19 @@ Mô hình URDF gốc theo chuẩn **ROS-Industrial/RoboDK**; đã căn lại cho
 
 | | `yrc` — YRC1000 onboard | `client` — Pieper analytical |
 |---|---|---|
-| Ai giải IK | Bộ điều khiển YRC1000 (gửi pose Cartesian BASE) | PC giải (Pieper giải tích) |
+| Ai giải IK | Bộ điều khiển YRC1000 (gửi pose Cartesian BASE) | PC giải (Pieper giải tích) → gửi **JOINTS** |
 | Overhead PC | 0 | ~0.24 ms/nghiệm |
 | Độ chính xác | Theo controller | Exact ~1e-13 mm, deterministic |
-| Điều kiện | **Phải setup TOOL** đúng `tool_no` trên teach-pendant | URDF/base/tool đúng |
-| Mặc định | ✅ cho robot thật | khi muốn IK PC-side |
+| Điều kiện | URDF/base/`robot_tool_offset_mm` đúng (controller dùng **TOOL00**) | URDF/base/`tcp_offset_mm` đúng |
+| Hardware-verified | ❌ chưa (Cartesian path) | ✅ cơ chế gửi joints (như Send-pose đã verify) |
+| Mặc định | opt-in | ✅ **mặc định an toàn** |
+
+> ⚠️ **Mặc định = `client`** (an toàn): giải IK trên cùng URDF dùng để hand-eye calib rồi
+> gửi **joints** — miễn nhiễm với quy ước frame BASE/TOOL của controller. Đường `yrc`
+> (Cartesian) **chưa verify phần cứng** → chỉ bật khi cần và sau khi touch-test.
+> **Nhất quán tool:** cả 2 đường đều dùng `robot_tool_offset_mm` (app làm chủ TCP offset);
+> đường `yrc` tự hạ TCP→flange và gửi với **TOOL00**, nên KHÔNG phụ thuộc cấu hình TOOL01
+> trên pendant. Lần gắp thật ĐẦU TIÊN nên dùng `client` với `tcp_offset_mm` đúng của gripper.
 
 - **Pieper** (`src/orchestrator/kinematics/pieper_gp7.py`) là solver giải tích chính:
   trả tất cả nhánh (≤8) + chọn **nhánh gần** joints hiện tại (`_nearest`) để chuyển
