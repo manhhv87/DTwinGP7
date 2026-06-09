@@ -373,6 +373,7 @@ class GP7AppQt(
         self._signals.exp_progress.connect(self._on_exp_progress)
         self._signals.exp_done.connect(self._on_exp_done)
         self._signals.live_jog_off.connect(self._on_live_jog_worker_exit)
+        self._signals.run_overwrite_blocked.connect(self._on_run_overwrite_blocked)
 
         # Build UI (fast — Qt widget construction only)
         self._build_viewport()
