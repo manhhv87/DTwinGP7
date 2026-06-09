@@ -106,20 +106,28 @@ def _build_tool_frames(cell_config) -> list[tuple[str, np.ndarray]]:
     return out
 
 
-# Z offset (mm) of the real YRC1000 BASE/ROBOT coordinate origin above the URDF
-# base reference. Measured constant from app-FK vs teach-pendant BASE over several
-# poses (controller has NO BASE shift configured — TP ROBOT == TP BASE). Applying
-# it to the "Base (0)" reference makes the app's Cartesian readout match the pendant.
-GP7_CTRL_BASE_Z_MM = 154.8
+# Z offset (mm) between the URDF base reference and the real YRC1000 BASE origin.
+# SUPERSEDED: a real GP7 measurement (commit 63f27fe, _pendant_pose verified to
+# <0.003mm vs the teach pendant) showed the controller BASE coincides with the URDF
+# base (no Z shift) — the pendant's CURRENT POSITION matched the un-offset base
+# frame, and the old +154.8 made the "Base (0)" readout 154.8mm LOWER than the
+# pendant. Kept at 0.0 so "Base (0)" == the robot base (its POSITION now matches the
+# pendant). Do NOT re-introduce the offset — and never add it to the HSE Cartesian
+# send path (that would command a 154.8mm error). For an EXACT pendant cross-check
+# (position AND the tool-frame orientation), use the Send-pose dialog's
+# "YRC pendant frame" line (gp7_app_qt._pendant_pose).
+GP7_CTRL_BASE_Z_MM = 0.0
 
 
 def _build_ref_frames(cell_config) -> list[tuple[str, np.ndarray]]:
     """[(name, T_base_ref)] — reference frame relative to robot base.
 
-    "Base (0)" is offset +Z by GP7_CTRL_BASE_Z_MM so it coincides with the real
-    controller BASE origin (the app's URDF base sits that much lower)."""
+    "Base (0)" = the robot base origin (its POSITION matches the teach-pendant
+    ROBOT/BASE readout). NOTE: orientation shown in this frame is the app's tool0
+    convention, which differs from the pendant TOOL by 180° about tool Z — use the
+    Send-pose "YRC pendant frame" line for a full position+orientation match."""
     _base0 = np.eye(4)
-    _base0[2, 3] = GP7_CTRL_BASE_Z_MM
+    _base0[2, 3] = GP7_CTRL_BASE_Z_MM      # 0.0 — kept for clarity/future-proofing
     out: list[tuple[str, np.ndarray]] = [("Base (0)", _base0)]
     if cell_config is None:
         return out

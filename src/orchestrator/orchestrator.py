@@ -550,9 +550,20 @@ class Orchestrator:
             (joint_list, None): caller calls MoveJ(joint_list)
             (None, None): IK fail
         """
-        # Path 1: YRC handles IK — send Cartesian pose directly
+        # Path 1: YRC handles IK — send Cartesian pose directly.
+        # TOOL-FRAME CONSISTENCY: the app owns the tool offset (robot_tool_offset_mm).
+        # Retract the TCP target back to the FLANGE along tool Z (identical to the
+        # client path above) and command the FLANGE pose with TOOL00 (the HSE backend
+        # for the experiment is created with tool_no=0). So BOTH IK paths use the SAME
+        # app tool offset, and neither depends on the controller's TOOL01 matching.
         if self.config.get("use_yrc_ik", False):
-            T_base = self._world_to_robot_base(target_T_world)
+            tool_offset = float(self.config.get("robot_tool_offset_mm", 0.0))
+            flange_T = target_T_world
+            if abs(tool_offset) > 1e-6:
+                flange_T = target_T_world.copy()
+                flange_T[:3, 3] = (
+                    target_T_world[:3, 3] - tool_offset * target_T_world[:3, 2])
+            T_base = self._world_to_robot_base(flange_T)
             return ("YRC_POSE", T_base)
 
         # Path 2: client-side numerical IK (default — URDF chain match RoboDK 0.00mm)

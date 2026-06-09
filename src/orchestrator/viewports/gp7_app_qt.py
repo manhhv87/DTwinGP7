@@ -4430,8 +4430,9 @@ class GP7AppQt(
         operator can cross-check the app against the TP 1:1.
 
         Verified against a real GP7 send-pose measurement:
-          • Position = TCP in the robot BASE frame (origin = _base_xyz; the pendant
-            uses this un-offset base — NOT the app's "Base (0)" +154.8 view frame).
+          • Position = TCP in the robot BASE frame (origin = _base_xyz, no offset;
+            this matched the pendant exactly. GP7_CTRL_BASE_Z_MM is now 0.0 so the
+            "Base (0)" reference frame matches too).
           • Orientation = base-frame orientation · Rz(180° about the TOOL Z) — the app
             tool0 frame and the controller TOOL frame differ by exactly that (proven:
             R_pendant = R_app·Rz180 to 0.001°). Tool Z (approach) is identical; only

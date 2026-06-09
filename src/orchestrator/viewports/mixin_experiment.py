@@ -90,6 +90,11 @@ class ExperimentMixin:
         self._exp_ik_cb = QComboBox()
         self._exp_ik_cb.addItems(
             ["yrc (YRC1000 onboard IK)", "client (Pieper analytical)"])
+        # SAFE DEFAULT = client: it solves IK on the same URDF model used for
+        # hand-eye calibration and sends JOINTS (the only hardware-verified motion
+        # mechanism, move_joints), so it is immune to the controller BASE/TOOL frame
+        # conventions. The yrc/Cartesian path is opt-in until hardware-verified.
+        self._exp_ik_cb.setCurrentIndex(1)              # 1 = client
         eform.addRow("IK source:", self._exp_ik_cb)
         self._exp_perc_cb = QComboBox()
         self._exp_perc_cb.addItems(["D455 + YOLO (real)", "Mock (dry-run test)"])
@@ -459,15 +464,22 @@ class ExperimentMixin:
 
     # ── Common helpers ────────────────────────────────────────────────────
     def _build_backend(self, ip):
-        """Create the motion backend (real HSE, or a fake via seam test)."""
+        """Create the motion backend (real HSE, or a fake via seam test).
+
+        tool_no = 0 (TOOL00 / bare flange): the experiment owns the tool offset —
+        client IK and the yrc-Cartesian path BOTH retract the TCP target to the
+        flange via robot_tool_offset_mm (orchestrator._solve_ik_client /
+        _solve_ik_routed), so the controller must NOT apply a tool offset on top.
+        (Discrete jog / Send-pose / Run-on-Robot use _hse_tool_no separately.)"""
+        EXP_TOOL_NO = 0
         factory = getattr(self, "_exp_backend_factory", None)
         if factory is not None:
-            backend = factory(ip, getattr(self, "_hse_tool_no", 1),
+            backend = factory(ip, EXP_TOOL_NO,
                               getattr(self, "_pp_max_speed_pct", 20.0))
         else:
             from ..backends.motoman_hse import MotomanHSEBackend
             backend = MotomanHSEBackend(
-                ip=ip, tool_no=getattr(self, "_hse_tool_no", 1),
+                ip=ip, tool_no=EXP_TOOL_NO,
                 max_speed_pct=getattr(self, "_pp_max_speed_pct", 20.0))
         if hasattr(backend, "set_home_joints"):
             backend.set_home_joints(list(getattr(self, "_home_joints", [0.0] * 6)))

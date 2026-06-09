@@ -91,3 +91,42 @@ class TestPredictSafety:
         traj = [[0] * 6, [np.deg2rad(30)] * 6]
         result = orch._predict_safety(traj)
         assert result is None                            # safe, fast speed
+
+
+class TestYrcToolFrameConsistency:
+    """The yrc/Cartesian path must retract the TCP target to the FLANGE using the
+    SAME app tool offset the client path uses (so neither relies on the controller
+    TOOL config). _build_backend uses TOOL00 to match."""
+
+    def _orch(self, calibration_file, tool_offset):
+        return Orchestrator(
+            queue.Queue(maxsize=3),
+            config={
+                "calibration_path": str(calibration_file),
+                "use_yrc_ik": True,
+                "robot_tool_offset_mm": tool_offset,
+                "robot_base_xyz_mm": (0.0, 0.0, 0.0),
+                "robot_base_rpy_deg": (0.0, 0.0, 0.0),
+            },
+            robot=MagicMock(),
+        )
+
+    @staticmethod
+    def _topdown(x, y, z):
+        T = np.eye(4)
+        T[:3, :3] = np.array([[1, 0, 0], [0, -1, 0], [0, 0, -1.0]])  # tool Z = -world Z
+        T[:3, 3] = [x, y, z]
+        return T
+
+    def test_yrc_retracts_tcp_to_flange(self, calibration_file):
+        orch = self._orch(calibration_file, tool_offset=100.0)
+        kind, T_base = orch._solve_ik_routed(self._topdown(400.0, 0.0, 300.0))
+        assert kind == "YRC_POSE"
+        # tool Z points down → flange is 100mm ABOVE the TCP target (Z 300→400).
+        assert T_base[2, 3] == pytest.approx(400.0, abs=1e-6)
+        assert T_base[0, 3] == pytest.approx(400.0, abs=1e-6)
+
+    def test_yrc_no_offset_sends_tcp_unchanged(self, calibration_file):
+        orch = self._orch(calibration_file, tool_offset=0.0)
+        _, T_base = orch._solve_ik_routed(self._topdown(400.0, 0.0, 300.0))
+        assert T_base[2, 3] == pytest.approx(300.0, abs=1e-6)   # no retract
