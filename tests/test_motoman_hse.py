@@ -646,3 +646,44 @@ class TestDirectMove:
         packet, _ = mock_sock.sendto.call_args[0]
         speed = struct.unpack("<I", packet[HSE_HEADER_SIZE + 12:HSE_HEADER_SIZE + 16])[0]
         assert speed == 1000                    # capped to 10.00% (not 8000)
+
+
+class TestUploadOverwrite:
+    """YRC1000 FTP refuses STOR over an existing job ('503 Can't overwrite
+    JOB-file') → upload_job must DELE first."""
+
+    def _ftp(self, monkeypatch):
+        import ftplib
+        from unittest.mock import MagicMock
+        ftp = MagicMock()
+        monkeypatch.setattr(ftplib, "FTP", MagicMock(return_value=ftp))
+        return ftp
+
+    def test_delete_before_stor(self, monkeypatch):
+        from src.orchestrator.backends.motoman_hse import MotomanHSEBackend
+        order = []
+        ftp = self._ftp(monkeypatch)
+        ftp.delete.side_effect = lambda n: order.append(("delete", n))
+        ftp.storbinary.side_effect = lambda cmd, s: order.append(("stor", cmd))
+        MotomanHSEBackend(ip="x").upload_job("//NAME T\nNOP\nEND\n", "PROG")
+        assert [k for k, _ in order] == ["delete", "stor"]       # delete first
+        assert order[0][1] == "PROG.JBI"
+
+    def test_missing_file_550_on_delete_is_tolerated(self, monkeypatch):
+        import ftplib
+        from src.orchestrator.backends.motoman_hse import MotomanHSEBackend
+        stored = {}
+        ftp = self._ftp(monkeypatch)
+        ftp.delete.side_effect = ftplib.error_perm("550 File not found")
+        ftp.storbinary.side_effect = lambda cmd, s: stored.setdefault("cmd", cmd)
+        MotomanHSEBackend(ip="x").upload_job("X", "PROG")         # must NOT raise
+        assert stored["cmd"] == "STOR PROG.JBI"
+
+    def test_active_job_overwrite_refused_gives_hint(self, monkeypatch):
+        import ftplib
+        from src.orchestrator.backends.motoman_hse import MotomanHSEBackend
+        ftp = self._ftp(monkeypatch)
+        ftp.delete.side_effect = ftplib.error_perm(
+            "503 Bad sequence of commands. Can't overwrite JOB-file.")
+        with pytest.raises(RuntimeError, match="teach pendant"):
+            MotomanHSEBackend(ip="x").upload_job("X", "PROG")
