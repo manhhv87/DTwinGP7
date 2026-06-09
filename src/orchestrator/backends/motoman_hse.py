@@ -59,6 +59,16 @@ HSE_PORT_FILE = 10041
 # never echoes the expected id).
 _MAX_DRAIN = 8
 
+
+class JobUploadError(RuntimeError):
+    """FTP upload of a .JBI was refused because the job cannot be overwritten on the
+    controller (it is the currently-SELECTED job, or write-protected). Carries the
+    job name so the GUI can offer to rename it. `job_name` excludes the .JBI suffix."""
+
+    def __init__(self, message: str, job_name: str = "") -> None:
+        super().__init__(message)
+        self.job_name = job_name
+
 # Network I/O range for writable bits (YRC1000):
 # 27010-27020 = general purpose network I/O (CIO ladder accessible).
 # Purpose for gripper: bind 1 bit here to a physical Y-output via CIO ladder
@@ -304,22 +314,23 @@ class MotomanHSEBackend:
             # commands. Can't overwrite JOB-file") — delete it first. A 550 (no such
             # file) is expected/fine. The controller will NOT delete the currently
             # SELECTED job, so if delete is refused, give a clear teach-pendant hint.
+            _job = filename[:-4] if filename.upper().endswith(".JBI") else filename
             try:
                 ftp.delete(filename)
             except ftplib.error_perm as e:
                 if not str(e).strip().startswith("550"):
-                    raise RuntimeError(
-                        f"Cannot overwrite '{filename}' on the controller "
+                    raise JobUploadError(
+                        f"Cannot overwrite job '{_job}' on the controller "
                         f"({str(e).strip()}). It is likely the CURRENTLY-SELECTED job "
-                        f"— select a different job (or CANCEL/RESET) on the teach "
-                        f"pendant, then Run on Robot again.") from e
+                        f"— rename the job in the app, or deselect/CANCEL it on the "
+                        f"teach pendant, then Run on Robot again.", _job) from e
             try:
                 ftp.storbinary(f"STOR {filename}", io.BytesIO(data))
             except ftplib.error_perm as e:
-                raise RuntimeError(
-                    f"FTP upload of '{filename}' refused ({str(e).strip()}). If it is "
-                    f"the active job, deselect it on the teach pendant; also check it "
-                    f"is not write-protected.") from e
+                raise JobUploadError(
+                    f"Upload of job '{_job}' refused ({str(e).strip()}). If it is the "
+                    f"active job, rename it in the app or deselect it on the teach "
+                    f"pendant; also check it is not write-protected.", _job) from e
         finally:
             try:
                 ftp.quit()

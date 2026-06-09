@@ -106,3 +106,4 @@ class WorkerSignals(QObject):
     exp_progress  = pyqtSignal(int, object)  # (trials completed, stats dict) — Digital Twin experiment
     exp_done      = pyqtSignal(object)       # stats dict — mirror/experiment finished → re-enable UI
     live_jog_off  = pyqtSignal(str)          # Phase-2 live jog worker exited abnormally → uncheck toggle + show msg
+    run_overwrite_blocked = pyqtSignal(str, str)  # (job_name, message) — Run-on-Robot upload blocked (can't overwrite) → offer rename

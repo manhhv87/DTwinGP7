@@ -20,7 +20,7 @@ from PyQt6.QtWidgets import (
     QMessageBox, QSpinBox,
 )
 
-from ..backends.motoman_hse import MotomanHSEBackend
+from ..backends.motoman_hse import JobUploadError, MotomanHSEBackend
 
 
 class ConnectionMixin:
@@ -314,7 +314,13 @@ class ConnectionMixin:
                         "Robot: aborted before upload", "warn"); return
                 self._signals.status.emit(
                     f"Robot: FTP uploading '{jname}.JBI'…", "info")
-                backend.upload_job(jtext, jname)
+                try:
+                    backend.upload_job(jtext, jname)
+                except JobUploadError as e:
+                    # Can't overwrite (active/protected job) → ask the user to rename.
+                    self._signals.run_overwrite_blocked.emit(
+                        getattr(e, "job_name", jname) or jname, str(e))
+                    return
             if self._hse_stop.is_set():
                 self._signals.status.emit("Robot: aborted before start", "warn"); return
             import time as _time
@@ -709,6 +715,31 @@ class ConnectionMixin:
             act.setChecked(False)
             act.blockSignals(False)
         self._set_status(msg, level="err")
+
+    def _on_run_overwrite_blocked(self, job_name: str, message: str) -> None:
+        """Main-thread slot: a Run-on-Robot upload could not overwrite an existing job
+        on the controller. Explain clearly and — if the blocked job is the active one
+        — offer to rename it in the app right away (then the user re-runs)."""
+        self._set_status(message, level="err")
+        is_active = (self._robot_job_name(self._active_job) == job_name)
+        if is_active:
+            r = QMessageBox.warning(
+                self, "Job already on the controller",
+                f"<b>Cannot overwrite job '{job_name}' on the YRC1000.</b><br><br>"
+                f"{message}<br><br>"
+                f"Rename this job in the app now (then Run on Robot again)?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+                QMessageBox.StandardButton.Cancel)
+            if r == QMessageBox.StandardButton.Yes and hasattr(self, "_on_job_rename"):
+                self._on_job_rename()
+        else:
+            QMessageBox.warning(
+                self, "Job already on the controller",
+                f"<b>Cannot overwrite job '{job_name}' on the YRC1000.</b><br><br>"
+                f"{message}<br><br>"
+                f"Select job '{job_name}' in the Program panel and click the Rename "
+                f"(pencil) button, or delete/deselect it on the teach pendant; then "
+                f"Run on Robot again.")
 
     def _on_stop_all(self) -> None:
         """Stop EVERYTHING that can move the robot: sim playback, Run-on-Robot job,
