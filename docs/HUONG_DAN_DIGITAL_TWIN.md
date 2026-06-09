@@ -335,6 +335,7 @@ Direct control bị chặn lẫn nhau với Live mirror / Experiment / Run on Ro
 | Toạ độ app "lệch" so với pendant (vd Z hơn 154.8mm, orientation 180°) | **Không phải lỗi** — chỉ khác frame hiển thị. Robot tới đúng pose (gửi joints trực tiếp). Xem dòng **"YRC pendant frame"** trong dialog Send-pose → khớp pendant 1:1. App mặc định hiển thị ở frame "Base (0)" (+154.8) + quy ước tool0 |
 | Joints = 0 nhưng pose Cartesian khác 0 | Bình thường — đó là forward-kinematics của tư thế Zero (tay duỗi tới ~X560, Z485) |
 | Live jog "chập chờn / tự ngắt dù servo on" | Controller thỉnh thoảng từ chối lệnh MOVE streaming. App đã chịu 5 lần reject liên tiếp trước khi ngắt; nếu vẫn đứt → giảm tần số jog / kiểm REMOTE + mạng |
+| Run on Robot: "503 Bad sequence of commands. Can't overwrite JOB-file." | YRC1000 FTP không cho ghi đè job đã tồn tại. App đã tự xoá file cũ trước khi upload (DELE→STOR). Nếu vẫn lỗi: job đó **đang được chọn** trên pendant hoặc **write-protected** → chọn job khác / DELETE job trong JOB LIST trên TP rồi chạy lại |
 
 ---
 
