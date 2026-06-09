@@ -405,10 +405,21 @@ class ConnectionMixin:
                 level="warn"); return
         joints = [round(float(q), 3) for q in self._joints]
         speed_pct = min(float(getattr(self, "_pp_max_speed_pct", 10.0)), 10.0)
+        # Target in YRC pendant coordinates (BASE frame + TOOL convention) so the
+        # operator can cross-check 1:1 with the teach pendant.
+        pend = self._pendant_pose() if hasattr(self, "_pendant_pose") else None
+        pend_str = ""
+        if pend is not None:
+            x, y, z, rx, ry, rz = pend
+            pend_str = (
+                f"YRC pendant frame (should match the TP):<br>"
+                f"<code>X {x:.1f}  Y {y:.1f}  Z {z:.1f}  "
+                f"Rx {rx:.1f}  Ry {ry:.1f}  Rz {rz:.1f}</code><br><br>")
         r = QMessageBox.warning(
             self, "Send pose to REAL robot",
             f"<b>⚠ THE ROBOT WILL MOVE FOR REAL</b><br><br>"
-            f"Target joints (deg):<br><code>{joints}</code><br>"
+            f"Target joints (deg):<br><code>{joints}</code><br><br>"
+            f"{pend_str}"
             f"Speed: {speed_pct:.0f}%  ·  HSE: <code>{self._hse_ip}</code><br><br>"
             f"Verify: YRC1000 in <b>REMOTE</b> mode, workspace clear, "
             f"hand on the <b>E-stop</b>.<br><br>Continue?",
