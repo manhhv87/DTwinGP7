@@ -4420,10 +4420,23 @@ class GP7AppQt(
         # Tool / Reference (live — depends on joint state)
         T_world_tool = self._current_tool_world()
         if T_world_tool is not None:
-            T_world_base = np.eye(4); T_world_base[:3, 3] = self._base_xyz
-            T_world_ref = T_world_base @ T_base_ref
-            T_ref_tool = np.linalg.inv(T_world_ref) @ T_world_tool
-            self._fill_pose_row(self._tcp_pose_lbls, T_ref_tool)
+            # When the reference is the robot base ("Base (0)"), show the pose
+            # EXACTLY as the YRC1000 teach pendant does — BASE frame + the TOOL
+            # Rz(180°) naming convention — so the panel cross-checks 1:1 with the
+            # TP (no more Rz180/angle mismatch vs CURRENT POSITION). _pendant_pose
+            # is verified <0.02 vs the real pendant. Other (user) frames keep the
+            # generic tool-in-frame readout. Display-only: jog/IK/motion unaffected.
+            pend = (self._pendant_pose()
+                    if self._ref_frames[self._ref_idx][0] == "Base (0)"
+                    else None)
+            if pend is not None:
+                for lbl, v in zip(self._tcp_pose_lbls, pend):
+                    lbl.setText(f"{v:.3f}")
+            else:
+                T_world_base = np.eye(4); T_world_base[:3, 3] = self._base_xyz
+                T_world_ref = T_world_base @ T_base_ref
+                T_ref_tool = np.linalg.inv(T_world_ref) @ T_world_tool
+                self._fill_pose_row(self._tcp_pose_lbls, T_ref_tool)
 
     def _pendant_pose(self) -> tuple[float, float, float, float, float, float] | None:
         """Current TCP expressed exactly as the YRC1000 teach-pendant shows it, so the
