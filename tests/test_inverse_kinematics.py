@@ -125,6 +125,23 @@ class TestEdgeCases:
         with pytest.raises(ValueError, match="4x4"):
             inverse_kinematics(model, np.eye(3), [0.0] * 6)
 
+    def test_out_of_limit_seed_never_returned(self):
+        """Contract: IK must NEVER return an out-of-joint-limit solution, even
+        when the (out-of-limit) seed's own pose already meets tolerance. Before
+        the seed-clip fix, IK returned q_init verbatim at iteration 0."""
+        model = gp7_default()
+        q_min = np.array([lk.joint_min for lk in model.links])
+        q_max = np.array([lk.joint_max for lk in model.links])
+        # Seed pushed beyond S/T axis limits; FK(seed) is the exact target, so
+        # the un-clipped code would converge on iter 0 and return the bad seed.
+        q_oob = np.array([q_max[0] + 0.30, 0.0, 0.0, 0.0, 0.0, q_min[5] - 0.30])
+        T_target = forward_kinematics(model, q_oob)
+        sol = inverse_kinematics(model, T_target, q_oob.tolist())
+        if sol is not None:
+            sol = np.asarray(sol)
+            assert np.all(sol >= q_min - 1e-9) and np.all(sol <= q_max + 1e-9), \
+                f"IK returned out-of-limit solution: {sol}"
+
     def test_joint_limits_respected(self):
         """IK output phải nằm trong joint limits."""
         model = gp7_default()

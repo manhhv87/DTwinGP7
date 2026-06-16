@@ -566,7 +566,7 @@ class TestVerbatimReexport:
         pj = parse_jbi(self._JOB)
         prog = s.imp(pj, s._targets)
         s._jbi_raw["J"] = {"text": self._JOB, "name": "J",
-                           "sig": s._job_signature(prog)}
+                           "sig": s._job_signature(prog, s._targets)}
         out = tmp_path / "J.JBI"
         s.export(prog, "J", out, raw_key="J")
         # Byte-for-byte identical — comment, IFTHENEXP, VJ=I000, indent all kept.
@@ -579,7 +579,7 @@ class TestVerbatimReexport:
         pj = parse_jbi(self._JOB)
         prog = s.imp(pj, s._targets)
         s._jbi_raw["J"] = {"text": self._JOB, "name": "J",
-                           "sig": s._job_signature(prog)}
+                           "sig": s._job_signature(prog, s._targets)}
         prog.append(Instruction(type="Wait", wait_seconds=2.0))   # edit
         out = tmp_path / "J.JBI"
         s.export(prog, "J", out, raw_key="J")
@@ -587,6 +587,26 @@ class TestVerbatimReexport:
         assert txt != self._JOB                  # not verbatim
         assert "TIMER T=2.000" in txt            # synthesised edit present
         assert "'a comment line" not in txt      # comments dropped on synthesis
+
+    def test_reteaching_target_invalidates_verbatim(self, tmp_path):
+        """Re-teaching a referenced target (joints change, instruction list
+        UNCHANGED) must NOT take the verbatim path — otherwise the old pulses
+        upload to the real robot (bug #7)."""
+        from src.orchestrator.backends.inform_parser import parse_jbi
+        s = self._stub()
+        pj = parse_jbi(self._JOB)
+        prog = s.imp(pj, s._targets)
+        s._jbi_raw["J"] = {"text": self._JOB, "name": "J",
+                           "sig": s._job_signature(prog, s._targets)}
+        assert s._targets, "import should have created a referenced target"
+        name = next(iter(s._targets))
+        # Simulate a re-teach after a fixture shift: change the target joints only.
+        s._targets[name]["joints"] = [d + 5.0 for d in s._targets[name]["joints"]]
+        out = tmp_path / "J.JBI"
+        s.export(prog, "J", out, raw_key="J")
+        txt = out.read_text(encoding="utf-8")
+        assert txt != self._JOB                  # re-synthesised with NEW pulses
+        assert "P00001=55242,26922" not in txt   # the STALE pulses must be gone
 
 
 # ───── Full instruction coverage (every type round-trips + exports) ─────

@@ -3500,7 +3500,14 @@ class GP7AppQt(
             if o.parent_frame == fr.name:
                 o.parent_frame = None
         self._ref_frames = _build_ref_frames(self._cell_config)
+        # Deleting a frame shrinks _ref_frames; clamp the selected index so the
+        # live readout/jog (which index _ref_frames[_ref_idx]) cannot IndexError
+        # on a now-out-of-range selection. _refresh_tool_ref_combos rebuilds the
+        # combo items with signals blocked, so it does NOT resync _ref_idx itself.
+        self._ref_idx = max(0, min(self._ref_idx, len(self._ref_frames) - 1))
         self._refresh_tool_ref_combos_if_present()
+        if getattr(self, "_ref_combo", None) is not None:
+            self._ref_combo.setCurrentIndex(self._ref_idx)
         self._refresh_cell_tree()
         self._set_status(f"Deleted frame '{fr.name}'", level="ok")
 

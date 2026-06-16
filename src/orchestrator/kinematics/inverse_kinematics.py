@@ -241,6 +241,11 @@ def inverse_kinematics(
     link_attr = getattr(model, "joints", None) or getattr(model, "links", None)
     q_min = np.array([j.joint_min for j in link_attr])
     q_max = np.array([j.joint_max for j in link_attr])
+    # Clip the SEED to limits BEFORE the first convergence check — otherwise an
+    # out-of-limit q_init whose pose already meets tolerance would be returned
+    # verbatim (violating the "never return an out-of-limit solution" contract
+    # documented above). The per-iter clip below only guards subsequent steps.
+    q = np.clip(q, q_min, q_max)
 
     # URDFRobot → analytical Jacobian (6× faster). DH model → keep finite-diff
     # (legacy, rarely used — analytical formula would need to be implemented for DH).
@@ -382,6 +387,7 @@ def inverse_kinematics_lm(
     link_attr = getattr(model, "joints", None) or getattr(model, "links", None)
     q_min = np.array([j.joint_min for j in link_attr])
     q_max = np.array([j.joint_max for j in link_attr])
+    q = np.clip(q, q_min, q_max)            # clip seed before the first conv. check
     n = len(q)
     max_step_rad = np.deg2rad(max_step_deg)
     use_analytical = isinstance(model, URDFRobot)
@@ -468,6 +474,7 @@ def inverse_kinematics_sdls(
     link_attr = getattr(model, "joints", None) or getattr(model, "links", None)
     q_min = np.array([j.joint_min for j in link_attr])
     q_max = np.array([j.joint_max for j in link_attr])
+    q = np.clip(q, q_min, q_max)            # clip seed before the first conv. check
     gamma_max = np.deg2rad(gamma_max_deg)
     use_analytical = isinstance(model, URDFRobot)
 
@@ -710,6 +717,7 @@ def inverse_kinematics_batch(
 
     q_min = np.array([j.joint_min for j in model.joints])
     q_max = np.array([j.joint_max for j in model.joints])
+    q_batch = np.clip(q_batch, q_min, q_max)   # clip seeds before first conv. check
     max_step_rad = np.deg2rad(max_step_deg)
     damping_sq = damping ** 2
     I6 = np.eye(6)
