@@ -50,7 +50,8 @@ class URDFRobot:
         flange_xyz_mm: Fixed offset from joint_6 → flange link (URDF fixed joint).
             GP7: (80, 0, 0).
         tool0_rpy_rad: Tool0 frame rotation relative to flange (URDF tool0 joint).
-            GP7: (π, -π/2, 0).
+            GP7: (0, π/2, 0) — matches the controller TOOL00 + pieper _R_J6_TOOL0.
+            (NOT the RoboDK (π, -π/2, 0), which is 180° about Z off.)
     """
 
     name: str

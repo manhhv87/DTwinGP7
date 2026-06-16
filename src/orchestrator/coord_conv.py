@@ -82,6 +82,18 @@ def camera_to_base(xyz_cam: np.ndarray, T_BC: np.ndarray) -> np.ndarray:
     return transform_point(xyz_cam, T_BC)
 
 
+def camera_yaw_to_base(yaw_cam_rad: float, T_BC: np.ndarray) -> float:
+    """Rotate an in-plane (image-frame) PCA grasp yaw into the base frame via the
+    hand-eye rotation R_BC. SINGLE SOURCE OF TRUTH for the yaw transform — both the
+    orchestrator pick path and the GUI camera-teach path must use this so they can
+    never diverge (skipping it leaves the gripper off by the camera mounting
+    rotation + image handedness, mis-aligning the jaws with the object long axis).
+    """
+    R_BC = np.asarray(T_BC, dtype=float)[:3, :3]
+    d = R_BC @ np.array([np.cos(yaw_cam_rad), np.sin(yaw_cam_rad), 0.0])
+    return float(np.arctan2(d[1], d[0]))
+
+
 def make_grasp_pose(
     xyz_base_mm: np.ndarray,
     yaw_rad: float = 0.0,

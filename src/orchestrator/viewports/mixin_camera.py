@@ -636,14 +636,21 @@ class CameraMixin:
         if pose_cam is None:
             self._set_status("Object missing 3D pose (no depth)", level="warn")
             return
-        from ..coord_conv import camera_to_base, load_calibration, make_grasp_pose
+        from ..coord_conv import (
+            camera_to_base, camera_yaw_to_base, load_calibration, make_grasp_pose)
         calib = self._project_root / "config" / "calibration" / "T_base_camera.npy"
         try:
             t_bc = load_calibration(calib)
         except Exception as e:                              # noqa: BLE001
             self._set_status(f"Calibration error: {e}", level="err"); return
         xyz_base = camera_to_base(np.asarray(pose_cam[:3], dtype=float), t_bc)
-        T = make_grasp_pose(xyz_base, float(pose_cam[3]))
+        # Transform the PCA yaw camera→base via the SHARED helper (the raw image-frame
+        # yaw alone leaves the gripper mis-aligned with the object long axis — same
+        # transform the orchestrator pick path uses). yaw_offset_deg is an optional
+        # gripper-vs-PCA calibration constant; default 0 (operator reviews this teach).
+        yaw_base = camera_yaw_to_base(float(pose_cam[3]), t_bc)
+        yaw_off = float(getattr(self, "_grasp_yaw_offset_deg", 0.0) or 0.0)
+        T = make_grasp_pose(xyz_base, yaw_base, yaw_off)
         cls = target.get("class_name", "?")
         name = self._teach_target_from_matrix(
             T, default_name=f"PICK_{len(self._targets) + 1:02d}",

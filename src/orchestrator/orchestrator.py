@@ -26,7 +26,8 @@ from typing import Any
 
 import numpy as np
 
-from .coord_conv import camera_to_base, load_calibration, make_grasp_pose
+from .coord_conv import (
+    camera_to_base, camera_yaw_to_base, load_calibration, make_grasp_pose)
 from .state_machine import PickPlaceStateMachine, PickState
 
 logger = logging.getLogger(__name__)
@@ -168,10 +169,7 @@ class Orchestrator:
             # is a pixel-frame angle (x-right, y-down); carrying it straight into
             # rotz() about base Z leaves it off by the camera mounting rotation +
             # image handedness, mis-aligning the gripper with the object long axis.
-            R_BC = np.asarray(self.T_BC, dtype=float)[:3, :3]
-            yaw_cam = float(pc[3])
-            d_base = R_BC @ np.array([np.cos(yaw_cam), np.sin(yaw_cam), 0.0])
-            yaw_base = float(np.arctan2(d_base[1], d_base[0]))
+            yaw_base = camera_yaw_to_base(float(pc[3]), self.T_BC)
             objects.append({**o, "pose_base": camera_to_base(xyz_cam, self.T_BC),
                             "yaw_base": yaw_base})
         # Object with highest Z (closest to camera / on top) is grasped first.
@@ -683,6 +681,11 @@ class Orchestrator:
         """
         self.sm.reset()
         t_start = time.time()
+        # Every cycle is one ATTEMPT. Counting here (not after reachability) so
+        # detection-miss / timeout / unreachable failures are included in the
+        # denominator — otherwise the success rate is inflated and the trial counts
+        # under-report (the GUI/thesis metrics read these).
+        self.stats["attempted"] += 1
 
         # Reset viewport scene to the initial template (if backend supports it) —
         # prevents objects from drifting across multiple trials.
@@ -698,6 +701,7 @@ class Orchestrator:
             det_msg = self.queue.get(timeout=self.config["detection_timeout_s"])
         except queue.Empty:
             logger.warning("Trial %d: no detection received", trial_id)
+            self.stats["failed"] += 1
             self._log_trial(trial_id, False, "detection_timeout", t_start, None)
             return False
 
@@ -705,6 +709,7 @@ class Orchestrator:
         if not objects:
             logger.info("Trial %d: no objects detected", trial_id)
             self.sm.transition_to(PickState.IDLE, "no objects")
+            self.stats["failed"] += 1
             self._log_trial(trial_id, False, "detection_miss", t_start, None)
             return False
 
@@ -776,7 +781,7 @@ class Orchestrator:
                     continue
 
             # ─── Execute pick-and-place for this object ───
-            self.stats["attempted"] += 1
+            # ('attempted' already counted at the top of run_one_cycle.)
             ok = self._execute_pick_place(
                 grasp_T, lift_T, place_T, place_lift_T, obj, trial_id,
             )
@@ -790,6 +795,7 @@ class Orchestrator:
         # No object was reachable.
         logger.info("Trial %d: all objects out of reach", trial_id)
         self.sm.fail("unreachable")
+        self.stats["failed"] += 1
         self._log_trial(trial_id, False, "unreachable", t_start, objects[0])
         return False
 

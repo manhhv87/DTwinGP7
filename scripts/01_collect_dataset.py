@@ -60,15 +60,24 @@ def main() -> int:
     cfg = rs.config()
     cfg.enable_stream(rs.stream.color, args.color_w, args.color_h, rs.format.bgr8, 30)
     cfg.enable_stream(rs.stream.depth, 848, 480, rs.format.z16, 30)
-    pipeline.start(cfg)
+    profile = pipeline.start(cfg)
     align = rs.align(rs.stream.color)
-    log.info("RealSense started. Output → %s", out_dir)
+    # Depth scale (z16 units → metres). Saved depth must be float METRES to match
+    # D455Camera.get_frame() / the in-app capture, which both write metres into the
+    # SAME data/raw/*_depth.npy — raw uint16 here would be ~1000× off for any metres-
+    # assuming consumer (labeling / pose verification / training).
+    depth_scale = profile.get_device().first_depth_sensor().get_depth_scale()
+    log.info("RealSense started (depth_scale=%.6f m/unit). Output → %s",
+             depth_scale, out_dir)
 
     meta = {"class": "bottle", "lighting": "bright",
             "angle": "0", "overlap": "none", "bg": "gray"}
     counter = 0
 
     key_map = {
+        # Class hotkeys MUST cover every detector class (DEFAULT_CLASS_NAMES =
+        # tray/bottle/cup/bolt) — 'tray' (index 0) was previously uncapturable.
+        ord("0"): ("class", "tray"),
         ord("1"): ("class", "bottle"), ord("2"): ("class", "cup"),
         ord("3"): ("class", "bolt"),
         ord("b"): ("lighting", "bright"), ord("m"): ("lighting", "medium"),
@@ -87,7 +96,7 @@ def main() -> int:
             if not color_frame or not depth_frame:
                 continue
             color = np.asanyarray(color_frame.get_data())
-            depth = np.asanyarray(depth_frame.get_data())
+            depth = np.asanyarray(depth_frame.get_data()).astype(np.float32) * depth_scale
 
             overlay = color.copy()
             txt = (f"{meta['class']} | {meta['lighting']} | overlap:{meta['overlap']} "
