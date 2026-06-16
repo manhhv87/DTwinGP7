@@ -1242,6 +1242,13 @@ class GP7AppQt(
             return
         # Pose w.r.t. Reference → world frame TCP target
         T_ref_tool = _xyz_rpy_to_matrix(x, y, z, rx, ry, rz)
+        # The "Base (0)" readout is rendered in the YRC pendant convention (tool
+        # orientation · Rz180), so a value COPIED from it carries that Rz180.
+        # Undo it here (Rz180 is its own inverse) before building the target, or
+        # paste would command a 180° tool-Z reorientation. Position is unaffected.
+        if self._ref_frames[self._ref_idx][0] == "Base (0)":
+            Rz180 = np.array([[-1.0, 0.0, 0.0], [0.0, -1.0, 0.0], [0.0, 0.0, 1.0]])
+            T_ref_tool[:3, :3] = T_ref_tool[:3, :3] @ Rz180
         T_world_base = np.eye(4); T_world_base[:3, 3] = self._base_xyz
         T_world_ref = T_world_base @ self._ref_frames[self._ref_idx][1]
         T_world_tool = T_world_ref @ T_ref_tool
