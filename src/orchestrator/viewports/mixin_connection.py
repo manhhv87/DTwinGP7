@@ -438,8 +438,11 @@ class ConnectionMixin:
         # busy in _robot_motion_active(); _send_pose_stop lets Stop-all abort it.
         self._send_pose_busy = True
         self._send_pose_stop.clear()
-        threading.Thread(
-            target=self._send_pose_worker, args=(joints, speed_pct), daemon=True).start()
+        # Track the handle so closeEvent / Stop-all can JOIN it — otherwise the
+        # daemon worker is killed mid-move at exit and its servo-OFF never runs.
+        self._send_pose_thread = threading.Thread(
+            target=self._send_pose_worker, args=(joints, speed_pct), daemon=True)
+        self._send_pose_thread.start()
         self._set_status("Robot: sending pose…", level="info")
 
     def _send_pose_worker(self, joints: "list[float]", speed_pct: float) -> None:
