@@ -104,7 +104,12 @@ class ObjectDetector:
 
     def detect(self, rgb: np.ndarray) -> list[Detection]:
         """Run inference and return a list of Detection objects."""
-        results = self.model(rgb, conf=self.conf, iou=self.iou, verbose=False)[0]
+        # retina_masks=True → masks come back at the ORIGINAL image resolution, not
+        # the letterboxed model-input (square, padded) size. Without it, masks.data
+        # are e.g. 640×640-with-bars for a 1280×720 input, and a later naive resize to
+        # the depth shape distorts the centroid/PCA-yaw and the deprojected 3D point.
+        results = self.model(
+            rgb, conf=self.conf, iou=self.iou, retina_masks=True, verbose=False)[0]
         detections: list[Detection] = []
 
         if results.masks is None:

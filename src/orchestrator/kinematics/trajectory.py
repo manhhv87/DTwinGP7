@@ -142,10 +142,14 @@ def check_joint_limits(
     """
     # Polymorphic: URDFRobot uses `.joints`, RobotDHModel uses `.links`
     link_attr = getattr(model, "joints", None) or getattr(model, "links", None)
+    # IK accepts solutions up to ~1e-9 rad over a limit (clamp/round at the boundary);
+    # use the SAME tolerance here so a converged on-limit solution is not flagged as a
+    # spurious violation.
+    _TOL = 1e-9
     violations: list[tuple[int, int, float]] = []
     for s_idx, sample in enumerate(samples):
         for j_idx, (q, link) in enumerate(zip(sample.joints_rad, link_attr)):
-            if not (link.joint_min <= q <= link.joint_max):
+            if not (link.joint_min - _TOL <= q <= link.joint_max + _TOL):
                 violations.append((s_idx, j_idx, float(q)))
     return violations
 
@@ -163,6 +167,28 @@ GP7_LINK_SPHERE_RADII_MM: tuple[float, ...] = (
     50.0,     # J6 (flange)
     40.0,     # TCP / gripper
 )
+
+
+def _sphere_centers_batch(model, joints_batch: np.ndarray) -> list[np.ndarray]:
+    """Joint-origin sphere centers per sample, [base, J1..Jn, TCP] each (N,3).
+
+    POLYMORPHIC: for a URDFRobot use the URDF chain FK (joint origins that match
+    the real robot + IK + motion); for a DH model use the DH batch FK. The DH
+    skeleton's origins do NOT match the physical robot, so self-collision must use
+    the URDF geometry whenever the caller passes the URDF model."""
+    try:
+        from .urdf_chain import URDFRobot, _urdf_consts, fk_with_joint_frames_batch_urdf
+        is_urdf = isinstance(model, URDFRobot)
+    except Exception:                                  # noqa: BLE001
+        is_urdf = False
+    if is_urdf:
+        T_tcp, p_joints, _ = fk_with_joint_frames_batch_urdf(model, joints_batch)
+        N = joints_batch.shape[0]
+        base_p = np.broadcast_to(_urdf_consts(model)[0][:3, 3], (N, 3)).copy()
+        return ([base_p]
+                + [p_joints[:, i, :] for i in range(p_joints.shape[1])]
+                + [T_tcp[:, :3, 3]])
+    return joint_positions_batch(model, joints_batch)
 
 
 def check_self_collision_spheres(
@@ -194,16 +220,28 @@ def check_self_collision_spheres(
     # Batch FK for all samples at once (vectorized matmul) instead of N separate calls —
     # positions[p] is an array (N,3), bit-identical to joint_positions for each sample.
     joints_batch = np.array([s.joints_rad for s in samples], dtype=float)
-    positions = joint_positions_batch(model, joints_batch)
+    positions = _sphere_centers_batch(model, joints_batch)
     n = len(positions)
+    # The wrist (J4,J5,J6,TCP = last 4 centers of the URDF chain) is a near-RIGID
+    # sub-assembly — e.g. J4↔TCP is a constant ~80mm at every pose, NOT a collision.
+    # Skip pairs entirely inside it (else a fixed-distance rigid pair false-flags
+    # every trajectory). DH path keeps rigid_tail=0 (unchanged).
+    try:
+        from .urdf_chain import URDFRobot
+        rigid_tail = 4 if isinstance(model, URDFRobot) else 0
+    except Exception:                                  # noqa: BLE001
+        rigid_tail = 0
     # Match radii to position count; pad with the last value if too short.
     radii = list(radii_mm[:n]) + [radii_mm[-1]] * max(0, n - len(radii_mm))
     # (N, n, 3): positions of all joints for all samples.
     P = np.stack(positions, axis=1)
 
     violations: list[tuple[int, int, int, float]] = []
+    wrist_lo = n - rigid_tail                          # first index of the rigid tail
     for i in range(n):
         for j in range(i + min_non_adjacent_gap, n):
+            if rigid_tail and i >= wrist_lo and j >= wrist_lo:
+                continue                               # rigid wrist-internal pair
             thr = radii[i] + radii[j]
             diff = P[:, i, :] - P[:, j, :]
             # Vectorized SQUARED distance as a coarse filter (superset):

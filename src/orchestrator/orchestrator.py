@@ -163,7 +163,17 @@ class Orchestrator:
                 logger.warning("Skipping detection with malformed pose_camera: %r", pc)
                 continue
             xyz_cam = np.array(pc[:3], dtype=float)
-            objects.append({**o, "pose_base": camera_to_base(xyz_cam, self.T_BC)})
+            # Transform the in-plane grasp YAW from the camera image frame into the
+            # base frame with the SAME hand-eye rotation as the position. The PCA yaw
+            # is a pixel-frame angle (x-right, y-down); carrying it straight into
+            # rotz() about base Z leaves it off by the camera mounting rotation +
+            # image handedness, mis-aligning the gripper with the object long axis.
+            R_BC = np.asarray(self.T_BC, dtype=float)[:3, :3]
+            yaw_cam = float(pc[3])
+            d_base = R_BC @ np.array([np.cos(yaw_cam), np.sin(yaw_cam), 0.0])
+            yaw_base = float(np.arctan2(d_base[1], d_base[0]))
+            objects.append({**o, "pose_base": camera_to_base(xyz_cam, self.T_BC),
+                            "yaw_base": yaw_base})
         # Object with highest Z (closest to camera / on top) is grasped first.
         objects.sort(key=lambda o: o["pose_base"][2], reverse=True)
         return objects
@@ -342,8 +352,9 @@ class Orchestrator:
         try:
             from src.orchestrator.kinematics import (
                 check_joint_limits, check_self_collision_spheres,
-                gp7_default, interpolate_joints,
+                interpolate_joints,
             )
+            from src.orchestrator.kinematics.urdf_chain import gp7_urdf
         except ImportError as e:                    # noqa: BLE001
             logger.debug("Kinematics module could not be imported: %s", e)
             return None
@@ -351,7 +362,18 @@ class Orchestrator:
         if len(joint_waypoints_rad) < 2:
             return None                              # Not enough waypoints to predict
 
-        model = gp7_default()
+        # Use the SAME URDF chain as IK + actual motion. The old gp7_default() DH
+        # SKELETON's joint origins do NOT match the real robot (verified URDF=RoboDK
+        # 0.00mm), so its self-collision geometry was wrong — false negatives in the
+        # dangerous direction. Reuse the IK cache when present.
+        model = getattr(self, "_dh_model_cached", None)
+        if model is None:
+            base_rpy_deg = self.config.get("robot_base_rpy_deg", (0.0, 0.0, 0.0))
+            model = gp7_urdf(
+                base_xyz_mm=tuple(self.config.get("robot_base_xyz_mm", (0.0, 0.0, 0.0))),
+                base_rpy_rad=tuple(float(np.deg2rad(d)) for d in base_rpy_deg),
+                tool_offset_mm=float(self.config.get("robot_tool_offset_mm", 0.0)))
+            self._dh_model_cached = model
         samples = interpolate_joints(
             joint_waypoints_rad, dt=0.05,
             max_joint_speed_deg_s=self.config["predict_max_speed_deg_s"],
@@ -711,7 +733,9 @@ class Orchestrator:
                     target_z, clamped_z, int(safety_margin),
                 )
             xyz_base[2] = clamped_z
-            yaw = obj["pose_camera"][3]
+            # Base-frame yaw (camera→base transformed in _select_objects); fall back
+            # to the raw pixel-frame yaw only if a producer bypassed _select_objects.
+            yaw = obj.get("yaw_base", obj["pose_camera"][3])
             grasp_T = make_grasp_pose(xyz_base, yaw, self.config["yaw_offset_deg"])
             lift_T = grasp_T.copy()
             lift_T[2, 3] += dz

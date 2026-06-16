@@ -349,6 +349,7 @@ class GP7AppQt(
         self._last_camera_objects: list[dict] = []
         self._last_depth = None
         self._last_rgb = None
+        self._last_frame = None         # atomic (rgb, depth) coherent pair for capture
         self._last_display = None            # processed RGB image (built by worker)
         self._last_fps: float = 0.0
         self._last_intrinsics = None
@@ -6772,7 +6773,14 @@ class GP7AppQt(
             base = self._safe_target_name(default_name) or "TGT"
             name = base; i = 2
             while name in self._targets:
-                name = self._safe_target_name(f"{base}_{i}"); i += 1
+                if i > 999:                          # never spin (UI hang guard)
+                    self._set_status(
+                        "Cannot auto-name target (too many duplicates)", level="warn")
+                    return None
+                # Truncate the STEM (not the whole "base_i") so the _i suffix always
+                # survives _safe_target_name's 24-char cap — otherwise a 24-char base
+                # truncates back to itself and the loop never terminates.
+                name = self._safe_target_name(f"{base[:20]}_{i}"); i += 1
         self._targets[name] = {
             "joints": [math.degrees(q) for q in sol],
             "tcp_pose": list(_matrix_to_xyz_rpy_deg(T)),

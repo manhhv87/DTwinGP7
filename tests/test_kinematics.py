@@ -266,3 +266,18 @@ def test_interpolate_cartesian_180deg_axis_recovery():
     assert abs(mid[1, 1]) < 1e-6 and abs(mid[2, 2]) < 1e-6
     for T in poses:                                         # all valid rotations
         np.testing.assert_allclose(T[:3, :3] @ T[:3, :3].T, np.eye(3), atol=1e-6)
+
+
+def test_check_joint_limits_tolerates_tiny_overshoot():
+    """A solution 1e-10 rad over a limit (IK boundary rounding) must NOT be flagged
+    (bug #R4-8 — zero-tolerance vs IK's 1e-9 acceptance)."""
+    import numpy as np
+    from src.orchestrator.kinematics import (
+        check_joint_limits, gp7_default, TrajectorySample)
+    m = gp7_default()
+    qmax = [lk.joint_max for lk in m.links]
+    over = list(qmax); over[0] += 1e-10                  # just over J1 max
+    samples = [TrajectorySample(t=0.0, joints_rad=over)]
+    assert check_joint_limits(m, samples) == []          # within 1e-9 tolerance
+    way_over = list(qmax); way_over[0] += 0.05           # 0.05 rad over → real violation
+    assert check_joint_limits(m, [TrajectorySample(t=0.0, joints_rad=way_over)])

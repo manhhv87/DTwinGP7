@@ -73,3 +73,15 @@ class TestHistory:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+def test_reset_does_not_grow_history_unbounded():
+    """reset() must RE-INITIALISE history, not append every cycle (bug #R4-9 —
+    unbounded memory growth across trials)."""
+    from src.orchestrator.state_machine import PickPlaceStateMachine, PickState
+    sm = PickPlaceStateMachine()
+    for _ in range(100):
+        sm.transition_to(PickState.DETECT)
+        sm.reset()
+    assert len(sm.history) <= 2          # was 100s+ before (append-per-reset)
+    assert sm.state == PickState.IDLE
