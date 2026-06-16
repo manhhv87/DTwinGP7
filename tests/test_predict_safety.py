@@ -174,3 +174,26 @@ class TestPredictTrajectoryFailSafe:
         # First seed = current ([0]*6); second seed = the prev solution (chained).
         assert seeds_seen[0] == [0.0] * 6
         assert seeds_seen[-1] == [1.0, 2.0, 3.0, 4.0, 5.0, 6.0]
+
+
+class TestGraspYawCameraToBase:
+    def test_yaw_transformed_into_base_frame(self, tmp_path):
+        """The PCA grasp yaw must be rotated camera→base by the SAME hand-eye R as
+        the position (bug #R4-4). T_BC = 90° about Z → a camera-frame yaw of 0 maps
+        to a base-frame yaw of +90°."""
+        T = np.eye(4)
+        T[:3, :3] = np.array([[0.0, -1.0, 0.0],
+                              [1.0, 0.0, 0.0],
+                              [0.0, 0.0, 1.0]])          # +90° about Z
+        path = tmp_path / "T_bc.npy"
+        save_calibration(path, T)
+        orch = Orchestrator(queue.Queue(maxsize=3),
+                            config={"calibration_path": str(path)}, robot=MagicMock())
+        det = {"objects": [{"pose_camera": [100.0, 0.0, 500.0, 0.0], "class_name": "x"}]}
+        objs = orch._select_objects(det)
+        assert abs(objs[0]["yaw_base"] - np.pi / 2) < 1e-6
+
+    def test_identity_calibration_yaw_unchanged(self, orchestrator_with_predict):
+        det = {"objects": [{"pose_camera": [10.0, 20.0, 500.0, 0.7], "class_name": "x"}]}
+        objs = orchestrator_with_predict._select_objects(det)
+        assert abs(objs[0]["yaw_base"] - 0.7) < 1e-6     # identity T_BC → unchanged

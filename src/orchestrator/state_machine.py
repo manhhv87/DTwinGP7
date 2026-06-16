@@ -105,6 +105,10 @@ class PickPlaceStateMachine:
         self.history.append(StateRecord(PickState.ERROR, time.time(), reason))
 
     def reset(self) -> None:
-        """Reset the state machine to IDLE to start a new cycle."""
+        """Reset the state machine to IDLE to start a new cycle.
+
+        RE-INITIALISES history (does not append) — appending every cycle grew it
+        unbounded across thousands of trials. Per-trial history is still complete
+        within a cycle; the telemetry CSV keeps the durable record."""
         self._state = PickState.IDLE
-        self.history.append(StateRecord(PickState.IDLE, time.time(), "reset"))
+        self.history = [StateRecord(PickState.IDLE, time.time(), "reset")]

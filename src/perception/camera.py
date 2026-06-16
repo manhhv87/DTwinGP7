@@ -75,7 +75,11 @@ class D455Camera:
 
         depth_frame = self.spatial.process(depth_frame)
         depth_frame = self.temporal.process(depth_frame)
-        depth_frame = self.hole_filling.process(depth_frame)
+        # NOTE: hole_filling is intentionally NOT applied — it FABRICATES depth in
+        # no-return regions (e.g. by copying a neighbour), which then passes the
+        # zero-depth rejection in postprocess.masked_depth and corrupts the grasp
+        # depth with invented data. Leaving holes as 0 lets masked_depth drop them.
+        # (Re-enable only for a display-only colormap, on a separate copy.)
 
         rgb = np.asanyarray(color_frame.get_data())
         depth = np.asanyarray(depth_frame.get_data()) * self.depth_scale

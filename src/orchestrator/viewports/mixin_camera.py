@@ -352,6 +352,14 @@ class CameraMixin:
     def _start_camera(self) -> None:
         if self._cam_running:
             return
+        if self._cam_thread is not None and self._cam_thread.is_alive():
+            # A previous _stop_camera join timed out and its worker is still inside
+            # the camera (get_frame / pipeline.stop in finally). Starting now would
+            # open a SECOND pipeline on the same D455 → librealsense crash/hang.
+            self._set_status(
+                "Camera: previous session still closing — wait a moment, then retry",
+                level="warn")
+            return
         self._cam_source = self._cam_source_cb.currentText()
         self._cam_use_detector = self._cam_detector_chk.isChecked()
         self._cam_color_size, self._cam_fps = _CAM_RES_PRESETS[
@@ -370,7 +378,15 @@ class CameraMixin:
         self._cam_stop.set()
         t = self._cam_thread
         if t is not None and t.is_alive():
-            t.join(timeout=2.5)
+            t.join(timeout=3.5)                  # > camera frame timeout (~2s) + filters
+        # If the worker is STILL alive after the join, keep the handle and stay
+        # 'running' so _start_camera refuses to open a 2nd pipeline on the same
+        # device until this worker actually exits (its finally calls camera.stop()).
+        if t is not None and t.is_alive():
+            self._set_status(
+                "Camera: worker still closing (will free the device shortly)",
+                level="warn")
+            return
         self._cam_thread = None
         self._cam_running = False
 
@@ -418,10 +434,15 @@ class CameraMixin:
                 now = time.time()
                 self._last_fps = 1.0 / max(now - prev_t, 1e-6)
                 prev_t = now
-                # Store raw frame (atomic ref-assign) for capture/control — copy because
-                # the RealSense buffer is reused on the next frame. Updated every frame.
-                self._last_rgb = np.ascontiguousarray(rgb).copy()
-                self._last_depth = np.asarray(depth).copy()
+                # Store the raw frame as ONE coherent (rgb, depth) tuple so capture
+                # reads a matched pair in a single atomic ref-read (reading _last_rgb
+                # then _last_depth separately could straddle a worker update → a
+                # mismatched RGB/depth pair). Copy: the RealSense buffer is reused.
+                _rgb_c = np.ascontiguousarray(rgb).copy()
+                _depth_c = np.asarray(depth).copy()
+                self._last_frame = (_rgb_c, _depth_c)   # atomic coherent pair
+                self._last_rgb = _rgb_c                 # individual refs (display)
+                self._last_depth = _depth_c
                 self._last_camera_objects = objects
                 self._last_intrinsics = dict(camera.intrinsics)
                 self._last_source = source_label
@@ -566,12 +587,12 @@ class CameraMixin:
         """Save current frame: RGB (.png, BGR) + depth (.npy, meters) → data/raw.
 
         Unchecking 'Save depth' → RGB only."""
-        rgb = getattr(self, "_last_rgb", None)
-        if rgb is None:
+        frame = getattr(self, "_last_frame", None)
+        if frame is None:
             self._set_status("No camera frame yet — press Start first", level="warn")
             return
+        rgb, depth = frame                          # coherent pair (atomic read)
         save_depth = self._cam_save_depth_chk.isChecked()
-        depth = self._last_depth
         if save_depth and depth is None:
             self._set_status(
                 "No depth to save — uncheck 'Save depth' or Start again",
@@ -683,18 +704,28 @@ class CameraMixin:
         self._ensure_cell_config()
         # Extrinsics: camera-in-base pose from hand-eye calibration.
         calib = self._project_root / "config" / "calibration" / "T_base_camera.npy"
-        try:
-            x, y, z, rx, ry, rz = _matrix_to_xyz_rpy_deg(load_calibration(calib))
-            pose = PoseConfig(xyz_mm=(x, y, z), rpy_deg=(rx, ry, rz))
-            pose_note = "pose from calibration"
-        except Exception as e:                              # noqa: BLE001
+
+        def _fallback_pose(reason: str):
             existing = getattr(self._cell_config, "camera", None)
             if existing is not None:
-                pose = existing.pose; pose_note = "keeping previous pose"
-            else:
-                pose = PoseConfig(xyz_mm=(700.0, 0.0, 1200.0),
-                                  rpy_deg=(180.0, 0.0, 0.0))
-                pose_note = f"default pose (not calibrated: {e})"
+                return existing.pose, f"keeping previous pose ({reason})"
+            return (PoseConfig(xyz_mm=(700.0, 0.0, 1200.0),
+                               rpy_deg=(180.0, 0.0, 0.0)),
+                    f"default pose ({reason})")
+        # Distinguish a genuine calibration LOAD/shape error from a calibration that
+        # loaded fine but produced an OUT-OF-BOUNDS PoseConfig — the old single try
+        # mislabeled the latter as "not calibrated".
+        try:
+            x, y, z, rx, ry, rz = _matrix_to_xyz_rpy_deg(load_calibration(calib))
+        except Exception as e:                              # noqa: BLE001
+            pose, pose_note = _fallback_pose(f"not calibrated: {e}")
+        else:
+            try:
+                pose = PoseConfig(xyz_mm=(x, y, z), rpy_deg=(rx, ry, rz))
+                pose_note = "pose from calibration"
+            except Exception as e:                          # noqa: BLE001
+                pose, pose_note = _fallback_pose(
+                    f"calibration pose out of cell bounds — check units/limits: {e}")
         is_d455 = "D455" in str(getattr(self, "_last_source", "") or "")
         w = int(intr.get("width", 1280)); h = int(intr.get("height", 720))
         cam = CameraConfig(
