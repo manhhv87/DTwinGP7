@@ -124,18 +124,26 @@ def connect_robot(robot_file: str, log):
         log.error("Robot file not found: %s", robot_file)
         return None
     try:
+        from robodk.robolink import ITEM_TYPE_ROBOT
         rdk = Robolink()
-        for it in (rdk.ItemList() or []):                   # clean slate
+        # REUSE an existing GP7 — do NOT wipe the user's open station (the project
+        # uses RoboDK as the live viewport; the old blanket ItemList().Delete()
+        # destroyed every robot/frame/tool/object unrecoverably).
+        robot = None
+        for it in (rdk.ItemList() or []):
             try:
-                it.Delete()
+                if it.Type() == ITEM_TYPE_ROBOT and "GP7" in it.Name():
+                    robot = it
+                    break
             except Exception:                               # noqa: BLE001
-                pass
-        robot = rdk.AddFile(robot_file)
-        if not robot.Valid():
-            log.error("AddFile succeeded but robot item is not Valid.")
+                continue
+        if robot is None:                                   # none present → add it
+            robot = rdk.AddFile(robot_file)
+        if robot is None or not robot.Valid():
+            log.error("No GP7 robot found and AddFile did not yield a valid robot.")
             return None
         robot.setName("Yaskawa GP7")
-        log.info("RoboDK robot loaded: %s", robot.Name())
+        log.info("RoboDK robot ready: %s", robot.Name())
         return robot
     except Exception as e:                                  # noqa: BLE001
         log.error("Failed to connect/load RoboDK: %s", e)

@@ -664,12 +664,15 @@ class GP7AppQt(
         for label, cb in (("Home", self._on_home), ("Zero", self._on_zero)):
             act = QAction(label, self); act.triggered.connect(cb)
             m_robot.addAction(act)
+            if label == "Home":
+                self._act_move_home = act        # tracked for robot-dependent enable
         m_robot.addSeparator()
         # (Removed: Demo motion — dev-test 4-pose hard-coded loop, replaced
         # by Program → Play with a fully user-defined sequence.)
         act_params = QAction("&Parameters (URDF/DH)...", self)
         act_params.triggered.connect(self._show_parameters_dlg)
         m_robot.addAction(act_params)
+        self._act_robot_params = act_params       # tracked for robot-dependent enable
         m_robot.addSeparator()
         # Teach on surface — toggle mode to pick the 3D scene to create a target
         self._act_surface_pick = self._make_toggle(
@@ -1941,8 +1944,14 @@ class GP7AppQt(
         # HSE connection update if config has it
         rc = getattr(cfg, "robot_connection", None)
         if rc is not None:
-            self._hse_ip = getattr(rc, "ip", "") or ""
-            self._hse_tool_no = int(getattr(rc, "tool_no", 1) or 1)
+            # Only override when the cell YAML actually CARRIES a value — a cell
+            # without connection keys must NOT wipe the configured/default IP, tool#
+            # or FTP creds (those drive Run-on-Robot / Send-pose / the real TL frame).
+            self._hse_ip = getattr(rc, "ip", None) or self._hse_ip
+            self._hse_tool_no = int(getattr(rc, "tool_no", None) or self._hse_tool_no)
+            self._hse_ftp_user = getattr(rc, "ftp_user", None) or self._hse_ftp_user
+            self._hse_ftp_pass = getattr(rc, "ftp_pass", None) or self._hse_ftp_pass
+            self._hse_ftp_dir = getattr(rc, "ftp_job_dir", None) or self._hse_ftp_dir
         # Auto-fit camera including the new cell meshes
         try:
             self._plotter.reset_camera()
@@ -1986,8 +1995,10 @@ class GP7AppQt(
             self._jog_dock.widget().setEnabled(enabled)
         # Status console stays enabled to show hints
         # Robot-dependent menu actions (config dialog, params, IK)
-        for attr in ("_act_configurations", "_act_robot_params",
-                     "_act_find_alts", "_act_move_home", "_act_surface_pick"):
+        # Only the actions that actually exist as menu items (the old list named two
+        # — _act_configurations/_act_find_alts — that were never created, so those
+        # robot-dependent items silently stayed enabled with no robot).
+        for attr in ("_act_robot_params", "_act_move_home", "_act_surface_pick"):
             act = getattr(self, attr, None)
             if act is not None:
                 act.setEnabled(enabled)
@@ -3230,9 +3241,13 @@ class GP7AppQt(
             xyz, rpy = self._read_pose(pw)
             rob.pose = PoseConfig(xyz_mm=xyz, rpy_deg=rpy)
             self._base_xyz = tuple(xyz)
-            # Rebuild URDF model with new base
+            self._base_rpy = tuple(rpy)
+            # Rebuild URDF model with the new base — INCLUDING rpy (was dropped, so a
+            # base rotation was silently ignored in the model/3D view).
             if self._model is not None:
-                self._model = gp7_urdf(base_xyz_mm=self._base_xyz)
+                self._model = gp7_urdf(
+                    base_xyz_mm=self._base_xyz,
+                    base_rpy_rad=tuple(math.radians(d) for d in rpy))
                 self._apply_joints_main(self._joints)
             self._refresh_cell_tree()
             self._set_status("Updated robot base pose", level="ok")
@@ -4948,7 +4963,8 @@ class GP7AppQt(
         # invalidate the cached mesh.
         _tool_T = self._tool_frames[self._tool_idx][1]
         _tool_sig = tuple(np.round(np.asarray(_tool_T, float).ravel(), 3))
-        ckey = (id(self._model), mode, self._tool_idx, tuple(self._base_xyz), _tool_sig)
+        ckey = (id(self._model), mode, self._tool_idx, tuple(self._base_xyz),
+                tuple(getattr(self, "_base_rpy", (0.0, 0.0, 0.0))), _tool_sig)
         if ckey in cache:
             return cache[ckey]
 

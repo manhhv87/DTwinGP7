@@ -93,17 +93,13 @@ def decode_alarm(code: int, sub_code: int = 0) -> AlarmInfo:
     info = _ALARM_DB.get(code)
     if info is not None:
         return info
-    # Unknown code — infer severity from range
-    if code == 0:
-        severity = AlarmSeverity.NONE
-    elif code < 2000:
-        severity = AlarmSeverity.MINOR
-    elif code < 3000:
-        severity = AlarmSeverity.MAJOR
-    elif code < 4000:
-        severity = AlarmSeverity.SYSTEM
-    else:
-        severity = AlarmSeverity.USER
+    # Unknown code → FAIL-SAFE. The real YRC1000 does NOT encode severity in the
+    # code's decimal magnitude, so do NOT infer it (the old range scheme dropped
+    # every code >=4000 to USER/recoverable, suppressing the twin's auto-stop on
+    # genuine major faults such as 41xx servo/encoder). Default any unknown nonzero
+    # code to SYSTEM (non-recoverable) so auto-stop fires — matches this function's
+    # documented contract.
+    severity = AlarmSeverity.NONE if code == 0 else AlarmSeverity.SYSTEM
     return AlarmInfo(
         code=code,
         name=f"UNKNOWN_{code:04d}",

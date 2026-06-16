@@ -82,6 +82,8 @@ class VarStore:
         v = int(value)
         if name[0] == "B":
             v &= 0xFF                       # byte wrap 0–255
+        elif name[0] == "I":
+            v = ((v + 2**31) % 2**32) - 2**31   # 32-bit signed wrap (YRC1000 I-var)
         self._v[name] = v
 
     def as_dict(self) -> dict[str, int]:
@@ -198,7 +200,12 @@ def eval_express(expr: str, store: VarStore, io_reader: IoReader = _no_io) -> in
         v = factor()
         while peek() in ("*", "/"):
             op = nxt(); r = factor()
-            v = v * r if op == "*" else (_trunc_div(v, r) if r != 0 else v)
+            if op == "/":
+                if r == 0:
+                    raise ValueError("EXPRESS divide by zero — controller alarm 4420")
+                v = _trunc_div(v, r)
+            else:
+                v = v * r
         return v
 
     def expr_add() -> int:
@@ -234,7 +241,12 @@ def apply_setvar(
     elif op == "MUL":
         res = cur * operand
     elif op == "DIV":
-        res = _trunc_div(cur, operand) if operand != 0 else cur  # guard div-by-zero
+        if operand == 0:
+            # The real YRC1000 raises alarm 4420 "Divide by 0" and HALTS the job;
+            # the twin must mirror that (the playback loop turns this ValueError into
+            # a _PlaybackAbort) rather than silently continuing with a stale value.
+            raise ValueError(f"DIV by zero ({name} / 0) — controller would alarm 4420")
+        res = _trunc_div(cur, operand)
     else:
         raise ValueError(f"Unsupported variable assignment operator: '{op}'")
     store.set(name, res)

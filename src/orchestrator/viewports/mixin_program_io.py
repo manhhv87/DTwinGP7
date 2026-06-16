@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import logging
 import math
+import os
 import re
 from pathlib import Path
 
@@ -64,8 +65,14 @@ class ProgramIOMixin:
                 doc["jbi_raw"] = self._jbi_raw
             if getattr(self, "_jbi_positions", None):
                 doc["jbi_positions"] = self._jbi_positions
-            Path(path).write_text(json.dumps(doc, indent=2), encoding="utf-8")
-            self._saved_signature = self._project_signature()   # mark clean
+            # Atomic write: a crash / disk-full mid-write must NOT truncate and
+            # corrupt the previous project. Write a temp file in the same dir, then
+            # os.replace() (atomic on the same filesystem).
+            _dst = Path(path)
+            _tmp = _dst.with_name(_dst.name + ".tmp")
+            _tmp.write_text(json.dumps(doc, indent=2), encoding="utf-8")
+            os.replace(_tmp, _dst)
+            self._saved_signature = self._project_signature()   # mark clean (after replace)
             total_steps = sum(len(p) for p in self._jobs.values())
             self._set_status(
                 f"Saved {len(self._jobs)} job(s), {total_steps} steps total, "

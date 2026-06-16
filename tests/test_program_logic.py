@@ -132,10 +132,12 @@ class TestSetVar:
         apply_setvar("I000", "INC", "", s); assert s.get("I000") == 5
         apply_setvar("I000", "DEC", "", s); assert s.get("I000") == 4
 
-    def test_div_by_zero_guarded(self):
+    def test_div_by_zero_raises(self):
+        # The real YRC1000 alarms (4420) and HALTS on /0 — the twin must mirror that
+        # (playback turns the ValueError into a _PlaybackAbort), not silently skip it.
         s = VarStore(); s.set("I000", 9)
-        apply_setvar("I000", "DIV", "0", s)        # no crash
-        assert s.get("I000") == 9                  # unchanged
+        with pytest.raises(ValueError, match="zero"):
+            apply_setvar("I000", "DIV", "0", s)
 
     def test_set_from_var(self):
         s = VarStore(); s.set("B001", 42)
@@ -161,9 +163,10 @@ class TestExpress:
         assert eval_express("(2 + 3) * 4", s) == 20
         assert eval_express("-5 + 10", s) == 5
 
-    def test_div_by_zero_guard(self):
+    def test_div_by_zero_raises(self):
         s = VarStore(); s.set("B000", 0)
-        assert eval_express("10 / B000", s) == 10          # guarded → unchanged lhs
+        with pytest.raises(ValueError, match="zero"):       # mirrors controller 4420 halt
+            eval_express("10 / B000", s)
 
     def test_apply_setvar_instr_express(self):
         s = VarStore(); s.set("B005", 7)
@@ -1269,3 +1272,16 @@ class TestRunOnRobotCollectsSubJobs:
     def test_robot_job_name_falls_back_to_sanitized(self):
         h = self._host({"WELD_A": []}, "WELD_A")
         assert h._robot_job_name("WELD_A") == "WELD_A"
+
+
+def test_ivar_wraps_to_int32():
+    """I-variables are 32-bit signed on the YRC1000 — the sim must wrap, not keep an
+    unbounded Python int (bug #R5-9)."""
+    from src.orchestrator.viewports.program_logic import VarStore
+    s = VarStore()
+    s.set("I000", 2**31)            # overflow by 1 → wraps to -2**31
+    assert s.get("I000") == -(2**31)
+    s.set("I001", 2**31 - 1)        # max positive int32 → unchanged
+    assert s.get("I001") == 2**31 - 1
+    s.set("I002", -2**31 - 1)       # underflow → wraps to +max
+    assert s.get("I002") == 2**31 - 1
