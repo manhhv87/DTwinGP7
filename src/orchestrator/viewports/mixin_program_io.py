@@ -528,9 +528,15 @@ class ProgramIOMixin:
 
         if not self._program:
             self._set_status("Current job empty", level="warn"); return
+        # Default the filename to the ORIGINAL //NAME (keeps e.g. SPEED-1's dash) so
+        # accepting it unchanged preserves the verbatim re-export — self._active_job
+        # is the sanitized key (SPEED1), which would mismatch //NAME and force a
+        # needless re-synthesis (verbatim name-match gate).
+        _raw = getattr(self, "_jbi_raw", {}).get(self._active_job)
+        _default = (_raw or {}).get("name") or self._active_job
         path, _ = QFileDialog.getSaveFileName(
             self, "Export Yaskawa INFORM .JBI",
-            f"{self._active_job}.JBI", "INFORM (*.JBI)")
+            f"{_default}.JBI", "INFORM (*.JBI)")
         if not path: return
         try:
             stem = Path(path).stem[:32].replace(" ", "_") or "PROG"

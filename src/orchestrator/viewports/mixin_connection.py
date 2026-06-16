@@ -492,13 +492,27 @@ class ConnectionMixin:
             # with servos ON. Poll Joints() until within tolerance, the move stalls,
             # or a stop is requested (→ servo OFF). Bounded so it can't hang.
             t_end = _t.monotonic() + 30.0
+            read_fails = 0
             while _t.monotonic() < t_end:
                 if self._send_pose_stop.is_set():
                     break
                 try:
                     cur = backend.Joints()
+                    read_fails = 0
                 except Exception:                        # noqa: BLE001
-                    break                                # can't read → stop waiting
+                    # A single dropped UDP reply must NOT abandon monitoring (and the
+                    # abort path). Tolerate a few; if we PERSISTENTLY can't read the
+                    # robot, stop it defensively rather than leave an unmonitored
+                    # in-flight move the operator can no longer abort.
+                    read_fails += 1
+                    if read_fails >= 5:
+                        try: backend.Stop()
+                        except Exception: pass            # noqa: BLE001
+                        self._signals.status.emit(
+                            "Send pose: lost monitoring — servo OFF (safety)", "warn")
+                        return
+                    _t.sleep(0.1)
+                    continue
                 if max(abs(a - b) for a, b in zip(cur, joints)) < 0.5:
                     break                                # arrived (≤0.5° all axes)
                 _t.sleep(0.1)

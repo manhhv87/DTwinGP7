@@ -144,3 +144,33 @@ class TestSelectObjectsMalformed:
         ]}
         objs = orch._select_objects(det)
         assert [o["class_name"] for o in objs] == ["good"]
+
+
+class TestPredictTrajectoryFailSafe:
+    def test_ik_fail_rejects_not_fail_open(self, orchestrator_with_predict):
+        """A pose the predictor can't IK-solve must be REJECTED (reason string),
+        NOT silently skipped (the old fail-OPEN 'return None' = proceed). #1/#14."""
+        orch = orchestrator_with_predict
+        orch._current_joints = [0.0] * 6
+        orch._solve_ik_client = lambda T, seed_deg=None: None   # IK always fails
+        T = np.eye(4); T[:3, 3] = [400.0, 0.0, 300.0]
+        reason = orch._predict_safety_for_trajectory([(T, "movj")])
+        assert reason is not None and "ik_unreachable" in reason
+
+    def test_predict_seeds_from_running_prev_joints(self, orchestrator_with_predict):
+        """The prediction loop threads the RUNNING prev joints into _solve_ik_client
+        (seed chaining like execution), not always self._current_joints. #2."""
+        orch = orchestrator_with_predict
+        orch._current_joints = [0.0] * 6
+        seeds_seen = []
+
+        def fake_ik(T, seed_deg=None):
+            seeds_seen.append(seed_deg)
+            return [1.0, 2.0, 3.0, 4.0, 5.0, 6.0]          # constant solution
+        orch._solve_ik_client = fake_ik
+        T0 = np.eye(4); T0[:3, 3] = [400.0, 0.0, 300.0]
+        T1 = np.eye(4); T1[:3, 3] = [410.0, 0.0, 300.0]
+        orch._predict_safety_for_trajectory([(T0, "movj"), (T1, "movj")])
+        # First seed = current ([0]*6); second seed = the prev solution (chained).
+        assert seeds_seen[0] == [0.0] * 6
+        assert seeds_seen[-1] == [1.0, 2.0, 3.0, 4.0, 5.0, 6.0]
