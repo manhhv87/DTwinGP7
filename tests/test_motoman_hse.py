@@ -26,7 +26,9 @@ from src.orchestrator.backends.hse_protocol import (
 from src.orchestrator.backends.motoman_hse import (
     HSE_PORT_ROBOT,
     NETWORK_IO_BASE,
+    MotionHaltedError,
     MotomanHSEBackend,
+    RobotAlarmError,
 )
 
 
@@ -61,6 +63,11 @@ def _build_position_response(joints_deg: list[float]) -> bytes:
 def backend_with_mock_socket(monkeypatch):
     """MotomanHSEBackend with socket.sendto/recvfrom monkey-patched."""
     backend = MotomanHSEBackend(ip="192.168.1.100", port=HSE_PORT_ROBOT, timeout_s=0.5)
+    # Skip the start-confirm (Running-bit assert) phase in unit tests — the mock
+    # never asserts Running, so it would just burn the grace window. Real hardware
+    # keeps the default. _wait_idle still issues its completion READ_STATUS +
+    # READ_ALARM, so move-test response sequences include a final alarm poll.
+    backend.start_confirm_timeout_s = 0.0
 
     # Inject mock socket vào backend
     mock_sock = MagicMock(spec=socket.socket)
@@ -280,6 +287,7 @@ class TestMoveJEndToEnd:
             _build_response(),                       # JOB_SELECT
             _build_response(),                       # START
             _build_response(payload=b"\x00"),        # READ_STATUS — idle (bit 1 = 0)
+            _build_response(payload=b"\x00"),        # READ_ALARM — none (len<8 → (0,0))
         ]
         mock_sock.recvfrom.side_effect = [
             (r, ("192.168.1.100", 10040)) for r in responses
@@ -294,8 +302,8 @@ class TestMoveJEndToEnd:
         assert "STOR " in uploaded["cmd"]
         assert b"/JOB" in uploaded["data"]              # INFORM header
         assert b"MOVJ" in uploaded["data"]              # motion instruction
-        # HSE sent 3 packets: JOB_SELECT, START, READ_STATUS
-        assert mock_sock.sendto.call_count == 3
+        # HSE sent 4 packets: JOB_SELECT, START, READ_STATUS, READ_ALARM
+        assert mock_sock.sendto.call_count == 4
 
     def test_movej_wait_idle_times_out(self, backend_with_mock_socket, monkeypatch):
         backend, mock_sock = backend_with_mock_socket
@@ -344,11 +352,12 @@ class TestBatchMode:
         import ftplib
         monkeypatch.setattr(ftplib, "FTP", mock_ftp_cls)
 
-        # Socket: JOB_SELECT + START + READ_STATUS idle
+        # Socket: JOB_SELECT + START + READ_STATUS idle + READ_ALARM none
         responses = [
             _build_response(),                               # JOB_SELECT
             _build_response(),                               # START
             _build_response(payload=b"\x00"),                # READ_STATUS idle
+            _build_response(payload=b"\x00"),                # READ_ALARM none
         ]
         mock_sock.recvfrom.side_effect = [
             (r, ("x", 10040)) for r in responses
@@ -367,9 +376,9 @@ class TestBatchMode:
 
         # FTP called đúng 1 lần — không phải 3 lần (cho 3 motion)
         mock_ftp.storbinary.assert_called_once()
-        # HSE socket: JOB_SELECT + START + READ_STATUS (3 packets) — KHÔNG có
-        # WRITE_IO/MoveJ packet riêng vì batch
-        assert mock_sock.sendto.call_count == 3
+        # HSE socket: JOB_SELECT + START + READ_STATUS + READ_ALARM (4 packets) —
+        # KHÔNG có WRITE_IO/MoveJ packet riêng vì batch
+        assert mock_sock.sendto.call_count == 4
 
         # Verify nội dung INFORM bao gồm tất cả instructions
         data = uploaded["data"]
@@ -391,6 +400,7 @@ class TestBatchMode:
             (_build_response(), ("x", 10040)),               # JOB_SELECT
             (_build_response(), ("x", 10040)),               # START
             (_build_response(payload=b"\x00"), ("x", 10040)),  # READ_STATUS idle
+            (_build_response(payload=b"\x00"), ("x", 10040)),  # READ_ALARM none
         ]
         backend.MoveJ([10, 0, 0, 0, 0, 0])
         # Non-batch path: FTP called 1 lần cho MoveJ này
@@ -426,9 +436,9 @@ class TestBatchMode:
             backend.MoveJ([0] * 6)
             backend.setDO(1, 1)
 
-        # Sock chỉ có JOB_SELECT + START + READ_STATUS (3 packets), không có
-        # WRITE_IO packet (vì DOUT đi qua INFORM)
-        assert mock_sock.sendto.call_count == 3
+        # Sock có JOB_SELECT + START + READ_STATUS + READ_ALARM (4 packets), không
+        # có WRITE_IO packet (vì DOUT đi qua INFORM)
+        assert mock_sock.sendto.call_count == 4
         data = uploaded["data"]
         assert b"DOUT OT#(1) ON" in data
 
@@ -687,3 +697,55 @@ class TestUploadOverwrite:
             "503 Bad sequence of commands. Can't overwrite JOB-file.")
         with pytest.raises(RuntimeError, match="teach pendant"):
             MotomanHSEBackend(ip="x").upload_job("X", "PROG")
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# Motion-safety: halt latch + alarm-aware completion (bug-hunt HIGH cluster)
+# ─────────────────────────────────────────────────────────────────────────
+
+
+class TestMotionSafety:
+    def test_wait_idle_raises_on_alarm(self, backend_with_mock_socket):
+        """An alarm-aborted job must NOT be reported as success: when Running
+        clears, _wait_idle checks READ_ALARM and raises if nonzero (#3)."""
+        backend, mock_sock = backend_with_mock_socket
+        alarm = struct.pack("<I", 2010) + struct.pack("<I", 3)   # code 2010, sub 3
+        mock_sock.recvfrom.side_effect = [
+            (_build_response(payload=b"\x00"), ("x", 10040)),     # READ_STATUS idle
+            (_build_response(payload=alarm), ("x", 10040)),       # READ_ALARM → 2010/3
+        ]
+        with pytest.raises(RobotAlarmError) as ei:
+            backend._wait_idle()
+        assert ei.value.code == 2010 and ei.value.sub_code == 3
+
+    def test_wait_idle_ok_when_no_alarm(self, backend_with_mock_socket):
+        backend, mock_sock = backend_with_mock_socket
+        mock_sock.recvfrom.side_effect = [
+            (_build_response(payload=b"\x00"), ("x", 10040)),     # READ_STATUS idle
+            (_build_response(payload=b"\x00"), ("x", 10040)),     # READ_ALARM none
+        ]
+        backend._wait_idle()                                     # must not raise
+
+    def test_job_start_refused_when_halted(self, backend_with_mock_socket):
+        """Stop() latched _halted → job_start refuses to START (no motion). (#4/#17)"""
+        backend, mock_sock = backend_with_mock_socket
+        backend._halted = True
+        with pytest.raises(MotionHaltedError):
+            backend.job_start()
+        mock_sock.sendto.assert_not_called()                    # nothing was sent
+
+    def test_move_pulse_refused_when_halted(self, backend_with_mock_socket):
+        """Direct MOVE path is gated on the halt latch too (live-jog can't stream
+        after a Stop). (#17)"""
+        backend, mock_sock = backend_with_mock_socket
+        backend._halted = True
+        with pytest.raises(MotionHaltedError):
+            backend.move_pulse([0, 0, 0, 0, 0, 0], speed_pct=5.0)
+        mock_sock.sendto.assert_not_called()
+
+    def test_servo_on_clears_halt_latch(self, backend_with_mock_socket):
+        backend, mock_sock = backend_with_mock_socket
+        backend._halted = True
+        mock_sock.recvfrom.return_value = (_build_response(), ("x", 10040))
+        backend.servo_on()
+        assert backend._halted is False                         # resume cleared it
