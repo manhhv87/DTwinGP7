@@ -523,25 +523,41 @@ class InformJobBuilder:
         return self
 
     def movj_indirect(self, index_var: str, speed_var: str = "",
-                      speed_pct: float | None = None) -> "InformJobBuilder":
-        """MOVJ P[Bxxx] [VJ=Ixxx | VJ=n] — indirect position, optional var speed."""
+                      speed_pct: float | None = None,
+                      tool_no: int | None = None,
+                      pl: int | None = None,
+                      user_frame: int | None = None) -> "InformJobBuilder":
+        """MOVJ P[Bxxx] [VJ=Ixxx | VJ=n] [PL= TL= UF#=] — indirect position.
+
+        tool_no/pl/user_frame mirror movj(): the active modal TL/PL/UF MUST be
+        emitted here too, otherwise the indirect move silently runs under whatever
+        frame is active at playback (a UF#(1) move can execute in the base frame)."""
         index_var = self._validate_var(index_var)
         if speed_var:
             vj = f"VJ={self._validate_var(speed_var)}"
         else:
             vj = f"VJ={self._clamp_joint_speed(speed_pct):.2f}"
-        self._instructions.append(_Instruction(f"MOVJ P[{index_var}] {vj}"))
+        inst = f"MOVJ P[{index_var}] {vj}"
+        inst += self._motion_modifiers(pl, tool_no, user_frame)
+        self._instructions.append(_Instruction(inst))
         return self
 
     def movl_indirect(self, index_var: str, speed_var: str = "",
-                      speed_mm_s: float = 100.0) -> "InformJobBuilder":
-        """MOVL P[Bxxx] [V=Ixxx | V=n] — indirect position, optional var speed."""
+                      speed_mm_s: float = 100.0,
+                      tool_no: int | None = None,
+                      pl: int | None = None,
+                      user_frame: int | None = None) -> "InformJobBuilder":
+        """MOVL P[Bxxx] [V=Ixxx | V=n] [PL= TL= UF#=] — indirect position.
+
+        Emits the active modal TL/PL/UF (see movj_indirect)."""
         index_var = self._validate_var(index_var)
         if speed_var:
             v = f"V={self._validate_var(speed_var)}"
         else:
             v = f"V={max(1.0, min(float(speed_mm_s), MAX_LINEAR_MM_S)):.1f}"
-        self._instructions.append(_Instruction(f"MOVL P[{index_var}] {v}"))
+        inst = f"MOVL P[{index_var}] {v}"
+        inst += self._motion_modifiers(pl, tool_no, user_frame)
+        self._instructions.append(_Instruction(inst))
         return self
 
     def _clamp_joint_speed(self, speed_pct: float | None) -> float:

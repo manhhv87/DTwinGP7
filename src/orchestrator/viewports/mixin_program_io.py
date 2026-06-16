@@ -291,7 +291,7 @@ class ProgramIOMixin:
             # jobs (snapshot mismatch) fall back to re-synthesis from the model.
             self._jbi_raw = {
                 k: {"text": v["text"], "name": v["name"],
-                    "sig": self._job_signature(jobs[k])}
+                    "sig": self._job_signature(jobs[k], targets)}
                 for k, v in raw_texts.items()}
             # Global P-var table for P[Bxxx] indirect motions (resolved at play).
             self._jbi_positions = global_pos
@@ -592,11 +592,28 @@ class ProgramIOMixin:
                 f"Exported {n_ok} .JBI files → {out_dir}", level="ok")
 
     @staticmethod
-    def _job_signature(program: list[Instruction]) -> str:
+    def _job_signature(program: list[Instruction], targets: dict | None = None) -> str:
         """Compact signature of an instruction list — used to detect whether a
-        job was edited since import (→ decide verbatim vs re-synthesis export)."""
+        job was edited since import (→ decide verbatim vs re-synthesis export).
+
+        When `targets` is given, the joints + jbi_token of every referenced target
+        are folded in. RE-TEACHING a target leaves the instruction list unchanged,
+        so without this the verbatim snapshot would still match and stale pulses
+        would upload to the real robot. Re-teaching now invalidates the snapshot →
+        re-synthesis with the NEW joints."""
         import json as _json
-        return _json.dumps([ins.to_dict() for ins in program], sort_keys=True)
+        sig: dict = {"prog": [ins.to_dict() for ins in program]}
+        if targets:
+            refs: dict = {}
+            for ins in program:
+                name = getattr(ins, "target_name", None)
+                if name and name in targets and name not in refs:
+                    t = targets[name]
+                    refs[name] = {"joints": list(t.get("joints", [])),
+                                  "jbi_token": t.get("jbi_token", "")}
+            if refs:
+                sig["targets"] = refs
+        return _json.dumps(sig, sort_keys=True)
 
     def _export_job_to_path(
         self, program: list[Instruction], job_name: str, path: Path,
@@ -613,7 +630,8 @@ class ProgramIOMixin:
         status. folder_name re-emits the original ///FOLDERNAME.
         """
         raw = getattr(self, "_jbi_raw", {}).get(raw_key or job_name)
-        if raw and raw.get("sig") == self._job_signature(program):
+        if raw and raw.get("sig") == self._job_signature(
+                program, getattr(self, "_targets", None)):
             path.write_bytes(raw["text"].encode("utf-8"))   # verbatim re-export
             return
         errs = validate_program(program)
@@ -653,7 +671,9 @@ class ProgramIOMixin:
                 if ins.pos_index_var:
                     builder.movj_indirect(ins.pos_index_var,
                                           speed_var=ins.speed_var,
-                                          speed_pct=cur_vj_pct)
+                                          speed_pct=cur_vj_pct,
+                                          tool_no=cur_tl, pl=cur_pl,
+                                          user_frame=cur_uf)
                 else:
                     if ins.target_name:
                         pname = target_cvars[ins.target_name]
@@ -668,7 +688,9 @@ class ProgramIOMixin:
                 if ins.pos_index_var:
                     builder.movl_indirect(ins.pos_index_var,
                                           speed_var=ins.speed_var,
-                                          speed_mm_s=cur_v_mm_s)
+                                          speed_mm_s=cur_v_mm_s,
+                                          tool_no=cur_tl, pl=cur_pl,
+                                          user_frame=cur_uf)
                 else:
                     if ins.target_name:
                         pname = target_cvars[ins.target_name]
