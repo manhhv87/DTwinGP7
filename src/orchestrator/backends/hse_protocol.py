@@ -323,6 +323,12 @@ class HSEResponse:
                 f"Payload size mismatch: declared {payload_size}, got {len(payload)}"
             )
 
+        # When the controller reports TWO added-status words, the second 16-bit
+        # field (_pad2) is data, not padding — fold it in (high word) so the full
+        # diagnostic code is preserved instead of silently dropped.
+        if added_size >= 2:
+            added_status = added_status | (_pad2 << 16)
+
         return cls(
             service=service,
             status=status,

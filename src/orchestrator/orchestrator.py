@@ -200,6 +200,12 @@ class Orchestrator:
             self._reach_env_cached = ReachEnvelope.gp7_default(base_xyz_mm=base_xyz)
 
         target_xyz = np.asarray(target_T)[:3, 3]
+        # The envelope is about the FLANGE/wrist; target_T is the TCP. Back off the
+        # tool offset along tool Z so a long tool doesn't skew the gate by ~its length
+        # at the reach boundary (consistent with the IK flange retract).
+        tool_off = float(self.config.get("robot_tool_offset_mm", 0.0))
+        if abs(tool_off) > 1e-6:
+            target_xyz = target_xyz - tool_off * np.asarray(target_T)[:3, 2]
         if not self._reach_env_cached.can_reach(target_xyz):
             logger.info(
                 "Reach envelope fail at world %s (base=%s)",

@@ -37,23 +37,22 @@ class TestDecodeKnownCodes:
 
 
 class TestUnknownCodeFallback:
-    def test_unknown_in_minor_range(self):
-        info = decode_alarm(1500)
-        assert info.severity == AlarmSeverity.MINOR
-        assert info.name.startswith("UNKNOWN_")
-        assert info.code == 1500
+    """Unknown codes default FAIL-SAFE to SYSTEM (non-recoverable → auto-stop
+    fires). Severity is NOT inferred from the code's decimal magnitude — the real
+    YRC1000 does not encode it that way, and the old scheme dropped codes >=4000 to
+    USER/recoverable, suppressing auto-stop on genuine major faults."""
 
-    def test_unknown_in_major_range(self):
-        info = decode_alarm(2999)
-        assert info.severity == AlarmSeverity.MAJOR
+    def test_unknown_code_defaults_to_system(self):
+        for code in (1500, 2999, 3500, 4500):
+            info = decode_alarm(code)
+            assert info.severity == AlarmSeverity.SYSTEM, code
+            assert info.name.startswith("UNKNOWN_")
+            assert info.code == code
 
-    def test_unknown_in_system_range(self):
-        info = decode_alarm(3500)
-        assert info.severity == AlarmSeverity.SYSTEM
-
-    def test_unknown_in_user_range(self):
-        info = decode_alarm(4500)
-        assert info.severity == AlarmSeverity.USER
+    def test_unknown_high_code_is_not_recoverable(self):
+        # The dangerous direction: a >=4000 code must NOT be classified recoverable.
+        from src.orchestrator.backends.alarm_codes import is_recoverable
+        assert not is_recoverable(decode_alarm(4500))
 
 
 class TestRecoverable:

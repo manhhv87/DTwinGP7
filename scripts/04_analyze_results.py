@@ -42,12 +42,15 @@ def main() -> int:
 
     import pandas as pd
 
-    # Collect all CSV files (expand wildcards).
-    paths: list[str] = []
+    # Collect all CSV files (expand wildcards). Canonicalize to ABSOLUTE paths
+    # before dedup — the same file matched both PROJECT_ROOT/pattern (absolute) and
+    # pattern (relative) yields two distinct strings that set() would NOT dedup,
+    # reading every CSV twice (inflating trial counts + the t-test n).
+    seen: set[str] = set()
     for pattern in args.csv:
-        paths.extend(glob.glob(str(PROJECT_ROOT / pattern)))
-        paths.extend(glob.glob(pattern))
-    paths = sorted(set(paths))
+        for p in glob.glob(str(PROJECT_ROOT / pattern)) + glob.glob(pattern):
+            seen.add(str(Path(p).resolve()))
+    paths = sorted(seen)
     if not paths:
         log.error("No CSV files found matching %s", args.csv)
         return 1
@@ -73,13 +76,26 @@ def main() -> int:
     if "mode" in df.columns and set(df["mode"].dropna().unique()) >= {"rgb_only", "rgbd"}:
         from scipy import stats as sps
 
-        rgb = df[df["mode"] == "rgb_only"]["success"].to_numpy()
-        rgbd = df[df["mode"] == "rgbd"]["success"].to_numpy()
-        n = min(len(rgb), len(rgbd))
-        if n > 1:
-            t, p = sps.ttest_rel(rgb[:n], rgbd[:n])
-            log.info("Depth fusion: t=%.3f, p=%.4f (%s)",
-                     t, p, "significant" if p < 0.05 else "not significant")
+        rgb_df = df[df["mode"] == "rgb_only"]
+        rgbd_df = df[df["mode"] == "rgbd"]
+        # PAIR by trial_id (paired t-test compares the SAME scene under both modes).
+        # Positional rgb[:n] vs rgbd[:n] pairs unrelated trials → meaningless stat.
+        if "trial_id" in df.columns:
+            merged = rgb_df.merge(rgbd_df, on="trial_id", suffixes=("_a", "_b"))
+            if len(merged) > 1:
+                t, p = sps.ttest_rel(merged["success_a"], merged["success_b"])
+                log.info("Depth fusion (paired on trial_id, n=%d): t=%.3f, p=%.4f (%s)",
+                         len(merged), t, p,
+                         "significant" if p < 0.05 else "not significant")
+            else:
+                log.warning("No shared trial_id between modes — skipping paired test")
+        else:
+            # No pairing key → unpaired (independent-samples) test.
+            rgb = rgb_df["success"].to_numpy(); rgbd = rgbd_df["success"].to_numpy()
+            if len(rgb) > 1 and len(rgbd) > 1:
+                t, p = sps.ttest_ind(rgb, rgbd)
+                log.info("Depth fusion (UNPAIRED, no trial_id): t=%.3f, p=%.4f (%s)",
+                         t, p, "significant" if p < 0.05 else "not significant")
 
     # ─── Figure ───
     try:

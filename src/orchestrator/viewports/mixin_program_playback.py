@@ -251,6 +251,13 @@ class ProgramPlaybackMixin:
         except ValueError as e:
             self._signals.status.emit(f"Program logic error: {e}", "err")
             raise _PlaybackAbort from e
+        # Full static validation for EVERY job — incl. CALL-JOB sub-jobs, which would
+        # otherwise only get resolve_labels/build_block_map and could JUMP into a
+        # structured IF/WHILE block (landing mid-block) at runtime.
+        errs = validate_program(prog)
+        if errs:
+            self._signals.status.emit(f"Program logic error: {errs[0]}", "err")
+            raise _PlaybackAbort
         # Show this job's code in the program list (switches view on CALL JOB).
         if job_label:
             self._signals.prog_show_job.emit(job_label)
