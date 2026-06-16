@@ -122,10 +122,12 @@ GP7_CTRL_BASE_Z_MM = 0.0
 def _build_ref_frames(cell_config) -> list[tuple[str, np.ndarray]]:
     """[(name, T_base_ref)] — reference frame relative to robot base.
 
-    "Base (0)" = the robot base origin (its POSITION matches the teach-pendant
-    ROBOT/BASE readout). NOTE: orientation shown in this frame is the app's tool0
-    convention, which differs from the pendant TOOL by 180° about tool Z — use the
-    Send-pose "YRC pendant frame" line for a full position+orientation match."""
+    "Base (0)" = the robot base origin. The Cartesian-jog readout renders this
+    frame in the YRC1000 teach-pendant convention (BASE position + TOOL Rz(180°)
+    orientation, via gp7_app_qt._pendant_pose), so the panel matches the pendant
+    CURRENT POSITION 1:1 — position AND orientation. (The Send-pose dialog shows
+    the same "YRC pendant frame" line.) The raw frame definition here stays the
+    app tool0 convention; only the live tool-in-base readout applies the Rz180."""
     _base0 = np.eye(4)
     _base0[2, 3] = GP7_CTRL_BASE_Z_MM      # 0.0 — kept for clarity/future-proofing
     out: list[tuple[str, np.ndarray]] = [("Base (0)", _base0)]

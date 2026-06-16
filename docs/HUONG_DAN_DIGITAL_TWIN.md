@@ -187,7 +187,7 @@ Mô hình URDF gốc theo chuẩn **ROS-Industrial/RoboDK**; đã căn lại cho
 
 **c) Frame tool0** = `tool0_rpy_rad=(0, π/2, 0)` (khớp TOOL00 pendant), KHÔNG phải `(π,-π/2,0)` (RoboDK, lệch 180° quanh Z). Đổi kèm `_R_J6_TOOL0` trong `pieper_gp7.py`.
 
-**d) Gốc frame BASE** = "Base (0)" cộng `GP7_CTRL_BASE_Z_MM = 154.8` mm (`control_panel.py`) — gốc BASE/ROBOT của controller cao hơn gốc URDF 154.8mm (controller KHÔNG có BASE shift; đo hằng số qua nhiều tư thế). Đây là lệch quy ước frame (ROS-I "đáy base_link" vs Yaskawa "giao 2 trục đầu"), không phải sai hình học — link lengths đã khớp datasheet.
+**d) Gốc frame BASE + hiển thị khớp pendant.** `GP7_CTRL_BASE_Z_MM` nay = **0.0** (display-only, không bao giờ vào đường gửi lệnh). Readout Cartesian-jog khi chọn Ref **"Base (0)"** hiển thị **đúng như teach-pendant CURRENT POSITION** — vị trí so với base robot + quy ước TOOL **Rz(180°)** quanh trục tool Z — qua `gp7_app_qt._pendant_pose` (verify <0.02 vs pendant thật). Tức cả **vị trí lẫn góc** trên panel khớp 1:1 với TP (trước đây góc lệch Rz180 vì panel dùng quy ước tool0). Dialog Send-pose vẫn có dòng "YRC pendant frame" tương tự. Đây là lệch **quy ước** frame/tool (ROS-I tool0 vs Yaskawa TOOL00), không phải sai hình học — link lengths đã khớp datasheet.
 
 **Kết quả sau hiệu chỉnh:** FK(joints đọc từ robot) khớp pendant **BASE**: Z + Rx/Ry/Rz **chính xác**, X/Y còn ~vài mm–1cm (sai số mô hình/thời điểm đọc, chấp nhận cho twin).
 
@@ -340,7 +340,7 @@ Direct control bị chặn lẫn nhau với Live mirror / Experiment / Run on Ro
 | Gắp trượt (Mock dry-run) | Bình thường — dry-run dùng calib sim; chỉ kiểm luồng/an toàn |
 | Live jog "jog step > 30° BLOCKED" | Pose ảo đã teleport (paste/Home/load target) khi đang live jog — tắt rồi bật lại toggle để đồng bộ lại pose thực |
 | Bật Live jog báo "Robot busy" | Đang chạy Run on Robot / Live mirror / experiment — dừng cái đó trước (không chạy đồng thời) |
-| Toạ độ app "lệch" so với pendant (vd Z hơn 154.8mm, orientation 180°) | **Không phải lỗi** — chỉ khác frame hiển thị. Robot tới đúng pose (gửi joints trực tiếp). Xem dòng **"YRC pendant frame"** trong dialog Send-pose → khớp pendant 1:1. App mặc định hiển thị ở frame "Base (0)" (+154.8) + quy ước tool0 |
+| Toạ độ app "lệch" so với pendant (Z hơn ~154.8mm, góc lệch ~180°) | **Không phải lỗi** — khác quy ước frame/tool, robot vẫn tới đúng pose (gửi joints trực tiếp). **Đã xử lý:** chọn Ref **"Base (0)"** → readout panel hiển thị đúng pendant (vị trí + góc) qua `_pendant_pose`; dialog Send-pose cũng có dòng "YRC pendant frame". Nếu vẫn thấy lệch Z 154.8 / góc 180° trên panel → đang chạy **build cũ**, `git pull` |
 | Joints = 0 nhưng pose Cartesian khác 0 | Bình thường — đó là forward-kinematics của tư thế Zero (tay duỗi tới ~X560, Z485) |
 | Live jog "chập chờn / tự ngắt dù servo on" | Controller thỉnh thoảng từ chối lệnh MOVE streaming. App đã chịu 5 lần reject liên tiếp trước khi ngắt; nếu vẫn đứt → giảm tần số jog / kiểm REMOTE + mạng |
 | Run on Robot: "503 Bad sequence of commands. Can't overwrite JOB-file." | YRC1000 FTP không cho ghi đè job đã tồn tại. App đã tự xoá file cũ trước khi upload (DELE→STOR). Nếu vẫn lỗi: job đó **đang được chọn** trên pendant hoặc **write-protected** → chọn job khác / DELETE job trong JOB LIST trên TP rồi chạy lại |
