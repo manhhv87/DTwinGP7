@@ -167,7 +167,11 @@ class TestRunOneCycle:
         orchestrator.queue.put(make_detection_msg([]))
         ok = orchestrator.run_one_cycle(trial_id=1)
         assert ok is False
-        assert orchestrator.stats["attempted"] == 0
+        # A detection-miss IS a counted attempt + failure now (it was previously
+        # dropped from both counters → inflated success rate / under-counted trials).
+        assert orchestrator.stats["attempted"] == 1
+        assert orchestrator.stats["failed"] == 1
+        assert orchestrator.stats["successful"] == 0
 
     def test_empty_queue_times_out(self, orchestrator):
         orchestrator.config["detection_timeout_s"] = 0.1

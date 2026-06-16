@@ -93,3 +93,15 @@ class TestCalibrationIO:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+def test_camera_yaw_to_base_rotates_by_hand_eye():
+    """camera_yaw_to_base must rotate the image-frame yaw through R_BC — shared by
+    the orchestrator pick path AND the GUI camera-teach path so they can't diverge
+    (bug #R6-1). T_BC=+90° about Z → a camera yaw of 0 → base yaw +90°."""
+    import numpy as np
+    from src.orchestrator.coord_conv import camera_yaw_to_base
+    T = np.eye(4)
+    T[:3, :3] = np.array([[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]])
+    assert abs(camera_yaw_to_base(0.0, T) - np.pi / 2) < 1e-9
+    assert abs(camera_yaw_to_base(0.3, np.eye(4)) - 0.3) < 1e-9   # identity → unchanged

@@ -387,7 +387,12 @@ class ExperimentMixin:
                     "Digital Twin: HSE not responding — check IP / HSE Server",
                     "err")
                 return
-            if ultra_fast and hasattr(backend, "enable_ultra_fast"):
+            if ultra_fast and ik_source == "yrc":
+                # Ultra-fast (P-var batch) only applies to the client/joint-IK path;
+                # with YRC Cartesian IK it is a no-op — say so instead of implying it's on.
+                self._signals.status.emit(
+                    "Ultra-fast ignored (only applies to client IK, not YRC)", "warn")
+            elif ultra_fast and hasattr(backend, "enable_ultra_fast"):
                 try:
                     backend.enable_ultra_fast(True)
                 except Exception:                               # noqa: BLE001
@@ -559,11 +564,12 @@ class ExperimentMixin:
             cfg["robot_base_xyz_mm"] = tuple(getattr(self, "_base_xyz",
                                                      (0.0, 0.0, 0.0)))
 
-        # IK source (default yrc for real HSE).
-        if ik_source == "client":
-            cfg["use_client_ik"] = True
-        else:
-            cfg["use_yrc_ik"] = True
+        # IK source — the GUI choice is AUTHORITATIVE. Set BOTH flags explicitly so a
+        # stale use_yrc_ik:true left in experiment.yaml can't override the operator's
+        # SAFE 'client' selection (_solve_ik_routed checks use_yrc_ik first → the
+        # unverified Cartesian path would otherwise run silently).
+        cfg["use_client_ik"] = (ik_source == "client")
+        cfg["use_yrc_ik"] = (ik_source == "yrc")
         return cfg
 
     def _build_experiment_perception(self, config, det_queue, choice, n):

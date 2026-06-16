@@ -393,4 +393,19 @@ def inverse_kinematics_pieper_gp7_nearest(
             d = float(np.max(np.abs(np.asarray(var) - q_init)))
             if d < best_dist:
                 best_dist = d; best = var
+    # Wrist singularity (q5≈0): the J4 and J6 axes are collinear, so ONLY q4+q6 is
+    # constrained and the pose is INVARIANT to the split. The solver packs the sum
+    # into q4 (q6=0); redistribute toward q_init so we don't command a needless
+    # coupled wrist jump. FK-preserving (sum kept) → does not change the reached pose.
+    if abs(best[4]) < 1e-6 and len(q_init) >= 6:
+        best = list(best)
+        s = best[3] + best[5]
+        lo4, hi4 = jl[3]; lo6, hi6 = jl[5]
+        c4 = float(np.clip(q_init[3], lo4, hi4)); c6 = s - c4
+        if lo6 - 1e-9 <= c6 <= hi6 + 1e-9:
+            best[3], best[5] = c4, c6
+        else:
+            c6b = float(np.clip(q_init[5], lo6, hi6)); c4b = s - c6b
+            if lo4 - 1e-9 <= c4b <= hi4 + 1e-9:
+                best[3], best[5] = c4b, c6b
     return best

@@ -30,6 +30,7 @@ FIELDNAMES = [
     "lighting",
     "overlap",
     "mode",
+    "ik",
 ]
 
 
@@ -80,6 +81,7 @@ class TrialLogger:
             "lighting": self.context.get("lighting", ""),
             "overlap": self.context.get("overlap", ""),
             "mode": self.context.get("mode", ""),
+            "ik": self.context.get("ik", ""),     # IK source (client/yrc) per run
         }
         self._rows.append(row)
         with self.csv_path.open("a", newline="", encoding="utf-8") as f:

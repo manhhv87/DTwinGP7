@@ -401,3 +401,25 @@ class TestPerformance:
 
         assert sol is not None
         assert elapsed_ms < 50, f"IK took {elapsed_ms:.1f}ms, target < 50ms"
+
+
+def test_pieper_wrist_singularity_redistributes_q4_q6():
+    """At q5≈0 (wrist singular) the q4/q6 split is free (axes collinear) — the
+    nearest-branch solver must redistribute toward q_init instead of packing the sum
+    into q4 (bug #R6-5). FK is preserved (pose unchanged)."""
+    import numpy as np
+    from src.orchestrator.kinematics.urdf_chain import (
+        gp7_urdf, fk_with_joint_frames_urdf)
+    from src.orchestrator.kinematics.pieper_gp7 import (
+        inverse_kinematics_pieper_gp7_nearest,
+    )
+    m = gp7_urdf()
+    q = [0.2, 0.1, -0.1, np.deg2rad(40.0), 0.0, np.deg2rad(20.0)]   # q5 = 0
+    T, _, _ = fk_with_joint_frames_urdf(m, q)
+    sol = inverse_kinematics_pieper_gp7_nearest(m, T, q)
+    assert sol is not None
+    # Pose preserved (FK round-trip) — the redistribution must not move the TCP.
+    T2, _, _ = fk_with_joint_frames_urdf(m, sol)
+    assert np.linalg.norm(T2[:3, 3] - T[:3, 3]) < 1e-3
+    # q4/q6 should stay near the seed, not collapse to q6=0.
+    assert abs(sol[3] - q[3]) < np.deg2rad(5) and abs(sol[5] - q[5]) < np.deg2rad(5)

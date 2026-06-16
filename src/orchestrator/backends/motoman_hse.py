@@ -1070,6 +1070,15 @@ class MotomanHSEBackend:
         """
         if self.reach_envelope is None:
             return 0
+        # A 6-element JOINT list is NOT a Cartesian point — the sphere envelope would
+        # mis-read its first 3 values as XYZ mm. Be permissive for joint targets
+        # (their reach is bounded by the joint-limit check); only sphere-check an
+        # actual 4x4 pose or 3-vector.
+        try:
+            if np.asarray(target, dtype=float).shape == (6,):
+                return 0
+        except Exception:                               # noqa: BLE001
+            pass
         return 0 if self.reach_envelope.can_reach(target) else -1
 
     def SolveIK(self, pose: Any, joints_approx: Any = None) -> Any:

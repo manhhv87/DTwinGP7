@@ -5871,6 +5871,7 @@ class GP7AppQt(
     def _on_prog_add_setdo(self) -> None:
         """Generic digital output (DOUT) — replaces gripper-specific. General-purpose
         programming: control any output bit (gripper, valve, ...)."""
+        if self._guard_not_running("add DOUT"): return
         ins = Instruction(
             type="SetDO",
             do_index=int(self._prog_do_idx.value()),
@@ -5881,6 +5882,7 @@ class GP7AppQt(
         self._set_status(f"Program +{ins.describe()}", level="ok")
 
     def _on_prog_add_wait(self) -> None:
+        if self._guard_not_running("add Wait"): return
         secs = float(self._prog_wait_spin.value())
         self._program.append(Instruction(type="Wait", wait_seconds=secs))
         self._refresh_program_list()
@@ -5890,6 +5892,7 @@ class GP7AppQt(
     def _on_prog_add_movec(self) -> None:
         """2-step: first click → store current pose as MID; second click → end +
         commit MoveC instruction."""
+        if self._guard_not_running("add MoveC"): return
         T = self._current_tool_world()
         if T is None: return
         pose = list(_matrix_to_xyz_rpy_deg(T))
@@ -6033,6 +6036,7 @@ class GP7AppQt(
 
     def _append_block(self, ins_type: str, need_cond: bool) -> None:
         """Append one block instruction; read condition if need_cond."""
+        if self._guard_not_running(f"add {ins_type}"): return
         kwargs = {}
         if need_cond:
             cond = self._read_struct_cond()
@@ -6245,6 +6249,7 @@ class GP7AppQt(
         Editing mutates the active job's list in place, which invalidates the
         verbatim re-export cache (signature mismatch) → export re-synthesises.
         """
+        if self._guard_not_running("edit the program"): return
         idx = self._prog_list.currentRow()
         if idx < 0 or idx >= len(self._program):
             self._set_status("Select an instruction to Edit", level="warn"); return
@@ -6262,6 +6267,9 @@ class GP7AppQt(
                     self, "Modify", f"Replace step {idx+1} pose with current pose?",
                     QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
                 if r != QMessageBox.StandardButton.Yes: return
+                # An indirect P[Bxxx] move ignores joints/tcp_pose (pos_index_var wins
+                # at export/playback) — clear it so the captured pose actually applies.
+                ins.pos_index_var = ""
                 if t == "MoveJ":
                     ins.joints = list(self._joints)
                 else:
