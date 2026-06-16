@@ -259,7 +259,9 @@ class TestUltraFastBatch:
         self, backend_with_mocks,
     ):
         backend, mock_sock, uploaded = backend_with_mocks
-        # KHÔNG enable_ultra_fast → batch dùng đường C-variable cũ
+        # KHÔNG enable_ultra_fast → batch dùng đường InformJobBuilder thường
+        # (khai vị trí trong //POS). Ultra-fast thì set P-var lúc runtime,
+        # //POS rỗng (NPOS 0,0,0,0,0,0).
         responses = [(_build_response(), ("x", 10040)) for _ in range(3)]
         responses.append((_build_response(payload=b"\x00"), ("x", 10040)))
         mock_sock.recvfrom.side_effect = responses
@@ -268,11 +270,13 @@ class TestUltraFastBatch:
             backend.MoveJ([0] * 6)
             backend.MoveJ([10] * 6)
 
-        # Standard batch: C-variables xuất hiện trong //POS
+        # Standard batch khai P-variable trong //POS (đúng format controller
+        # nhận — KHÔNG dùng global C-var, vốn bị YRC1000 từ chối lúc lưu 451).
         data = uploaded["data"]
-        assert b"C00000=" in data                         # C-var declaration
-        assert b"MOVJ C00000" in data
-        assert b"MOVJ P000" not in data                   # KHÔNG dùng P-vars
+        assert b"///NPOS 0,0,0,2,0,0" in data             # 2 P-vars khai ở slot 3
+        assert b"P00000=" in data                          # khai vị trí trong //POS
+        assert b"MOVJ P000" in data
+        assert b"C00000=" not in data                     # KHÔNG có global C-var
 
     def test_ultra_fast_nested_batch_raises(self, backend_with_mocks):
         backend, _, _ = backend_with_mocks

@@ -99,7 +99,7 @@ class TestPulseConversion:
         b.movj("p")
         text = b.render()
         # S axis 10° × 1241.212 = 12412 pulse
-        assert "C00000=12412," in text
+        assert "P00000=12412," in text
         # L axis -5° × 1517.037 = -7585 pulse
         assert ",-7585," in text
 
@@ -108,7 +108,7 @@ class TestPulseConversion:
         b.add_position("home", [0] * 6)
         b.movj("home")
         text = b.render()
-        assert "C00000=0,0,0,0,0,0" in text
+        assert "P00000=0,0,0,0,0,0" in text
 
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -139,7 +139,7 @@ class TestSpeedClamp:
         b = InformJobBuilder(name="J")
         b.add_position("p", [0] * 6)
         b.movl("p", speed_mm_s=80.0)
-        assert "MOVL C00000 V=80.0" in b.render()
+        assert "MOVL P000 V=80.0" in b.render()
 
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -241,14 +241,30 @@ class TestPVarPositions:
         assert "\t WHILE B001<3\r\n" in text          # while nested 1 level in IF
         assert "\t \t INC B001\r\n" in text           # while body nested 2 levels
 
-    def test_default_no_token_sequential_cvar(self):
+    def test_default_no_token_sequential_pvar(self):
+        """No pos_token → job-local P-variables (controller-accepted format).
+        A C-var declared in //POS makes the YRC1000 reject the job on save
+        ('451 Error closing file [5130]'), so the default must be P-vars."""
         b = InformJobBuilder(name="J")
         b.add_position("a", [0] * 6)
         b.add_position("b", [0] * 6)
         b.movj("a"); b.movj("b")
         text = b.render()
-        assert "C00000=" in text and "C00001=" in text
-        assert "MOVJ C00000 " in text and "MOVJ C00001 " in text
+        assert "///NPOS 0,0,0,2,0,0" in text          # 2 P-vars in slot 3
+        assert "P00000=" in text and "P00001=" in text  # 5-digit declaration
+        assert "MOVJ P000 " in text and "MOVJ P001 " in text  # 3-digit reference
+        assert "C0000" not in text                    # no global C-var in //POS
+
+    def test_default_pvar_index_avoids_explicit_token_collision(self):
+        """A new (no-token) point added after an explicit P token gets the next
+        FREE P index — never collides with the imported token's index."""
+        b = InformJobBuilder(name="J")
+        b.add_position("imp", [0] * 6, pos_token="P5")   # imported → index 5
+        b.add_position("new", [0] * 6)                    # default → index 6
+        b.movj("imp"); b.movj("new")
+        text = b.render()
+        assert "P00005=" in text and "P00006=" in text
+        assert "MOVJ P005 " in text and "MOVJ P006 " in text
 
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -269,17 +285,17 @@ class TestSnapshot:
             "/JOB\r\n"
             "//NAME MIN\r\n"
             "//POS\r\n"
-            "///NPOS 1,0,0,0,0,0\r\n"
+            "///NPOS 0,0,0,1,0,0\r\n"
             "///TOOL 0\r\n"
             "///POSTYPE PULSE\r\n"
             "///PULSE\r\n"
-            "C00000=0,0,0,0,0,0\r\n"
+            "P00000=0,0,0,0,0,0\r\n"
             "//INST\r\n"
             "///DATE 2026/05/20 22:00\r\n"
             "///ATTR SC,RW\r\n"
             "///GROUP1 RB1\r\n"
             "NOP\r\n"
-            "MOVJ C00000 VJ=10.00\r\n"
+            "MOVJ P000 VJ=10.00\r\n"
             "END\r\n"
         )
         assert actual == expected, f"\nGOT:\n{actual}\nEXPECTED:\n{expected}"
@@ -299,7 +315,7 @@ class TestSnapshot:
         )
         # Spot check key structural elements
         assert text.startswith("/JOB\r\n//NAME PICKTEST\r\n")
-        assert "///NPOS 5,0,0,0,0,0" in text       # 5 positions
+        assert "///NPOS 0,0,0,5,0,0" in text       # 5 P-vars (slot 3)
         assert "DOUT OT#(2) ON" in text            # gripper close
         assert "TIMER T=0.500" in text
         assert "DOUT OT#(2) OFF" in text

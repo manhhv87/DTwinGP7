@@ -344,6 +344,7 @@ Direct control bị chặn lẫn nhau với Live mirror / Experiment / Run on Ro
 | Joints = 0 nhưng pose Cartesian khác 0 | Bình thường — đó là forward-kinematics của tư thế Zero (tay duỗi tới ~X560, Z485) |
 | Live jog "chập chờn / tự ngắt dù servo on" | Controller thỉnh thoảng từ chối lệnh MOVE streaming. App đã chịu 5 lần reject liên tiếp trước khi ngắt; nếu vẫn đứt → giảm tần số jog / kiểm REMOTE + mạng |
 | Run on Robot: "503 Bad sequence of commands. Can't overwrite JOB-file." | YRC1000 FTP không cho ghi đè job đã tồn tại. App đã tự xoá file cũ trước khi upload (DELE→STOR). Nếu vẫn lỗi: job đó **đang được chọn** trên pendant hoặc **write-protected** → chọn job khác / DELETE job trong JOB LIST trên TP rồi chạy lại |
+| Run on Robot: "451 Error closing file.--[5130]--" | Controller nhận file nhưng **từ chối khi lưu/parse** (lỗi định dạng .JBI). Nguyên nhân: job tự viết trong app trước đây sinh **C-variable** (`C00000`) trong `//POS`, nhưng YRC1000 chỉ chấp nhận **P-variable** job-local (`P00000`). Đã sửa: synthesizer giờ luôn sinh P-var (`///NPOS 0,0,0,N,0,0`, `MOVJ P000`), khớp đúng job teach-pendant. Cần `git pull` để có bản sửa rồi chạy lại |
 
 ---
 
