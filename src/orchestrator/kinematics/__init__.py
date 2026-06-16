@@ -12,6 +12,7 @@ from .inverse_kinematics import inverse_kinematics, inverse_kinematics_seeded
 from .trajectory import (
     TrajectorySample,
     interpolate_joints,
+    interpolate_cartesian,
     check_joint_limits,
     check_self_collision_spheres,
 )
@@ -26,6 +27,7 @@ __all__ = [
     "inverse_kinematics_seeded",
     "TrajectorySample",
     "interpolate_joints",
+    "interpolate_cartesian",
     "check_joint_limits",
     "check_self_collision_spheres",
 ]

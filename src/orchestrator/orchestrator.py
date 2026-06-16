@@ -155,7 +155,14 @@ class Orchestrator:
         # mutate or re-sort the producer-owned detection dicts/list in place.
         objects = []
         for o in det_msg.get("objects", []):
-            xyz_cam = np.array(o["pose_camera"][:3], dtype=float)
+            # Validate the detection shape HERE so a malformed pose_camera skips
+            # this one object instead of crashing the whole trial loop later (PLAN
+            # reads pose_camera[3] for yaw — IndexError would abort everything).
+            pc = o.get("pose_camera")
+            if not isinstance(pc, (list, tuple, np.ndarray)) or len(pc) < 4:
+                logger.warning("Skipping detection with malformed pose_camera: %r", pc)
+                continue
+            xyz_cam = np.array(pc[:3], dtype=float)
             objects.append({**o, "pose_base": camera_to_base(xyz_cam, self.T_BC)})
         # Object with highest Z (closest to camera / on top) is grasped first.
         objects.sort(key=lambda o: o["pose_base"][2], reverse=True)
@@ -367,40 +374,50 @@ class Orchestrator:
         return None
 
     def _predict_safety_for_trajectory(
-        self, target_T_world_list: list[np.ndarray]
+        self, segments: list[tuple[np.ndarray, str]]
     ) -> str | None:
-        """Build joint trajectory from a list of world poses and check predictive safety.
+        """Build a joint trajectory from (pose, move-kind) segments and check safety.
 
-        Solves IK client-side for each pose (URDF DLS), prepends current joints,
-        then calls `_predict_safety`. Short-circuits and returns None if predictive
-        safety is disabled or IK fails (letting the main flow handle it naturally).
+        `segments` = [(T_world 4x4, kind), …] where kind is 'movj' or 'movl' — the
+        move type EXECUTION uses for that leg. A MoveL runs as a CARTESIAN straight
+        line, which traces a different joint path than joint-linear interpolation, so
+        MoveL legs are sampled in Cartesian space (interpolate_cartesian → IK each
+        sample). MoveJ legs use the endpoint (joint-linear, matching execution).
+
+        Solves IK client-side (URDF DLS) and applies the SAME ±360° wrap execution
+        does, against a RUNNING previous-joint state, so the validated trajectory is
+        the one actually commanded. Returns None if disabled / IK fails (let the main
+        flow handle it) / safe; a reason string if unsafe.
         """
         if not self.config.get("predictive_safety_enabled", False):
             return None
-        if not target_T_world_list:
+        if not segments:
             return None
+        from src.orchestrator.kinematics import interpolate_cartesian
 
-        # Build joint waypoints (radians) — current first, then each target via IK.
-        # CRITICAL: apply the SAME ±360° wrap that execution (_move_j/_l_via_ik) does,
-        # against a RUNNING previous-joint state, so the validated trajectory is the
-        # one actually commanded (a raw IK value near a limit can wrap to an
-        # out-of-limit command otherwise — safety layer would validate a different
-        # trajectory than the one executed).
         waypoints_rad: list[list[float]] = []
         prev_deg: list[float] | None = None
+        prev_pose: np.ndarray | None = None
         if self._current_joints is not None:
             prev_deg = [float(q) for q in self._current_joints]
             waypoints_rad.append([np.deg2rad(q) for q in prev_deg])
-        for T in target_T_world_list:
-            joints_deg = self._solve_ik_client(T)
-            if joints_deg is None:
-                # IK fail — cannot predict, let main flow raise naturally
-                logger.debug("Predictive safety skip: IK fail at world %s",
-                             T[:3, 3].round(1).tolist())
-                return None
-            joints_deg = self._wrap_joints_toward(joints_deg, prev_deg)
-            prev_deg = joints_deg
-            waypoints_rad.append([np.deg2rad(q) for q in joints_deg])
+        for T, kind in segments:
+            # MoveL → sample the straight line (drop the start pose, already a
+            # waypoint); MoveJ / first leg / unknown-start → endpoint only.
+            if kind == "movl" and prev_pose is not None:
+                poses = interpolate_cartesian(prev_pose, T, n_steps=8)[1:]
+            else:
+                poses = [np.asarray(T, dtype=float)]
+            for T_s in poses:
+                joints_deg = self._solve_ik_client(T_s)
+                if joints_deg is None:
+                    logger.debug("Predictive safety skip: IK fail at world %s",
+                                 np.asarray(T_s)[:3, 3].round(1).tolist())
+                    return None
+                joints_deg = self._wrap_joints_toward(joints_deg, prev_deg)
+                prev_deg = joints_deg
+                waypoints_rad.append([np.deg2rad(q) for q in joints_deg])
+            prev_pose = np.asarray(T, dtype=float)
 
         return self._predict_safety(waypoints_rad)
 
@@ -756,16 +773,28 @@ class Orchestrator:
             if self._current_joints is None:
                 try:
                     self._current_joints = self._joints_to_list(self.robot.Joints())
-                except Exception:  # noqa: BLE001
-                    pass
+                except Exception as e:  # noqa: BLE001
+                    logger.warning("Could not read current joints: %s", e)
+                if (self._current_joints is None
+                        and self.config.get("predictive_safety_enabled", False)):
+                    # Fail SAFE: without the start config the predicted trajectory
+                    # would OMIT the current→lift segment (the riskiest one) and
+                    # validate a TRUNCATED path. Abort rather than move blind.
+                    logger.error("Trial %d: no start joints — cannot predict safety, "
+                                 "aborting trial", trial_id)
+                    self.stats["failed"] += 1
+                    self.sm.fail("no_start_joints_for_prediction")
+                    return False
 
-            # UC2 — Predictive safety: solve IK for 4 waypoints, build joint
-            # trajectory (current → lift → grasp → lift → place_lift →
-            # place → place_lift), verify joint limits + self-collision in pure
-            # Python BEFORE sending MoveJ. Early-reject unsafe trials → avoids
-            # sending alarm-prone commands to the real controller.
+            # UC2 — Predictive safety: build the joint trajectory the way EXECUTION
+            # runs it — current →(MoveJ) lift →(MoveL) grasp →(MoveL) lift →(MoveJ)
+            # place_lift →(MoveL) place →(MoveL) place_lift — verifying joint limits +
+            # self-collision in pure Python BEFORE moving. MoveL legs are sampled in
+            # Cartesian space so the validated path matches the controller's straight-
+            # line execution (joint-linear would validate a DIFFERENT path).
             reason = self._predict_safety_for_trajectory(
-                [lift_T, grasp_T, lift_T, place_lift_T, place_T, place_lift_T]
+                [(lift_T, "movj"), (grasp_T, "movl"), (lift_T, "movl"),
+                 (place_lift_T, "movj"), (place_T, "movl"), (place_lift_T, "movl")]
             )
             if reason is not None:
                 logger.warning("Trial %d: predictive safety reject — %s",

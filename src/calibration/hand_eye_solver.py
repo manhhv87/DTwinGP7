@@ -163,6 +163,9 @@ def touch_test_error(
     """
     if len(points_camera) != len(points_base_truth):
         raise ValueError("Number of camera and base points must be equal")
+    if not points_camera:
+        raise ValueError("No evaluation points provided (empty list) — "
+                         "cannot compute touch-test error")
 
     errors = []
     for p_cam, p_truth in zip(points_camera, points_base_truth):

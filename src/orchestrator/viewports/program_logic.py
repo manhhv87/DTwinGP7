@@ -302,25 +302,58 @@ def build_block_map(program: list[Instruction]) -> dict[int, dict]:
     return bm
 
 
+def _block_contexts(program: list[Instruction]) -> list[tuple[int, ...]]:
+    """For each line, the stack of ENCLOSING IF/WHILE opener indices (the block
+    nesting context). An opener/closer line sits at the OUTER level. Used to reject
+    a JUMP that targets a label inside a block the JUMP is not itself inside."""
+    ctx: list[tuple[int, ...]] = []
+    stack: list[int] = []
+    for i, ins in enumerate(program):
+        t = ins.type
+        if t in ("EndIf", "EndWhile"):
+            if stack:
+                stack.pop()
+            ctx.append(tuple(stack))
+        elif t in ("IfThen", "While"):
+            ctx.append(tuple(stack))      # opener line is at the outer level
+            stack.append(i)
+        else:
+            ctx.append(tuple(stack))
+    return ctx
+
+
 def validate_program(program: list[Instruction]) -> list[str]:
     """Collect all static errors (NO raise) — used to block Play/Export.
 
-    Checks: duplicate labels, JUMP to undefined label, balanced IF/WHILE blocks,
-    valid variable names, and valid condition operators.
+    Checks: duplicate labels, JUMP to undefined label, JUMP into a structured
+    block, balanced IF/WHILE blocks, valid variable names + condition operators.
     """
     errors: list[str] = []
     try:
         labels = resolve_labels(program)
     except ValueError as e:
         errors.append(str(e)); labels = {}
+    blocks_ok = True
     try:
         build_block_map(program)
     except ValueError as e:
-        errors.append(str(e))
+        errors.append(str(e)); blocks_ok = False
+    # Block-nesting context per line (only meaningful when blocks are balanced).
+    ctx = _block_contexts(program) if blocks_ok else []
     for i, ins in enumerate(program):
         t = ins.type
         if t == "Jump" and ins.label_name not in labels:
             errors.append(f"Line {i+1}: JUMP to undefined label *{ins.label_name}")
+        elif t == "Jump" and blocks_ok and ins.label_name in labels:
+            # INFORM forbids jumping INTO a structured block: the target's enclosing
+            # blocks must all also enclose the JUMP (ctx[target] is a prefix of
+            # ctx[jump]). Jumping outward / within the same block is fine.
+            cj = ctx[i]
+            cl = ctx[labels[ins.label_name]]
+            if cj[:len(cl)] != cl:
+                errors.append(
+                    f"Line {i+1}: JUMP into a structured IF/WHILE block "
+                    f"(*{ins.label_name}) is not allowed")
         if t == "SetVar":
             try:
                 VarStore.validate(ins.var_name)

@@ -385,3 +385,15 @@ class TestExampleJobsPipeline:
                 exp(prog, "T" + (s._safe_job_name(pj.name) or "J"), op)
                 assert parse_jbi(op.read_text(encoding="utf-8")).warnings == [], \
                     f"{f}: re-parse warnings after export"
+
+
+def test_missing_nop_in_inst_warns():
+    """An //INST with no NOP marker drops all lines (every line is 'before NOP')
+    — must WARN instead of silently producing an empty job (bug #23)."""
+    txt = (
+        "/JOB\r\n//NAME J\r\n//POS\r\n///NPOS 0,0,0,0,0,0\r\n//INST\r\n"
+        "///DATE 2026/01/01 00:00\r\n///ATTR SC,RW\r\n///GROUP1 RB1\r\n"
+        "MOVJ P000 VJ=10.00\r\nEND\r\n")          # NO 'NOP' line
+    pj = parse_jbi(txt)
+    assert pj.instructions == []                  # all dropped (no NOP)
+    assert any("NOP" in w for w in pj.warnings), pj.warnings

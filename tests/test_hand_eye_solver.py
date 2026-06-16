@@ -113,3 +113,9 @@ class TestSolveHandEye:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+def test_touch_test_error_empty_raises():
+    """Empty point lists → clear ValueError, not NaN/crash (bug #19)."""
+    with pytest.raises(ValueError, match="No evaluation points|empty"):
+        touch_test_error([], [], np.eye(4))

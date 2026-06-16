@@ -56,6 +56,13 @@ class PerceptionNode:
         if self._running:
             logger.warning("PerceptionNode is already running")
             return
+        if self._thread is not None and self._thread.is_alive():
+            # A previous stop() timed out and its worker is still inside the camera
+            # (e.g. wait_for_frames). Starting now would put TWO workers on ONE
+            # RealSense pipeline → crash/hang. Refuse until the old worker exits.
+            logger.warning("PerceptionNode previous worker still alive — refusing to "
+                           "start a second worker on the same camera pipeline")
+            return
         self._running = True
         self._thread = threading.Thread(target=self._loop, daemon=True)
         self._thread.start()

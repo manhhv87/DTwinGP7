@@ -76,6 +76,54 @@ def interpolate_joints(
     return samples
 
 
+def interpolate_cartesian(
+    T_start: np.ndarray, T_end: np.ndarray, n_steps: int = 8,
+) -> list[np.ndarray]:
+    """Sample 4x4 poses along the STRAIGHT-LINE (Cartesian) path T_start→T_end.
+
+    Position is linearly interpolated; orientation is slerp'd via the axis-angle of
+    the relative rotation (pure numpy, no scipy). Used by predictive safety to model
+    a MoveL the way the controller actually executes it — a Cartesian straight line,
+    NOT a joint-linear move — so the validated joint path matches the commanded one.
+
+    Returns n_steps+1 poses (inclusive of both endpoints).
+    """
+    T0 = np.asarray(T_start, dtype=float)
+    T1 = np.asarray(T_end, dtype=float)
+    p0, p1 = T0[:3, 3], T1[:3, 3]
+    R0, R1 = T0[:3, :3], T1[:3, :3]
+    R_rel = R0.T @ R1
+    # axis-angle of R_rel
+    cos_a = np.clip((np.trace(R_rel) - 1.0) / 2.0, -1.0, 1.0)
+    angle = float(np.arccos(cos_a))
+    if angle > 1e-9:
+        axis = np.array([R_rel[2, 1] - R_rel[1, 2],
+                         R_rel[0, 2] - R_rel[2, 0],
+                         R_rel[1, 0] - R_rel[0, 1]])
+        nrm = np.linalg.norm(axis)
+        axis = axis / nrm if nrm > 1e-12 else np.array([0.0, 0.0, 1.0])
+    else:
+        axis = np.array([0.0, 0.0, 1.0])
+    n = max(1, int(n_steps))
+    out: list[np.ndarray] = []
+    for k in range(n + 1):
+        a = k / n
+        T = np.eye(4)
+        T[:3, 3] = p0 * (1 - a) + p1 * a
+        if angle > 1e-9:
+            th = a * angle
+            c, s = np.cos(th), np.sin(th)
+            x, y, z = axis
+            # Rodrigues for the incremental rotation about `axis` by `th`
+            K = np.array([[0, -z, y], [z, 0, -x], [-y, x, 0.0]])
+            R_inc = np.eye(3) + s * K + (1 - c) * (K @ K)
+            T[:3, :3] = R0 @ R_inc
+        else:
+            T[:3, :3] = R0
+        out.append(T)
+    return out
+
+
 def check_joint_limits(
     model: RobotDHModel,
     samples: list[TrajectorySample],

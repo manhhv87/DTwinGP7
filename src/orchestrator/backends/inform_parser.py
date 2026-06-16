@@ -318,6 +318,18 @@ def parse_jbi(
         if instr is not None:
             instructions.append(instr)
 
+    # No NOP seen but the //INST body had non-comment lines → they were ALL
+    # skipped (every line hit the 'before NOP' branch). Warn instead of returning
+    # a silently-empty job that could overwrite a real job with an empty export.
+    if not started and any(
+            ln and not ln.startswith(("///", "'"))
+            and ln not in ("NOP", "END", "COMM")
+            and not ln.startswith(("COMM ", "COMM\t"))
+            for ln in inst_lines):
+        warnings.append(
+            "//INST has no NOP marker — all instruction lines were skipped "
+            "(job parsed as empty). Check the .JBI is a valid INFORM job.")
+
     return ParsedJob(
         name=name or "IMPORTED",
         instructions=instructions,
