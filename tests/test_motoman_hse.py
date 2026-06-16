@@ -698,6 +698,22 @@ class TestUploadOverwrite:
         with pytest.raises(RuntimeError, match="teach pendant"):
             MotomanHSEBackend(ip="x").upload_job("X", "PROG")
 
+    def test_stor_451_close_error_gives_actionable_message(self, monkeypatch):
+        """451 'Error closing file' is FTP 4xx (error_temp): the controller took
+        the bytes but refused to SAVE the job (account/mode/lock). Must surface a
+        clear, actionable message — NOT a JobUploadError rename prompt."""
+        import ftplib
+        from src.orchestrator.backends.motoman_hse import (
+            JobUploadError, MotomanHSEBackend)
+        ftp = self._ftp(monkeypatch)
+        ftp.delete.side_effect = ftplib.error_perm("550 File not found")   # no file yet
+        ftp.storbinary.side_effect = ftplib.error_temp(
+            "451 Error closing file.--[5130]--")
+        with pytest.raises(RuntimeError, match="refused to SAVE") as ei:
+            MotomanHSEBackend(ip="x").upload_job("X", "PROG")
+        assert not isinstance(ei.value, JobUploadError)   # not the rename path
+        assert "WRITE permission" in str(ei.value)
+
 
 # ─────────────────────────────────────────────────────────────────────────
 # Motion-safety: halt latch + alarm-aware completion (bug-hunt HIGH cluster)

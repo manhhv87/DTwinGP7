@@ -353,6 +353,21 @@ class MotomanHSEBackend:
                     f"Upload of job '{_job}' refused ({str(e).strip()}). If it is the "
                     f"active job, rename it in the app or deselect it on the teach "
                     f"pendant; also check it is not write-protected.", _job) from e
+            except ftplib.error_temp as e:
+                # 4xx (e.g. "451 Error closing file.--[5130]--"): the controller
+                # ACCEPTED the byte transfer but REFUSED to SAVE/close the job. This
+                # is NOT a job-content/format problem — a byte-exact valid teach-
+                # pendant export (e.g. PP1.JBI) is rejected the same way. It is
+                # controller-side: the FTP account lacks job-WRITE permission, or the
+                # operation mode / security level / an edit-lock prohibits saving a
+                # job file. NOT an overwrite issue → do not offer the rename dialog.
+                raise RuntimeError(
+                    f"Controller refused to SAVE job '{_job}' ({str(e).strip()}). The "
+                    f".JBI transferred OK but could not be written. Check on the "
+                    f"controller: (1) the FTP account has job WRITE permission (not "
+                    f"read-only), (2) job editing is allowed in the current operation "
+                    f"mode / security level, (3) the job is not open or edit-locked on "
+                    f"the teach pendant.") from e
         finally:
             try:
                 ftp.quit()
