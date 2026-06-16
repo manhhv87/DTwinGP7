@@ -409,11 +409,18 @@ class Orchestrator:
             else:
                 poses = [np.asarray(T, dtype=float)]
             for T_s in poses:
-                joints_deg = self._solve_ik_client(T_s)
+                # Seed from the RUNNING prev joints (chained, like execution) so the
+                # predicted IK branch matches the commanded one.
+                joints_deg = self._solve_ik_client(T_s, seed_deg=prev_deg)
                 if joints_deg is None:
-                    logger.debug("Predictive safety skip: IK fail at world %s",
-                                 np.asarray(T_s)[:3, 3].round(1).tolist())
-                    return None
+                    # Fail-SAFE: a pose the predictor cannot solve is treated as
+                    # UNSAFE (a mid-MoveL pose that fails IK = the controller's
+                    # straight-line MoveL would alarm). Reject the trial instead of
+                    # silently skipping ALL predictive validation (the old fail-OPEN
+                    # 'return None' which the caller reads as 'proceed').
+                    pos = np.asarray(T_s)[:3, 3].round(1).tolist()
+                    logger.warning("Predictive safety: IK unreachable at world %s", pos)
+                    return f"predicted_ik_unreachable @ {pos}"
                 joints_deg = self._wrap_joints_toward(joints_deg, prev_deg)
                 prev_deg = joints_deg
                 waypoints_rad.append([np.deg2rad(q) for q in joints_deg])
@@ -471,7 +478,8 @@ class Orchestrator:
         """
         return self._wrap_joints_toward(target_joints, self._current_joints)
 
-    def _solve_ik_client(self, target_T_world: np.ndarray) -> list[float] | None:
+    def _solve_ik_client(self, target_T_world: np.ndarray,
+                         seed_deg: list[float] | None = None) -> list[float] | None:
         """Client-side IK: **Pieper analytical** (nearest-branch) → DLS fallback.
 
         Pieper exact (~1e-10mm, deterministic, ~50µs) + selects the branch nearest
@@ -508,12 +516,14 @@ class Orchestrator:
             )
         model = self._dh_model_cached
 
-        # Seed nearest-branch: use current joints if available; if not (first trial
-        # or after a YRC_POSE move that sets None) use HOME instead of [0]*6 —
-        # prevents Pieper from picking a "near-zero" branch that differs from the
-        # actual pose → large MoveJ jump.
-        if self._current_joints is not None:
-            q_init = [np.deg2rad(q) for q in self._current_joints]
+        # Seed nearest-branch: explicit seed_deg (e.g. the RUNNING prev-joint state
+        # threaded by predictive safety so prediction branch-chains exactly like
+        # execution) wins; else current joints; else (first trial / after a YRC_POSE
+        # move that sets None) HOME instead of [0]*6 — prevents Pieper from picking a
+        # "near-zero" branch that differs from the actual pose → large MoveJ jump.
+        seed = seed_deg if seed_deg is not None else self._current_joints
+        if seed is not None:
+            q_init = [np.deg2rad(q) for q in seed]
         else:
             home = self.config.get("home_joints_deg") or [0.0] * 6
             q_init = [np.deg2rad(q) for q in home]

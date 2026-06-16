@@ -96,14 +96,21 @@ def interpolate_cartesian(
     # axis-angle of R_rel
     cos_a = np.clip((np.trace(R_rel) - 1.0) / 2.0, -1.0, 1.0)
     angle = float(np.arccos(cos_a))
-    if angle > 1e-9:
+    if angle < 1e-9:
+        axis = np.array([0.0, 0.0, 1.0])               # no rotation
+    elif angle < np.pi - 1e-6:
         axis = np.array([R_rel[2, 1] - R_rel[1, 2],
                          R_rel[0, 2] - R_rel[2, 0],
                          R_rel[1, 0] - R_rel[0, 1]])
-        nrm = np.linalg.norm(axis)
-        axis = axis / nrm if nrm > 1e-12 else np.array([0.0, 0.0, 1.0])
+        axis = axis / np.linalg.norm(axis)
     else:
-        axis = np.array([0.0, 0.0, 1.0])
+        # angle ≈ 180°: the antisymmetric part is ~0 → recover the axis from the
+        # symmetric part. (R_rel + I) = 2·(axis⊗axis); its largest-norm column is
+        # proportional to the axis.
+        M = R_rel + np.eye(3)
+        col = M[:, int(np.argmax(np.linalg.norm(M, axis=0)))]
+        nrm = np.linalg.norm(col)
+        axis = col / nrm if nrm > 1e-12 else np.array([0.0, 0.0, 1.0])
     n = max(1, int(n_steps))
     out: list[np.ndarray] = []
     for k in range(n + 1):

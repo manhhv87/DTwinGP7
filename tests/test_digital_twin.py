@@ -269,8 +269,9 @@ class TestDecoupledRates:
         twin.start_mirror()
         time.sleep(0.35)                                   # ~3 alarm polls expected
         twin.stop_mirror()
-        # ~3-4 alarm polls (so với joint polls ~35) — verify alarm dùng time-based
-        alarm_calls = mock_hse.read_alarm.call_count
+        # ~3-4 alarm polls (so với joint polls ~35) — verify alarm dùng time-based.
+        # Trừ 1 lần poll ĐỒNG BỘ lúc start_mirror (refresh alarm state, #7).
+        alarm_calls = mock_hse.read_alarm.call_count - 1
         joints_calls = mock_hse.Joints.call_count
         assert alarm_calls < joints_calls / 5             # alarm thưa hơn joint nhiều
 
@@ -294,8 +295,10 @@ class TestAlarmAutoPoll:
         time.sleep(0.3)
         twin.stop_mirror()
         assert mock_hse_with_alarm.read_alarm.call_count >= 1
-        # Alarm thưa hơn joints nhiều (period-based, không spam)
-        assert mock_hse_with_alarm.read_alarm.call_count <= mock_hse_with_alarm.Joints.call_count // 3
+        # Alarm thưa hơn joints nhiều (period-based, không spam). Trừ 1 lần poll
+        # đồng bộ lúc start_mirror (#7) trước khi so tỉ lệ.
+        periodic_alarms = mock_hse_with_alarm.read_alarm.call_count - 1
+        assert periodic_alarms <= mock_hse_with_alarm.Joints.call_count // 3 + 1
 
     def test_major_alarm_triggers_auto_stop(
         self, mock_hse_with_alarm, viewport_cb, caplog

@@ -144,14 +144,26 @@ class DigitalTwinMirror:
         # then restart the mirror. Resetting _auto_stopped on a clean restart re-arms
         # auto-stop. (Uses the last-polled alarm; the immediate first poll refreshes
         # it, so a stale-cached alarm at most costs one extra restart — fail-safe.)
-        if self.current_alarm().code != 0:
+        # Refresh the alarm from the controller NOW (synchronous) so the re-arm
+        # decision uses the LIVE state, not a value cached from a previous session
+        # — a stale code=0 could otherwise clear the halt latch for ~one tick while
+        # an alarm is actually active. Only clear the latch when we CONFIRM clean.
+        try:
+            self._poll_alarm()
+            clean = self.current_alarm().code == 0
+        except Exception as e:              # noqa: BLE001
+            logger.warning("start_mirror: initial alarm read failed (%s) — "
+                           "motion stays HALTED until confirmed clean", e)
+            clean = False
+        if clean:
+            self._motion_halted.clear()     # confirmed clean → allow motion again
+            self._auto_stopped = False
+        else:
+            self._motion_halted.set()       # fail-safe: alarm active or unknown
             logger.warning(
-                "start_mirror: alarm %d still active — motion stays HALTED "
+                "start_mirror: alarm %d active (or unread) — motion stays HALTED "
                 "(clear it on the teach pendant, then restart the mirror)",
                 self.current_alarm().code)
-        else:
-            self._motion_halted.clear()     # clean (re)start → allow motion again
-            self._auto_stopped = False
         # Fire alarm poll on first tick (0.0 < monotonic), helps short tests pass
         # + practically sensible: check alarm immediately at start to know initial state.
         self._next_alarm_poll_t = 0.0
@@ -190,6 +202,7 @@ class DigitalTwinMirror:
         """
         period = 1.0 / self.telemetry_hz
         last_flush = time.monotonic()
+        last_running: bool | None = None                  # read on alarm cadence
 
         while not self._stop_flag.is_set():
             tick_start = time.monotonic()
@@ -204,15 +217,24 @@ class DigitalTwinMirror:
 
                 self._check_drift(actual)                  # (3) Drift every tick
 
-                # (5) Alarm on time period (not per-tick) — decouple from loop rate
+                # (5) Alarm on time period (not per-tick) — decouple from loop rate.
+                # Read the Running bit on the SAME slow cadence (cached + logged each
+                # tick) so the telemetry 'running' column is populated without adding
+                # an HSE round-trip per tick.
                 alarm_code = 0
                 if tick_start >= self._next_alarm_poll_t:
                     self._next_alarm_poll_t = tick_start + self.alarm_poll_period_s
                     alarm_code = self._poll_alarm()
+                    if hasattr(self.hse, "read_status_running"):
+                        try:
+                            last_running = bool(self.hse.read_status_running())
+                        except Exception:                  # noqa: BLE001
+                            last_running = None
 
                 # (2) Telemetry CSV every tick — high resolution for analysis
                 if self.telemetry is not None:
-                    self.telemetry.log_state(actual, alarm=alarm_code or None)
+                    self.telemetry.log_state(
+                        actual, running=last_running, alarm=alarm_code or None)
                 with self._lock:
                     self._last_actual = list(actual)
             except Exception as e:                          # noqa: BLE001

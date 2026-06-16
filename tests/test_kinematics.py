@@ -247,3 +247,22 @@ def test_interpolate_cartesian_straight_line_and_orientation():
     for T in poses:
         R = T[:3, :3]
         np.testing.assert_allclose(R @ R.T, np.eye(3), atol=1e-6)
+
+
+def test_interpolate_cartesian_180deg_axis_recovery():
+    """At exactly 180° the antisymmetric axis recovery is degenerate — the symmetric
+    (R+I) fallback must recover the correct axis (bug #8). 180° about X here."""
+    import numpy as np
+    from src.orchestrator.kinematics import interpolate_cartesian
+    T0 = np.eye(4)
+    T1 = np.eye(4)
+    T1[:3, :3] = np.array([[1.0, 0.0, 0.0],
+                           [0.0, -1.0, 0.0],
+                           [0.0, 0.0, -1.0]])              # 180° about X
+    poses = interpolate_cartesian(T0, T1, n_steps=4)
+    np.testing.assert_allclose(poses[-1][:3, :3], T1[:3, :3], atol=1e-6)
+    # midpoint = 90° about X (NOT identity / wrong axis): R[1,1]=cos90=0
+    mid = poses[2][:3, :3]
+    assert abs(mid[1, 1]) < 1e-6 and abs(mid[2, 2]) < 1e-6
+    for T in poses:                                         # all valid rotations
+        np.testing.assert_allclose(T[:3, :3] @ T[:3, :3].T, np.eye(3), atol=1e-6)
