@@ -40,6 +40,7 @@ def _build_response(status=0, payload=b"", request_id=0):
 @pytest.fixture
 def backend_with_mocks(monkeypatch):
     backend = MotomanHSEBackend(ip="192.168.1.100", timeout_s=0.5)
+    backend.start_confirm_timeout_s = 0.0    # skip Running-assert wait in unit tests
     mock_sock = MagicMock()
     backend._sock = mock_sock
 
@@ -168,10 +169,11 @@ class TestUltraFastBatch:
         backend, mock_sock, uploaded = backend_with_mocks
         backend.enable_ultra_fast(True)
 
-        # Mock socket responses: 3 WRITE_POS_VAR + JOB_SELECT + START + READ_STATUS idle
+        # 3 WRITE_POS_VAR + JOB_SELECT + START + READ_STATUS idle + READ_ALARM none
         mock_sock.recvfrom.side_effect = [
             (_build_response(), ("x", 10040)) for _ in range(5)
-        ] + [(_build_response(payload=b"\x00"), ("x", 10040))]
+        ] + [(_build_response(payload=b"\x00"), ("x", 10040)),
+             (_build_response(payload=b"\x00"), ("x", 10040))]
 
         with backend.batch():
             backend.MoveJ([0, 0, 0, 0, 0, 0])

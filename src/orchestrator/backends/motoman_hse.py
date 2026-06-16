@@ -69,6 +69,21 @@ class JobUploadError(RuntimeError):
         super().__init__(message)
         self.job_name = job_name
 
+
+class MotionHaltedError(RuntimeError):
+    """A motion command (START / direct MOVE) was refused because Stop() latched
+    the halt. Cleared by servo_on(). The robot was NOT commanded to move."""
+
+
+class RobotAlarmError(RuntimeError):
+    """A job/move did not complete cleanly — the controller raised an alarm. Carries
+    (code, sub_code) so the caller can decode it instead of reporting false success."""
+
+    def __init__(self, code: int, sub_code: int) -> None:
+        super().__init__(f"Robot alarm {code}/{sub_code} during motion")
+        self.code = int(code)
+        self.sub_code = int(sub_code)
+
 # Network I/O range for writable bits (YRC1000):
 # 27010-27020 = general purpose network I/O (CIO ladder accessible).
 # Purpose for gripper: bind 1 bit here to a physical Y-output via CIO ladder
@@ -126,6 +141,10 @@ class MotomanHSEBackend:
         self.job_name_prefix = job_name_prefix
         self._job_counter = 0
         self.wait_completion_timeout_s = wait_completion_timeout_s
+        # Bounded window to confirm a started job actually asserted its Running bit
+        # before _wait_idle starts polling for completion (job_start() returns on
+        # the START ack, BEFORE the controller's start latency). 0 disables it.
+        self.start_confirm_timeout_s = 0.5
         # Optional kinematic envelope for MoveJ_Test client-side when no RoboDK item.
         self.reach_envelope = reach_envelope
         # TOOL coordinate number — must match TOOL01 configured on teach pendant
@@ -138,8 +157,11 @@ class MotomanHSEBackend:
         self._batch_name = ""
         # Halt latch: Stop() sets it, servo_on() clears it. A batch dispatch
         # (upload+JOB_SELECT+START) checks it so a Stop() that lands mid-batch
-        # cannot issue a START after the halt.
+        # cannot issue a START after the halt. _halt_lock makes the
+        # check-then-START atomic w.r.t. Stop() (the long FTP upload runs OUTSIDE
+        # the lock so Stop() is never blocked behind it).
         self._halted = False
+        self._halt_lock = threading.Lock()
 
         # Ultra-fast P-var mode state (M3++)
         self._ultra_fast_mode = False
@@ -353,7 +375,13 @@ class MotomanHSEBackend:
         logger.debug("JOB_SELECT '%s'", job_name)
 
     def job_start(self) -> None:
-        """START (0x86): execute current job. Robot must have servo on + REMOTE mode."""
+        """START (0x86): execute current job. Robot must have servo on + REMOTE mode.
+
+        Refuses to START while halted (Stop() latched _halted) — the central gate
+        for every job-based motion path (MoveJ/MoveL/_move_pose/batch/ultra-fast).
+        Cleared by servo_on()."""
+        if self._halted:
+            raise MotionHaltedError("START refused — motion halted (call servo_on to resume)")
         self._send_request(
             Command.START, instance=1, attribute=1,
             service=Service.SET_ATTRIBUTE_SINGLE,
@@ -389,6 +417,10 @@ class MotomanHSEBackend:
         SAFETY: real motion — keep speed low and a hand on the E-stop. Payload
         layout follows the FS100 HSE reference (88 bytes).
         """
+        if self._halted:
+            # Gate the direct (no-job) MOVE path on the halt latch too, matching
+            # job_start — otherwise live-jog could keep streaming after a Stop().
+            raise MotionHaltedError("MOVE refused — motion halted (call servo_on to resume)")
         if tool_no is None:
             tool_no = self.tool_no
         # SAFETY: reject malformed input — a short pulse list would pad missing
@@ -573,19 +605,53 @@ class MotomanHSEBackend:
         sub_code = struct.unpack("<I", resp.payload[4:8])[0]
         return (int(code), int(sub_code))
 
+    def _raise_if_alarm(self) -> None:
+        """Raise RobotAlarmError if the controller currently reports an alarm.
+        Best-effort: a READ_ALARM transport error is logged, not raised."""
+        try:
+            code, sub = self.read_alarm()
+        except Exception as e:                      # noqa: BLE001
+            logger.warning("READ_ALARM failed during completion check: %s", e)
+            return
+        if code != 0:
+            raise RobotAlarmError(code, sub)
+
     def _wait_idle(self, timeout_s: float | None = None) -> None:
-        """Poll READ_STATUS until the running flag clears or timeout."""
-        deadline = time.monotonic() + (timeout_s or self.wait_completion_timeout_s)
+        """Wait for a started job to complete, then verify it was not alarm-aborted.
+
+        job_start() returns on the START ack — BEFORE the controller asserts its
+        Running bit — so a status poll landing inside the start latency reads idle
+        and we would return WHILE THE ROBOT IS STILL MOVING. Phase 1 therefore
+        waits (bounded by start_confirm_timeout_s) for Running to assert; a
+        zero/very-fast job that finishes inside that window is still handled by
+        Phase 2's alarm-verified return. Phase 2 then polls until Running clears
+        and checks the alarm state — an alarm-aborted job must NOT be reported as
+        success (the caller would otherwise drive the gripper / next move blind)."""
+        total = timeout_s or self.wait_completion_timeout_s
+        deadline = time.monotonic() + total
+        # Phase 1 — confirm the job actually started (Running asserted).
+        confirm_deadline = time.monotonic() + min(self.start_confirm_timeout_s, total)
+        while time.monotonic() < confirm_deadline:
+            try:
+                if self.read_status_running():
+                    break                            # started — go wait for it to finish
+            except Exception as e:                  # noqa: BLE001
+                logger.warning("READ_STATUS error while confirming start: %s", e)
+            time.sleep(0.02)
+        # Phase 2 — wait for completion, then verify no alarm aborted the job.
         while time.monotonic() < deadline:
             try:
                 if not self.read_status_running():
+                    self._raise_if_alarm()
                     return
+            except RobotAlarmError:
+                raise
             except Exception as e:                  # noqa: BLE001
                 logger.warning("READ_STATUS error while polling: %s", e)
             time.sleep(0.1)
+        self._raise_if_alarm()                       # surface an alarm behind a timeout
         raise TimeoutError(
-            f"Job did not complete within {timeout_s or self.wait_completion_timeout_s}s — "
-            f"check teach pendant / alarm."
+            f"Job did not complete within {total}s — check teach pendant / alarm."
         )
 
     def _next_job_name(self) -> str:
@@ -683,7 +749,11 @@ class MotomanHSEBackend:
             # dout + timer are already encoded in the template, skip here
 
         self.job_select(self._pvar_template_name)
-        self.job_start()
+        with self._halt_lock:                    # atomic halt re-check vs Stop()
+            if self._halted:
+                logger.warning("Ultra-fast batch dropped: motion halted before START")
+                return
+            self.job_start()
         self._wait_idle()
 
     # ─── Batch mode (M3 optimization) ───
@@ -760,9 +830,16 @@ class MotomanHSEBackend:
             return
 
         text = builder.render()
-        self.upload_job(text, name)
+        self.upload_job(text, name)              # slow (FTP) — intentionally OUTSIDE the lock
         self.job_select(name)
-        self.job_start()
+        # Re-check the halt latch atomically with the START: a Stop() during the
+        # (long) upload above latches _halted under _halt_lock, so either we see
+        # it here and skip, or job_start runs and a subsequent Stop() servo-OFFs.
+        with self._halt_lock:
+            if self._halted:
+                logger.warning("Batch '%s' dropped: motion halted (Stop) before START", name)
+                return
+            self.job_start()
         self._wait_idle()
 
     def _batch_append_motion(self, target: Any, kind: str) -> None:
@@ -1049,7 +1126,8 @@ class MotomanHSEBackend:
         SAFETY: this is software stop only — verify the value/instance against the
         actual controller; never rely on it in place of a physical E-stop.
         """
-        self._halted = True                       # latch: block any pending batch dispatch
+        with self._halt_lock:                     # atomic vs the dispatch re-check
+            self._halted = True                   # latch: block any pending START
         try:
             import struct as _struct
             self._send_request(
