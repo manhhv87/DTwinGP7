@@ -486,11 +486,34 @@ class ConnectionMixin:
             backend.move_joints(joints, speed_pct=speed_pct)
             self._signals.status.emit(
                 f"Robot: moving to current pose @ {speed_pct:.0f}%", "ok")
+            # The direct MOVE (0x8B) is fire-and-forget (no Running bit), so STAY
+            # ALIVE until the robot actually reaches the target — otherwise close /
+            # Stop-all joins this thread instantly while the robot is still moving
+            # with servos ON. Poll Joints() until within tolerance, the move stalls,
+            # or a stop is requested (→ servo OFF). Bounded so it can't hang.
+            t_end = _t.monotonic() + 30.0
+            while _t.monotonic() < t_end:
+                if self._send_pose_stop.is_set():
+                    break
+                try:
+                    cur = backend.Joints()
+                except Exception:                        # noqa: BLE001
+                    break                                # can't read → stop waiting
+                if max(abs(a - b) for a, b in zip(cur, joints)) < 0.5:
+                    break                                # arrived (≤0.5° all axes)
+                _t.sleep(0.1)
         except Exception as e:                           # noqa: BLE001
             try: backend.Stop()
             except Exception: pass                       # noqa: BLE001
             self._signals.status.emit(f"Send-pose error: {e}", "err")
         finally:
+            # If a stop/close was requested at any point (incl. mid-motion above),
+            # servo OFF to halt the in-flight move — the join in closeEvent / Stop-all
+            # now actually covers the motion because we waited for arrival above.
+            if self._send_pose_stop.is_set():
+                try: backend.Stop()
+                except Exception: pass                   # noqa: BLE001
+                self._signals.status.emit("Send pose: stopped — servo OFF", "warn")
             self._send_pose_busy = False
             try:
                 backend.disconnect()

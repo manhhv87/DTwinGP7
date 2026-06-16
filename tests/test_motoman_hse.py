@@ -714,6 +714,18 @@ class TestUploadOverwrite:
         assert not isinstance(ei.value, JobUploadError)   # not the rename path
         assert "WRITE permission" in str(ei.value)
 
+    def test_stor_425_data_connection_not_mislabeled_as_save_refusal(self, monkeypatch):
+        """A genuine transient 4xx (425 data-connection) must NOT be reported as a
+        controller save-refusal — that would send the operator down the wrong path."""
+        import ftplib
+        from src.orchestrator.backends.motoman_hse import MotomanHSEBackend
+        ftp = self._ftp(monkeypatch)
+        ftp.delete.side_effect = ftplib.error_perm("550 File not found")
+        ftp.storbinary.side_effect = ftplib.error_temp("425 Can't open data connection")
+        with pytest.raises(RuntimeError, match="network") as ei:
+            MotomanHSEBackend(ip="x").upload_job("X", "PROG")
+        assert "refused to SAVE" not in str(ei.value)
+
 
 # ─────────────────────────────────────────────────────────────────────────
 # Motion-safety: halt latch + alarm-aware completion (bug-hunt HIGH cluster)
@@ -765,3 +777,27 @@ class TestMotionSafety:
         mock_sock.recvfrom.return_value = (_build_response(), ("x", 10040))
         backend.servo_on()
         assert backend._halted is False                         # resume cleared it
+
+    def test_wait_idle_raises_if_job_never_starts(self, backend_with_mock_socket):
+        """If Running never asserts within start_confirm_timeout_s, the job did NOT
+        start → raise, never fall through to a false 'completed' (regression guard
+        for the start-confirm fix)."""
+        backend, mock_sock = backend_with_mock_socket
+        backend.start_confirm_timeout_s = 0.2          # short confirm window
+        backend.wait_completion_timeout_s = 5.0
+        # READ_STATUS always idle (Running never asserts), READ_ALARM none.
+        mock_sock.recvfrom.return_value = (_build_response(payload=b"\x00"), ("x", 10040))
+        with pytest.raises(TimeoutError, match="did not start"):
+            backend._wait_idle()
+
+    def test_wait_idle_confirms_running_then_completes(self, backend_with_mock_socket):
+        """With start-confirm ON: Running asserts, then clears → success (no false
+        early return inside start latency)."""
+        backend, mock_sock = backend_with_mock_socket
+        backend.start_confirm_timeout_s = 1.0
+        mock_sock.recvfrom.side_effect = [
+            (_build_response(payload=b"\x08"), ("x", 10040)),   # READ_STATUS running
+            (_build_response(payload=b"\x00"), ("x", 10040)),   # READ_STATUS idle
+            (_build_response(payload=b"\x00"), ("x", 10040)),   # READ_ALARM none
+        ]
+        backend._wait_idle()                            # must not raise

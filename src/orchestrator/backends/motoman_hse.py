@@ -141,10 +141,12 @@ class MotomanHSEBackend:
         self.job_name_prefix = job_name_prefix
         self._job_counter = 0
         self.wait_completion_timeout_s = wait_completion_timeout_s
-        # Bounded window to confirm a started job actually asserted its Running bit
-        # before _wait_idle starts polling for completion (job_start() returns on
-        # the START ack, BEFORE the controller's start latency). 0 disables it.
-        self.start_confirm_timeout_s = 0.5
+        # Bounded window for _wait_idle to confirm a started job asserted its
+        # Running bit before polling for completion (job_start() returns on the
+        # START ack, BEFORE the controller's start latency). Must EXCEED the
+        # worst-case START→Running latency; generous because Phase 1 breaks as soon
+        # as Running is seen. 0 disables Phase 1 (unit tests only).
+        self.start_confirm_timeout_s = 3.0
         # Optional kinematic envelope for MoveJ_Test client-side when no RoboDK item.
         self.reach_envelope = reach_envelope
         # TOOL coordinate number — must match TOOL01 configured on teach pendant
@@ -354,20 +356,29 @@ class MotomanHSEBackend:
                     f"active job, rename it in the app or deselect it on the teach "
                     f"pendant; also check it is not write-protected.", _job) from e
             except ftplib.error_temp as e:
-                # 4xx (e.g. "451 Error closing file.--[5130]--"): the controller
-                # ACCEPTED the byte transfer but REFUSED to SAVE/close the job. This
-                # is NOT a job-content/format problem — a byte-exact valid teach-
-                # pendant export (e.g. PP1.JBI) is rejected the same way. It is
-                # controller-side: the FTP account lacks job-WRITE permission, or the
-                # operation mode / security level / an edit-lock prohibits saving a
-                # job file. NOT an overwrite issue → do not offer the rename dialog.
+                # ftplib raises error_temp for EVERY 4xx STOR reply — distinguish:
+                msg = str(e).strip()
+                if msg.startswith(("451", "450", "452")):
+                    # "451 Error closing file.--[5130]--": the controller ACCEPTED the
+                    # byte transfer but REFUSED to SAVE/close the job. NOT a job-
+                    # content problem — a byte-exact valid teach-pendant export (e.g.
+                    # PP1.JBI) is rejected the same way → controller-side: FTP account
+                    # lacks job-WRITE permission, or operation mode / security level /
+                    # an edit-lock prohibits saving. NOT an overwrite → no rename dialog.
+                    raise RuntimeError(
+                        f"Controller refused to SAVE job '{_job}' ({msg}). The .JBI "
+                        f"transferred OK but could not be written. Check on the "
+                        f"controller: (1) the FTP account has job WRITE permission "
+                        f"(not read-only), (2) job editing is allowed in the current "
+                        f"operation mode / security level, (3) the job is not open or "
+                        f"edit-locked on the teach pendant.") from e
+                # 425/426/other 4xx = data-connection / transfer failure (NOT a save
+                # refusal) — report honestly so the operator checks the network, not
+                # job permissions.
                 raise RuntimeError(
-                    f"Controller refused to SAVE job '{_job}' ({str(e).strip()}). The "
-                    f".JBI transferred OK but could not be written. Check on the "
-                    f"controller: (1) the FTP account has job WRITE permission (not "
-                    f"read-only), (2) job editing is allowed in the current operation "
-                    f"mode / security level, (3) the job is not open or edit-locked on "
-                    f"the teach pendant.") from e
+                    f"FTP transfer of job '{_job}' failed ({msg}) — data-connection / "
+                    f"network error, not a controller save-refusal. Check the network "
+                    f"link to the controller and retry.") from e
         finally:
             try:
                 ftp.quit()
@@ -636,23 +647,41 @@ class MotomanHSEBackend:
 
         job_start() returns on the START ack — BEFORE the controller asserts its
         Running bit — so a status poll landing inside the start latency reads idle
-        and we would return WHILE THE ROBOT IS STILL MOVING. Phase 1 therefore
-        waits (bounded by start_confirm_timeout_s) for Running to assert; a
-        zero/very-fast job that finishes inside that window is still handled by
-        Phase 2's alarm-verified return. Phase 2 then polls until Running clears
-        and checks the alarm state — an alarm-aborted job must NOT be reported as
-        success (the caller would otherwise drive the gripper / next move blind)."""
+        and we would return WHILE THE ROBOT IS STILL MOVING.
+
+        Guarantee: we NEVER report completion before having CONFIRMED the job ran.
+        Phase 1 polls (up to start_confirm_timeout_s) until Running asserts; if it
+        never asserts within that window the job did not start (wrong mode / servo
+        off / alarm) → raise rather than fall through and falsely report success.
+        Phase 2 then waits for Running to CLEAR and checks the alarm state — an
+        alarm-aborted job must NOT be reported as success (the caller would
+        otherwise drive the gripper / next move blind). start_confirm_timeout_s
+        MUST exceed the controller's worst-case START→Running latency; the default
+        is generous and Phase 1 breaks as soon as Running is seen. Setting it to 0
+        skips Phase 1 (unit tests only — no real start latency to cover)."""
         total = timeout_s or self.wait_completion_timeout_s
         deadline = time.monotonic() + total
-        # Phase 1 — confirm the job actually started (Running asserted).
-        confirm_deadline = time.monotonic() + min(self.start_confirm_timeout_s, total)
-        while time.monotonic() < confirm_deadline:
-            try:
-                if self.read_status_running():
-                    break                            # started — go wait for it to finish
-            except Exception as e:                  # noqa: BLE001
-                logger.warning("READ_STATUS error while confirming start: %s", e)
-            time.sleep(0.02)
+        # Phase 1 — confirm the job actually STARTED (Running asserted).
+        confirm = min(self.start_confirm_timeout_s, total)
+        if confirm > 0:
+            confirm_deadline = time.monotonic() + confirm
+            running_seen = False
+            while time.monotonic() < confirm_deadline:
+                try:
+                    if self.read_status_running():
+                        running_seen = True
+                        break                        # started — go wait for it to finish
+                except Exception as e:              # noqa: BLE001
+                    logger.warning("READ_STATUS error while confirming start: %s", e)
+                time.sleep(0.02)
+            if not running_seen:
+                # Running never asserted within the start window: the job did not
+                # start. Do NOT fall through to Phase 2 (which would read idle and
+                # falsely report success while the robot may still be about to move).
+                self._raise_if_alarm()
+                raise TimeoutError(
+                    f"Job did not start (Running not asserted within {confirm:.1f}s) "
+                    f"— check REMOTE mode / servo ON / teach-pendant alarm.")
         # Phase 2 — wait for completion, then verify no alarm aborted the job.
         while time.monotonic() < deadline:
             try:
