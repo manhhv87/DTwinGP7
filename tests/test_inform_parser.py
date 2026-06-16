@@ -53,9 +53,9 @@ class TestRoundTrip:
         deg2 = parse_jbi(t1).instructions[0].joints_deg
         t2 = (InformJobBuilder(name="J").add_position("p", deg2)
               .movj("p")).render()
-        # C-var line (pulses) phải identical giữa 2 lần render.
-        line1 = [ln for ln in t1.splitlines() if ln.startswith("C00000=")][0]
-        line2 = [ln for ln in t2.splitlines() if ln.startswith("C00000=")][0]
+        # Position line (pulses) phải identical giữa 2 lần render.
+        line1 = [ln for ln in t1.splitlines() if ln.startswith("P00000=")][0]
+        line2 = [ln for ln in t2.splitlines() if ln.startswith("P00000=")][0]
         assert line1 == line2
 
     def test_modifiers_parsed(self):

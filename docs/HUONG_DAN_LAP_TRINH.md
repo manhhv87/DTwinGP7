@@ -775,7 +775,7 @@ Import: `from src.orchestrator.backends.inform_codegen import InformJobBuilder, 
 | API | Mô tả |
 |---|---|
 | `InformJobBuilder(name, max_speed_pct=30.0)` | Builder dạng chain (mỗi method `return self`) |
-| `.add_position(name, joints_deg)` | Khai C-var position (joints **độ**) |
+| `.add_position(name, joints_deg, pos_token=None)` | Khai vị trí trong `//POS` (joints **độ**). Mặc định sinh **P-var job-local** (`P00000`…) đúng format YRC1000 nhận; truyền `pos_token='P5'`/`'C3'` để giữ token gốc khi round-trip .JBI import |
 | `.movj(name, speed_pct=None, tool_no, pl, user_frame)` · `.movl(name, speed_mm_s=100)` · `.movc(...)` | Lệnh chuyển động |
 | `.dout(idx, on)` · `.timer(s)` · `.wait_in(idx, on, timeout_s)` · `.msg(text)` · `.call_job(name)` · `.comment(text)` | I/O / timing / phụ trợ |
 | `.render() -> str` | Sinh full text `.JBI` (CRLF, Yaskawa convention) |

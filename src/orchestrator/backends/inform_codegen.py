@@ -155,7 +155,8 @@ class InformJobBuilder:
             joints_deg: Joint angles (len = number of axes).
             pos_token: Optional explicit INFORM token, e.g. 'P00001' or 'C00003',
                 to preserve the original variable kind + index on round-trip. If
-                None, a sequential C-variable (C00000, C00001, …) is assigned.
+                None, a sequential job-local P-variable (P00000, P00001, …) is
+                assigned — see the letter='P' default below.
         """
         if name in self._pos_index:
             raise ValueError(f"Position '{name}' already exists")
@@ -176,7 +177,16 @@ class InformJobBuilder:
                     f"Invalid pos_token '{pos_token}' (expected C##### or P###)")
             letter, index = m.group(1).upper(), int(m.group(2))
         else:
-            letter, index = "C", len(self._positions)
+            # Default to a job-LOCAL P-variable. The YRC1000 reserves the job
+            # //POS library for P-vars; declaring a GLOBAL C-variable in //POS
+            # makes the controller reject the job on save ("451 Error closing
+            # file.--[5130]--" at STOR-close). P-vars also can't clobber a global
+            # C-var used by other jobs. Index = next free P slot above any
+            # explicit P token already added, so a mixed imported(P-token)+new
+            # job never collides on an index.
+            letter = "P"
+            index = max((p.index for p in self._positions if p.letter == "P"),
+                        default=-1) + 1
         pulses = [int(round(d * r)) for d, r in zip(joints_deg, self.pulse_per_deg)]
         self._pos_index[name] = len(self._positions)
         self._positions.append(_Position(
