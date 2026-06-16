@@ -38,6 +38,30 @@ class TestValidation:
     def test_name_with_underscore_allowed(self):
         InformJobBuilder(name="PICK_PLACE_01")          # OK
 
+    def test_non_ascii_name_rejected(self):
+        # str.isalnum() accepts Vietnamese letters, but the .JBI uploads
+        # ASCII-strict → must reject early with a clear error, not crash on FTP.
+        with pytest.raises(ValueError, match="ASCII"):
+            InformJobBuilder(name="Gắp")
+
+    def test_non_ascii_comment_and_msg_transliterated(self):
+        """Vietnamese comment/SimEvent/MSG must transliterate to ASCII so the
+        whole job stays uploadable (upload_job encodes ascii-strict)."""
+        b = InformJobBuilder(name="J")
+        b.add_position("p", [0] * 6)
+        b.comment("Đóng kẹp rồi nhấc vật")
+        b.msg("Gắp vật thành công")
+        b.movj("p")
+        text = b.render()
+        text.encode("ascii", "strict")                  # must not raise
+        assert "'Dong kep roi nhac vat" in text
+        assert 'MSG "Gap vat thanh cong"' in text
+
+    def test_non_ascii_call_job_rejected(self):
+        b = InformJobBuilder(name="J")
+        with pytest.raises(ValueError, match="ASCII"):
+            b.call_job("Gắp")
+
     def test_duplicate_position_raises(self):
         b = InformJobBuilder(name="J")
         b.add_position("p0", [0] * 6)

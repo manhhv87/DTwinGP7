@@ -30,6 +30,7 @@ Workflow:
 from __future__ import annotations
 
 import re
+import unicodedata
 from dataclasses import dataclass, field
 from typing import Literal
 
@@ -126,8 +127,10 @@ class InformJobBuilder:
     def _validate_name(name: str) -> None:
         if not name or len(name) > 32:
             raise ValueError(f"Job name must be 1-32 characters, got '{name}'")
-        if not name.replace("_", "").isalnum():
-            raise ValueError(f"Job name must be alphanumeric/_, got '{name}'")
+        # ASCII only: str.isalnum() accepts Vietnamese letters, but the .JBI is
+        # uploaded ASCII-strict, so a non-ASCII name would crash FTP later.
+        if not name.isascii() or not name.replace("_", "").isalnum():
+            raise ValueError(f"Job name must be ASCII alphanumeric/_, got '{name}'")
         # INFORM convention: must start with a letter (digit-start is unstable on
         # many YRC1000 firmware versions — JOB_SELECT may fail silently).
         if not name[0].isalpha():
@@ -327,8 +330,8 @@ class InformJobBuilder:
     def msg(self, text: str) -> "InformJobBuilder":
         """MSG "string" — display message on the teach pendant (≤ 32 ASCII)."""
         # INFORM MSG supports ≤ 32 characters, ASCII printable, no embedded quotes.
-        clean = "".join(c for c in text if 0x20 <= ord(c) < 0x7F and c != '"')
-        clean = clean[:32]
+        # Transliterate non-ASCII (e.g. Vietnamese) so the upload can't crash.
+        clean = self._ascii_safe(text, 32).replace('"', "")
         self._instructions.append(_Instruction(f'MSG "{clean}"'))
         return self
 
@@ -337,14 +340,29 @@ class InformJobBuilder:
         '-' (e.g. SPEED-1), so this is looser than _validate_name: 1-32 chars,
         alphanumeric plus _ and -."""
         jn = (job_name or "").strip()
-        if not jn or len(jn) > 32 or not jn.replace("_", "").replace("-", "").isalnum():
-            raise ValueError(f"Invalid CALL JOB name: '{job_name}'")
+        if (not jn or len(jn) > 32 or not jn.isascii()
+                or not jn.replace("_", "").replace("-", "").isalnum()):
+            raise ValueError(f"Invalid CALL JOB name (ASCII alnum/_/-): '{job_name}'")
         self._instructions.append(_Instruction(f"CALL JOB:{jn}"))
         return self
 
+    @staticmethod
+    def _ascii_safe(text: str, maxlen: int) -> str:
+        """Transliterate to printable ASCII so the rendered job stays uploadable.
+
+        upload_job() encodes the whole .JBI as ASCII-strict, so ANY non-ASCII
+        char (e.g. a Vietnamese comment/SimEvent name) would crash the FTP upload
+        with a cryptic UnicodeEncodeError. Comments/MSG are cosmetic, so we
+        transliterate losslessly-enough: đ/Đ → d/D, then NFKD strips diacritics
+        (ắ → a), then any remaining non-printable/non-ASCII char is dropped.
+        'Đóng kẹp' → 'Dong kep'."""
+        text = text.replace("đ", "d").replace("Đ", "D")
+        text = unicodedata.normalize("NFKD", text)
+        return "".join(c for c in text if 0x20 <= ord(c) < 0x7F)[:maxlen]
+
     def comment(self, text: str) -> "InformJobBuilder":
         """Add a comment 'NOP // <text>' for debugging."""
-        safe = text.replace("\r", "").replace("\n", " ")[:80]
+        safe = self._ascii_safe(text.replace("\r", "").replace("\n", " "), 80)
         self._instructions.append(_Instruction(f"'{safe}"))    # ' = INFORM comment
         return self
 
