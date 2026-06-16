@@ -323,6 +323,7 @@ class GP7AppQt(
         self._hse_stop = threading.Event()
         self._send_pose_busy: bool = False     # Phase-1 discrete send in progress (re-entrancy guard)
         self._send_pose_stop = threading.Event()   # abort the discrete send (Stop-all)
+        self._send_pose_thread: threading.Thread | None = None  # joinable on close/Stop-all
         # Sim move animation (Home / Zero / Align) — tracked so it can be cancelled
         # before a new move and joined on app close (no untracked teleport threads).
         self._anim_thread: threading.Thread | None = None
@@ -7134,9 +7135,20 @@ class GP7AppQt(
             self._send_pose_stop.set()                       # Phase-1 discrete send
         if getattr(self, "_live_jog_stop", None) is not None:
             self._live_jog_stop.set()                        # Phase-2 live jog
-            t = getattr(self, "_live_jog_thread", None)
-            if t is not None and t.is_alive():
-                t.join(timeout=2.0)                          # let worker servo-OFF
+        # Experiment: stop + servo-OFF synchronously (mirror is read-only).
+        try:
+            if hasattr(self, "_on_stop_experiment"):
+                self._on_stop_experiment()
+        except Exception:                                    # noqa: BLE001
+            pass
+        # JOIN every real-robot worker so the servo-OFF / Stop in its finally
+        # block actually runs before the interpreter kills the daemon thread at
+        # exit — otherwise the robot can be left MOVING with servos ON.
+        for _wname in ("_live_jog_thread", "_send_pose_thread",
+                       "_hse_thread", "_exp_thread"):
+            _wt = getattr(self, _wname, None)
+            if _wt is not None and _wt.is_alive():
+                _wt.join(timeout=2.0)
         try:
             if getattr(self, "_twin", None) is not None:
                 self._twin.stop_mirror()

@@ -183,6 +183,8 @@ class ExperimentMixin:
         if (getattr(self, "_live_jog_thread", None) is not None
                 and self._live_jog_thread.is_alive()):
             return "Live jog is ON — turn it off before mirroring / experiment"
+        if bool(getattr(self, "_send_pose_busy", False)):
+            return "A Send-pose move is in progress — wait for it to finish"
         if getattr(self, "_model", None) is None:
             return "Load Robot GP7 first (a model is required to build the viewport)"
         if not (getattr(self, "_hse_ip", "") or ""):
