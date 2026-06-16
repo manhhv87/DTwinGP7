@@ -468,3 +468,39 @@ class TestExtendedLGCodegen:
         for tok in ["CLEAR STACK", "CLEAR I010 2", "PULSE OT#(6)",
                     "DIN B005 IG#(2)", "DOUT OG#(2) B005"]:
             assert tok in text, tok
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# Bug-hunt batch fixes (#15 dash name, #21 TL/UF bounds, #24 ClearVar count=0)
+# ─────────────────────────────────────────────────────────────────────────
+
+
+class TestBugHuntFixes:
+    def test_dash_job_name_allowed(self):
+        # '-' is a valid Yaskawa job-name char (e.g. SPEED-1.JBI) — must NOT raise.
+        b = InformJobBuilder(name="SPEED-1")
+        b.add_position("p", [0] * 6); b.movj("p")
+        assert "//NAME SPEED-1" in b.render()
+
+    def test_space_job_name_still_rejected(self):
+        with pytest.raises(ValueError, match="alphanumeric"):
+            InformJobBuilder(name="bad name")
+
+    def test_negative_tool_no_rejected(self):
+        b = InformJobBuilder(name="J")
+        b.add_position("p", [0] * 6)
+        with pytest.raises(ValueError, match="TL"):
+            b.movj("p", tool_no=-1)
+
+    def test_negative_user_frame_rejected(self):
+        b = InformJobBuilder(name="J")
+        b.add_position("p", [0] * 6)
+        with pytest.raises(ValueError, match="UF"):
+            b.movl("p", user_frame=-1)
+
+    def test_clear_var_count_zero_normalised_to_one(self):
+        # count==0 must clear 1 var (match the sim), not 0.
+        b = InformJobBuilder(name="J")
+        b.add_position("p", [0] * 6); b.movj("p"); b.clear_var("I000", 0)
+        assert "CLEAR I000 1" in b.render()
+        assert "CLEAR I000 0" not in b.render()

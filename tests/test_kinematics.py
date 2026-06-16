@@ -224,3 +224,26 @@ class TestCustomDH:
         T = forward_kinematics(m, [0, 0])
         np.testing.assert_almost_equal(T[0, 3], 150, decimal=4)
         np.testing.assert_almost_equal(T[1, 3], 0, decimal=4)
+
+
+def test_interpolate_cartesian_straight_line_and_orientation():
+    """interpolate_cartesian samples a Cartesian straight line (pos lerp + axis-angle
+    orientation slerp), endpoints inclusive (bug #14 predictive-MoveL helper)."""
+    import numpy as np
+    from src.orchestrator.kinematics import interpolate_cartesian
+    T0 = np.eye(4)
+    T1 = np.eye(4)
+    T1[:3, 3] = [100.0, 0.0, -50.0]                      # pure translation
+    # 90° about Z between the two
+    T1[:3, :3] = np.array([[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]])
+    poses = interpolate_cartesian(T0, T1, n_steps=4)
+    assert len(poses) == 5                               # n_steps + 1, inclusive
+    np.testing.assert_allclose(poses[0], T0, atol=1e-9)
+    np.testing.assert_allclose(poses[-1][:3, 3], T1[:3, 3], atol=1e-6)
+    np.testing.assert_allclose(poses[-1][:3, :3], T1[:3, :3], atol=1e-6)
+    # midpoint position is exactly halfway (straight line)
+    np.testing.assert_allclose(poses[2][:3, 3], [50.0, 0.0, -25.0], atol=1e-6)
+    # every sampled rotation stays a valid rotation matrix (orthonormal)
+    for T in poses:
+        R = T[:3, :3]
+        np.testing.assert_allclose(R @ R.T, np.eye(3), atol=1e-6)

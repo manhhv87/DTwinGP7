@@ -127,10 +127,14 @@ class InformJobBuilder:
     def _validate_name(name: str) -> None:
         if not name or len(name) > 32:
             raise ValueError(f"Job name must be 1-32 characters, got '{name}'")
-        # ASCII only: str.isalnum() accepts Vietnamese letters, but the .JBI is
-        # uploaded ASCII-strict, so a non-ASCII name would crash FTP later.
-        if not name.isascii() or not name.replace("_", "").isalnum():
-            raise ValueError(f"Job name must be ASCII alphanumeric/_, got '{name}'")
+        # ASCII alphanumeric + '_' + '-'. '-' is a VALID Yaskawa job-name char
+        # (real teach-pendant exports use it, e.g. SPEED-1.JBI) and CALL JOB already
+        # accepts it — rejecting it here crashed re-synthesised export of such jobs.
+        # ASCII-only: str.isalnum() accepts non-ASCII (e.g. Vietnamese) letters but
+        # the .JBI uploads ASCII-strict, so a non-ASCII name would crash FTP later.
+        if not name.isascii() or not name.replace("_", "").replace("-", "").isalnum():
+            raise ValueError(
+                f"Job name must be ASCII alphanumeric/_/-, got '{name}'")
         # INFORM convention: must start with a letter (digit-start is unstable on
         # many YRC1000 firmware versions — JOB_SELECT may fail silently).
         if not name[0].isalpha():
@@ -223,8 +227,12 @@ class InformJobBuilder:
                 raise ValueError(f"PL must be 0..8, got {pl}")
             parts.append(f"PL={int(pl)}")
         if tool_no is not None:
+            if not (0 <= int(tool_no) <= 63):
+                raise ValueError(f"TL (tool_no) must be 0..63, got {tool_no}")
             parts.append(f"TL={int(tool_no)}")
         if user_frame is not None:
+            if not (0 <= int(user_frame) <= 63):
+                raise ValueError(f"UF# (user_frame) must be 0..63, got {user_frame}")
             parts.append(f"UF#({int(user_frame)})")
         return (" " + " ".join(parts)) if parts else ""
 
@@ -501,9 +509,13 @@ class InformJobBuilder:
         return self
 
     def clear_var(self, name: str, count: int) -> "InformJobBuilder":
-        """CLEAR Ixxx n | CLEAR Ixxx ALL (count < 0 → ALL)."""
+        """CLEAR Ixxx n | CLEAR Ixxx ALL (count < 0 → ALL).
+
+        count == 0 is normalised to 1 (clear a single var) to match the sim
+        interpreter — otherwise the sim cleared 1 var while the exported INFORM
+        cleared 0, diverging silently on the real controller."""
         name = self._validate_var(name)
-        n = "ALL" if count < 0 else int(count)
+        n = "ALL" if count < 0 else max(1, int(count))
         self._instructions.append(_Instruction(f"CLEAR {name} {n}"))
         return self
 

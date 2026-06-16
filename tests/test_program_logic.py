@@ -246,6 +246,27 @@ class TestLabels:
                             cond_lhs="B000", cond_op="<", cond_rhs="3")]
         assert validate_program(prog) == []
 
+    def test_validate_jump_into_if_block_rejected(self):
+        # JUMP from OUTSIDE into a label inside an IF block is illegal INFORM.
+        prog = [
+            Instruction(type="Jump", label_name="INNER"),       # outside the IF
+            Instruction(type="IfThen", cond_lhs="B000", cond_op="=", cond_rhs="1"),
+            Instruction(type="Label", label_name="INNER"),      # inside the IF
+            Instruction(type="EndIf"),
+        ]
+        errs = validate_program(prog)
+        assert any("structured" in e and "INNER" in e for e in errs), errs
+
+    def test_validate_jump_outward_from_block_allowed(self):
+        # Jumping OUT of a block (to an enclosing/top-level label) is fine.
+        prog = [
+            Instruction(type="Label", label_name="DONE"),
+            Instruction(type="IfThen", cond_lhs="B000", cond_op="=", cond_rhs="1"),
+            Instruction(type="Jump", label_name="DONE"),        # inside → out
+            Instruction(type="EndIf"),
+        ]
+        assert validate_program(prog) == []
+
     def test_validate_bad_cond_operand(self):
         # Toán hạng rác trong điều kiện phải bị chặn (không lọt ra .JBI / Play).
         for ins in (

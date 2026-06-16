@@ -630,8 +630,13 @@ class ProgramIOMixin:
         status. folder_name re-emits the original ///FOLDERNAME.
         """
         raw = getattr(self, "_jbi_raw", {}).get(raw_key or job_name)
-        if raw and raw.get("sig") == self._job_signature(
-                program, getattr(self, "_targets", None)):
+        # Verbatim re-export ONLY when unchanged AND the export name still matches
+        # the original //NAME. If the file was renamed/de-duped (job_name differs),
+        # the verbatim text's //NAME would no longer match the filename — some
+        # firmware rejects //NAME != filename — so re-synthesise with the new name.
+        if (raw and raw.get("sig") == self._job_signature(
+                program, getattr(self, "_targets", None))
+                and (raw.get("name") or "").upper() == job_name.upper()):
             path.write_bytes(raw["text"].encode("utf-8"))   # verbatim re-export
             return
         errs = validate_program(program)

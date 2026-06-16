@@ -64,9 +64,10 @@ def world_to_robot_base(
 def matrix_to_rpy_yaskawa(R: np.ndarray) -> tuple[float, float, float]:
     """Decompose 3x3 rotation matrix → (Rx, Ry, Rz) degrees XYZ-fixed convention.
 
-    Yaskawa HSE BASE pose uses XYZ-fixed Tait-Bryan:
-        R = Rx(α) · Ry(β) · Rz(γ)         (applied left-to-right)
-        equivalent to Rz then Ry then Rx (intrinsic ZYX)
+    Yaskawa HSE BASE pose uses XYZ-fixed (extrinsic) Tait-Bryan, which equals the
+    intrinsic ZYX composition that this code actually solves:
+        R = Rz(γ) · Ry(β) · Rx(α)
+        (extrinsic XYZ = intrinsic ZYX — rotate about fixed X, then Y, then Z)
 
     Solve:
         β = atan2(-R[2,0], sqrt(R[0,0]² + R[1,0]²))

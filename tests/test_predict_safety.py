@@ -130,3 +130,17 @@ class TestYrcToolFrameConsistency:
         orch = self._orch(calibration_file, tool_offset=0.0)
         _, T_base = orch._solve_ik_routed(self._topdown(400.0, 0.0, 300.0))
         assert T_base[2, 3] == pytest.approx(300.0, abs=1e-6)   # no retract
+
+
+class TestSelectObjectsMalformed:
+    def test_malformed_pose_camera_skipped_not_crash(self, orchestrator_with_predict):
+        """A detection with a short/missing pose_camera must be SKIPPED, not crash
+        the whole trial loop (bug #26 — PLAN reads pose_camera[3])."""
+        orch = orchestrator_with_predict
+        det = {"objects": [
+            {"pose_camera": [0.1, 0.2, 0.5, 1.0], "class_name": "good"},
+            {"pose_camera": [0.1, 0.2], "class_name": "short"},     # len < 4
+            {"class_name": "missing"},                              # no pose_camera
+        ]}
+        objs = orch._select_objects(det)
+        assert [o["class_name"] for o in objs] == ["good"]

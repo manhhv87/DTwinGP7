@@ -62,12 +62,14 @@ class ProgramPlaybackMixin:
             self._set_status("Program: resumed", level="ok")
 
     def _on_prog_delete(self) -> None:
+        if self._guard_not_running("edit the program"): return
         idx = self._prog_list.currentRow()
         if 0 <= idx < len(self._program):
             del self._program[idx]
             self._refresh_program_list()
 
     def _on_prog_move_up(self) -> None:
+        if self._guard_not_running("edit the program"): return
         idx = self._prog_list.currentRow()
         if 0 < idx < len(self._program):
             self._program[idx-1], self._program[idx] = \
@@ -76,6 +78,7 @@ class ProgramPlaybackMixin:
             self._prog_list.setCurrentRow(idx - 1)
 
     def _on_prog_move_down(self) -> None:
+        if self._guard_not_running("edit the program"): return
         idx = self._prog_list.currentRow()
         if 0 <= idx < len(self._program) - 1:
             self._program[idx+1], self._program[idx] = \
