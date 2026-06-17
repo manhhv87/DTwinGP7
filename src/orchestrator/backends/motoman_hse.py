@@ -325,6 +325,14 @@ class MotomanHSEBackend:
         """
         filename = job_name if job_name.upper().endswith(".JBI") else f"{job_name}.JBI"
         # Yaskawa INFORM uses Shift-JIS encoding but ASCII-only is safe for both.
+        # Normalise line endings to CRLF: the YRC1000 job parser expects CRLF
+        # record terminators, but the Run-on-Robot path reads the rendered job via
+        # Path.read_text() (universal newlines), which COLLAPSES the file's CRLF to
+        # LF. An LF-only job transfers OK yet the controller refuses to CLOSE/save
+        # it -> "451 Error closing file.--[5130]--". Collapse-then-expand is
+        # idempotent for already-CRLF text (the one-off / batch builder paths).
+        job_text = (job_text.replace("\r\n", "\n").replace("\r", "\n")
+                    .replace("\n", "\r\n"))
         data = job_text.encode("ascii", errors="strict")
 
         logger.info("FTP upload '%s' (%d bytes) to %s%s",
