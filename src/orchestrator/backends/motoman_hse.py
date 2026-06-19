@@ -398,12 +398,18 @@ class MotomanHSEBackend:
                 pass                                # noqa: BLE001
 
     def job_select(self, job_name: str) -> None:
-        """JOB_SELECT (0x87): selects the uploaded job as current. Must be called before START."""
+        """JOB_SELECT (0x87): selects the uploaded job as current. Must be called before START.
+
+        Per the Yaskawa HSE spec (Job Selection and Start): command 0x87, instance 1
+        (= set executing job), Service 0x02 (Set_Attribute_All), Attribute FIXED 0x00.
+        We previously sent attribute=1, which the controller rejected with status 0x1F
+        / added_status 0xA002 ("Attribute error") — so JOB_SELECT never took effect.
+        """
         name = job_name.upper().removesuffix(".JBI").encode("ascii")
         # Payload: 32-byte job name (null-padded) + 4-byte line number (uint32 LE, 0=top)
         payload = name.ljust(32, b"\x00") + struct.pack("<I", 0)
         self._send_request(
-            Command.JOB_SELECT, instance=1, attribute=1,
+            Command.JOB_SELECT, instance=1, attribute=0,
             service=Service.SET_ATTRIBUTE_ALL, payload=payload,
         )
         logger.debug("JOB_SELECT '%s'", job_name)
