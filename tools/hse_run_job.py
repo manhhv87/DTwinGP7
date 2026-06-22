@@ -31,7 +31,8 @@ from src.orchestrator.backends.hse_protocol import (  # noqa: E402
 
 _args = [a for a in sys.argv[1:]]
 DO_START = "--start" in _args
-_args = [a for a in _args if a != "--start"]
+SKIP_SELECT = "--skip-select" in _args
+_args = [a for a in _args if a not in ("--start", "--skip-select")]
 JOB = _args[0] if _args else "MINHTEST"
 IP = _args[1].strip() if len(_args) > 1 else "192.168.125.100"
 
@@ -102,9 +103,15 @@ def main() -> int:
         time.sleep(1.0)
         print()
 
-        print(f"[2] JOB_SELECT '{JOB}' (0x87 inst1 attr0 svc0x02)")
-        sel_ok = step(be, f"job_select {JOB}", lambda: be.job_select(JOB))
-        print()
+        if SKIP_SELECT:
+            print("[2] JOB_SELECT — SKIPPED (--skip-select): the job must already be\n"
+                  f"    selected on the pendant (open '{JOB}', cursor at the top).")
+            sel_ok = True
+            print()
+        else:
+            print(f"[2] JOB_SELECT '{JOB}' (0x87 inst1 attr0 svc0x02)")
+            sel_ok = step(be, f"job_select {JOB}", lambda: be.job_select(JOB))
+            print()
 
         if not sel_ok:
             print(">>> JOB_SELECT is the command being rejected. The 0x2080/added_status\n"
@@ -114,9 +121,8 @@ def main() -> int:
             step(be, "job_start", be.job_start)
             print()
         else:
-            print("[3] START — SKIPPED (no --start). JOB_SELECT succeeded; re-run with\n"
-                  "    --start to test START (robot will move). If JOB_SELECT was OK but\n"
-                  "    the app still 0x2080s, the rejection is at START.")
+            print("[3] START — SKIPPED (no --start). Re-run with --start to test START\n"
+                  "    (robot will move).")
     finally:
         be.disconnect()
 
