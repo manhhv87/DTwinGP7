@@ -205,10 +205,11 @@ class TestViewportMirrorDisable:
         twin.stop_mirror()
         assert viewport_cb.call_count >= 3
 
-    def test_default_mirror_hz_low_enough_to_be_smooth(self):
-        """Default 2Hz đủ smooth cho mắt người."""
+    def test_default_mirror_hz_high_enough_to_be_smooth(self):
+        """Viewport mirror must refresh fast enough to track the real robot
+        smoothly — the old 2Hz default looked choppy / slower than reality."""
         from src.orchestrator.digital_twin import DEFAULT_MIRROR_HZ
-        assert DEFAULT_MIRROR_HZ <= 5.0
+        assert DEFAULT_MIRROR_HZ >= 10.0
 
 
 class TestDecoupledRates:
