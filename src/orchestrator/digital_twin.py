@@ -4,18 +4,18 @@ digital_twin.py
 DigitalTwinMirror: facade bidirectional digital twin combining:
   - Motion backend (HSE → real YRC1000, or SimRobot for dev)
   - Optional viewport callback (Open3D mirror — render robot state live)
-  - Mirror thread (poll real state @ 10Hz)
+  - Mirror thread (poll real state @ telemetry_hz, default 20Hz)
   - Telemetry logger (CSV state log)
   - Drift detection + auto-stop on major alarms
 
 ARCHITECTURE:
   Orchestrator ──> DigitalTwinMirror ───── MoveJ joints ──> Backend ──> Robot
        (duck-type API)                                                    │
-                       MirrorThread <───── poll Joints (10Hz) ────────────┘
+                       MirrorThread <───── poll Joints (~20Hz) ───────────┘
                             ↓
-                       viewport_callback(joints)  ← optional, ~2Hz
+                       viewport_callback(joints)  ← optional, ~20Hz
                             ↓
-                       TelemetryLogger → CSV (10Hz)
+                       TelemetryLogger → CSV (~20Hz)
 
 Viewport callback receives joints (degrees) every N ticks — Open3D mirror renders
 the ACTUAL state (not commanded). Backend must handle frame conversion
@@ -39,15 +39,18 @@ logger = logging.getLogger(__name__)
 
 # ─── Decoupled rates ───
 # Loop runs at telemetry_hz (high) → each tick: poll Joints + log CSV + drift check.
-# Viewport setJoints throttled down to mirror_hz (low) to avoid RoboDK Free nagware.
+# Viewport render throttled to mirror_hz — keep it CLOSE to telemetry_hz so the
+# on-screen twin tracks the REAL robot smoothly. (The old 2Hz default was a leftover
+# RoboDK-Free "nagware" limit; this app renders with Open3D/Qt/VTK and has no such
+# cap, so 2Hz only made the mirror look choppy / slower than the real robot.)
 # Alarm polled on a time period rather than per-tick (decoupled from loop rate).
 #
 # Defaults chosen so that:
-#   - Telemetry 10Hz: sufficient resolution for velocity analysis (post-process)
-#   - Mirror 2Hz: smooth visually + safe for RoboDK Free (~120 setJoints/min)
+#   - Telemetry 20Hz: smooth velocity resolution + fresh poll feeding the viewport
+#   - Mirror 20Hz: viewport tracks the real robot in near-real-time (~20 fps)
 #   - Alarm 2.5s: alarm state changes rarely, no need to poll frequently
-DEFAULT_TELEMETRY_HZ = 10.0
-DEFAULT_MIRROR_HZ = 2.0
+DEFAULT_TELEMETRY_HZ = 20.0
+DEFAULT_MIRROR_HZ = 20.0
 DEFAULT_ALARM_POLL_PERIOD_S = 2.5
 
 # Drift warning: if deviation between commanded and actual ≥ threshold, log a warning.
@@ -67,7 +70,8 @@ class DigitalTwinMirror:
         viewport_callback: Callable(joints_deg: list[float]) → None, called every N
             ticks to render robot state. None → no viewport mirror.
         telemetry: TelemetryLogger for state logging. None → skip.
-        mirror_hz: Viewport callback call frequency. Default 2Hz.
+        mirror_hz: Viewport callback call frequency. Default 20Hz (clamped to
+            telemetry_hz). Keep it high so the on-screen twin tracks the real robot.
         telemetry_hz: Joint poll + CSV log frequency. Default 10Hz.
         drift_warn_deg: Threshold for warning on commanded vs actual drift.
     """

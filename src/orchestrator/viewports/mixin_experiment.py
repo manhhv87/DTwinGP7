@@ -4,7 +4,7 @@ mixin_experiment.py
 ExperimentMixin — Digital Twin for the REAL ROBOT in GP7AppQt.
 
   • Phase 1 — **Live mirror**: poll REAL joints from YRC1000 via HSE @telemetry_hz,
-    render into the viewport @mirror_hz (~2 Hz), log telemetry CSV. Robot receives NO
+    render into the viewport @mirror_hz (~20 Hz), log telemetry CSV. Robot receives NO
     commands (read-only) → safe. Render 76 ms << 500 ms (2 Hz) so smooth.
   • Phase 2 — **Run experiment**: run autonomous pick-place on the REAL robot via
     Orchestrator + perception (real D455+YOLO, or Mock dry-run) — mirrors
@@ -68,13 +68,13 @@ class ExperimentMixin:
         gb.setObjectName("cardGroup")           # title-inside-card (qt_theme)
         form = QFormLayout(gb)
         self._exp_mirror_hz = QDoubleSpinBox()
-        self._exp_mirror_hz.setRange(0.5, 10.0)
-        self._exp_mirror_hz.setSingleStep(0.5)
-        self._exp_mirror_hz.setValue(2.0)
+        self._exp_mirror_hz.setRange(0.5, 30.0)     # high → smooth mirror; clamped to tele Hz
+        self._exp_mirror_hz.setSingleStep(1.0)
+        self._exp_mirror_hz.setValue(20.0)
         self._exp_tele_hz = QDoubleSpinBox()
-        self._exp_tele_hz.setRange(1.0, 30.0)
+        self._exp_tele_hz.setRange(1.0, 60.0)
         self._exp_tele_hz.setSingleStep(1.0)
-        self._exp_tele_hz.setValue(10.0)
+        self._exp_tele_hz.setValue(20.0)
         form.addRow("Mirror Hz (viewport):", self._exp_mirror_hz)
         form.addRow("Telemetry Hz (CSV):", self._exp_tele_hz)
         lay.addWidget(gb)
