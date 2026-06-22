@@ -200,8 +200,10 @@ class ConnectionMixin:
         return (orig or self._safe_job_name(key))[:32]
 
     def _on_run_on_robot(self) -> None:
-        """Render active job + all CALL JOB sub-jobs → upload every .JBI →
-        JOB_SELECT + START the main job → wait_idle.
+        """Render active job + all CALL JOB sub-jobs, then run in TWO key-switch
+        phases (this YRC1000 rejects JOB_SELECT in REMOTE): key in PLAY/TEACH →
+        upload + JOB_SELECT (no motion); key in REMOTE → servo ON + START +
+        wait_idle. The worker picks the phase from the controller's reported mode.
 
         Runs in a worker thread so the UI stays responsive. Stop button → servo OFF.
         """
@@ -246,13 +248,17 @@ class ConnectionMixin:
                     if len(order) > 1 else "")
         r = QMessageBox.warning(
             self, "Run on Robot — Safety check",
-            f"<b>⚠ THE ROBOT WILL MOVE FOR REAL</b><br><br>"
+            f"<b>⚠ Run on Robot — 2 steps (robot MOVES in step 2)</b><br><br>"
+            f"This controller can't select a job in REMOTE, so it runs in two "
+            f"key-switch steps:<br>"
+            f"&nbsp;1) Key in <b>PLAY</b> → upload &amp; SELECT the job (no motion)<br>"
+            f"&nbsp;2) Key in <b>REMOTE</b> → START it (⚠ robot moves)<br>"
+            f"The app detects the key position and does the matching step.<br><br>"
             f"Job: <code>{self._active_job}</code> ({n_steps} instructions)"
             f"{sub_note}<br>"
             f"HSE IP: <code>{self._hse_ip}</code><br>"
             f"Max VJ: {self._pp_max_speed_pct:.0f}%<br><br>"
-            f"Before continuing, verify:<br>"
-            f"&nbsp;✓ YRC1000 in REMOTE mode<br>"
+            f"Before STEP 2 (REMOTE), verify:<br>"
             f"&nbsp;✓ TP speed slider ≤ 10%<br>"
             f"&nbsp;✓ Workspace clear, hand ready on E-stop<br>"
             f"&nbsp;✓ No active alarm<br><br>"
@@ -306,43 +312,59 @@ class ConnectionMixin:
                 self._signals.status.emit(
                     f"Robot: ALARM 0x{code:04X} (sub 0x{sub:04X}) — reset on TP first",
                     "err"); return
-            # Upload the main job + every sub-job so CALL JOB resolves on the
-            # controller (main = jobs[0]).
-            for jname, jtext in jobs:
-                if self._hse_stop.is_set():
-                    self._signals.status.emit(
-                        "Robot: aborted before upload", "warn"); return
-                self._signals.status.emit(
-                    f"Robot: FTP uploading '{jname}.JBI'…", "info")
-                try:
-                    backend.upload_job(jtext, jname)
-                except JobUploadError as e:
-                    # Can't overwrite (active/protected job) → ask the user to rename.
-                    self._signals.run_overwrite_blocked.emit(
-                        getattr(e, "job_name", jname) or jname, str(e))
-                    return
-            if self._hse_stop.is_set():
-                self._signals.status.emit("Robot: aborted before start", "warn"); return
             import time as _time
-            # Servo ON (START requires servo power + REMOTE mode). REMOTE must be
-            # set on the TP key switch; servo we command here. Warn (don't abort)
-            # if it fails — START below will surface the definitive controller error.
+            # This YRC1000 rejects JOB_SELECT (0x87) in REMOTE ("incorrect mode"
+            # 0x2080) — selecting a job is a PLAY/TEACH operation — while START
+            # (0x86) needs REMOTE. The mode key switch is manual, so Run-on-Robot
+            # runs in TWO key-switch phases, chosen from the controller's mode:
+            #   key PLAY/TEACH → upload every .JBI + JOB_SELECT the main job (no motion)
+            #   key REMOTE     → servo ON + START the already-selected job (⚠ moves)
+            try:
+                mode = backend.read_controller_status()["mode"]
+            except Exception:                            # noqa: BLE001
+                mode = "?"                               # default → PHASE 1 (no motion)
+
+            if mode != "REMOTE":
+                # ── PHASE 1 (key PLAY/TEACH): upload all + select main. No motion. ──
+                for jname, jtext in jobs:
+                    if self._hse_stop.is_set():
+                        self._signals.status.emit(
+                            "Robot: aborted before upload", "warn"); return
+                    self._signals.status.emit(
+                        f"Robot: FTP uploading '{jname}.JBI'…", "info")
+                    try:
+                        backend.upload_job(jtext, jname)
+                    except JobUploadError as e:
+                        # Can't overwrite (active/protected job) → ask to rename.
+                        self._signals.run_overwrite_blocked.emit(
+                            getattr(e, "job_name", jname) or jname, str(e))
+                        return
+                self._signals.status.emit(f"Robot: JOB_SELECT '{main_name}'…", "info")
+                backend.job_select(main_name)
+                self._signals.status.emit(
+                    f"Robot: '{main_name}' uploaded & SELECTED (key={mode}). Now turn "
+                    f"the key switch to REMOTE and click Run on Robot again to START.",
+                    "ok")
+                return
+
+            # ── PHASE 2 (key REMOTE): START the job selected in the PLAY phase. ──
+            # Do NOT re-upload (FTP 503 on the currently-selected job) or re-select
+            # (JOB_SELECT is rejected in REMOTE) — the PLAY phase already did both.
             self._signals.status.emit("Robot: servo ON…", "info")
             try:
                 backend.servo_on()
                 _time.sleep(1.0)                     # let servos engage before START
             except Exception as e:                   # noqa: BLE001
                 self._signals.status.emit(
-                    f"Robot: servo-on failed ({e}) — check REMOTE mode on the TP",
-                    "warn")
+                    f"Robot: servo-on failed ({e}) — check the TP", "warn")
             # Stop requested during the servo-engage window → abort BEFORE START
             # (otherwise the robot briefly starts moving before the poll loop stops it).
             if self._hse_stop.is_set():
                 try: backend.Stop()
                 except Exception: pass               # noqa: BLE001
                 self._signals.status.emit("Robot: aborted before start", "warn"); return
-            self._signals.status.emit(f"Robot: JOB_SELECT + START '{main_name}'…", "info")
-            backend.job_select(main_name)
+            self._signals.status.emit(
+                f"Robot: START '{main_name}' (job selected in the PLAY step)…", "info")
             backend.job_start()
             # Poll status until idle or stop. On ANY abnormal exit (stop / poll
             # error / timeout) servo-OFF first so a still-moving robot is halted.
