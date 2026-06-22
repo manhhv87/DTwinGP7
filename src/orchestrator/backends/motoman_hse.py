@@ -525,6 +525,30 @@ class MotomanHSEBackend:
             return False
         return bool(resp.payload[0] & 0x08)
 
+    def read_controller_status(self) -> dict:
+        """READ_STATUS (0x72) decoded into operation mode / cycle / servo / alarm.
+
+        Data1 bits: 0 step, 1 1-cycle, 2 auto, 3 running, 4 safeguard, 5 teach,
+        6 play, 7 remote.  Data2 bits: 1 hold(PP), 2 hold(ext), 3 hold(cmd),
+        4 alarm, 5 error, 6 servo on.  (Verified vs Yaskawa HSE "Controller Status
+        Reading" tables.) In REMOTE the controller sets BOTH the play and remote
+        bits, so `mode` checks `remote` first.
+        """
+        resp = self._send_request(
+            Command.READ_STATUS, instance=1, service=Service.GET_ATTRIBUTE_ALL)
+        p = resp.payload or b""
+        d1 = p[0] if len(p) >= 1 else 0
+        d2 = p[4] if len(p) >= 5 else 0
+        remote, play, teach = bool(d1 & 0x80), bool(d1 & 0x40), bool(d1 & 0x20)
+        return {
+            "data1": d1, "data2": d2,
+            "mode": "REMOTE" if remote else ("PLAY" if play else ("TEACH" if teach else "?")),
+            "remote": remote, "play": play, "teach": teach,
+            "auto": bool(d1 & 0x04), "running": bool(d1 & 0x08),
+            "servo": bool(d2 & 0x40), "alarm": bool(d2 & 0x10),
+            "error": bool(d2 & 0x20), "hold": bool(d2 & 0x0E),
+        }
+
     # ─── P-variable write (M3++ ultra-fast mode) ───
     def write_position_var(
         self, p_index: int, joints_deg: list[float],
