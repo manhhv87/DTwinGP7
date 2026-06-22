@@ -4388,8 +4388,11 @@ class GP7AppQt(
     def _animate_to(self, end_deg: list[float], steps: int = 36, dt: float = 0.02,
                      stop_event: threading.Event | None = None,
                      pause_event: threading.Event | None = None) -> None:
-        """Worker-thread slerp animation: emit joints_update per frame.
+        """Worker-thread JOINT-linear animation: emit joints_update per frame.
 
+        Linearly interpolates each joint start→end (correct for MoveJ). NOTE: this
+        is a joint-space lerp, NOT Cartesian — MoveL uses _animate_movel_cartesian
+        to trace a straight TCP line like the real controller.
         Honors stop_event (abort) and pause_event (block while set).
         Throttle: skip emit if less than 1/_ANIM_MAX_FPS since last frame → reduces
         Qt event queue + VTK render() load.

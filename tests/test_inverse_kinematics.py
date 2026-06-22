@@ -423,3 +423,40 @@ def test_pieper_wrist_singularity_redistributes_q4_q6():
     assert np.linalg.norm(T2[:3, 3] - T[:3, 3]) < 1e-3
     # q4/q6 should stay near the seed, not collapse to q6=0.
     assert abs(sol[3] - q[3]) < np.deg2rad(5) and abs(sol[5] - q[5]) < np.deg2rad(5)
+
+
+def test_movel_cartesian_frames_trace_straight_line():
+    """MOVL frames trace a straight CARTESIAN TCP line, not a joint-lerp arc, with
+    the endpoint pinned to the stored joints. Regression for the sim-vs-real MOVL
+    path divergence: PP1's P4→P5 joint-lerp bowed ~173mm off the true line."""
+    import numpy as np
+    from src.orchestrator.kinematics.urdf_chain import gp7_urdf, forward_kinematics_urdf
+    from src.orchestrator.kinematics.trajectory import movel_joint_frames
+
+    m = gp7_urdf()
+    ppd = (1241.212, 1517.037, 1137.778, 853.333, 728.178, 464.863)
+    p4_pulse = [-47424, 25138, -17957, 938, -40698, 102661]
+    p5_pulse = [56012, 31125, 28227, 2771, -69762, 62996]
+    start = [p / r for p, r in zip(p4_pulse, ppd)]          # P4 joints (deg)
+    end = [p / r for p, r in zip(p5_pulse, ppd)]            # P5 joints (deg)
+    T_tool = np.eye(4)                                      # tool = flange for the test
+
+    n = 20
+    frames = movel_joint_frames(m, T_tool, start, end, n_steps=n)
+    assert frames is not None and len(frames) == n
+
+    # Endpoint pinned to the stored joints (lossless taught point).
+    assert np.allclose(frames[-1], end, atol=1e-6)
+
+    p_start = forward_kinematics_urdf(m, np.deg2rad(start))[:3, 3]
+    p_end = forward_kinematics_urdf(m, np.deg2rad(end))[:3, 3]
+    # The frame at t=0.5 (idx n/2) must sit ON the straight chord (was ~173mm off).
+    p_mid = forward_kinematics_urdf(m, np.deg2rad(frames[n // 2 - 1]))[:3, 3]
+    line_mid = 0.5 * (p_start + p_end)
+    dev = float(np.linalg.norm(p_mid - line_mid))
+    assert dev < 5.0, f"MOVL midpoint deviates {dev:.1f}mm from the straight line"
+
+    # Sanity: the OLD joint-lerp midpoint is far off the line (proves the fix matters).
+    jl_mid = forward_kinematics_urdf(
+        m, np.deg2rad([0.5 * (a + b) for a, b in zip(start, end)]))[:3, 3]
+    assert float(np.linalg.norm(jl_mid - line_mid)) > 100.0

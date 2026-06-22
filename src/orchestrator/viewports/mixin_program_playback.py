@@ -23,6 +23,7 @@ from PyQt6.QtWidgets import QMessageBox
 
 from ..kinematics.inverse_kinematics import inverse_kinematics_seeded
 from ..kinematics.pieper_gp7 import inverse_kinematics_pieper_gp7_nearest
+from ..kinematics.trajectory import movel_joint_frames
 from ..kinematics.urdf_chain import forward_kinematics_urdf
 from .control_panel import _xyz_rpy_to_matrix
 from .program_logic import (
@@ -324,12 +325,20 @@ class ProgramPlaybackMixin:
                                   pause_event=self._prog_pause)
             elif t == "MoveL":
                 if ins.pos_index_var or ins.target_name:
-                    # Target / indirect stored joints — bypass IK, animate directly.
+                    # Target / indirect → EXACT stored joints. A real MOVL is a
+                    # straight CARTESIAN line, so trace it (IK per step) rather than
+                    # joint-lerping the endpoints (which bows off the line and made
+                    # the sim path differ from the robot). Endpoint pins to the
+                    # stored joints. Falls back to joint-lerp if no model / IK fails.
                     joints = self._resolve_motion_joints(ins, store)
                     if joints is None: raise _PlaybackAbort
-                    self._animate_to(joints, steps=steps, dt=0.025,
-                                      stop_event=self._prog_stop,
-                                      pause_event=self._prog_pause)
+                    if not self._animate_movel_cartesian(
+                            joints, steps=steps, dt=0.025,
+                            stop_event=self._prog_stop,
+                            pause_event=self._prog_pause):
+                        self._animate_to(joints, steps=steps, dt=0.025,
+                                          stop_event=self._prog_stop,
+                                          pause_event=self._prog_pause)
                 else:
                     sol = self._solve_movel(ins.tcp_pose)
                     if sol is None:
@@ -477,6 +486,46 @@ class ProgramPlaybackMixin:
                            job_label=key)
         finally:
             call_stack.pop()
+
+    def _animate_movel_cartesian(
+        self, end_deg: list[float], steps: int = 36, dt: float = 0.02,
+        stop_event: "threading.Event | None" = None,
+        pause_event: "threading.Event | None" = None,
+    ) -> bool:
+        """Worker-thread MOVL animation that traces a straight CARTESIAN TCP line
+        (matching how the real YRC1000 runs MOVL), IK per step, endpoint pinned to
+        the stored joints. Returns True on success; False (→ caller falls back to
+        the joint-lerp `_animate_to`) if there is no robot model or IK fails
+        mid-path. Honors stop_event / pause_event like `_animate_to`."""
+        if getattr(self, "_model", None) is None:
+            return False
+        start_deg = list(self._joints)
+        try:
+            T_flange_tool = self._tool_frames[self._tool_idx][1]
+            frames = movel_joint_frames(
+                self._model, T_flange_tool, start_deg, end_deg, n_steps=steps)
+        except Exception as e:                              # noqa: BLE001
+            logger.warning("MoveL Cartesian frame gen failed (%s) — joint-lerp", e)
+            return False
+        if not frames:
+            return False
+        min_emit_dt = 1.0 / getattr(self, "_ANIM_MAX_FPS", 30.0)
+        last_emit_t = 0.0
+        for j, frame in enumerate(frames):
+            if stop_event is not None and stop_event.is_set():
+                return True                                 # stopped (not a failure)
+            if pause_event is not None:
+                while pause_event.is_set():
+                    if stop_event is not None and stop_event.is_set():
+                        return True
+                    time.sleep(0.05)
+            now = time.monotonic()
+            is_final = (j == len(frames) - 1)
+            if is_final or (now - last_emit_t) >= min_emit_dt:
+                self._signals.joints_update.emit(list(frame))
+                last_emit_t = now
+            time.sleep(dt)
+        return True
 
     def _solve_movel(self, tcp_pose_6: list[float]) -> list[float] | None:
         """Solve IK via **Pieper analytical** + verify post-FK pose error.
