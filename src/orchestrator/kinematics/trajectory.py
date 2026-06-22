@@ -131,6 +131,58 @@ def interpolate_cartesian(
     return out
 
 
+def movel_joint_frames(
+    model, T_flange_tool: np.ndarray,
+    start_deg: list[float], end_deg: list[float], n_steps: int = 12,
+) -> list[list[float]] | None:
+    """Joint frames (degrees) tracing a straight CARTESIAN TCP line for a MOVL.
+
+    The real YRC1000 executes MOVL as a straight-line TCP motion (Cartesian), NOT
+    a joint-linear move. The sim used to joint-lerp the stored endpoints, which
+    bows off the true line (e.g. PP1 P4→P5 deviated ~173mm), so the simulated path
+    did not match the robot. This reproduces the controller's MOVL: the start/end
+    TCP poses (FK·tool) are interpolated (lerp position + slerp orientation, via
+    `interpolate_cartesian`) and IK (Pieper nearest, seeded from the previous frame)
+    is solved at each step. The final frame is PINNED to `end_deg` so the endpoint
+    round-trips the stored joints exactly (no IK drift at the taught point).
+
+    Args:
+        model: URDF GP7 robot (forward_kinematics_urdf + Pieper-IK compatible).
+        T_flange_tool: 4x4 flange→tool(TCP) transform = the active tool frame.
+        start_deg, end_deg: joint configs (degrees) at the segment endpoints.
+        n_steps: number of Cartesian samples (>=2); more = smoother line.
+
+    Returns:
+        Joint frames (degrees) AFTER the start pose — the intermediate steps plus
+        the pinned `end_deg` (length == max(2, n_steps)) — or None if any
+        intermediate IK fails (caller falls back to joint-linear interpolation).
+    """
+    import math
+
+    from .pieper_gp7 import inverse_kinematics_pieper_gp7_nearest
+    from .urdf_chain import forward_kinematics_urdf
+
+    n = max(2, int(n_steps))
+    T_flange_tool = np.asarray(T_flange_tool, dtype=float)
+    T0 = forward_kinematics_urdf(model, [math.radians(q) for q in start_deg]) @ T_flange_tool
+    T1 = forward_kinematics_urdf(model, [math.radians(q) for q in end_deg]) @ T_flange_tool
+    tcp_poses = interpolate_cartesian(T0, T1, n_steps=n)      # n+1 poses, incl. endpoints
+    inv_tool = np.linalg.inv(T_flange_tool)
+    seed = [math.radians(q) for q in start_deg]
+    frames: list[list[float]] = []
+    for idx in range(1, len(tcp_poses)):                     # skip idx 0 (= start pose)
+        if idx == len(tcp_poses) - 1:
+            frames.append([float(q) for q in end_deg])       # pin endpoint to stored joints
+            break
+        sol = inverse_kinematics_pieper_gp7_nearest(
+            model, tcp_poses[idx] @ inv_tool, seed)
+        if sol is None:
+            return None                                      # caller → joint-lerp fallback
+        frames.append([math.degrees(q) for q in sol])
+        seed = sol
+    return frames
+
+
 def check_joint_limits(
     model: RobotDHModel,
     samples: list[TrajectorySample],
