@@ -73,7 +73,9 @@ def main() -> int:
     step, cyc1, auto, running, safeg, teach, play, remote = (_bit(d1, i) for i in range(8))
     _r0, hold_pp, hold_ext, hold_cmd, alarming, erroring, servo, _r7 = (_bit(d2, i) for i in range(8))
 
-    mode = "TEACH" if teach else ("PLAY" if play else ("REMOTE" if remote else "UNKNOWN"))
+    # NOTE: in REMOTE mode the controller sets BOTH the play AND remote bits
+    # (remote = play commanded externally), so check `remote` FIRST.
+    mode = "REMOTE" if remote else ("PLAY" if play else ("TEACH" if teach else "UNKNOWN"))
     cycle = "STEP" if step else ("1-CYCLE" if cyc1 else ("AUTO/CONTINUOUS" if auto else "UNKNOWN"))
 
     print(f"Data1 = 0x{d1:02X}    Data2 = 0x{d2:02X}\n")
