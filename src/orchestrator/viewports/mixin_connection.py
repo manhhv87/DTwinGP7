@@ -418,6 +418,61 @@ class ConnectionMixin:
         return bool(run_active or jog_active or send_busy
                     or getattr(self, "_exp_running", False))
 
+    def _on_teach_from_robot(self) -> None:
+        """Read the REAL robot's CURRENT joints via HSE (one-shot, READ-ONLY — the
+        robot does NOT move) into the app, then re-teach the SELECTED target with
+        them. Lets you teach points from the physical robot WITHOUT the live mirror
+        (which can't run at the same time as Run on Robot). Jog the robot on the
+        pendant first, then click."""
+        if not self._hse_ip:
+            r = QMessageBox.question(
+                self, "Teach from robot",
+                "HSE IP not configured. Open Connection settings now?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+            if r == QMessageBox.StandardButton.Yes:
+                self._on_show_connection_settings()
+            return
+        if getattr(self, "_model", None) is None:
+            self._set_status("Teach: load the GP7 robot first", level="warn"); return
+        if self._robot_motion_active():
+            self._set_status(
+                "Teach: robot busy (Run on Robot / live mirror / jog) — stop it first",
+                level="warn"); return
+        # One-shot HSE read — READ_POSITION only, no motion command is sent.
+        self._set_status("Teach: reading real robot joints via HSE…", level="info")
+        backend = MotomanHSEBackend(
+            ip=self._hse_ip, timeout_s=2.0, tool_no=self._hse_tool_no)
+        try:
+            backend.connect()
+            joints = backend.Joints()                       # degrees
+        except Exception as e:                              # noqa: BLE001
+            self._set_status(
+                f"Teach: HSE read failed ({e}) — check the connection", level="err")
+            return
+        finally:
+            try:
+                backend.disconnect()
+            except Exception:                               # noqa: BLE001
+                pass
+        if not joints or len(joints) < 6:
+            self._set_status("Teach: bad joint data from the robot", level="err"); return
+        # Load the real pose into the app (renders it), then capture it into a target:
+        #   a NAME typed in the target field → teach a NEW target,
+        #   else a target selected in the list → re-teach that one.
+        self._apply_joints_main([float(q) for q in joints])
+        name_edit = getattr(self, "_tgt_name_edit", None)
+        name = name_edit.text().strip() if name_edit is not None else ""
+        tgt_list = getattr(self, "_tgt_list", None)
+        if name:
+            self._on_tgt_teach()                            # NEW target from the typed name
+        elif (tgt_list is not None and tgt_list.currentRow() >= 0
+                and getattr(self, "_targets", None)):
+            self._on_tgt_modify()                           # re-teach the SELECTED target
+        else:
+            self._set_status(
+                "Teach: real pose loaded. Type a NAME then click again (new point), "
+                "or select a target then click again (re-teach it).", level="info")
+
     def _on_send_pose_to_robot(self) -> None:
         """Phase-1 direct control (RoboDK-style, discrete): send the app's CURRENT
         joints to the REAL robot via HSE MOVE (0x8B, no job upload). One move per

@@ -1782,6 +1782,17 @@ class GP7AppQt(
             "via HSE. Robot WILL move — safety dialog appears first.")
         b_run_robot.clicked.connect(self._on_run_on_robot)
         robot_row.addWidget(b_run_robot, 1)
+        # Teach-from-robot: read the real joints via HSE (read-only, no motion) and
+        # re-teach the selected target — no live mirror needed (which can't run at
+        # the same time as Run on Robot). Neutral style = safe/read-only.
+        b_teach_robot = QPushButton("✎  Teach from robot")
+        b_teach_robot.setMinimumHeight(34)
+        b_teach_robot.setToolTip(
+            "Read the real robot's CURRENT joints via HSE (read-only — robot does "
+            "NOT move). Type a NAME → save as a NEW target; or select a target → "
+            "re-teach it. Jog the robot on the pendant first; no live mirror needed.")
+        b_teach_robot.clicked.connect(self._on_teach_from_robot)
+        robot_row.addWidget(b_teach_robot)
         rbw = QWidget(); rbw.setLayout(robot_row)
         vbox.addWidget(rbw)
 

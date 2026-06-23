@@ -327,6 +327,9 @@ cùng tham chiếu — chỉnh một chỗ thì mọi lệnh dùng target đó c
 - **Khung danh sách** — liệt kê target dạng `TÊN [j1…j6]` (độ).
 - **Name** + **+ Teach** `Ctrl+T` — tạo target mới từ tư thế robot hiện tại.
 - **Modify** `F3` — cập nhật target đang chọn bằng tư thế hiện tại.
+- **✎ Teach from robot** (ở hàng robot thật, §7.6) — như **+ Teach** / **Modify** nhưng lấy
+  tư thế từ **robot THẬT** qua HSE (chỉ đọc, robot không chạy): **gõ tên** = thêm điểm mới;
+  **chọn target** = dạy lại. Không cần Live mirror.
 - **Delete** — xoá target (cảnh báo nếu đang có MoveJ/MoveL tham chiếu).
 - **Go to** — di chuyển robot tới target để xem trước (không thêm lệnh).
 - **Config** `F4` — chọn cấu hình IK khác cho cùng vị trí TCP (§6).
@@ -339,6 +342,16 @@ Nút tạo lệnh đi tới target (**+ MoveJ →** / **+ MoveL →**) nằm ở
 
 Target lưu cả joints và TCP pose: MoveJ dùng joints (nhanh), MoveL dùng TCP pose (đường
 thẳng); nhờ lưu cả hai nên giữ đúng cấu hình tay khi phát lại.
+
+**Thêm / dạy lại điểm rồi đồng bộ sang robot thật.** Hai cách lấy tư thế để teach:
+- **Từ sim:** jog robot ảo (jog khớp / Cartesian / IK) tới vị trí → **+ Teach** (mới) hoặc
+  **Modify** `F3` (dạy lại).
+- **Từ robot thật:** jog robot thật bằng pendant tới vị trí → bấm **✎ Teach from robot**
+  (gõ tên = mới, chọn target = dạy lại). Lấy thẳng joints controller nên chính xác nhất.
+
+Sau khi teach/sửa điểm, bấm **⚙ Run on Robot** (§11) để nạp lên controller. App tự phát hiện
+điểm đã đổi và xuất lại job với giá trị MỚI (không gửi nhầm điểm cũ). Để robot **chạy qua**
+một điểm mới, nhớ thêm lệnh **+ MoveJ →** / **+ MoveL →** (tab Motion, §7) tham chiếu điểm đó.
 
 ---
 
@@ -538,6 +551,11 @@ PULSE kích kẹp nếu trùng gripper index. Mọi lệnh vẫn xuất đúng c
 **Hàng robot thật:**
 - **⚙ Run on Robot (real — HSE)** — nạp và chạy thật trên YRC1000; robot sẽ chuyển động,
   có dialog an toàn (§11).
+- **✎ Teach from robot** — đọc joints HIỆN TẠI của robot thật qua HSE (chỉ đọc, robot
+  **KHÔNG** chuyển động) rồi ghi vào target: **gõ TÊN mới** vào ô Name → tạo điểm mới;
+  **chọn một target** trong danh sách (không gõ tên) → dạy lại điểm đó. Không cần bật Live
+  mirror (§11). Jog robot bằng pendant tới vị trí, rồi bấm; sau đó **Run on Robot** để đồng
+  bộ điểm mới lên controller. Chi tiết teach: §5.
 
 **Hàng file:**
 - **Save** — lưu project (mọi job + targets) ra `.json`.
