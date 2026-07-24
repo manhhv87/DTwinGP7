@@ -58,6 +58,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--method", default="park",
                         choices=["park", "horaud", "daniilidis", "andreff", "tsai"])
     parser.add_argument("--output", default="config/calibration/T_base_camera.npy")
+    parser.add_argument(
+        "--bootstrap", type=int, default=0, metavar="B",
+        help="Bootstrap the solve B times (paper uses 200) → per-parameter sigma "
+             "for anchored DR (Eq. 1). Writes --sigma-output.")
+    parser.add_argument(
+        "--sigma-output", default="config/calibration/T_base_camera_sigma.json",
+        help="Where to write the bootstrap sigma JSON (synthgen sampler input).")
     return parser.parse_args()
 
 
@@ -152,6 +159,24 @@ def main() -> int:
     save_calibration(out_path, T_BC_mm)
     log.info("Saved T_base_camera (mm) → %s", out_path)
     log.info("Camera at base frame: %s mm", T_BC_mm[:3, 3].round(2))
+
+    # ─── Bootstrap uncertainty (anchored-DR sampling widths, paper §3.4) ───
+    if args.bootstrap > 0:
+        from src.calibration.uncertainty import bootstrap_hand_eye, save_sigma_json
+
+        result = bootstrap_hand_eye(
+            session.poses_gripper2base,
+            session.poses_target2cam,
+            method=args.method,
+            n_boot=args.bootstrap,
+        )
+        save_sigma_json(result, PROJECT_ROOT / args.sigma_output)
+        log.info(
+            "Bootstrap B=%d (valid %d): sigma_t=%s mm, sigma_r=%s deg → %s",
+            args.bootstrap, result["n_valid"],
+            result["sigma_trans_mm"], result["sigma_rot_deg"], args.sigma_output,
+        )
+
     log.info("Verify further with touch test (section 6.4).")
     return 0
 

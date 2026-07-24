@@ -42,11 +42,20 @@ class PerceptionNode:
         camera: Any,
         detector: Any,
         output_queue: queue.Queue,
+        save_frames_dir: str | None = None,
     ) -> None:
         self.camera = camera
         self.detector = detector
         self.queue = output_queue
         self.extractor = PoseExtractor(camera.intrinsics)
+        # C3 failure-driven loop: when set, every processed RGB frame is saved
+        # and its path travels with the detection message → the orchestrator
+        # logs it per trial (frame at DETECT time = failure context).
+        self.save_frames_dir = save_frames_dir
+        self._frame_counter = 0
+        if save_frames_dir is not None:
+            from pathlib import Path
+            Path(save_frames_dir).mkdir(parents=True, exist_ok=True)
 
         self._running = False
         self._thread: threading.Thread | None = None
@@ -104,8 +113,29 @@ class PerceptionNode:
             if enriched is not None and enriched["pose_camera"] is not None:
                 objects.append(enriched)
 
+        frame_path = ""
+        if self.save_frames_dir is not None:
+            frame_path = self._save_frame(rgb)
+
         dt = max(time.time() - t0, 1e-6)
-        return {"timestamp": time.time(), "objects": objects, "fps": 1.0 / dt}
+        return {"timestamp": time.time(), "objects": objects, "fps": 1.0 / dt,
+                "frame_path": frame_path}
+
+    def _save_frame(self, rgb: Any) -> str:
+        """Save the RGB frame for failure-context logging. Returns path or ''."""
+        import cv2  # lazy import — only needed when frame saving is enabled
+        from pathlib import Path
+
+        self._frame_counter += 1
+        path = Path(self.save_frames_dir) / (
+            f"frame_{int(time.time() * 1000)}_{self._frame_counter:06d}.png"
+        )
+        try:
+            cv2.imwrite(str(path), rgb)
+        except Exception as e:  # noqa: BLE001 — frame loss must not kill a trial
+            logger.warning("Could not save frame %s: %s", path, e)
+            return ""
+        return str(path)
 
     def _loop(self) -> None:
         """Background loop: continuously call process_once → push to queue."""

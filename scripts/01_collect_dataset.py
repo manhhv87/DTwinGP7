@@ -10,7 +10,7 @@ Saves: data/raw/{class}_{lighting}_{angle}_{overlap}_{bg}_{ts}_{NNNN}_rgb.png
 
 Hotkeys:
     SPACE      capture 1 image (RGB + depth)
-    1/2/3      class = bottle / cup / bolt
+    0/1/2/3    class = carton / plastic_box / wood_box / metal_box
     b/m/d      lighting = bright / medium / dim
     n/l/o      overlap  = none / light / medium
     g/u/r      background = gray / blue / brown
@@ -70,16 +70,17 @@ def main() -> int:
     log.info("RealSense started (depth_scale=%.6f m/unit). Output → %s",
              depth_scale, out_dir)
 
-    meta = {"class": "bottle", "lighting": "bright",
+    meta = {"class": "carton", "lighting": "bright",
             "angle": "0", "overlap": "none", "bg": "gray"}
     counter = 0
 
     key_map = {
-        # Class hotkeys MUST cover every detector class (DEFAULT_CLASS_NAMES =
-        # tray/bottle/cup/bolt) — 'tray' (index 0) was previously uncapturable.
-        ord("0"): ("class", "tray"),
-        ord("1"): ("class", "bottle"), ord("2"): ("class", "cup"),
-        ord("3"): ("class", "bolt"),
+        # Class hotkeys = PAPER dataset classes (synthgen.yaml / dataset_check.
+        # EXPECTED_NAMES): carton=0, plastic_box=1, wood_box=2, metal_box=3.
+        # NOTE: filename metadata only — the training label is drawn in Roboflow.
+        ord("0"): ("class", "carton"),
+        ord("1"): ("class", "plastic_box"), ord("2"): ("class", "wood_box"),
+        ord("3"): ("class", "metal_box"),
         ord("b"): ("lighting", "bright"), ord("m"): ("lighting", "medium"),
         ord("d"): ("lighting", "dim"),
         ord("n"): ("overlap", "none"), ord("l"): ("overlap", "light"),

@@ -1,0 +1,23 @@
+Template card layout 5x4 over pick region x[400.0,1000.0] y[-200.0,200.0] mm (margin 40.0 mm)
+Print, cut, and fix the cards at these BASE-frame coordinates:
+
+  card  1: x=  440.0 mm  y= -160.0 mm
+  card  2: x=  570.0 mm  y= -160.0 mm
+  card  3: x=  700.0 mm  y= -160.0 mm
+  card  4: x=  830.0 mm  y= -160.0 mm
+  card  5: x=  960.0 mm  y= -160.0 mm
+  card  6: x=  440.0 mm  y=  -53.3 mm
+  card  7: x=  570.0 mm  y=  -53.3 mm
+  card  8: x=  700.0 mm  y=  -53.3 mm
+  card  9: x=  830.0 mm  y=  -53.3 mm
+  card 10: x=  960.0 mm  y=  -53.3 mm
+  card 11: x=  440.0 mm  y=   53.3 mm
+  card 12: x=  570.0 mm  y=   53.3 mm
+  card 13: x=  700.0 mm  y=   53.3 mm
+  card 14: x=  830.0 mm  y=   53.3 mm
+  card 15: x=  960.0 mm  y=   53.3 mm
+  card 16: x=  440.0 mm  y=  160.0 mm
+  card 17: x=  570.0 mm  y=  160.0 mm
+  card 18: x=  700.0 mm  y=  160.0 mm
+  card 19: x=  830.0 mm  y=  160.0 mm
+  card 20: x=  960.0 mm  y=  160.0 mm

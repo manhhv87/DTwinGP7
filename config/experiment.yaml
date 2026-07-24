@@ -9,8 +9,10 @@
 robot_name: "Yaskawa GP7"
 calibration_path: "config/calibration/T_base_camera.npy"
 
-# ───── Vùng đặt vật (base frame, mm) ─────
-place_position: [700.0, 120.0, 700.0]   # Y=120 (mirror của bottle pick Y=-120), bottle hoàn toàn trong bàn 400mm width
+# ───── Điểm PLACE trên băng tải (base frame, mm) ─────
+# Bài toán: PICK vật random trên BÀN (dưới camera) → PLACE lên BĂNG TẢI (điểm cố định này).
+# [MEASURE] đo điểm đặt trên băng tải khi lắp cell; giá trị dưới là placeholder.
+place_position: [700.0, 120.0, 700.0]   # [MEASURE] điểm đặt cố định trên băng tải, phải trong tầm với
 
 # ───── Tham số chuyển động (tinh chỉnh ở pha tuning — mục 9) ─────
 approach_height_mm: 200.0       # lift_T Z = grasp_Z + 200 → MoveL xuống thẳng đứng từ cao, IK pick elbow-up clean

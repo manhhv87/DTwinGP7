@@ -36,6 +36,23 @@ from src.perception import PerceptionNode  # noqa: E402
 from src.utils import load_yaml, setup_logging, timestamp  # noqa: E402
 
 
+def _load_pose_list(path: Path) -> list[dict[str, str]]:
+    """Load a pre-drawn pose-list CSV (from scripts/22_make_pose_lists.py).
+
+    Required column: pose_id. Optional: card_id, x_mm, y_mm, yaw_deg,
+    class_hint, condition. Row order = trial order.
+    """
+    import csv
+
+    if not path.exists():
+        raise FileNotFoundError(f"Pose list not found: {path}")
+    with path.open("r", newline="", encoding="utf-8") as f:
+        rows = list(csv.DictReader(f))
+    if not rows or "pose_id" not in rows[0]:
+        raise ValueError(f"Pose list {path} must have a 'pose_id' column")
+    return rows
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -96,6 +113,16 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--lighting", default="", help="Lighting condition label (log)")
     parser.add_argument("--overlap", default="", help="Overlap level label (log)")
+    parser.add_argument(
+        "--pose-list", default=None,
+        help="Pre-drawn pose-list CSV (from 22_make_pose_lists.py). Prints the "
+             "card placement instruction before each trial and logs pose_id → "
+             "outcomes pair pose-by-pose across configurations (McNemar, §3.7). "
+             "Reuse the SAME list for every configuration under comparison.")
+    parser.add_argument(
+        "--save-frames", action="store_true",
+        help="Save the RGB frame of every detection to results/frames/<ts>/ and "
+             "log its path per trial (failure context for the C3 loop).")
     parser.add_argument(
         "--headless", action="store_true",
         help="Run WITHOUT viewport (SimRobot mock) — validate logic and generate CSV. "
@@ -487,10 +514,12 @@ def main() -> int:
     # Headless: queue large enough to pre-fill 1 scenario/trial (deterministic).
     qsize = args.trials + 1 if args.headless else 3
     det_queue: queue.Queue = queue.Queue(maxsize=qsize)
-    perception = PerceptionNode(camera, detector, det_queue)
+    ts = timestamp()
+    frames_dir = str(PROJECT_ROOT / f"results/frames/{ts}") if args.save_frames else None
+    perception = PerceptionNode(camera, detector, det_queue,
+                                save_frames_dir=frames_dir)
 
     # ─── Logger ───
-    ts = timestamp()
     label = "headless" if args.headless else args.mode
     trial_logger = TrialLogger(
         PROJECT_ROOT / f"results/experiment_{label}_{ts}.csv",
@@ -501,6 +530,29 @@ def main() -> int:
     # ─── Orchestrator ───
     orch = Orchestrator(det_queue, config=config, robot=sim_robot,
                         logger_obj=trial_logger)
+
+    # ─── Pose list (paired McNemar design, paper §3.7) ───
+    pre_trial_hook = None
+    if args.pose_list:
+        pl_path = Path(args.pose_list)
+        if not pl_path.is_absolute():
+            pl_path = PROJECT_ROOT / args.pose_list
+        pose_rows = _load_pose_list(pl_path)
+        if len(pose_rows) < args.trials:
+            log.warning("Pose list has %d entries < --trials %d → running %d trials",
+                        len(pose_rows), args.trials, len(pose_rows))
+            args.trials = len(pose_rows)
+
+        def pre_trial_hook(i: int) -> None:
+            row = pose_rows[i - 1]
+            orch.current_pose_id = str(row.get("pose_id", i))
+            log.info(
+                "▶ Trial %d — PLACE OBJECT: card=%s  x=%s mm  y=%s mm  yaw=%s deg%s%s",
+                i, row.get("card_id", "?"), row.get("x_mm", "?"),
+                row.get("y_mm", "?"), row.get("yaw_deg", "?"),
+                f"  class={row['class_hint']}" if row.get("class_hint") else "",
+                f"  condition={row['condition']}" if row.get("condition") else "",
+            )
 
     def _drive_experiment() -> None:
         """Run N trials → cleanup digital twin → log summary.
@@ -517,11 +569,11 @@ def main() -> int:
                 msg = perception.process_once()
                 if msg is not None:
                     det_queue.put(msg)
-            stats = orch.run_n_trials(args.trials)
+            stats = orch.run_n_trials(args.trials, pre_trial_hook=pre_trial_hook)
         else:
             try:
                 perception.start()
-                stats = orch.run_n_trials(args.trials)
+                stats = orch.run_n_trials(args.trials, pre_trial_hook=pre_trial_hook)
             except KeyboardInterrupt:
                 # Real mode: Ctrl+C must stop the GP7 IMMEDIATELY rather than just killing Python.
                 # Call robot.Stop() before propagating.

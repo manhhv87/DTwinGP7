@@ -17,9 +17,59 @@ from src.perception.postprocess import (
     mask_centroid,
     mask_pca_yaw,
     masked_depth,
+    z_from_ground_plane,
 )
 
 INTRINSICS = {"fx": 600.0, "fy": 600.0, "ppx": 320.0, "ppy": 240.0}
+
+
+def _overhead_T_BC(cam_xyz_mm=(700.0, 0.0, 1200.0)):
+    """Eye-to-hand camera looking straight down: R = Rx(180) = diag(1,-1,-1)."""
+    T = np.eye(4)
+    T[:3, :3] = np.diag([1.0, -1.0, -1.0])
+    T[:3, 3] = cam_xyz_mm
+    return T
+
+
+class TestZFromGroundPlane:
+    """C4 depth-free localisation: ray--plane intersection."""
+
+    def test_center_pixel_distance(self):
+        # Camera 1200 mm up, table plane at 500 mm → distance 700 mm = 0.7 m.
+        T = _overhead_T_BC()
+        z = z_from_ground_plane(INTRINSICS, 320.0, 240.0, T, plane_z_base_mm=500.0)
+        assert z == pytest.approx(0.7, abs=1e-6)
+
+    def test_deprojected_point_lies_on_plane(self):
+        # Any pixel → deprojected + transformed to base must land on Z=plane.
+        T = _overhead_T_BC()
+        for u, v in [(320.0, 240.0), (500.0, 120.0), (100.0, 400.0)]:
+            z = z_from_ground_plane(INTRINSICS, u, v, T, plane_z_base_mm=500.0)
+            p_cam = np.append(deproject_pixel(INTRINSICS, u, v, z), 1.0)  # mm, homog
+            p_base = (T @ p_cam)[:3]
+            assert p_base[2] == pytest.approx(500.0, abs=1e-3)
+
+    def test_center_pixel_lands_under_camera(self):
+        T = _overhead_T_BC(cam_xyz_mm=(700.0, 0.0, 1200.0))
+        z = z_from_ground_plane(INTRINSICS, 320.0, 240.0, T, plane_z_base_mm=500.0)
+        p_cam = np.append(deproject_pixel(INTRINSICS, 320.0, 240.0, z), 1.0)
+        p_base = (T @ p_cam)[:3]
+        assert p_base[0] == pytest.approx(700.0, abs=1e-3)  # under the camera
+        assert p_base[1] == pytest.approx(0.0, abs=1e-3)
+
+    def test_higher_plane_gives_smaller_z(self):
+        # Top of a taller box (higher plane) is closer to the overhead camera.
+        T = _overhead_T_BC()
+        z_low = z_from_ground_plane(INTRINSICS, 320.0, 240.0, T, 500.0)
+        z_high = z_from_ground_plane(INTRINSICS, 320.0, 240.0, T, 560.0)
+        assert z_high < z_low
+
+    def test_ray_parallel_returns_none(self):
+        # Camera looking horizontally → ray never meets a horizontal plane.
+        T = np.eye(4)
+        T[:3, :3] = np.array([[1, 0, 0], [0, 0, -1], [0, 1, 0]], dtype=float)
+        T[:3, 3] = [700.0, 0.0, 600.0]
+        assert z_from_ground_plane(INTRINSICS, 320.0, 240.0, T, 500.0) is None
 
 
 def rect_mask(hw, box):

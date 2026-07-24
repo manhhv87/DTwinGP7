@@ -140,6 +140,10 @@ class Orchestrator:
         self.sm = PickPlaceStateMachine()
         self.stats = {"attempted": 0, "successful": 0, "failed": 0}
         self._current_joints: list[float] | None = None       # cache for SolveIK ref
+        # C3 failure context: pre-drawn pose-list id (set per trial by the
+        # experiment script) and the RGB frame saved by PerceptionNode at DETECT.
+        self.current_pose_id: str = ""
+        self._last_frame_path: str = ""
 
         self._set_speed()
 
@@ -697,8 +701,10 @@ class Orchestrator:
 
         # ─── DETECT ───
         self.sm.transition_to(PickState.DETECT)
+        self._last_frame_path = ""
         try:
             det_msg = self.queue.get(timeout=self.config["detection_timeout_s"])
+            self._last_frame_path = det_msg.get("frame_path", "")
         except queue.Empty:
             logger.warning("Trial %d: no detection received", trial_id)
             self.stats["failed"] += 1
@@ -939,11 +945,20 @@ class Orchestrator:
         except Exception as e:  # noqa: BLE001
             logger.warning("Could not return home: %s", e)
 
-    def run_n_trials(self, n: int) -> dict[str, Any]:
-        """Run `n` consecutive trials, returning aggregate statistics."""
+    def run_n_trials(self, n: int, pre_trial_hook: Any = None) -> dict[str, Any]:
+        """Run `n` consecutive trials, returning aggregate statistics.
+
+        Args:
+            pre_trial_hook: Optional callable(trial_index_1based) invoked before
+                each cycle — the experiment script uses it to print the pose-list
+                placement instruction and set `current_pose_id` (paired McNemar
+                design, paper §3.7).
+        """
         logger.info("Starting %d trials", n)
         for i in range(n):
             logger.info("─── Trial %d/%d ───", i + 1, n)
+            if pre_trial_hook is not None:
+                pre_trial_hook(i + 1)
             self.run_one_cycle(trial_id=i + 1)
             time.sleep(self.config["inter_trial_delay_s"])
 
@@ -965,9 +980,34 @@ class Orchestrator:
         t_start: float,
         obj: dict[str, Any] | None,
     ) -> None:
-        """Write one trial result row if a TrialLogger is present."""
+        """Write one trial result row if a TrialLogger is present.
+
+        Besides the base fields, logs the C3 failure context: detected pose in
+        base frame, detector confidence, mask area, the RGB frame captured at
+        DETECT, and the pre-drawn pose-list id — everything failure_miner needs
+        to map a physical failure back into renderer parameters.
+        """
         if self.trial_logger is None:
             return
+        extra: dict[str, Any] = {
+            "frame_path": self._last_frame_path,
+            "pose_id": self.current_pose_id,
+        }
+        if obj:
+            pose_base = obj.get("pose_base")
+            if pose_base is not None:
+                extra["det_x_mm"] = round(float(pose_base[0]), 1)
+                extra["det_y_mm"] = round(float(pose_base[1]), 1)
+                extra["det_z_mm"] = round(float(pose_base[2]), 1)
+            yaw = obj.get("yaw_base")
+            if yaw is None and obj.get("pose_camera") is not None:
+                yaw = obj["pose_camera"][3]
+            if yaw is not None:
+                extra["det_yaw_deg"] = round(float(np.rad2deg(float(yaw))), 1)
+            if obj.get("confidence") is not None:
+                extra["confidence"] = round(float(obj["confidence"]), 3)
+            if obj.get("mask_area"):
+                extra["mask_area"] = int(obj["mask_area"])
         self.trial_logger.log_trial(
             trial_id=trial_id,
             success=success,
@@ -975,4 +1015,5 @@ class Orchestrator:
             cycle_time_s=time.time() - t_start,
             failure_reason=failure_reason,
             final_state=self.sm.state.value,
+            extra=extra,
         )

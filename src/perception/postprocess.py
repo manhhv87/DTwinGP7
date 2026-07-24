@@ -137,6 +137,46 @@ def deproject_pixel(
     return np.array([x, y, z_m]) * 1000.0  # metres → mm
 
 
+def z_from_ground_plane(
+    intrinsics: dict[str, float],
+    u: float,
+    v: float,
+    T_BC_mm: np.ndarray,
+    plane_z_base_mm: float,
+) -> float | None:
+    """Camera-frame depth z (metres) of pixel (u,v) by ray--plane intersection.
+
+    Contribution C4 (depth-free localisation). Instead of reading depth, intersect
+    the viewing ray through (u,v) with a horizontal plane Z=plane_z_base_mm in the
+    BASE frame (e.g. the conveyor top, or top face of a known-height box). Returns
+    the camera-frame z (metres) so it is a drop-in for masked_depth() feeding
+    deproject_pixel(). None if the ray is parallel to the plane.
+
+    Immune to depth dropouts on specular/dark parts (the D455 failure mode). Assumes
+    the pixel lies on a known plane — i.e. a single layer of parts of known height.
+
+    Args:
+        intrinsics: {fx, fy, ppx, ppy}.
+        u, v: pixel coordinates.
+        T_BC_mm: 4x4 camera->base transform, translation in mm.
+        plane_z_base_mm: plane height in base frame (mm), e.g. Z_conveyor + h_class.
+    """
+    fx, fy = intrinsics["fx"], intrinsics["fy"]
+    ppx, ppy = intrinsics["ppx"], intrinsics["ppy"]
+    a = (u - ppx) / fx
+    b = (v - ppy) / fy
+    R = np.asarray(T_BC_mm, dtype=float)[:3, :3]
+    tz = float(T_BC_mm[2, 3])
+    # base-frame Z of a camera-ray point at camera depth z (mm) = z*denom + tz
+    denom = R[2, 0] * a + R[2, 1] * b + R[2, 2]
+    if abs(denom) < 1e-9:
+        return None                      # ray parallel to the plane
+    z_mm = (plane_z_base_mm - tz) / denom
+    if z_mm <= 0:
+        return None                      # plane behind the camera
+    return z_mm / 1000.0                  # → metres, matches masked_depth()
+
+
 class PoseExtractor:
     """Combine the above helpers to extract a 3D pose from a single detection.
 
