@@ -7,12 +7,21 @@ Statistical analysis of experiment results + figure generation for paper (sectio
 Reads one or more trial CSV files (from 03_run_experiment.py) and computes:
     - Overall success rate + by class + by condition
     - Failure-mode matrix
-    - Paired t-test comparing RGB-only vs RGB-D (if column 'mode' is present)
+    - Paired EXACT McNemar comparisons (grasp outcomes are binary and paired —
+      a t-test is the wrong test here):
+        (a) RGB-only vs RGB-D when column 'mode' carries both values;
+        (b) --paired-with <other.csv>: this run vs another run, paired by
+            --pair-key (pose_id from a pre-drawn pose list, or trial_id).
+      Reports the discordant counts (n01/n10), exact p, and a paired-bootstrap
+      95% CI on the success-rate difference. When comparing >2 configurations
+      against a common baseline, feed the p-values to src.utils.stats.holm.
     - Summary figure → figures/results_summary.png
 
 Usage:
     python scripts/04_analyze_results.py --csv results/experiment_sim_*.csv
-    python scripts/04_analyze_results.py --csv results/all_trials.csv
+    python scripts/04_analyze_results.py --csv results/run_anchored.csv \
+        --paired-with results/run_blind.csv --pair-key pose_id \
+        --label-a anchored --label-b blind
 """
 from __future__ import annotations
 
@@ -33,7 +42,26 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--csv", nargs="+", required=True,
                         help="Trial CSV file(s) (wildcard supported)")
     parser.add_argument("--out", default="figures/results_summary.png")
+    parser.add_argument("--paired-with", default=None,
+                        help="Second run CSV — paired exact McNemar vs --csv")
+    parser.add_argument("--pair-key", default="pose_id",
+                        help="Column pairing trials across runs (pose_id | trial_id)")
+    parser.add_argument("--label-a", default="run_a", help="Name of the --csv run")
+    parser.add_argument("--label-b", default="run_b", help="Name of the --paired-with run")
     return parser.parse_args()
+
+
+def _log_mcnemar(log, s: dict) -> None:
+    """Log a mcnemar_summary dict in the format the paper tables need."""
+    log.info(
+        "McNemar %s vs %s (n=%d pairs): %.1f%% vs %.1f%% | "
+        "discordant n01=%d n10=%d | exact p=%.4g | delta=%.1f pp, 95%% CI [%.1f, %.1f] (%s)",
+        s["label_a"], s["label_b"], s["n_pairs"],
+        s["rate_a"] * 100, s["rate_b"] * 100,
+        s["n01"], s["n10"], s["p_mcnemar_exact"],
+        s["delta_pp"], s["ci95_pp"][0], s["ci95_pp"][1],
+        "significant" if s["p_mcnemar_exact"] < 0.05 else "not significant",
+    )
 
 
 def main() -> int:
@@ -72,30 +100,45 @@ def main() -> int:
         fm = fails["failure_reason"].value_counts()
         log.info("Failure modes:\n%s", fm)
 
-    # ─── Paired t-test RGB vs RGB-D ───
+    # ─── Paired exact McNemar: RGB-only vs RGB-D ───
+    # Binary paired outcomes → McNemar on the discordant pairs (paper §3.7).
+    # The earlier paired t-test treated 0/1 as continuous — wrong test, removed.
     if "mode" in df.columns and set(df["mode"].dropna().unique()) >= {"rgb_only", "rgbd"}:
-        from scipy import stats as sps
+        from src.utils.stats import mcnemar_summary
 
         rgb_df = df[df["mode"] == "rgb_only"]
         rgbd_df = df[df["mode"] == "rgbd"]
-        # PAIR by trial_id (paired t-test compares the SAME scene under both modes).
-        # Positional rgb[:n] vs rgbd[:n] pairs unrelated trials → meaningless stat.
+        # PAIR by trial_id (compares the SAME scene under both modes).
         if "trial_id" in df.columns:
             merged = rgb_df.merge(rgbd_df, on="trial_id", suffixes=("_a", "_b"))
             if len(merged) > 1:
-                t, p = sps.ttest_rel(merged["success_a"], merged["success_b"])
-                log.info("Depth fusion (paired on trial_id, n=%d): t=%.3f, p=%.4f (%s)",
-                         len(merged), t, p,
-                         "significant" if p < 0.05 else "not significant")
+                _log_mcnemar(log, mcnemar_summary(
+                    merged["success_a"], merged["success_b"], "rgb_only", "rgbd"))
             else:
                 log.warning("No shared trial_id between modes — skipping paired test")
         else:
-            # No pairing key → unpaired (independent-samples) test.
-            rgb = rgb_df["success"].to_numpy(); rgbd = rgbd_df["success"].to_numpy()
-            if len(rgb) > 1 and len(rgbd) > 1:
-                t, p = sps.ttest_ind(rgb, rgbd)
-                log.info("Depth fusion (UNPAIRED, no trial_id): t=%.3f, p=%.4f (%s)",
-                         t, p, "significant" if p < 0.05 else "not significant")
+            log.warning("No trial_id column — McNemar needs pairing; "
+                        "rerun with a shared pose list (03 --pose-list)")
+
+    # ─── Paired exact McNemar: this run vs --paired-with run ───
+    if args.paired_with:
+        from src.utils.stats import mcnemar_summary
+
+        df_b = pd.read_csv(args.paired_with)
+        key = args.pair_key
+        if key not in df.columns or key not in df_b.columns:
+            log.error("Pair key '%s' missing in one of the runs — cannot pair", key)
+        else:
+            a = df[df[key].astype(str).str.len() > 0]
+            b = df_b[df_b[key].astype(str).str.len() > 0]
+            merged = a.merge(b, on=key, suffixes=("_a", "_b"))
+            if len(merged) > 1:
+                _log_mcnemar(log, mcnemar_summary(
+                    merged["success_a"], merged["success_b"],
+                    args.label_a, args.label_b))
+            else:
+                log.error("No shared '%s' values between the two runs — "
+                          "both must be run from the SAME pre-drawn pose list", key)
 
     # ─── Figure ───
     try:

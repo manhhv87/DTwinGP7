@@ -33,6 +33,21 @@ FIELDNAMES = [
     "ik",
 ]
 
+# Failure-context columns (C3 failure-driven loop): detected pose, detector
+# confidence, mask area, saved RGB frame, and the pre-drawn pose-list id.
+# Appended AFTER the base fields; files created before this change keep their
+# original header (see _resolve_fieldnames) so appends stay consistent.
+CONTEXT_FIELDNAMES = [
+    "det_x_mm",
+    "det_y_mm",
+    "det_z_mm",
+    "det_yaw_deg",
+    "confidence",
+    "mask_area",
+    "frame_path",
+    "pose_id",
+]
+
 
 class TrialLogger:
     """Logs trials to CSV (append-mode, safe across multiple sessions).
@@ -52,11 +67,20 @@ class TrialLogger:
         self.csv_path.parent.mkdir(parents=True, exist_ok=True)
         self.context = extra_context or {}
         self._rows: list[dict[str, Any]] = []
+        self._fieldnames = self._resolve_fieldnames()
 
-        # Write the header if the file does not exist yet.
-        if not self.csv_path.exists():
-            with self.csv_path.open("w", newline="", encoding="utf-8") as f:
-                csv.DictWriter(f, fieldnames=FIELDNAMES).writeheader()
+    def _resolve_fieldnames(self) -> list[str]:
+        """New files get the full schema; existing files keep their own header
+        (appending wider rows to an old file would silently misalign columns)."""
+        full = FIELDNAMES + CONTEXT_FIELDNAMES
+        if self.csv_path.exists():
+            with self.csv_path.open("r", newline="", encoding="utf-8") as f:
+                header = f.readline().strip()
+            if header:
+                return header.split(",")
+        with self.csv_path.open("w", newline="", encoding="utf-8") as f:
+            csv.DictWriter(f, fieldnames=full).writeheader()
+        return full
 
     def log_trial(
         self,
@@ -66,8 +90,15 @@ class TrialLogger:
         cycle_time_s: float = 0.0,
         failure_reason: str = "",
         final_state: str = "",
+        extra: dict[str, Any] | None = None,
     ) -> None:
-        """Write one trial result row to the CSV."""
+        """Write one trial result row to the CSV.
+
+        Args:
+            extra: Optional failure-context fields (CONTEXT_FIELDNAMES) — the
+                orchestrator passes detected pose / confidence / frame path /
+                pose_id here. Keys outside the file's schema are dropped.
+        """
         import time
 
         row = {
@@ -83,9 +114,13 @@ class TrialLogger:
             "mode": self.context.get("mode", ""),
             "ik": self.context.get("ik", ""),     # IK source (client/yrc) per run
         }
+        if extra:
+            row.update(extra)
+        # Restrict to the file's schema (old files → old columns; unknown keys dropped).
+        row = {k: row.get(k, "") for k in self._fieldnames}
         self._rows.append(row)
         with self.csv_path.open("a", newline="", encoding="utf-8") as f:
-            csv.DictWriter(f, fieldnames=FIELDNAMES).writerow(row)
+            csv.DictWriter(f, fieldnames=self._fieldnames).writerow(row)
 
         status = "OK" if success else f"FAIL ({failure_reason})"
         logger.info("Trial %d logged: %s", trial_id, status)

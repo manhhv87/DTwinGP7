@@ -17,6 +17,7 @@ from .postprocess import (
     mask_pca_yaw,
     masked_depth,
     resize_mask,
+    z_from_ground_plane,
 )
 
 __all__ = [
@@ -33,4 +34,5 @@ __all__ = [
     "masked_depth",
     "resize_mask",
     "deproject_pixel",
+    "z_from_ground_plane",
 ]

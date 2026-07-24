@@ -53,7 +53,7 @@ RoboDK FK 0.00mm), real mode dùng HSE backend + telemetry CSV @10Hz (replay off
 
 ```bash
 pip install -r requirements.txt
-pytest tests/ -q                                              # → 452 passed
+pytest tests/ -q                                              # → 606 passed
 python scripts/03_run_experiment.py --mode sim --headless --trials 500
 python scripts/03_run_experiment.py --mode sim --trials 500 --minimal-build
 python scripts/16_app_qt.py                                   # GP7 Program editor GUI
@@ -120,10 +120,11 @@ DTwinGP7/                        ← root repo (DTwinGP7 trên GitHub)
 │   ├── cell/                      CellConfig Pydantic schema (YAML → base pose + camera + mesh paths)
 │   ├── perception/                YOLO + D455 + postprocess
 │   ├── orchestrator/              trial pick-place + digital twin L4 + kinematics + backends
-│   ├── calibration/               hand-eye ChArUco
-│   ├── logging/ · utils/
-├── scripts/                     ← CLI entry points (01–07, 11, 13–17 + helpers, BẠN CHẠY)
-├── tests/                       ← 452 unit/integration tests
+│   ├── calibration/               hand-eye ChArUco + bootstrap uncertainty (σ cho anchored DR)
+│   ├── synthgen/                  synthetic-data engine C2/C3 (anchored DR + failure loop)
+│   ├── logging/ · utils/          utils/stats.py: McNemar exact + Holm + bootstrap CI
+├── scripts/                     ← CLI entry points (01–07, 11, 13–17, 20–23, BẠN CHẠY)
+├── tests/                       ← 606 unit/integration tests
 └── results/ · figures/ · logs/  ← output (gitignored)
 ```
 
@@ -214,6 +215,40 @@ python scripts/17_compare_fk_ik.py --samples 500 --fair
 ```
 
 **Fair mode** ensures all iterative methods stop at industrial tolerance (0.5mm) — apples-to-apples comparison. **Production mode** (default) uses each method as the app actually calls it (DLS with seeded retry, BFGS still early-exit). CSV per-row + 6-panel PNG histogram → `figures/compare_fk_ik_<ts>.csv|png`.
+
+## ⭐ Synthetic-data engine (C2/C3 — paper)
+
+`src/synthgen/` sinh dữ liệu huấn luyện từ chính digital twin theo 2 chế độ:
+**anchored** (phân phối neo quanh calibration đo được, độ rộng κ·σ từ bootstrap)
+và **blind** (biên rộng kiểu Tobin/Zhu — baseline đối chứng). Render bằng
+BlenderProc2 (env riêng), label tự động từ instance map.
+
+```bash
+# 0. σ calibration (1 lần, sau khi hiệu chuẩn):
+python scripts/02_run_calibration.py --hse-ip 192.168.1.100 --bootstrap 200
+
+# 1. Sample scene specs (venv repo):
+python scripts/20_generate_synth.py --mode anchored --kappa 2 --n 3000 --out data/synth/anchored_k2
+
+# 2. Render (env có `pip install blenderproc`):
+blenderproc run src/synthgen/render_blenderproc.py -- --scenes data/synth/anchored_k2/specs --out data/synth/anchored_k2/render
+
+# 3. Convert → YOLO-seg dataset + lệnh train:
+python scripts/20_generate_synth.py --make-labels --out data/synth/anchored_k2
+python scripts/23_launch_retrain.py --synth data/synth/anchored_k2/dataset --real data/real_dataset --version 1
+
+# Vòng failure-driven (C3): mine lỗi từ trial CSV → phân bổ budget → sinh batch mới
+python scripts/21_mine_failures.py --runs "results/experiment_real_*.csv" --n-budget 1000
+python scripts/20_generate_synth.py --from-failures results/failure_modes.json --out data/synth/loop_k1 --seed 1000
+
+# Pose list cặp đôi cho so sánh McNemar (dùng CHUNG 1 list cho mọi cấu hình):
+python scripts/22_make_pose_lists.py --n 300 --seed 42 --out config/pose_lists/std_v1.csv
+python scripts/03_run_experiment.py --mode real --trials 300 --pose-list config/pose_lists/std_v1.csv --save-frames
+python scripts/04_analyze_results.py --csv results/run_a.csv --paired-with results/run_b.csv --pair-key pose_id
+```
+
+Cấu hình factor (anchored vs blind, vùng gắp, ánh sáng proxy): `config/synthgen.yaml`
+— các khóa đánh dấu `[MEASURE]` phải đo tại cell thật trước khi chạy E3.
 
 ## ⭐ Train YOLO model
 
