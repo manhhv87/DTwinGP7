@@ -13,7 +13,7 @@ client-side cho FK/IK.
 - Sim non-headless + real cùng pattern: motion backend wrap trong DigitalTwinMirror
   facade, Open3D viewport (`O3DGuiSimRobot`) nhận setJoints @2Hz qua mirror
   thread để mirror state thật.
-- 452 test case cover L1–L3 (HSE protocol + backend, INFORM codegen,
+- 751 test case cover L1–L3 (HSE protocol + backend, INFORM codegen,
   ultra-fast P-var, digital twin mirror, kinematics FK + IK, frame conversion, ...).
 
 ---
@@ -287,7 +287,7 @@ DTwinGP7/                               # BỘ CODE + TÀI LIỆU (repo DTwinGP7
 │   ├── calibration_from_layout.py      # sinh T_BC từ camera.pose cho headless
 │   ├── convert_glb_to_stl.py           # GLB → STL utility
 │   └── gen_primitive_meshes.py         # sinh STL primitive (gripper, ...)
-├── tests/                              # 452 test cases (pytest, 100% pass)
+├── tests/                              # 751 test cases (pytest, 100% pass)
 │   ├── test_coord_conv.py
 │   ├── test_postprocess.py
 │   ├── test_state_machine.py
@@ -1498,7 +1498,7 @@ graph LR
 
 Thư viện phần cứng (`pyrealsense2`, `ultralytics`, `pyserial`) đều lazy-import → L1–L2 chạy được trên máy không có phần cứng. Open3D + numpy là core dependencies, không cần GPU.
 
-Hiện có **452 test case** ở `DTwinGP7/tests/` cover L1–L3. Bao quát: HSE protocol + Cartesian encode, HSE backend mock socket, INFORM codegen, ultra-fast P-var, digital twin mirror, kinematics FK, inverse kinematics DLS, frame conversion, và các unit khác. Toàn bộ chạy được trên máy không phần cứng (lazy-import + mock).
+Hiện có **751 test case** ở `DTwinGP7/tests/` cover L1–L3. Bao quát: HSE protocol + Cartesian encode, HSE backend mock socket, INFORM codegen, ultra-fast P-var, digital twin mirror, kinematics FK, inverse kinematics DLS, frame conversion, ba chế độ độ sâu C4 (`test_depth_modes.py`), chuẩn bị chế độ real (`test_real_mode_prep.py`), và các unit khác. Toàn bộ chạy được trên máy không phần cứng (lazy-import + mock).
 
 ## 9. Hiệu chỉnh (Tuning)
 
