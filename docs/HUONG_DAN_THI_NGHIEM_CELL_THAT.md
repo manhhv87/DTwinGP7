@@ -142,6 +142,8 @@ python scripts/03_run_experiment.py --mode sim --headless --trials 5
 ```
 
 **DỪNG nếu:** không chạy hết, hoặc không tạo được file mới trong `results\`. Đây là chế độ mô phỏng, robot **không** di chuyển.
+Tỷ lệ gắp in ra ở bước này **không có ý nghĩa**: cấu hình còn giữ số giữ chỗ ở mục 3, nên báo
+`success_rate=0.0%` và các lượt `unreachable` là bình thường.
 
 > Thư mục làm việc: `scripts\` là các lệnh chạy, `config\` là cấu hình, `results\` là nơi > mọi kết quả rơi vào, `logs\` là nhật ký chi tiết khi cần tra lỗi.
 
