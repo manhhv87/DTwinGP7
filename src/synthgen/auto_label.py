@@ -33,10 +33,13 @@ logger = logging.getLogger(__name__)
 # MIN_MASK_PIXELS spirit — tiny slivers make degenerate polygons).
 MIN_INSTANCE_PIXELS = 50
 
-# Paper dataset class order (4 box-shaped classes) — must match config/synthgen.yaml
+# Paper dataset class order (5 box-shaped classes) — must match config/synthgen.yaml
 # class_ids and dataset_check.EXPECTED_NAMES. (Sim/demo uses a separate set in
 # detector.DEFAULT_CLASS_NAMES; the synthetic pipeline here is the paper dataset.)
-DEFAULT_CLASS_NAMES = ["carton", "plastic_box", "wood_box", "metal_box"]
+# inox_box is the mirror-finish class contribution C4 rests on: it costs the D455
+# 8.9% of its depth pixels at the median and 25.8% at the 90th percentile, an order
+# of magnitude worse than the matte metal case (2.9%).
+DEFAULT_CLASS_NAMES = ["carton", "plastic_box", "wood_box", "metal_box", "inox_box"]
 
 
 def mask_to_polygon(

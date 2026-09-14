@@ -56,8 +56,47 @@ inter_trial_delay_s: 1.0        # nghỉ giữa các trial
 detection_timeout_s: 2.0        # thời gian chờ detection tối đa
 
 # ───── Perception (mode real) ─────
-model_path: "models/yolov8s-seg_best.pt"
+# Detector triển khai cho chiến dịch gắp: seed 1 của E2, seed có val mAP cao nhất, đúng
+# quy tắc đã ghi trong paper. Chép từ _work/ket_qua_E2/runs/seed1/weights/best.pt.
+model_path: "models/e2_seed1_best.pt"
 conf_threshold: 0.5
 
 # ───── Robot thật (mode real) ─────
 robot_ip: "192.168.1.100"       # IP YRC1000
+
+# ───── Tham số RIÊNG cho --mode real (cell thật, 5 vật của paper) ─────
+# 03_run_experiment.py gộp khối này đè lên các khóa phía trên CHỈ khi --mode real, nên
+# mô phỏng (khay, chai, cốc, bu lông) giữ nguyên hành vi cũ.
+real:
+  # Hàm kẹp mở 180 mm (đóng hết) tới 216 mm (mở hết), không đệm. Mỗi vật chỉ kẹp được
+  # theo cạnh 180 đến 190 mm của nó, tức dọc trục chính của mặt nạ, nên góc lệch là 0.
+  # Giá trị 90 ở trên là cho khay S23 (kẹp chiều rộng 100 mm) với bộ kẹp trước đây.
+  yaw_offset_deg: 0.0
+  # Mặt bàn, trong ĐÚNG hệ tọa độ của T_base_camera. Để null: 02_run_calibration.py đo
+  # mặt bàn từ depth qua chính T_BC vừa giải và ghi config/calibration/table_plane.json,
+  # chế độ real đọc từ đó. Chỉ gõ tay khi biết chắc con số nằm trong hệ của T_BC.
+  table_top_z_mm: null
+  # Đầu má kẹp không xuống thấp hơn mặt bàn cộng khoảng này, và không kẹp sâu hơn chiều
+  # cao vật trừ khoảng này. [XÁC NHẬN theo má kẹp thật; để lớn khi chạy thử lần đầu]
+  table_safety_margin_mm: 20.0
+  # Độ sâu kẹp tối đa tính từ mặt trên của vật. [XÁC NHẬN theo má kẹp thật]
+  grasp_depth_offset_mm: 50.0
+  # Chiều cao từng lớp theo thước kẹp (2026-09-11). Carton có hai cỡ, cao 120 và 80 mm:
+  # lấy 80 để má kẹp không vượt đáy vật với cả hai cỡ; độ sâu vẫn bị chặn ở 50 mm.
+  class_heights_mm:
+    carton: 80.0
+    plastic_box: 30.0
+    wood_box: 150.0
+    metal_box: 85.0
+    inox_box: 40.0
+  # Kích thước (dài, rộng, cao) theo thước kẹp, cho chế độ độ sâu plane và fusion (C4).
+  # Lớp có hai cỡ (carton) được phân biệt theo từng vật: mỗi cỡ được đặt lên mặt bàn và
+  # chiếu vào ảnh, cỡ nào có bóng khớp mặt nạ nhất (IoU) thì chọn, và chiều cao của cỡ đó
+  # thay cho 80 mm ở trên. Chiều cao thấp nhất của mỗi lớp phải bằng class_heights_mm
+  # (preflight kiểm tra).
+  class_sizes_mm:
+    carton: [[180, 120, 120], [180, 100, 80]]
+    plastic_box: [[180, 140, 30]]
+    wood_box: [[190, 190, 150]]
+    metal_box: [[190, 135, 85]]
+    inox_box: [[180, 85, 40]]

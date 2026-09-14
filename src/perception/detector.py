@@ -71,6 +71,7 @@ class ObjectDetector:
         conf: float = 0.5,
         iou: float = 0.45,
         class_names: list[str] | None = None,
+        class_heights_mm: dict[str, float] | None = None,
     ) -> None:
         # Must be a real weights file — do NOT let ultralytics auto-download a
         # COCO model when the path is wrong (that would produce wrong classes).
@@ -88,6 +89,9 @@ class ObjectDetector:
         self.model = YOLO(str(weights))
         self.conf = conf
         self.iou = iou
+        # Per-class part height (mm): caps how deep the jaws close (orchestrator
+        # grasp_depth_offset). Without it the grasp depth ignores the part.
+        self.class_heights_mm = dict(class_heights_mm or {})
         # Prefer class names from the model itself (self.model.names) → automatically
         # correct for any task/model. Fall back only when names are unavailable.
         model_names = getattr(self.model, "names", None)
@@ -126,6 +130,7 @@ class ObjectDetector:
                     confidence=float(results.boxes.conf[i]),
                     mask=results.masks.data[i].cpu().numpy().astype(np.uint8),
                     bbox=tuple(results.boxes.xyxy[i].cpu().numpy().tolist()),
+                    height_mm=self.class_heights_mm.get(cls_name),
                 )
             )
         return detections

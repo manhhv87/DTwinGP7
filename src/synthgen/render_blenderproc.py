@@ -1,4 +1,13 @@
-"""
+# `blenderproc run` REFUSES a script whose first line that is neither blank nor a
+# comment is anything other than the blenderproc import: it strips comments and blank
+# lines and checks the very first survivor (SetupUtility.check_if_setup_utilities_are_
+# at_the_top). A module docstring counts as that first line and fails the check, so the
+# import leads the file, the description is assigned to __doc__ below, and there is no
+# `from __future__ import annotations` (it may only follow a docstring, never an import).
+# Blender 4.2 ships Python 3.11, where the builtin generics below need no future import.
+import blenderproc as bproc
+
+__doc__ = """
 render_blenderproc.py
 ─────────────────────
 BlenderProc2 rendering backend for the anchored/blind synthetic generator.
@@ -28,7 +37,6 @@ Design notes:
         blenderproc run src/synthgen/render_blenderproc.py -- \
             --scenes <dir-with-3-specs> --out /tmp/smoke --samples 16
 """
-from __future__ import annotations
 
 import argparse
 import json
@@ -73,14 +81,13 @@ def _pose_from_spec(xyz_mm: list[float], yaw_deg: float) -> np.ndarray:
 
 
 def main() -> int:
-    # Import inside main → this module stays importable (and pytest-collectable)
-    # in the repo venv, where blenderproc is intentionally absent.
+    # bpy exists only inside Blender; blenderproc itself is imported at the top of the
+    # file, because the launcher refuses a script that does not open with that import.
     try:
-        import blenderproc as bproc
         import bpy
     except ImportError:
         print(
-            "blenderproc not available. Run via:\n"
+            "bpy not available — this script only runs under Blender. Run via:\n"
             "  blenderproc run src/synthgen/render_blenderproc.py -- --scenes ... --out ...",
             file=sys.stderr,
         )
@@ -94,6 +101,11 @@ def main() -> int:
                         help="Cycles samples/px (16 for smoke test, 64+ for real)")
     parser.add_argument("--limit", type=int, default=0,
                         help="Render only the first N specs (0 = all)")
+    parser.add_argument("--device", choices=["auto", "gpu", "cpu"], default="auto",
+                        help="Render device. 'gpu' REQUIRES a usable GPU and stops if "
+                             "there is none, so a batch meant for the GPU machine "
+                             "cannot quietly spend hours on its CPU instead. "
+                             "'auto' leaves the choice to BlenderProc.")
     args = parser.parse_args()
 
     scenes_dir = Path(args.scenes)
@@ -109,9 +121,19 @@ def main() -> int:
         return 1
 
     bproc.init()
+    if args.device == "cpu":
+        bproc.renderer.set_render_devices(use_only_cpu=True)
+    elif args.device == "gpu":
+        bproc.renderer.set_render_devices(desired_gpu_device_type=["OPTIX", "CUDA", "HIP"])
+        # BlenderProc falls back to the CPU when it finds no usable GPU, and says so
+        # only in passing. On a 3000-image batch that fallback costs hours, so check.
+        if bpy.context.scene.cycles.device != "GPU":
+            print("--device gpu was asked for, but Cycles ended up on the CPU: no "
+                  "usable OPTIX/CUDA/HIP device. Check the driver, or run with "
+                  "--device cpu deliberately.", file=sys.stderr)
+            return 3
+    print(f"Render device: {bpy.context.scene.cycles.device} (--device {args.device})")
     bproc.renderer.set_max_amount_of_samples(args.samples)
-    bproc.renderer.enable_segmentation_output(map_by=["instance", "custom_class_id"],
-                                              default_values={"custom_class_id": -1})
 
     def import_mesh(path: Path):
         """Load STL/OBJ/PLY → bproc MeshObject (STL via bpy operator fallback)."""
@@ -144,6 +166,16 @@ def main() -> int:
         # optimise later by caching meshes if render throughput becomes the bottleneck).
         for obj in bproc.object.get_all_mesh_objects():
             obj.delete()
+        # Lights are NOT mesh objects, so the loop above leaves them standing. Without
+        # this, every scene keeps the lights of all scenes before it: frame 50 of a
+        # batch was lit by 100 lamps, each frame brighter than the last, which silently
+        # destroys the lighting factor the anchored generator exists to control.
+        for light_obj in [o for o in bpy.data.objects if o.type == "LIGHT"]:
+            bpy.data.objects.remove(light_obj, do_unlink=True)
+        # Materials are created per scene too and would otherwise pile up as
+        # bg_mat.001, bg_mat.002 ... over a 3000-image run.
+        for mat in [m for m in bpy.data.materials if m.users == 0]:
+            bpy.data.materials.remove(mat)
 
         # ── Background plane ──
         bg = spec["background"]
@@ -160,11 +192,26 @@ def main() -> int:
         instances: dict[int, int] = {}
         for obj_spec in spec["objects"]:
             mesh = import_mesh(repo_root / obj_spec["mesh"])
-            mesh.set_scale([MM, MM, MM])            # STL assets are modelled in mm
+            # The STL is modelled in mm, so the mm→m factor is baked into the pose
+            # matrix. A separate set_scale() call is silently undone here:
+            # set_local2world_mat writes the whole matrix, whose linear part carries
+            # scale 1, and the mesh stays 1000x too large — large enough to swallow
+            # the camera, which renders as a black frame with no object in it.
             T = _pose_from_spec(obj_spec["xyz_mm"], obj_spec["yaw_deg"])
+            T[:3, :3] = T[:3, :3] * MM
             mesh.set_local2world_mat(T)
             place_on_surface(mesh, z_table_m)
             mesh.set_cp("custom_class_id", int(obj_spec["class_id"]))
+            # Without this the workpiece renders in default grey, whatever the
+            # sampler drew: an STL carries no material of its own.
+            ms = obj_spec.get("material")
+            if ms:
+                omat = bproc.material.create(f"mat_{idx}_{obj_spec['class_name']}")
+                omat.set_principled_shader_value(
+                    "Base Color", list(ms["albedo_rgb"]) + [1.0])
+                omat.set_principled_shader_value("Roughness", float(ms["roughness"]))
+                omat.set_principled_shader_value("Metallic", float(ms["metallic"]))
+                mesh.replace_materials(omat)
 
         # ── Distractors (never labelled: class id stays -1) ──
         for d in spec.get("distractors", []):
@@ -203,6 +250,13 @@ def main() -> int:
         bproc.camera.add_camera_pose(_cv_to_blender_cam(T_cv_m))
 
         # ── Render + write ──
+        # Segmentation is enabled HERE, once the scene exists. BlenderProc wires the
+        # segmentation AOV into the materials that are present at the moment of this
+        # call, so a mesh or a material created afterwards still renders in colour but
+        # is absent from BOTH segmentation maps — every frame then yields an empty
+        # label file, with nothing in the logs to say so.
+        bproc.renderer.enable_segmentation_output(map_by=["instance", "custom_class_id"],
+                                                  default_values={"custom_class_id": -1})
         data = bproc.renderer.render()
         rgb = np.asarray(data["colors"][0], dtype=np.uint8)
         inst = np.asarray(data["instance_segmaps"][0])
@@ -217,8 +271,19 @@ def main() -> int:
         with (out_dir / f"{stem}_meta.json").open("w", encoding="utf-8") as f:
             json.dump({"instances": {str(k): v for k, v in instances.items()},
                        "scene": spec_path.name}, f, indent=2)
+        # A scene holding more lights or meshes than its spec asked for means the
+        # per-scene reset leaked, and every later frame is lit by the frames before
+        # it. That went unnoticed once already, so it stops the run now.
+        n_lights = len([o for o in bpy.data.objects if o.type == "LIGHT"])
+        n_meshes = len(bproc.object.get_all_mesh_objects())
+        want_meshes = 1 + len(spec["objects"]) + len(spec.get("distractors", []))
+        if n_lights != len(spec["lights"]) or n_meshes != want_meshes:
+            raise RuntimeError(
+                f"{stem}: scene has {n_lights} lights and {n_meshes} meshes, but the "
+                f"spec asks for {len(spec['lights'])} and {want_meshes} — the "
+                f"per-scene reset leaked objects from an earlier frame.")
         print(f"[{stem}] objects={len(spec['objects'])} "
-              f"distractors={len(spec.get('distractors', []))}")
+              f"distractors={len(spec.get('distractors', []))} lights={n_lights}")
 
     print(f"Rendered {len(spec_files)} frames → {out_dir}")
     return 0

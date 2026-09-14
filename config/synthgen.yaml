@@ -37,11 +37,21 @@ camera:
   blind_intrinsics_px: 30.0
 
 lighting:
-  # [MEASURE] proxy 2 nguồn sáng trần phía trên bàn — đo vị trí/cường độ thật
+  # VỊ TRÍ vẫn là [MEASURE]: proxy 2 nguồn sáng trần phía trên bàn, chưa đo thật.
   anchor_positions_mm:
     - [700.0, -300.0, 1800.0]
     - [700.0, 300.0, 1800.0]
-  anchor_intensity_w: 60.0
+  # CÔNG SUẤT hiệu chuẩn ngày 12/09/2026: render mặt bàn trống rồi khớp độ sáng với
+  # ảnh thật. Ở 60 W mỗi đèn, vùng bàn trống trong ảnh render có luma 199, trong khi
+  # 16 ảnh bàn trống thật ở điều kiện chuẩn cho luma 150; hệ số khớp là 0,32 → 19 W.
+  # ⚠ Con số này gắn với VỊ TRÍ đèn giả định ở trên. Đo được vị trí đèn thật thì phải
+  #   suy lại công suất, vì độ rọi phụ thuộc khoảng cách.
+  # ⚠ D455 chụp dataset ở chế độ TỰ ĐỘNG phơi sáng (không chỗ nào trong repo đặt exposure).
+  #   Nên đây là khớp với thứ CAMERA XUẤT RA, không phải với độ rọi thật tính bằng lux.
+  #   Với dữ liệu huấn luyện thì khớp như vậy mới đúng, vì detector nhìn ảnh camera. Nhưng
+  #   nhớ rằng điều kiện thiếu sáng ngoài đời TỐI HƠN tỉ lệ 0,46 đo trên ảnh, do camera đã
+  #   tự bù một phần.
+  anchor_intensity_w: 19.0
   anchor_color_temp_k: 5000.0
   sigma_position_mm: 150.0
   sigma_intensity_frac: 0.20
@@ -53,35 +63,90 @@ lighting:
   blind_color_temp_range_k: [2500.0, 9000.0]
 
 background:
-  # [MEASURE] albedo xấp xỉ mặt bàn thật (nỉ xám) — chụp ảnh + trung bình RGB
-  anchor_albedo_rgb: [0.50, 0.52, 0.55]
+  # ĐO ngày 12/09/2026 từ 16 ảnh bàn trống ở điều kiện chuẩn (vùng giữa mặt bàn):
+  # sRGB trung vị (150, 151, 150), tức xám TRUNG TÍNH chứ không ngả xanh như số cũ
+  # [0.50, 0.52, 0.55]; độ lệch giữa các ảnh 0.049 — số 0.05 cũ trúng.
+  # Chỉ lấy ảnh điều kiện chuẩn: gộp cả ảnh thiếu sáng và đèn xiên vào thì độ lệch
+  # vọt lên 0.25, nhưng đó là biến thiên ÁNH SÁNG, đã có yếu tố riêng lo rồi.
+  anchor_albedo_rgb: [0.590, 0.592, 0.588]
   sigma_albedo: 0.05
   anchor_roughness: 0.8
   blind_albedo_range: [0.05, 0.95]
 
 objects:
-  # class_name → mesh (đường dẫn tương đối repo root). 4 hộp cùng chiều kẹp ~190 mm.
-  # Paper dataset (4 box-shaped classes, common clamped-edge ~190 mm — see
-  # D:\Scientific\2026\DigitalTwin\DATASET_DESIGN.md v2.0). Sim/demo còn dùng bộ
-  # bottle/cup/bolt/tray riêng (detector.DEFAULT_CLASS_NAMES) — KHÔNG liên quan ở đây.
+  # class_name → mesh (đường dẫn tương đối repo root). 5 hộp của bộ dữ liệu paper.
+  #
+  # THỨ TỰ NÀY LÀ CHUẨN — phải khớp với auto_label.DEFAULT_CLASS_NAMES và
+  # dataset_check.EXPECTED_NAMES. Lệch thứ tự thì mô hình vẫn train được nhưng
+  # tráo lớp lúc chạy; dataset_check tồn tại chính là để bắt lỗi đó.
+  #
+  # Mesh dựng bằng scripts/gen_product_meshes.py theo KÍCH THƯỚC ĐO BẰNG THƯỚC KẸP
+  # (dài × rộng × cao, mm), đo ngày 2026-09-11:
+  #     carton (2 cỡ) 180×120×120 và 180×100× 80
+  #     plastic_box   180×140× 30     wood_box   190×190×150
+  #     metal_box     190×135× 85     inox_box   180× 85× 40
+  # Lớp carton gồm hai hộp thật khác cỡ nên nhận DANH SÁCH mesh; bộ sinh cảnh chọn
+  # một cỡ cho mỗi lần đặt vật, cả hai đều mang nhãn carton. Chiều cao ở đây nuôi
+  # thẳng chế độ plane của C4 (z_from_ground_plane), nên sai mesh là sai điểm kẹp.
+  #
+  # Sim/demo còn dùng bộ bottle/cup/bolt/tray riêng (detector.DEFAULT_CLASS_NAMES)
+  # — KHÔNG liên quan ở đây.
   classes:
-    carton:      "models/objects/carton.stl"
+    carton:      ["models/objects/carton_large.stl", "models/objects/carton_small.stl"]
     plastic_box: "models/objects/plastic_box.stl"
     wood_box:    "models/objects/wood_box.stl"
     metal_box:   "models/objects/metal_box.stl"
+    inox_box:    "models/objects/inox_box.stl"
   class_ids:
     carton: 0
     plastic_box: 1
     wood_box: 2
     metal_box: 3
+    inox_box: 4
   count_range: [1, 3]
-  # Vùng PICK = mặt BÀN CẤP LIỆU dưới camera (vật random pose). [MEASURE] đo vùng bàn thật
-  # trong FOV camera + tầm với; giá trị dưới là placeholder ~600×400.
-  region_x_mm: [400.0, 1000.0]   # [MEASURE] theo bàn thật
-  region_y_mm: [-200.0, 200.0]   # [MEASURE] theo bàn thật
-  table_z_mm: 500.0              # [MEASURE] đỉnh mặt bàn trong base frame
+  # Vùng PICK = mặt BÀN CẤP LIỆU dưới camera (vật random pose). Số dưới suy TỪ CHÍNH
+  # dataset (7098 nhãn người duyệt) cộng hình học đo ngày 2026-09-11: mép trong bàn cách
+  # robot 140 mm, vạch đen 640 mm, bàn dài 1000 mm. Tâm vật thực tế nằm trong khoảng
+  # 277..562 mm tính từ robot và lệch ngang tối đa 390 mm (bách phân vị 1..99). Lấy đúng
+  # bao QUAN SÁT ĐƯỢC chứ không lấy cả mặt bàn, để DR neo quanh điểm làm việc thật và để
+  # thẻ pose không rơi vào chỗ ngoài tầm với.
+  # ⚠ Trục X/Y theo quy ước base frame của bố cục cell; phải xác nhận lại sau khi hiệu
+  #   chuẩn tay-mắt thật rồi chỉnh nếu lệch.
+  region_x_mm: [277.0, 562.0]
+  region_y_mm: [-390.0, 390.0]
+  table_z_mm: 500.0              # [MEASURE] đỉnh mặt bàn trong base frame — CHỜ hiệu chuẩn
   yaw_range_deg: [-90.0, 90.0]
   min_separation_mm: 120.0
+
+  # Diện mạo từng lớp. KHÔNG có khối này thì mọi vật render ra màu xám trắng như
+  # nhau, và dữ liệu tổng hợp không dạy detector được gì về màu sản phẩm.
+  #
+  # albedo_rgb là số ĐO ngày 12/09/2026: màu trung vị của các pixel thuộc mặt nạ
+  # người vẽ, trên ảnh điều kiện chuẩn (60 ảnh 1-vật mỗi lớp), chia cho 255:
+  #   carton 101,81,56   plastic 8,38,57   wood 120,105,74
+  #   metal  54,56,56    inox    83,88,78
+  #
+  # sigma_albedo_rel là độ lệch TƯƠNG ĐỐI (phần của chính màu đó), vì độ lệch đo
+  # được tỉ lệ thuận với từng kênh — carton lệch 9/101, 8/81, 6/56, đều quanh 0,10.
+  # Tức là độ sáng thay đổi giữa các ảnh, KHÔNG phải sắc màu đổi, nên bộ sinh cảnh
+  # nhân chung cả ba kênh. Nhiễu ba kênh độc lập ở bề rộng này sẽ biến hộp thép xám
+  # thành hộp xanh lá.
+  #   carton 0,10   plastic 0,33   wood 0,10   metal 0,31   inox 0,55
+  # Inox lệch gấp năm lần carton vì mặt gương phản chiếu xung quanh — đúng thứ đóng
+  # góp C4 nói tới.
+  #
+  # roughness và metallic là ƯỚC LƯỢNG vật lý, không phải số đo: chúng quyết định
+  # bề mặt phản xạ thế nào. [MEASURE nếu có máy đo độ bóng]
+  materials:
+    carton:      {albedo_rgb: [0.396, 0.318, 0.220], sigma_albedo_rel: 0.10, roughness: 0.85, metallic: 0.0}
+    plastic_box: {albedo_rgb: [0.031, 0.149, 0.224], sigma_albedo_rel: 0.33, roughness: 0.35, metallic: 0.0}
+    wood_box:    {albedo_rgb: [0.471, 0.412, 0.290], sigma_albedo_rel: 0.10, roughness: 0.80, metallic: 0.0}
+    metal_box:   {albedo_rgb: [0.212, 0.220, 0.220], sigma_albedo_rel: 0.31, roughness: 0.55, metallic: 0.7}
+    inox_box:    {albedo_rgb: [0.325, 0.345, 0.306], sigma_albedo_rel: 0.55, roughness: 0.10, metallic: 1.0}
+  sigma_roughness: 0.08
+  # Blind: dải rộng cố định, KHÔNG dùng bất kỳ số đo nào ở trên.
+  blind_albedo_range: [0.05, 0.95]
+  blind_roughness_range: [0.05, 1.0]
 
 distractors:
   count_range: [0, 3]            # anchored: ít distractor (cell thật gọn)

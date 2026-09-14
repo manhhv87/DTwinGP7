@@ -4,10 +4,14 @@ dataset_check.py
 Verify (and repair) an ultralytics YOLO-seg dataset before training.
 
 Why this exists: the single most damaging dataset bug is a SILENT class-id
-mismatch — Roboflow exports often order classes alphabetically
-(carton, metal_box, plastic_box, wood_box) while the paper's canonical order is
-(carton, plastic_box, wood_box, metal_box) = EXPECTED_NAMES.
+mismatch — annotation tools order classes alphabetically
+(Carton, Inox, Metal, Plastic, Wood) while the paper's canonical order is
+(carton, plastic_box, wood_box, metal_box, inox_box) = EXPECTED_NAMES.
 A model trained on shifted ids "works" but swaps classes at run time.
+
+This is not hypothetical: the first Roboflow export of this dataset used exactly
+that alphabetical order, so mapping by id would have mislabelled 4 of the 5
+classes with no error raised anywhere. Always map by NAME, never by index.
 
 Checks performed:
   - dataset.yaml / data.yaml present; class names read (list or dict form);
@@ -37,9 +41,9 @@ from .helpers import load_yaml
 
 logger = logging.getLogger(__name__)
 
-# Canonical class order for the PAPER dataset (4 box-shaped classes) — must match
+# Canonical class order for the PAPER dataset (5 box-shaped classes) — must match
 # config/synthgen.yaml objects.class_ids and auto_label.DEFAULT_CLASS_NAMES.
-EXPECTED_NAMES = ["carton", "plastic_box", "wood_box", "metal_box"]
+EXPECTED_NAMES = ["carton", "plastic_box", "wood_box", "metal_box", "inox_box"]
 
 IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".bmp")
 

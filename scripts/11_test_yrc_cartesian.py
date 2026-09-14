@@ -62,7 +62,7 @@ def parse_args() -> argparse.Namespace:
                    help="Override YRC1000 IP (default from cell config).")
     p.add_argument("--tool-no", type=int, default=1)
     p.add_argument("--speed-pct", type=float, default=10.0,
-                   help="Max speed % for phase 2 (default 10% REDUCED SPEED).")
+                   help="Max speed %% for phase 2 (default 10%% REDUCED SPEED).")
     p.add_argument("--z-offset-mm", type=float, default=50.0,
                    help="Z offset for phase 2 movement (default +50mm).")
     return p.parse_args()

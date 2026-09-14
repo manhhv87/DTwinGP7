@@ -81,6 +81,11 @@ def main() -> int:
 
     # ─── Step 1: sample specs ───
     config = SynthgenConfig.from_yaml(PROJECT_ROOT / args.config)
+    no_material = sorted(set(config.objects.classes) - set(config.objects.materials))
+    if no_material:
+        log.warning("No material configured for %s: those classes render in neutral "
+                    "grey and teach the detector nothing about their colour. Add them "
+                    "under objects.materials in %s.", no_material, args.config)
 
     import numpy as np
     calib_path = PROJECT_ROOT / args.calib

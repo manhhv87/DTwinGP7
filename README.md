@@ -6,9 +6,10 @@
 > Program Editor. RoboDK KHÔNG còn trong runtime — chỉ dùng để verify FK/IK
 > trong `scripts/13_verify_vs_robodk.py` + `scripts/17_compare_fk_ik.py`.
 >
-> **Use case thực tế**: gắp khay (tray) đựng điện thoại Galaxy S23 trên dây
-> chuyền assembly, dùng pneumatic parallel-jaw gripper custom.
-> Demo vision multi-class với 3 vật khác (bottle/cup/bolt) tùy chọn.
+> **Use case thực tế**: gắp 5 lớp hộp sản phẩm (carton 2 cỡ, hộp nhựa, hộp gỗ,
+> hộp thép, hộp inox mặt gương) đặt ngẫu nhiên trên bàn cấp liệu rồi thả lên
+> băng tải, dùng pneumatic parallel-jaw gripper custom (khe kẹp 180–216 mm).
+> Bộ vật cũ (tray/bottle/cup/bolt) nay chỉ còn cho kịch bản sim/demo.
 >
 > Repo GitHub: https://github.com/manhhv87/DTwinGP7
 
@@ -48,12 +49,13 @@ RoboDK FK 0.00mm), real mode dùng HSE backend + telemetry CSV @10Hz (replay off
 | **Digital Twin trên robot THẬT** (mirror + chạy thí nghiệm tự động) | [`docs/HUONG_DAN_DIGITAL_TWIN.md`](docs/HUONG_DAN_DIGITAL_TWIN.md) — kiến trúc + 2 chế độ + IK + E-stop + workflow 3 bậc |
 | **Hiểu kiến trúc tổng thể** | [`docs/phat_bieu_bai_toan_v3_2_HD.md`](docs/phat_bieu_bai_toan_v3_2_HD.md) — sơ đồ + thiết kế hệ thống |
 | **Setup STL mesh + YOLO weights + gripper IO** | [`models/README.md`](models/README.md) — assets + CIO ladder |
+| **Chạy thí nghiệm trên cell THẬT** (E1–E6) | [`docs/HUONG_DAN_THI_NGHIEM_CELL_THAT.md`](docs/HUONG_DAN_THI_NGHIEM_CELL_THAT.md) — từng pha: lệnh, kết quả phải có, tiêu chí nghiệm thu |
 
 ## ⭐ Quickstart 30 giây
 
 ```bash
 pip install -r requirements.txt
-pytest tests/ -q                                              # → 606 passed
+pytest tests/ -q                                              # → 751 passed
 python scripts/03_run_experiment.py --mode sim --headless --trials 500
 python scripts/03_run_experiment.py --mode sim --trials 500 --minimal-build
 python scripts/16_app_qt.py                                   # GP7 Program editor GUI
@@ -123,8 +125,8 @@ DTwinGP7/                        ← root repo (DTwinGP7 trên GitHub)
 │   ├── calibration/               hand-eye ChArUco + bootstrap uncertainty (σ cho anchored DR)
 │   ├── synthgen/                  synthetic-data engine C2/C3 (anchored DR + failure loop)
 │   ├── logging/ · utils/          utils/stats.py: McNemar exact + Holm + bootstrap CI
-├── scripts/                     ← CLI entry points (01–07, 11, 13–17, 20–23, BẠN CHẠY)
-├── tests/                       ← 606 unit/integration tests
+├── scripts/                     ← CLI entry points (01–07, 11, 13–17, 20–25, BẠN CHẠY)
+├── tests/                       ← 751 unit/integration tests
 └── results/ · figures/ · logs/  ← output (gitignored)
 ```
 
@@ -196,6 +198,13 @@ Chi tiết module tree: xem [phat_bieu mục 3](docs/phat_bieu_bai_toan_v3_2_HD.
    trong DLS IK. Bit-identical với reference (max_err = 0.0 trên 3000+ random
    configs). Chi tiết: [phat_bieu §7.5.2-3](docs/phat_bieu_bai_toan_v3_2_HD.md#752-kinematics-performance-optimization)
 
+8. **Ba chế độ độ sâu (C4)** — `03_run_experiment.py --depth-mode {rgbd,plane,fusion}`:
+   `rgbd` lấy trung vị depth trong mặt nạ; **`plane`** cắt tia nhìn với mặt bàn đã đo,
+   KHÔNG đọc depth, nên không dính lỗi mất depth trên vật mặt gương; **`fusion`** giữ
+   plane làm tiên nghiệm và chỉ cho depth sửa khi đáng tin (vật xếp chồng, hoặc carton
+   bị đọc nhầm cỡ). Hai cỡ carton phân biệt theo bóng chiếu của hộp (IoU với mặt nạ).
+   Kiểm trên 3370 ảnh có nhãn bằng `scripts/25_validate_depth_modes.py`.
+
 Tài liệu chi tiết: [phat_bieu_bai_toan_v3_2_HD.md](docs/phat_bieu_bai_toan_v3_2_HD.md).
 
 ## ⭐ Benchmark 6 IK methods (208 poses, GP7, fair mode)
@@ -241,9 +250,10 @@ python scripts/23_launch_retrain.py --synth data/synth/anchored_k2/dataset --rea
 python scripts/21_mine_failures.py --runs "results/experiment_real_*.csv" --n-budget 1000
 python scripts/20_generate_synth.py --from-failures results/failure_modes.json --out data/synth/loop_k1 --seed 1000
 
-# Pose list cặp đôi cho so sánh McNemar (dùng CHUNG 1 list cho mọi cấu hình):
-python scripts/22_make_pose_lists.py --n 300 --seed 42 --out config/pose_lists/std_v1.csv
-python scripts/03_run_experiment.py --mode real --trials 300 --pose-list config/pose_lists/std_v1.csv --save-frames
+# Pose list cặp đôi cho so sánh McNemar (dùng CHUNG 1 list cho mọi cấu hình).
+# std_v1.csv + hard_v1.csv đã sinh sẵn: 200 lượt, 20 thẻ, 5 lớp × 40 lượt.
+python scripts/22_make_pose_lists.py --n 200 --seed 42 --class-hints carton,plastic_box,wood_box,metal_box,inox_box --out config/pose_lists/std_v1.csv
+python scripts/03_run_experiment.py --mode real --trials 200 --pose-list config/pose_lists/std_v1.csv --save-frames
 python scripts/04_analyze_results.py --csv results/run_a.csv --paired-with results/run_b.csv --pair-key pose_id
 ```
 

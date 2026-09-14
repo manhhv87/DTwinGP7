@@ -101,6 +101,24 @@ _DEFAULT_CONFIG: dict[str, Any] = {
 }
 
 
+def grasp_depth_offset(obj_height_mm: float | None, max_offset_mm: float,
+                       clearance_mm: float) -> float:
+    """How far below the part's top face the jaw tips go (mm).
+
+    Never deeper than the part itself minus ``clearance_mm``, so the tips stay
+    above whatever the part rests on: the table, or another part in a stacked
+    scene, which the table-level floor alone cannot protect. Without a known
+    height, fall back to ``max_offset_mm`` and rely on that floor.
+
+    The previous formula, min(max_offset, max(clearance, height - clearance)),
+    returned max_offset for every height whenever clearance >= max_offset (the
+    defaults are 100 and 50), so the grasp depth never adapted to the part.
+    """
+    if obj_height_mm is None or obj_height_mm <= 0:
+        return float(max_offset_mm)
+    return float(max(0.0, min(max_offset_mm, obj_height_mm - clearance_mm)))
+
+
 class Orchestrator:
     """Orchestrates the pick-and-place cycle via robot backend (SimRobot or HSE).
 
@@ -143,7 +161,17 @@ class Orchestrator:
         # C3 failure context: pre-drawn pose-list id (set per trial by the
         # experiment script) and the RGB frame saved by PerceptionNode at DETECT.
         self.current_pose_id: str = ""
+        # Set per trial by the runner's pre-trial hook, and constant for a run.
+        self.current_condition: str = ""
+        self.current_stack_on: str = ""
+        self.session_id: str = ""
+        self.block_id: str = ""
+        self.operator_id: str = ""
         self._last_frame_path: str = ""
+        # Optional callable(trial_id, machine_success) -> 1 | 0 | "", asked once per
+        # trial that actually moved the robot. The runner sets it under
+        # --confirm-each-trial; its answer goes to the `human_ok` column.
+        self.human_score_hook: Any = None
 
         self._set_speed()
 
@@ -735,11 +763,7 @@ class Orchestrator:
             # pose_base[2] is Z of the object TOP (camera looks down → depth is top).
             # Adaptive offset: clipped to object height so fingertip enters the body.
             obj_height = obj.get("height_mm")
-            if obj_height and obj_height > 0:
-                effective_offset = min(max_offset,
-                                       max(safety_margin, obj_height - safety_margin))
-            else:
-                effective_offset = max_offset
+            effective_offset = grasp_depth_offset(obj_height, max_offset, safety_margin)
             target_z = xyz_base[2] - effective_offset
             # HARD CLAMP: regardless of offset, TCP never goes below min_grasp_z.
             clamped_z = max(target_z, min_grasp_z)
@@ -794,7 +818,7 @@ class Orchestrator:
             self._log_trial(
                 trial_id, ok,
                 "" if ok else self.sm.history[-1].note,
-                t_start, obj,
+                t_start, obj, ask_human=True,
             )
             return ok
 
@@ -979,6 +1003,7 @@ class Orchestrator:
         failure_reason: str,
         t_start: float,
         obj: dict[str, Any] | None,
+        ask_human: bool = False,
     ) -> None:
         """Write one trial result row if a TrialLogger is present.
 
@@ -986,12 +1011,22 @@ class Orchestrator:
         base frame, detector confidence, mask area, the RGB frame captured at
         DETECT, and the pre-drawn pose-list id — everything failure_miner needs
         to map a physical failure back into renderer parameters.
+
+        `ask_human` is set on the one path where the robot actually ran the
+        pick-and-place: there is something for an operator to score. On a
+        detection miss or an unreachable pose nothing moved, so asking would only
+        collect a keystroke that repeats what the machine already knows.
         """
         if self.trial_logger is None:
             return
         extra: dict[str, Any] = {
             "frame_path": self._last_frame_path,
             "pose_id": self.current_pose_id,
+            "condition": self.current_condition,
+            "stack_on": self.current_stack_on,
+            "session_id": self.session_id,
+            "block_id": self.block_id,
+            "operator_id": self.operator_id,
         }
         if obj:
             pose_base = obj.get("pose_base")
@@ -1008,6 +1043,21 @@ class Orchestrator:
                 extra["confidence"] = round(float(obj["confidence"]), 3)
             if obj.get("mask_area"):
                 extra["mask_area"] = int(obj["mask_area"])
+            # C4 depth-mode context (perception/depth_modes.py).
+            if obj.get("depth_used"):
+                extra["depth_used"] = obj["depth_used"]
+            if obj.get("depth_valid_frac") is not None:
+                extra["depth_valid_frac"] = round(float(obj["depth_valid_frac"]), 3)
+            if obj.get("height_mm") is not None:
+                extra["part_height_mm"] = round(float(obj["height_mm"]), 1)
+            if obj.get("size_iou") is not None:
+                extra["size_iou"] = round(float(obj["size_iou"]), 3)
+            if obj.get("h_depth_mm") is not None:
+                extra["h_depth_mm"] = round(float(obj["h_depth_mm"]), 1)
+        if ask_human and self.human_score_hook is not None:
+            # Ctrl+C propagates: the operator meant to stop, and this row is lost
+            # on purpose rather than being written with a made-up verdict.
+            extra["human_ok"] = self.human_score_hook(trial_id, success)
         self.trial_logger.log_trial(
             trial_id=trial_id,
             success=success,

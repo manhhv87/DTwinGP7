@@ -51,6 +51,8 @@ class D455Camera:
             self.intrinsics = {
                 "fx": intr.fx, "fy": intr.fy,
                 "ppx": intr.ppx, "ppy": intr.ppy,
+                # Reported, not applied: calibration logs them and warns if non-zero.
+                "model": str(intr.model), "coeffs": [float(c) for c in intr.coeffs],
                 "width": intr.width, "height": intr.height,
             }
             self.depth_scale = (

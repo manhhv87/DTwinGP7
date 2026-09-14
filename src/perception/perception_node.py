@@ -35,6 +35,9 @@ class PerceptionNode:
         camera: Object with .get_frame() and .intrinsics (D455Camera/MockCamera).
         detector: Object with .detect(rgb) (ObjectDetector/MockDetector).
         output_queue: Queue that receives detection messages.
+        save_frames_dir: If set, every processed RGB frame is saved there.
+        extractor: Pose extractor carrying the depth mode (C4) and the part
+            geometry; defaults to the RGB-D median-depth baseline.
     """
 
     def __init__(
@@ -43,11 +46,12 @@ class PerceptionNode:
         detector: Any,
         output_queue: queue.Queue,
         save_frames_dir: str | None = None,
+        extractor: PoseExtractor | None = None,
     ) -> None:
         self.camera = camera
         self.detector = detector
         self.queue = output_queue
-        self.extractor = PoseExtractor(camera.intrinsics)
+        self.extractor = extractor if extractor is not None else PoseExtractor(camera.intrinsics)
         # C3 failure-driven loop: when set, every processed RGB frame is saved
         # and its path travels with the detection message → the orchestrator
         # logs it per trial (frame at DETECT time = failure context).
