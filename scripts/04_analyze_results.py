@@ -29,6 +29,7 @@ import argparse
 import glob
 import sys
 from pathlib import Path
+from typing import Any
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
@@ -42,13 +43,115 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--csv", nargs="+", required=True,
                         help="Trial CSV file(s) (wildcard supported)")
     parser.add_argument("--out", default="figures/results_summary.png")
-    parser.add_argument("--paired-with", default=None,
-                        help="Second run CSV — paired exact McNemar vs --csv")
+    parser.add_argument("--paired-with", nargs="+", default=None,
+                        help="One or more run CSVs, each paired against --csv with exact "
+                             "McNemar. Pass the WHOLE family of comparisons in one call: "
+                             "with several of them the raw p-values are adjusted with "
+                             "Holm, which cannot happen if each comparison is run "
+                             "separately and read off on its own.")
+    parser.add_argument("--no-holm", action="store_true",
+                        help="Report raw p-values only, even with several --paired-with "
+                             "runs. Use it when this really is one pre-registered primary "
+                             "comparison and the others are exploratory; say so in the "
+                             "paper if you do.")
     parser.add_argument("--pair-key", default="pose_id",
                         help="Column pairing trials across runs (pose_id | trial_id)")
+    parser.add_argument("--split-col", default=None,
+                        help="Split the rows loaded by --csv on this column (typically "
+                             "depth_mode) and compare every value against --baseline. "
+                             "An interleaved blinded campaign writes one CSV per BLOCK, "
+                             "so the arm is a column, not a filename, and there is no "
+                             "per-arm file to hand to --paired-with.")
+    parser.add_argument("--baseline", default=None,
+                        help="With --split-col: the value that plays A in every "
+                             "comparison. Default: the first value alphabetically.")
+    parser.add_argument("--score-col", default="success",
+                        help="Which column counts as the outcome: 'success' (the "
+                             "machine's, from motion + the gripper detect sensor) or "
+                             "'human_ok' (what the operator saw, written by 03 "
+                             "--confirm-each-trial). They disagree when a part was "
+                             "gripped but dropped in transfer or landed off the drop "
+                             "point, so the paper must say which one it reports.")
     parser.add_argument("--label-a", default="run_a", help="Name of the --csv run")
+    parser.add_argument("--labels-b", nargs="+", default=None,
+                        help="Names for the --paired-with runs, in the same order.")
     parser.add_argument("--label-b", default="run_b", help="Name of the --paired-with run")
     return parser.parse_args()
+
+
+
+def _pair(log, a, b, key):
+    """Inner-join two runs on `key`, one row against one row.
+
+    Without the one-to-one constraint a duplicated key silently turns the join
+    into a cross product: n and both disagreement cells inflate, and McNemar
+    returns a p-value that is wrong in the permissive direction. Duplicates are
+    not hypothetical — TrialLogger appends to an existing CSV on purpose, and a
+    glob can pick up two runs of the same configuration.
+
+    Returns the merged frame, or None after logging why pairing was refused.
+    """
+    import pandas as pd
+
+    out = {}
+    for name, frame in (("A", a), ("B", b)):
+        f = frame[frame[key].notna()]
+        f = f[f[key].astype(str).str.strip().ne("")]
+        f = f[~f[key].astype(str).str.lower().isin({"nan", "none"})]
+        dup = f[key].duplicated().sum()
+        if dup:
+            log.error("Run %s has %d duplicated '%s' values. Two runs of the same "
+                      "configuration in one file, or an appended CSV. Pairing refused: "
+                      "a duplicated key would inflate the disagreement counts and make "
+                      "the p-value look better than it is.", name, dup, key)
+            return None
+        out[name] = f
+
+    merged = out["A"].merge(out["B"], on=key, suffixes=("_a", "_b"),
+                            validate="one_to_one")
+    only_a = len(out["A"]) - len(merged)
+    only_b = len(out["B"]) - len(merged)
+    if only_a or only_b:
+        log.warning("Pairing dropped %d row(s) present only in A and %d only in B. "
+                    "Both runs must come from the SAME pose list, run to the same "
+                    "length; a short run pairs silently against a full one.",
+                    only_a, only_b)
+    log.info("Paired %d trial(s) on '%s'", len(merged), key)
+    return merged
+
+
+_SCORE_MAP = {"1": 1, "0": 0, "true": 1, "false": 0, "yes": 1, "no": 0}
+
+
+def _apply_score_col(log, df, col: str, source: str):
+    """Make `success` carry the chosen outcome column, or refuse and return None.
+
+    Everything downstream (rates, failure matrix, McNemar, figure) reads
+    `success`, so the switch happens once, here. A partly filled column is
+    refused rather than silently scored on the rows that happen to be filled:
+    that would drop trials from one arm only and bias the comparison.
+    """
+    if col == "success":
+        return df
+    if col not in df.columns:
+        log.error("Column '%s' is not in %s. That run was recorded before human "
+                  "scoring existed, or 03_run_experiment.py ran without "
+                  "--confirm-each-trial.", col, source)
+        return None
+    raw = df[col].astype(str).str.strip().str.lower()
+    blank = df[col].isna() | raw.isin({"", "nan", "none"})
+    if blank.any():
+        log.error("%d of %d row(s) in %s have no '%s' value. Refusing to score on a "
+                  "partly filled column.", int(blank.sum()), len(df), source, col)
+        return None
+    mapped = raw.map(_SCORE_MAP)
+    if mapped.isna().any():
+        bad = sorted(set(raw[mapped.isna()]))[:5]
+        log.error("Column '%s' in %s holds values that are not 0/1: %s", col, source, bad)
+        return None
+    df = df.copy()
+    df["success"] = mapped.astype(int)
+    return df
 
 
 def _log_mcnemar(log, s: dict) -> None:
@@ -86,6 +189,13 @@ def main() -> int:
     df = pd.concat([pd.read_csv(p) for p in paths], ignore_index=True)
     log.info("Loaded %d trials from %d file(s)", len(df), len(paths))
 
+    df = _apply_score_col(log, df, args.score_col, "--csv")
+    if df is None:
+        return 1
+    log.info("Scoring on column '%s'%s", args.score_col,
+             " (the operator's verdict, not the machine's)"
+             if args.score_col != "success" else "")
+
     # ─── Basic statistics ───
     log.info("Overall success rate: %.1f%%", df["success"].mean() * 100)
     log.info("By class:\n%s", df.groupby("class_name")["success"].mean())
@@ -97,7 +207,9 @@ def main() -> int:
     # ─── Failure-mode matrix ───
     fails = df[df["success"] == 0]
     if len(fails):
-        fm = fails["failure_reason"].value_counts()
+        # Scored on human_ok, a failure can have an empty machine reason: the run
+        # thought it went fine. Those rows must show up, not be dropped as NaN.
+        fm = fails["failure_reason"].fillna("(no machine failure)").value_counts()
         log.info("Failure modes:\n%s", fm)
 
     # ─── Paired exact McNemar: RGB-only vs RGB-D ───
@@ -110,7 +222,9 @@ def main() -> int:
         rgbd_df = df[df["mode"] == "rgbd"]
         # PAIR by trial_id (compares the SAME scene under both modes).
         if "trial_id" in df.columns:
-            merged = rgb_df.merge(rgbd_df, on="trial_id", suffixes=("_a", "_b"))
+            merged = _pair(log, rgb_df, rgbd_df, "trial_id")
+            if merged is None:
+                return 1
             if len(merged) > 1:
                 _log_mcnemar(log, mcnemar_summary(
                     merged["success_a"], merged["success_b"], "rgb_only", "rgbd"))
@@ -120,25 +234,91 @@ def main() -> int:
             log.warning("No trial_id column — McNemar needs pairing; "
                         "rerun with a shared pose list (03 --pose-list)")
 
-    # ─── Paired exact McNemar: this run vs --paired-with run ───
-    if args.paired_with:
-        from src.utils.stats import mcnemar_summary
+    # ─── Paired exact McNemar ───
+    # Two ways to say which rows are which arm. --split-col splits the rows
+    # already loaded on a column: an interleaved blinded campaign writes one CSV
+    # per BLOCK, so the arm is a column, never a filename. --paired-with names
+    # one file (or glob) per arm, for runs kept in separate files.
+    pairs: list[tuple[str, Any, str, Any]] = []
 
-        df_b = pd.read_csv(args.paired_with)
+    if args.split_col:
+        if args.split_col not in df.columns:
+            log.error("--split-col '%s' is not a column of the loaded runs",
+                      args.split_col)
+            return 1
+        groups = {str(v): g for v, g in df.groupby(args.split_col) if str(v).strip()}
+        if len(groups) < 2:
+            log.error("--split-col '%s' has %d value(s) in the loaded rows; a paired "
+                      "comparison needs at least 2.", args.split_col, len(groups))
+            return 1
+        base = args.baseline or sorted(groups)[0]
+        if base not in groups:
+            log.error("--baseline '%s' is not one of %s", base, sorted(groups))
+            return 1
+        log.info("Split on '%s': %s, baseline '%s'", args.split_col,
+                 {k: len(v) for k, v in sorted(groups.items())}, base)
+        for name in sorted(k for k in groups if k != base):
+            pairs.append((base, groups[base], name, groups[name]))
+
+    if args.paired_with:
+        labels_b = args.labels_b or []
+        if labels_b and len(labels_b) != len(args.paired_with):
+            log.error("--labels-b has %d name(s) for %d run(s)",
+                      len(labels_b), len(args.paired_with))
+            return 1
+        for i, other in enumerate(args.paired_with):
+            name_b = labels_b[i] if labels_b else (
+                args.label_b if len(args.paired_with) == 1 else Path(other).stem)
+            files = sorted({str(Path(p).resolve())
+                            for p in glob.glob(str(PROJECT_ROOT / other)) + glob.glob(other)})
+            if not files:
+                log.error("--paired-with '%s' matched no file", other)
+                return 1
+            df_b = _apply_score_col(
+                log, pd.concat([pd.read_csv(f) for f in files], ignore_index=True),
+                args.score_col, other)
+            if df_b is None:
+                return 1
+            pairs.append((args.label_a, df, name_b, df_b))
+
+    if pairs:
+        from src.utils.stats import holm, mcnemar_summary
+
         key = args.pair_key
-        if key not in df.columns or key not in df_b.columns:
-            log.error("Pair key '%s' missing in one of the runs — cannot pair", key)
-        else:
-            a = df[df[key].astype(str).str.len() > 0]
-            b = df_b[df_b[key].astype(str).str.len() > 0]
-            merged = a.merge(b, on=key, suffixes=("_a", "_b"))
-            if len(merged) > 1:
-                _log_mcnemar(log, mcnemar_summary(
-                    merged["success_a"], merged["success_b"],
-                    args.label_a, args.label_b))
-            else:
-                log.error("No shared '%s' values between the two runs — "
-                          "both must be run from the SAME pre-drawn pose list", key)
+        results = []
+        for name_a, frame_a, name_b, frame_b in pairs:
+            if key not in frame_a.columns or key not in frame_b.columns:
+                log.error("Pair key '%s' missing in '%s' — cannot pair", key, name_b)
+                return 1
+            merged = _pair(log, frame_a, frame_b, key)
+            if merged is None:
+                return 1
+            if len(merged) <= 1:
+                log.error("No shared '%s' values between '%s' and '%s' — both must come "
+                          "from the SAME pre-drawn pose list", key, name_a, name_b)
+                return 1
+            summary = mcnemar_summary(merged["success_a"], merged["success_b"],
+                                      name_a, name_b)
+            _log_mcnemar(log, summary)
+            results.append(summary)
+
+        if len(results) > 1 and not args.no_holm:
+            adj = holm([r["p_mcnemar_exact"] for r in results])
+            log.info("─" * 60)
+            log.info("Holm-adjusted over this family of %d comparison(s):", len(results))
+            for r, pa in zip(results, adj):
+                log.info("  %-28s raw p=%.4g → adjusted p=%.4g %s",
+                         f"{r['label_a']} vs {r['label_b']}", r["p_mcnemar_exact"], pa,
+                         "(significant)" if pa < 0.05 else "(not significant)")
+            log.info("Adjustment is over the comparisons passed in THIS call. If the paper "
+                     "reports more comparisons than these, the family is larger and the "
+                     "adjustment here is too lenient.")
+        elif len(results) > 1:
+            log.warning("%d comparisons reported WITHOUT Holm adjustment (--no-holm). "
+                        "At alpha 0.05 the chance of at least one false positive across "
+                        "%d independent tests is %.0f%%.",
+                        len(results), len(results),
+                        (1 - 0.95 ** len(results)) * 100)
 
     # ─── Figure ───
     try:

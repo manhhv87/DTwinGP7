@@ -43,7 +43,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--epochs", type=int, default=100)
     parser.add_argument("--imgsz", type=int, default=1280)
     parser.add_argument("--seed", type=int, default=0,
-                        help="Train seed — paper reports mean±std over 3 seeds")
+                        help="Train seed — paper reports mean±std over 5 seeds")
     parser.add_argument("--zip", action="store_true",
                         help="Also zip the referenced dataset dirs for transfer")
     return parser.parse_args()

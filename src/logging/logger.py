@@ -46,6 +46,32 @@ CONTEXT_FIELDNAMES = [
     "mask_area",
     "frame_path",
     "pose_id",
+    # Staging and provenance. The condition and the stacked-support class are
+    # announced per trial by the runner; without them in the row there is no way
+    # to tell afterwards which trials ran under which staging. session/block/
+    # operator make the run order recoverable, so a configuration effect can be
+    # separated from a drift-across-the-afternoon effect.
+    "condition",
+    "stack_on",
+    "session_id",
+    "block_id",
+    "operator_id",
+    # C4 depth modes: the configured mode, the estimate that gave z (fusion picks
+    # one per detection), the share of mask pixels returning depth, the part height
+    # used (resolved per instance for the carton), the carton size-fit IoU, and the
+    # height above the table implied by the median depth.
+    "depth_mode",
+    "depth_used",
+    "depth_valid_frac",
+    "part_height_mm",
+    "size_iou",
+    "h_depth_mm",
+    # Operator verdict, scored by eye right after the trial (03 --confirm-each-trial).
+    # `success` is the machine's: the detect sensor proves a part was in the gripper
+    # when it closed, but nothing checks that the part was still held at PLACE or
+    # landed where it should. A part dropped in transfer scores success=1 here and
+    # human_ok=0. Empty when nobody scored the trial.
+    "human_ok",
 ]
 
 
@@ -113,6 +139,7 @@ class TrialLogger:
             "overlap": self.context.get("overlap", ""),
             "mode": self.context.get("mode", ""),
             "ik": self.context.get("ik", ""),     # IK source (client/yrc) per run
+            "depth_mode": self.context.get("depth_mode", ""),   # C4 mode per run
         }
         if extra:
             row.update(extra)

@@ -24,9 +24,9 @@ from src.utils.dataset_check import (  # noqa: E402
 )
 
 # Roboflow-style alphabetical order of the canonical set — the trap this module catches.
-# canonical = [carton(0), plastic_box(1), wood_box(2), metal_box(3)];
-# sorted() → [carton, metal_box, plastic_box, wood_box].
-ALPHA_NAMES = ["carton", "metal_box", "plastic_box", "wood_box"]
+# canonical = [carton(0), plastic_box(1), wood_box(2), metal_box(3), inox_box(4)];
+# sorted() → [carton, inox_box, metal_box, plastic_box, wood_box].
+ALPHA_NAMES = ["carton", "inox_box", "metal_box", "plastic_box", "wood_box"]
 
 
 def _write_png(path):
@@ -89,7 +89,7 @@ class TestVerify:
     def test_alphabetical_order_flagged(self, tmp_path):
         _make_dataset(tmp_path, ALPHA_NAMES,
                       ["0 0.1 0.1 0.2 0.1 0.2 0.2",      # 'carton' in alpha order
-                       "3 0.5 0.5 0.6 0.5 0.6 0.6"])     # 'wood_box' in alpha order
+                       "4 0.5 0.5 0.6 0.5 0.6 0.6"])     # 'wood_box' in alpha order
         report = verify_dataset(tmp_path)
         assert report["names_match"] is False
         assert report["ok"] is False
@@ -115,13 +115,13 @@ class TestVerify:
 
 class TestRemap:
     def test_remap_fixes_ids_and_yaml(self, tmp_path):
-        # In alpha order: id0=carton id1=metal_box id2=plastic_box id3=wood_box.
+        # In alpha order: id0=carton id1=inox_box id2=metal_box id3=plastic_box id4=wood_box.
         _make_dataset(tmp_path, ALPHA_NAMES,
                       ["0 0.1 0.1 0.2 0.1 0.2 0.2",      # carton → canonical 0
-                       "3 0.5 0.5 0.6 0.5 0.6 0.6"])     # wood_box → canonical 2
+                       "4 0.5 0.5 0.6 0.5 0.6 0.6"])     # wood_box → canonical 2
         result = remap_labels(tmp_path)
         assert result["noop"] is False
-        assert result["mapping"] == {"carton": 0, "metal_box": 3,
+        assert result["mapping"] == {"carton": 0, "inox_box": 4, "metal_box": 3,
                                      "plastic_box": 1, "wood_box": 2}
         assert (tmp_path / "labels_orig").exists()        # backup created
 

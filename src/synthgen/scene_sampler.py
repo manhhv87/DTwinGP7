@@ -171,9 +171,17 @@ class SceneSampler:
     def _sample_background(self, rng: np.random.Generator) -> dict[str, Any]:
         bg = self.config.background
         if self.mode == "anchored":
-            albedo = np.asarray(bg.anchor_albedo_rgb, dtype=float) + rng.normal(
-                0.0, self.kappa * bg.sigma_albedo, size=3
-            )
+            # Same story as the workpieces: the measured spread of the table's colour
+            # is equal across channels (12, 13, 12 on 150, 151, 150), so it is the
+            # brightness that differs between images, not the hue. Scale the table as
+            # a whole and jitter the channels only slightly; independent draws at this
+            # width hand the anchored arm pink and green tables, which is precisely
+            # what anchoring is supposed to rule out.
+            base = np.asarray(bg.anchor_albedo_rgb, dtype=float)
+            rel = bg.sigma_albedo / max(1e-6, float(base.mean()))
+            scale = max(0.0, 1.0 + rng.normal(0.0, self.kappa * rel))
+            hue = rng.normal(0.0, self.kappa * rel * 0.2, size=3)
+            albedo = base * scale * (1.0 + hue)
         else:
             lo, hi = bg.blind_albedo_range
             albedo = rng.uniform(lo, hi, size=3)
@@ -182,6 +190,40 @@ class SceneSampler:
             "z_mm": self.config.objects.table_z_mm,
             "albedo_rgb": np.clip(albedo, 0.0, 1.0).tolist(),
             "roughness": float(bg.anchor_roughness),
+        }
+
+    def _sample_material(self, rng: np.random.Generator, cls: str) -> dict[str, Any]:
+        """Appearance of one workpiece.
+
+        Anchored: the class's measured colour, widened by kappa*sigma, and its
+        estimated reflectance. Blind: the wide hand-set ranges, using none of those
+        measurements — including metallic, so a cardboard box may come out chrome,
+        which is exactly what a blind treatment does. Empty dict when the class has
+        no material configured; the renderer then leaves the mesh in default grey.
+        """
+        obj = self.config.objects
+        mat = obj.materials.get(cls)
+        if self.mode == "blind":
+            albedo = rng.uniform(*obj.blind_albedo_range, size=3)
+            rough = float(rng.uniform(*obj.blind_roughness_range))
+            metal = float(rng.uniform(0.0, 1.0))
+        elif mat is None:
+            return {}
+        else:
+            # The measured spread is proportional to each channel (brightness between
+            # images, not hue), so all three channels scale together. A small
+            # independent term keeps some genuine colour variation without turning a
+            # grey steel box green, which independent draws at the full width do.
+            base = np.asarray(mat.albedo_rgb, dtype=float)
+            scale = 1.0 + rng.normal(0.0, self.kappa * mat.sigma_albedo_rel)
+            hue = rng.normal(0.0, self.kappa * mat.sigma_albedo_rel * 0.2, size=3)
+            albedo = base * max(0.0, scale) * (1.0 + hue)
+            rough = float(mat.roughness + rng.normal(0.0, self.kappa * obj.sigma_roughness))
+            metal = float(mat.metallic)
+        return {
+            "albedo_rgb": np.clip(albedo, 0.0, 1.0).tolist(),
+            "roughness": float(np.clip(rough, 0.02, 1.0)),
+            "metallic": float(np.clip(metal, 0.0, 1.0)),
         }
 
     def _sample_xy(
@@ -249,13 +291,24 @@ class SceneSampler:
             if i == 0 and forced_region is not None:
                 x, y = self._sample_xy(rng, forced_region)
             yaw = float(rng.uniform(obj.yaw_range_deg[0], obj.yaw_range_deg[1]))
-            objects.append({
+            # A class may map to several physical sizes (carton: two); pick one per
+            # placement, from the same seeded generator so scenes stay reproducible.
+            meshes = obj.classes[cls]
+            if isinstance(meshes, list):
+                mesh = meshes[int(rng.integers(0, len(meshes)))]
+            else:
+                mesh = meshes
+            spec_obj = {
                 "class_name": cls,
                 "class_id": obj.class_ids[cls],
-                "mesh": obj.classes[cls],
+                "mesh": mesh,
                 "xyz_mm": [x, y, obj.table_z_mm],
                 "yaw_deg": yaw,
-            })
+            }
+            material = self._sample_material(rng, cls)
+            if material:
+                spec_obj["material"] = material
+            objects.append(spec_obj)
         return objects
 
     def _sample_distractors(self, rng: np.random.Generator) -> list[dict[str, Any]]:

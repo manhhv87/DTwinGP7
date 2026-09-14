@@ -19,8 +19,10 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import logging
 import os
 import queue
+import shutil
 import sys
 import threading
 from pathlib import Path
@@ -120,9 +122,66 @@ def parse_args() -> argparse.Namespace:
              "outcomes pair pose-by-pose across configurations (McNemar, §3.7). "
              "Reuse the SAME list for every configuration under comparison.")
     parser.add_argument(
+        "--depth-mode", choices=["rgbd", "plane", "fusion"], default="rgbd",
+        help="C4 depth mode. rgbd: median depth under the mask (default). plane: the "
+             "ray through the mask centroid meets the measured table plane lifted by "
+             "the part height, no depth read. fusion: the plane estimate, replaced by "
+             "the median depth when enough of the mask returns depth and disagrees "
+             "with it. plane and fusion need --mode real and table_plane.json.")
+    parser.add_argument(
+        "--confirm-each-trial", action="store_true",
+        help="Wait for the operator to press ENTER before every cycle, and drop any "
+             "frames the perception node captured while they were still reaching over "
+             "the table. Use this for every real run where a person places the part by "
+             "hand: without it the robot starts the next cycle 1 s after the last one "
+             "and detects whatever was on the table before the part was set down. Leave "
+             "it off for the cycle-time run, where the operator's pace is not part of "
+             "what is being measured. It also asks the operator, after every cycle that "
+             "moved the robot, whether the part ended up in the right place, and writes "
+             "the answer to the human_ok column — the machine's own success column "
+             "cannot see a part dropped in transfer.")
+    parser.add_argument(
         "--save-frames", action="store_true",
-        help="Save the RGB frame of every detection to results/frames/<ts>/ and "
-             "log its path per trial (failure context for the C3 loop).")
+        help="Save the RGB frame of every detection and log its path per trial "
+             "(failure context for the C3 loop). NOTE: the perception node runs "
+             "free, so this writes one image per PROCESSED FRAME, not one per "
+             "trial — a campaign produces thousands. Point --frames-dir at a disk "
+             "with room; when it fills, imwrite fails, frame_path goes empty and "
+             "the run carries on regardless.")
+    parser.add_argument(
+        "--blind-label", default=None, metavar="CODE",
+        help="Run blinded: the console shows only CODE and the placement prompts, and "
+             "every line naming the depth mode, the model or the outcome goes to the log "
+             "file instead. The person placing the parts is also the person scoring the "
+             "place tolerance by eye, so if they can see which configuration is running "
+             "they are an unblinded assessor of the primary endpoint. Use "
+             "tools/run_blinded_campaign.py, which allocates the codes and seals the key.")
+    parser.add_argument(
+        "--pose-slice", default=None, metavar="A:B",
+        help="Run rows A..B-1 of the pose list (0-based, Python slice) instead of the "
+             "first --trials rows. This is what makes interleaving possible: run block "
+             "0:25 of configuration A, then 0:25 of B, then 25:50 of A, and so on. "
+             "Without it every configuration is one long uninterrupted stretch, and any "
+             "drift across the afternoon lands in the paired test looking exactly like a "
+             "configuration effect.")
+    parser.add_argument(
+        "--session-id", default="",
+        help="Free-text tag for this sitting, e.g. 2026-09-20-morning. Written to every "
+             "row so a configuration effect can be told apart from an across-the-day "
+             "drift effect; without it the two are indistinguishable after the fact.")
+    parser.add_argument(
+        "--block-id", default="",
+        help="Free-text tag for this block within the sitting. Use it when configurations "
+             "are interleaved in short blocks rather than run as one long stretch each.")
+    parser.add_argument(
+        "--operator-id", default="",
+        help="Who placed the parts. Two people place differently, and that difference "
+             "lands in the disagreement cells of the paired test.")
+    parser.add_argument(
+        "--frames-dir", default="results/frames",
+        help="Where --save-frames writes. A timestamped subfolder is created under "
+             "it. Relative paths resolve against the repo. Default results/frames, "
+             "which is on the same disk as the code.")
     parser.add_argument(
         "--headless", action="store_true",
         help="Run WITHOUT viewport (SimRobot mock) — validate logic and generate CSV. "
@@ -250,10 +309,20 @@ def build_perception(mode: str, config: dict, args=None, cell_config=None):
         from src.perception import D455Camera, ObjectDetector
 
         camera = D455Camera()
+        model_path = Path(config.get("model_path", "models/yolov8s-seg_best.pt"))
+        if not model_path.is_absolute():
+            model_path = PROJECT_ROOT / model_path      # independent of the working dir
+        heights = config.get("class_heights_mm") or {}
         detector = ObjectDetector(
-            model_path=config.get("model_path", "models/yolov8s-seg_best.pt"),
+            model_path=str(model_path),
             conf=config.get("conf_threshold", 0.5),
+            class_heights_mm=heights,
         )
+        missing = [c for c in detector.class_names if c not in heights]
+        if missing:
+            logging.getLogger("experiment").warning(
+                "No height configured for classes %s: their grasp depth falls back to "
+                "grasp_depth_offset_mm and only the table floor protects them.", missing)
         return camera, detector
 
     # mode == "sim" (both RoboDK sim and headless): simulated detection scenario.
@@ -314,12 +383,59 @@ def build_perception(mode: str, config: dict, args=None, cell_config=None):
     return camera, detector
 
 
+def build_extractor(intrinsics, detector, config: dict, depth_mode: str, table_plane,
+                    calib_path):
+    """PoseExtractor for the physical cell, or None (logged) when the depth mode needs a
+    height that some class the detector can report does not have."""
+    from src.orchestrator.coord_conv import load_calibration
+    from src.perception import PoseExtractor
+
+    log = logging.getLogger("experiment")
+    heights = config.get("class_heights_mm") or {}
+    if depth_mode != "rgbd":
+        missing = [c for c in detector.class_names if c not in heights]
+        if missing:
+            log.error("PREFLIGHT: depth mode %s places each part's top face at its height, "
+                      "but classes %s have none in class_heights_mm. Run refused before "
+                      "connecting to the robot.", depth_mode, missing)
+            return None
+    T_BC = load_calibration(calib_path) if table_plane is not None else None
+    return PoseExtractor(intrinsics, depth_mode=depth_mode, T_BC_mm=T_BC,
+                         table_plane=table_plane, class_heights_mm=heights,
+                         class_sizes_mm=config.get("class_sizes_mm"))
+
+
 def main() -> int:
     args = parse_args()
     log = setup_logging("experiment", log_file=PROJECT_ROOT / "logs/experiment.log")
     log.info("=" * 60)
     log.info("Pick-and-place experiment — mode=%s, trials=%d", args.mode, args.trials)
     log.info("=" * 60)
+
+    if args.blind_label:
+        # Console keeps warnings and errors (safety must never be hidden); everything
+        # routine drops to the log file, which nobody reads mid-session.
+        import logging as _logging
+        for h in _logging.getLogger().handlers:
+            if isinstance(h, _logging.StreamHandler) and not isinstance(
+                    h, _logging.FileHandler):
+                h.setLevel(_logging.WARNING)
+        print("=" * 60)
+        print(f"  BLINDED RUN — arm {args.blind_label}")
+        print("  Place the parts as prompted. Which configuration this is, and how it is")
+        print("  doing, are deliberately not shown. Both are in the log file.")
+        print("=" * 60, flush=True)
+
+    if args.confirm_each_trial:
+        if args.headless:
+            log.error("--confirm-each-trial needs an operator; --headless pre-fills the "
+                      "detection queue and would hang. Drop one of the two flags.")
+            return 2
+        if not sys.stdin.isatty():
+            log.error("--confirm-each-trial reads ENTER from the terminal, but stdin is "
+                      "not a terminal here. Run it in a real terminal, otherwise the gate "
+                      "would silently never wait.")
+            return 2
 
     # Auto-pick cell config by --mode (if user did not override). Avoids the
     # situation where --mode real accidentally uses cell_layout.yaml (robot_connection
@@ -332,6 +448,12 @@ def main() -> int:
         log.info("Auto-pick cell-config: %s (theo --mode=%s)", args.cell_config, args.mode)
 
     config = load_yaml(PROJECT_ROOT / args.config)
+    # Settings for the physical cell and the paper's five parts live under "real:"
+    # and override the top-level (simulation) keys only in real mode, so the
+    # simulated tray/bottle/cup/bolt scenario keeps its behaviour.
+    real_overrides = config.pop("real", None) or {}
+    if args.mode == "real":
+        config.update(real_overrides)
 
     # Real mode: enable C2 safety layer (reach envelope + predictive safety over full trajectory).
     # Overrides the sim-friendly defaults in orchestrator _DEFAULT_CONFIG.
@@ -365,6 +487,53 @@ def main() -> int:
     # Pass home_joints from cell config to Orchestrator so _return_home uses
     # the correct home defined in the cell (not JointsHome() from the .robot file).
     config["home_joints_deg"] = list(cell_config.robot.home_joints_deg)
+
+    # ─── Preflight (real mode), BEFORE any connection to the robot ───
+    table_plane = None
+    calib_path = PROJECT_ROOT / config["calibration_path"]
+    if args.mode == "real":
+        from src.orchestrator.preflight import check_depth_mode, check_real_mode
+
+        problems, table_z = check_real_mode(
+            config, calib_path,
+            cell_config.robot.pose.xyz_mm, cell_config.robot.pose.rpy_deg)
+        dm_problems, table_plane = check_depth_mode(config, calib_path, args.depth_mode)
+        problems += dm_problems
+        if problems:
+            for p in problems:
+                log.error("PREFLIGHT: %s", p)
+            log.error("Real-mode run refused before connecting to the robot (%d problem%s).",
+                      len(problems), "" if len(problems) == 1 else "s")
+            return 5
+        config["table_top_z_mm"] = table_z
+        log.info("PREFLIGHT ok: calibrated T_BC, base pose unchanged, table top %.1f mm, "
+                 "jaw-tip floor %.1f mm, heights %s", table_z,
+                 table_z + float(config.get("table_safety_margin_mm", 100.0)),
+                 config.get("class_heights_mm"))
+        if table_plane is not None:
+            log.info("Depth mode %s; table plane z = %.5f x + %.5f y + %.1f mm (tilt %.2f deg)",
+                     args.depth_mode, table_plane["a"], table_plane["b"], table_plane["c"],
+                     float(table_plane.get("tilt_deg", float("nan"))))
+        else:
+            log.warning("Depth mode rgbd without a usable table plane: carton sizes are not "
+                        "resolved per instance, and the configured carton height is used.")
+    elif args.depth_mode != "rgbd":
+        log.error("--depth-mode %s needs the calibrated cell (--mode real): it intersects "
+                  "viewing rays with the measured table plane.", args.depth_mode)
+        return 2
+
+    # ─── Perception: camera, detector and pose extractor ───
+    # Built BEFORE the robot connection, so a missing model, a camera fault or a part
+    # without a height stops the run without touching the controller.
+    # Pass cell_config so mock detection auto-matches the real object pose.
+    camera, detector = build_perception(args.mode, config, args, cell_config)
+    extractor = None
+    if args.mode == "real":
+        extractor = build_extractor(camera.intrinsics, detector, config, args.depth_mode,
+                                    table_plane, calib_path)
+        if extractor is None:
+            camera.stop()
+            return 5
 
     # ─── Resolve backend ───
     # Motion backend:
@@ -508,23 +677,33 @@ def main() -> int:
             " (live Open3D viewport ON)" if viewport_cb else " (viewport OFF — telemetry-only)",
         )
 
-    # ─── Perception ───
-    # Pass cell_config so mock detection auto-matches the real object pose.
-    camera, detector = build_perception(args.mode, config, args, cell_config)
+    # ─── Perception node (camera, detector and extractor were built above) ───
     # Headless: queue large enough to pre-fill 1 scenario/trial (deterministic).
     qsize = args.trials + 1 if args.headless else 3
     det_queue: queue.Queue = queue.Queue(maxsize=qsize)
     ts = timestamp()
-    frames_dir = str(PROJECT_ROOT / f"results/frames/{ts}") if args.save_frames else None
+    if args.save_frames:
+        base = Path(args.frames_dir)
+        if not base.is_absolute():
+            base = PROJECT_ROOT / base
+        frames_dir = str(base / ts)
+        free_gb = shutil.disk_usage(base.parent if base.exists() else base.anchor).free / 2**30
+        log.info("Frames → %s (%.1f GB free on that disk)", frames_dir, free_gb)
+        if free_gb < 20.0:
+            log.warning("Under 20 GB free where frames are written. A campaign writes "
+                        "one image per processed frame; when the disk fills, saving "
+                        "fails silently and the failure context for C3 is lost.")
+    else:
+        frames_dir = None
     perception = PerceptionNode(camera, detector, det_queue,
-                                save_frames_dir=frames_dir)
+                                save_frames_dir=frames_dir, extractor=extractor)
 
     # ─── Logger ───
     label = "headless" if args.headless else args.mode
     trial_logger = TrialLogger(
         PROJECT_ROOT / f"results/experiment_{label}_{ts}.csv",
         extra_context={"lighting": args.lighting, "overlap": args.overlap,
-                       "mode": label},
+                       "mode": label, "depth_mode": args.depth_mode},
     )
 
     # ─── Orchestrator ───
@@ -532,27 +711,115 @@ def main() -> int:
                         logger_obj=trial_logger)
 
     # ─── Pose list (paired McNemar design, paper §3.7) ───
-    pre_trial_hook = None
+    pose_rows = None
     if args.pose_list:
         pl_path = Path(args.pose_list)
         if not pl_path.is_absolute():
             pl_path = PROJECT_ROOT / args.pose_list
         pose_rows = _load_pose_list(pl_path)
+        if args.pose_slice:
+            try:
+                lo_s, hi_s = args.pose_slice.split(":")
+                lo = int(lo_s) if lo_s else 0
+                hi = int(hi_s) if hi_s else len(pose_rows)
+            except ValueError:
+                log.error("--pose-slice must look like 25:50 (0-based, end exclusive); "
+                          "got %r", args.pose_slice)
+                return 2
+            if not 0 <= lo < hi <= len(pose_rows):
+                log.error("--pose-slice %s is outside the pose list of %d rows",
+                          args.pose_slice, len(pose_rows))
+                return 2
+            pose_rows = pose_rows[lo:hi]
+            args.trials = len(pose_rows)
+            log.info("Pose slice %s → %d trial(s), pose_id %s..%s", args.pose_slice,
+                     len(pose_rows), pose_rows[0].get("pose_id", "?"),
+                     pose_rows[-1].get("pose_id", "?"))
         if len(pose_rows) < args.trials:
             log.warning("Pose list has %d entries < --trials %d → running %d trials",
                         len(pose_rows), args.trials, len(pose_rows))
             args.trials = len(pose_rows)
 
+    orch.session_id = args.session_id
+    orch.block_id = args.block_id
+    orch.operator_id = args.operator_id
+
+    pre_trial_hook = None
+    if pose_rows is not None or args.confirm_each_trial:
+
         def pre_trial_hook(i: int) -> None:
-            row = pose_rows[i - 1]
-            orch.current_pose_id = str(row.get("pose_id", i))
-            log.info(
-                "▶ Trial %d — PLACE OBJECT: card=%s  x=%s mm  y=%s mm  yaw=%s deg%s%s",
-                i, row.get("card_id", "?"), row.get("x_mm", "?"),
-                row.get("y_mm", "?"), row.get("yaw_deg", "?"),
-                f"  class={row['class_hint']}" if row.get("class_hint") else "",
-                f"  condition={row['condition']}" if row.get("condition") else "",
-            )
+            if pose_rows is not None:
+                row = pose_rows[i - 1]
+                orch.current_pose_id = str(row.get("pose_id", i))
+                orch.current_condition = str(row.get("condition", ""))
+                orch.current_stack_on = str(row.get("stack_on", ""))
+                log.info(
+                    "▶ Trial %d — PLACE OBJECT: card=%s  x=%s mm  y=%s mm  yaw=%s deg%s%s",
+                    i, row.get("card_id", "?"), row.get("x_mm", "?"),
+                    row.get("y_mm", "?"), row.get("yaw_deg", "?"),
+                    f"  class={row['class_hint']}" if row.get("class_hint") else "",
+                    f"  condition={row['condition']}" if row.get("condition") else "",
+                )
+                if row.get("stack_on"):
+                    # Easy to miss in a list of otherwise identical instructions, and
+                    # a missed one silently turns a stacked trial into a flat one.
+                    log.info("    STACKED: put the %s down on the card FIRST, then the "
+                             "%s on top of it.", row["stack_on"],
+                             row.get("class_hint", "part"))
+            if args.blind_label:
+                row_ = pose_rows[i - 1] if pose_rows is not None else {}
+                print(f"\n[{args.blind_label}] Trial {i}/{args.trials} — PLACE: "
+                      f"card={row_.get('card_id', '?')}  yaw={row_.get('yaw_deg', '?')} deg"
+                      f"  class={row_.get('class_hint', '?')}", flush=True)
+                if row_.get("stack_on"):
+                    print(f"    STACKED: {row_['stack_on']} down first, then "
+                          f"{row_.get('class_hint', 'the part')} on top.", flush=True)
+            if not args.confirm_each_trial:
+                return
+            try:
+                input("   Placed it? TAKE YOUR HAND OUT of the cell, then press ENTER ")
+            except EOFError:
+                log.error("stdin closed during --confirm-each-trial; stopping rather than "
+                          "moving the robot with nobody confirming.")
+                raise KeyboardInterrupt from None
+            # The perception node keeps grabbing frames while the operator is still
+            # over the table, and the queue holds up to 3 of them. Without this the
+            # cycle would detect the table as it was BEFORE the part was placed.
+            dropped = 0
+            while True:
+                try:
+                    det_queue.get_nowait()
+                    dropped += 1
+                except queue.Empty:
+                    break
+            if dropped:
+                log.debug("Dropped %d frame(s) captured before placement finished", dropped)
+
+    if args.confirm_each_trial:
+
+        def human_score_hook(trial_id: int, machine_success: bool) -> int | str:
+            """Ask the operator what they saw, and put it in the `human_ok` column.
+
+            The machine's own verdict is deliberately NOT shown in the prompt, and
+            the question never names the configuration, so this stays usable inside
+            a blinded run. Anything other than the four accepted keys re-asks: a
+            stray ENTER must not be recorded as a good grasp.
+            """
+            while True:
+                try:
+                    ans = input(f"   Trial {trial_id} — part in the right place? "
+                                "[y]=yes  [n]=no  ").strip().lower()
+                except EOFError:
+                    log.error("stdin closed while scoring trial %d — logging it "
+                              "unscored. The next trial will stop the run.", trial_id)
+                    return ""
+                if ans in {"y", "t", "1"}:
+                    return 1
+                if ans in {"n", "h", "0"}:
+                    return 0
+                print("   Type y or n.", flush=True)
+
+        orch.human_score_hook = human_score_hook
 
     def _drive_experiment() -> None:
         """Run N trials → cleanup digital twin → log summary.

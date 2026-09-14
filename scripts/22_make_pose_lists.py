@@ -36,9 +36,13 @@ sys.path.insert(0, str(PROJECT_ROOT))
 from src.synthgen import SynthgenConfig  # noqa: E402
 from src.utils import setup_logging  # noqa: E402
 
-# Hard-set condition labels cycled over trials with --hard. They must match
-# the physical setups you build AND the --lighting labels used in 03 runs.
-DEFAULT_HARD_CONDITIONS = ["dim", "side_light", "novel_background"]
+# Hard-set condition labels for --hard. The paper's primary hard set is the
+# TWO-FACTOR family (novel background under dimmed light), so that is the default:
+# one condition, staged once, held for the whole campaign. The single-factor
+# families are secondary descriptors scored on images, not on grasp trials — pass
+# them explicitly if you really want grasp data on them, and note that every extra
+# label means the operator must restage the cell between blocks.
+DEFAULT_HARD_CONDITIONS = ["novel_background_dim"]
 
 
 def parse_args() -> argparse.Namespace:
@@ -49,17 +53,40 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--cards", type=int, nargs=2, default=[5, 4],
                         metavar=("NX", "NY"),
                         help="Template card grid over the pick region (default 5x4=20)")
+    parser.add_argument("--yaw-step-deg", type=float, default=5.0,
+                        help="Round each yaw to this step so the operator can set it against "
+                             "the printed tick ring on the card, and repeat the SAME angle in "
+                             "every configuration being compared. 0 disables rounding.")
     parser.add_argument("--margin-mm", type=float, default=40.0,
                         help="Keep cards this far from the region edge")
     parser.add_argument("--config", default="config/synthgen.yaml",
                         help="Supplies the pick-region bounds (single source of truth)")
-    parser.add_argument("--class-hints", default="carton,plastic_box,wood_box,metal_box",
+    parser.add_argument("--class-hints",
+                        default="carton,plastic_box,wood_box,metal_box,inox_box",
                         help="Comma list cycled per trial for class balance "
-                             "('' = no hint, operator's choice)")
+                             "('' = no hint, operator's choice). The inox case is the "
+                             "decisive class of the depth-mode comparison, so leaving it "
+                             "out produces a campaign that cannot answer C4.")
+    parser.add_argument("--class-weights", default="",
+                        help="Comma list of weights matching --class-hints, e.g. "
+                             "'1,1,1,1,4' to spend 40 percent of the trials on the last "
+                             "class. McNemar power is set by the number of pairs in the "
+                             "deciding cell, not by the total, so enrich that cell rather "
+                             "than splitting the budget evenly. Empty = equal shares.")
+    parser.add_argument("--stack-frac", type=float, default=0.0,
+                        help="Fraction of trials staged as a stacked scene: the operator "
+                             "puts the class named in the stack_on column on the card "
+                             "first, then the target part on top of it. The one-layer "
+                             "assumption of the plane depth mode is exactly what these "
+                             "trials probe, so the stacked rows of the depth-mode table "
+                             "have no source without them. 0 = none.")
     parser.add_argument("--hard", action="store_true",
-                        help="Cycle hard-set condition labels per trial")
+                        help="Attach hard-set condition labels")
     parser.add_argument("--conditions", default=",".join(DEFAULT_HARD_CONDITIONS),
-                        help="Hard condition labels to cycle (with --hard)")
+                        help="Hard condition labels (with --hard). Emitted in CONTIGUOUS "
+                             "BLOCKS, never alternated per trial: restaging the background "
+                             "and the lighting every third trial is not something anyone "
+                             "does 200 times.")
     parser.add_argument("--out", required=True, help="Output CSV path")
     return parser.parse_args()
 
@@ -95,17 +122,51 @@ def main() -> int:
         out = PROJECT_ROOT / args.out
     out.parent.mkdir(parents=True, exist_ok=True)
 
+    # Class order: cycled so the balance is exact rather than approximate, and
+    # weighted so the deciding class can be given more of the budget.
+    if classes:
+        if args.class_weights:
+            w = [int(x) for x in args.class_weights.split(",")]
+            if len(w) != len(classes):
+                log.error("--class-weights has %d entries but --class-hints has %d",
+                          len(w), len(classes))
+                return 1
+            cycle = [c for c, k in zip(classes, w) for _ in range(k)]
+        else:
+            cycle = list(classes)
+    else:
+        cycle = [""]
+
+    # Stacked trials: spread evenly through the list rather than clustered, so a
+    # half-finished run still holds a representative share of them.
+    n_stack = int(round(args.stack_frac * args.n))
+    stack_at = set(np.linspace(0, args.n - 1, n_stack).round().astype(int).tolist()) \
+        if n_stack else set()
+
     with out.open("w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
         writer.writerow(["pose_id", "card_id", "x_mm", "y_mm", "yaw_deg",
-                         "class_hint", "condition"])
+                         "class_hint", "condition", "stack_on"])
         for i in range(args.n):
             card_id, x, y = cards[int(rng.integers(0, len(cards)))]
             yaw = float(rng.uniform(yaw0, yaw1))
+            if args.yaw_step_deg > 0:
+                # The operator sets the angle by eye against a printed tick ring; a yaw of
+                # 85.6 deg cannot be placed, let alone repeated in the next run.
+                yaw = round(yaw / args.yaw_step_deg) * args.yaw_step_deg
+            cls = cycle[i % len(cycle)]
+            # Contiguous blocks, not per-trial alternation: the operator restages the
+            # cell once per block.
+            cond = conditions[(i * len(conditions)) // args.n] if conditions else ""
+            if i in stack_at and classes:
+                # Support box: any class other than the target, cycled for variety.
+                others = [c for c in classes if c != cls] or [cls]
+                stack_on = others[i % len(others)]
+            else:
+                stack_on = ""
             writer.writerow([
                 f"P{i + 1:04d}", card_id, round(x, 1), round(y, 1), round(yaw, 1),
-                classes[i % len(classes)] if classes else "",
-                conditions[i % len(conditions)] if conditions else "",
+                cls, cond, stack_on,
             ])
 
     cards_txt = out.with_suffix(out.suffix + ".cards.txt")

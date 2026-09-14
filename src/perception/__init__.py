@@ -8,6 +8,7 @@ Public API:
     PerceptionNode
 """
 from .camera import D455Camera, MockCamera
+from .depth_modes import DEPTH_MODES, TablePlane, ray_plane_depth, resolve_size
 from .detector import DEFAULT_CLASS_NAMES, Detection, MockDetector, ObjectDetector
 from .perception_node import PerceptionNode
 from .postprocess import (
@@ -35,4 +36,8 @@ __all__ = [
     "resize_mask",
     "deproject_pixel",
     "z_from_ground_plane",
+    "DEPTH_MODES",
+    "TablePlane",
+    "ray_plane_depth",
+    "resolve_size",
 ]
