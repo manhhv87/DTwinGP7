@@ -1,0 +1,96 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1120 660" width="1120" height="660"
+     role="img" aria-label="Bo tri chung: camera co dinh cao 710 mm nhin xuong, tam ban co ngua len va giu o do cao h >= H + 50 mm, toi da 470 mm tren mat ban, ca bo kep nam duoi tam; kem hinh lung tam voi hai thanh ga cach nhau 200 mm">
+  <defs>
+    <marker id="d2" viewBox="0 0 10 10" refX="5" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#5a6673"/>
+    </marker>
+    <marker id="am" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#b45309"/>
+    </marker>
+  </defs>
+  <rect x="0" y="0" width="1120" height="660" fill="#ffffff"/>
+  <g font-family="'Segoe UI',system-ui,sans-serif" fill="#1f2933">
+    <text x="26" y="32" font-size="16" fill="#1f2933" font-weight="700">Nhìn ngang toàn cell</text>
+    <text x="26" y="52" font-size="12" fill="#5a6673">Cả bộ kẹp nằm dưới tấm, nên không che hoa văn.</text>
+    <text x="26" y="70" font-size="12" fill="#b45309">Bộ kẹp vẽ phỏng theo ảnh chụp, chưa đo.</text>
+    <rect x="270.3" y="91.9" width="41.4" height="11.5" fill="#e6eef6" stroke="#3d474f" stroke-width="1.1"/>
+    <rect x="285.5" y="103.4" width="11.0" height="4.6" fill="#2f5d8a" stroke="#3d474f" stroke-width="0"/>
+    <line x1="291.0" y1="108.0" x2="30.0" y2="371.0" stroke="#2f5d8a" stroke-width="1" stroke-dasharray="5 4"/>
+    <line x1="291.0" y1="108.0" x2="552.0" y2="371.0" stroke="#2f5d8a" stroke-width="1" stroke-dasharray="5 4"/>
+    <rect x="217.4" y="280.5" width="147.2" height="9.2" fill="#eceff2" stroke="#3d474f" stroke-width="0.9"/>
+    <rect x="232.6" y="257.5" width="5.5" height="23.0" fill="#eceff2" stroke="#3d474f" stroke-width="0.9"/>
+    <rect x="343.9" y="257.5" width="5.5" height="23.0" fill="#eceff2" stroke="#3d474f" stroke-width="0.9"/>
+    <rect x="238.1" y="246.0" width="6.9" height="11.5" fill="#454c54" stroke="#3d474f" stroke-width="0.9"/>
+    <rect x="337.0" y="246.0" width="6.9" height="11.5" fill="#454c54" stroke="#3d474f" stroke-width="0.9"/>
+    <rect x="245.0" y="246.0" width="18.4" height="9.2" fill="#cbd7e2" stroke="#3d474f" stroke-width="0.9"/>
+    <rect x="318.6" y="246.0" width="18.4" height="9.2" fill="#cbd7e2" stroke="#3d474f" stroke-width="0.9"/>
+    <rect x="222.7" y="242.8" width="136.6" height="3.2" fill="#f4f7fa" stroke="#3d474f" stroke-width="1.1"/>
+    <rect x="222.7" y="240.5" width="136.6" height="2.3" fill="#b45309" stroke="#3d474f" stroke-width="0"/>
+    <rect x="280.9" y="289.7" width="20.2" height="9.2" fill="#eceff2" stroke="#3d474f" stroke-width="0.9"/>
+    <polyline points="291,299 291,320 191,430" fill="none" stroke="#22303c" stroke-width="7" stroke-linejoin="round" stroke-linecap="round"/>
+    <line x1="40.0" y1="430.0" x2="542.0" y2="430.0" stroke="#22303c" stroke-width="3"/>
+    <line x1="524.0" y1="108.0" x2="524.0" y2="430.0" stroke="#5a6673" stroke-width="1" marker-start="url(#d2)" marker-end="url(#d2)"/>
+    <text x="516" y="275" font-size="11.5" fill="#5a6673" text-anchor="middle" transform="rotate(-90 516 275)">710</text>
+    <line x1="120.0" y1="246.0" x2="120.0" y2="430.0" stroke="#5a6673" stroke-width="1" marker-start="url(#d2)" marker-end="url(#d2)"/>
+    <text x="112" y="340" font-size="11.5" fill="#5a6673" text-anchor="middle" transform="rotate(-90 112 340)">h</text>
+    <line x1="389.1" y1="108.5" x2="311.7" y2="97.9" stroke="#3d474f" stroke-width="1"/>
+    <circle cx="400.0" cy="110.0" r="11" fill="#ffffff" stroke="#3d474f" stroke-width="1.4"/>
+    <text x="400.0" y="114.5" font-size="13" font-weight="700" text-anchor="middle">1</text>
+    <line x1="420.2" y1="204.9" x2="346.2" y2="241.9" stroke="#3d474f" stroke-width="1"/>
+    <circle cx="430.0" cy="200.0" r="11" fill="#ffffff" stroke="#3d474f" stroke-width="1.4"/>
+    <text x="430.0" y="204.5" font-size="13" font-weight="700" text-anchor="middle">2</text>
+    <line x1="441.0" y1="250.1" x2="332.4" y2="250.6" stroke="#3d474f" stroke-width="1"/>
+    <circle cx="452.0" cy="250.0" r="11" fill="#ffffff" stroke="#3d474f" stroke-width="1.4"/>
+    <text x="452.0" y="254.5" font-size="13" font-weight="700" text-anchor="middle">3</text>
+    <line x1="429.2" y1="298.1" x2="355.4" y2="285.1" stroke="#3d474f" stroke-width="1"/>
+    <circle cx="440.0" cy="300.0" r="11" fill="#ffffff" stroke="#3d474f" stroke-width="1.4"/>
+    <text x="440.0" y="304.5" font-size="13" font-weight="700" text-anchor="middle">4</text>
+    <circle cx="38" cy="486" r="10.5" fill="none" stroke="#3d474f" stroke-width="1.4"/>
+    <text x="38" y="490" font-size="12.5" font-weight="700" text-anchor="middle">1</text>
+    <text x="58" y="487" font-size="12.5" fill="#1f2933" font-weight="600">Camera D455 cố định trên giá</text>
+    <text x="58" y="503" font-size="11.5" fill="#5a6673">cao 710 mm, nhìn thẳng xuống</text>
+    <circle cx="38" cy="528" r="10.5" fill="none" stroke="#3d474f" stroke-width="1.4"/>
+    <text x="38" y="532" font-size="12.5" font-weight="700" text-anchor="middle">2</text>
+    <text x="58" y="529" font-size="12.5" fill="#1f2933" font-weight="600">Tấm bàn cờ, mặt in NGỬA LÊN</text>
+    <text x="58" y="545" font-size="11.5" fill="#5a6673">vạch cam là mặt in; úp xuống thì camera không thấy gì</text>
+    <circle cx="38" cy="570" r="10.5" fill="none" stroke="#3d474f" stroke-width="1.4"/>
+    <text x="38" y="574" font-size="12.5" font-weight="700" text-anchor="middle">3</text>
+    <text x="58" y="571" font-size="12.5" fill="#1f2933" font-weight="600">Hai thanh gá kẹp vào hai má kẹp</text>
+    <text x="58" y="587" font-size="11.5" fill="#5a6673">chi tiết xem bản vẽ ban_ve_ga_3d</text>
+    <circle cx="38" cy="612" r="10.5" fill="none" stroke="#3d474f" stroke-width="1.4"/>
+    <text x="38" y="616" font-size="12.5" font-weight="700" text-anchor="middle">4</text>
+    <text x="58" y="613" font-size="12.5" fill="#1f2933" font-weight="600">Cổ tay lật cho kẹp hướng LÊN TRỜI</text>
+    <text x="58" y="629" font-size="11.5" fill="#5a6673">cả bộ kẹp nằm dưới tấm</text>
+    <line x1="586.0" y1="24.0" x2="586.0" y2="636.0" stroke="#ccd5dd" stroke-width="1"/>
+    <text x="612" y="32" font-size="16" fill="#1f2933" font-weight="700">Nhìn từ dưới lên, lưng tấm</text>
+    <text x="612" y="52" font-size="12" fill="#5a6673">Hoa văn ở mặt bên kia. Kích thước thật, mm.</text>
+    <rect x="662.5" y="89.8" width="357.0" height="252.5" fill="#f4f7fa" stroke="#3d474f" stroke-width="1.6"/>
+    <line x1="662.5" y1="216.0" x2="1019.5" y2="216.0" stroke="#c3ccd4" stroke-width="1" stroke-dasharray="6 4"/>
+    <line x1="841.0" y1="89.8" x2="841.0" y2="342.2" stroke="#c3ccd4" stroke-width="1" stroke-dasharray="6 4"/>
+    <rect x="756.0" y="131.0" width="170.0" height="34.0" fill="#cbd7e2" stroke="#3d474f" stroke-width="1.1"/>
+    <rect x="756.0" y="267.0" width="170.0" height="34.0" fill="#cbd7e2" stroke="#3d474f" stroke-width="1.1"/>
+    <rect x="756.0" y="118.2" width="170.0" height="12.8" fill="#454c54" stroke="#3d474f" stroke-width="1.1"/>
+    <rect x="756.0" y="301.0" width="170.0" height="12.8" fill="#454c54" stroke="#3d474f" stroke-width="1.1"/>
+    <line x1="722.0" y1="98.7" x2="722.0" y2="114.0" stroke="#b45309" stroke-width="2.2" marker-end="url(#am)"/>
+    <line x1="722.0" y1="333.3" x2="722.0" y2="318.0" stroke="#b45309" stroke-width="2.2" marker-end="url(#am)"/>
+    <line x1="662.5" y1="73.2" x2="1019.5" y2="73.2" stroke="#5a6673" stroke-width="1" marker-start="url(#d2)" marker-end="url(#d2)"/>
+    <text x="841" y="65" font-size="11.5" fill="#5a6673" text-anchor="middle">420</text>
+    <line x1="643.8" y1="89.8" x2="643.8" y2="342.2" stroke="#5a6673" stroke-width="1" marker-start="url(#d2)" marker-end="url(#d2)"/>
+    <text x="636" y="216" font-size="11.5" fill="#5a6673" text-anchor="middle" transform="rotate(-90 636 216)">297</text>
+    <line x1="977.0" y1="131.0" x2="977.0" y2="301.0" stroke="#5a6673" stroke-width="1" marker-start="url(#d2)" marker-end="url(#d2)"/>
+    <text x="991" y="216" font-size="11.5" fill="#5a6673" text-anchor="middle" transform="rotate(-90 991 216)">200</text>
+    <text x="612" y="400" font-size="12" fill="#5a6673">Hai thanh gá dán đối xứng qua tâm, chạy dọc cạnh 420.</text>
+    <text x="612" y="418" font-size="12" fill="#5a6673">Số 200 đo giữa hai mặt NGOÀI; khe giữa hai thanh khi đó là 120.</text>
+    <text x="612" y="436" font-size="12" fill="#5a6673">Mũi tên cam là chiều má kẹp đóng vào.</text>
+    <rect x="612" y="452" width="484" height="122" rx="3" fill="#eef3f7" stroke="#93aec6" stroke-width="1"/>
+    <text x="628" y="474" font-size="12.5" fill="#24506f" font-weight="700">Giữ tấm cao bao nhiêu: hai ràng buộc ngược nhau</text>
+    <text x="628" y="493" font-size="11.5" fill="#24506f">Camera: trên 505 mm hoa văn tràn khung. Nghiêng tấm ăn thêm biên,</text>
+    <text x="628" y="509" font-size="11.5" fill="#24506f">nên lấy trần an toàn 470 mm. Dưới 250 mm hoa văn chỉ chiếm 1/3 khung.</text>
+    <text x="628" y="530" font-size="11.5" fill="#24506f">Cơ khí: lật kẹp lên thì mặt bích nằm ở h − H, với H là khoảng cách</text>
+    <text x="628" y="546" font-size="11.5" fill="#24506f">mặt bích tới mặt trên má kẹp. Phải có h ≥ H + 50 để mặt bích không</text>
+    <text x="628" y="562" font-size="11.5" fill="#24506f">chạm bàn. Ước lượng H = 250–330 mm, nhưng PHẢI ĐO.</text>
+    <rect x="612" y="590" width="484" height="62" rx="3" fill="none" stroke="#b45309" stroke-width="1.5"/>
+    <text x="628" y="614" font-size="12" fill="#7a4d06" font-weight="700">Lắp và tháo tấm phải hai người. Mở kẹp là tấm rơi.</text>
+    <text x="628" y="633" font-size="12" fill="#7a4d06">Gá xong lắc thử tay. Thấy rơ một chút là làm lại.</text>
+  </g>
+</svg>
