@@ -56,8 +56,9 @@ inter_trial_delay_s: 1.0        # nghỉ giữa các trial
 detection_timeout_s: 2.0        # thời gian chờ detection tối đa
 
 # ───── Perception (mode real) ─────
-# Detector triển khai cho chiến dịch gắp: seed 1 của E2, seed có val mAP cao nhất, đúng
-# quy tắc đã ghi trong paper. Chép từ _work/ket_qua_E2/runs/seed1/weights/best.pt.
+# Checkpoint E2 hiện có: seed 1, được chọn trước đây theo validation mask mAP.
+# Chưa xác nhận lại lựa chọn này theo điểm composite box+mask của protocol mới.
+# Bản cục bộ trùng _work/ket_qua_E2/runs/seed1/weights/best.pt theo SHA-256.
 model_path: "models/e2_seed1_best.pt"
 conf_threshold: 0.5
 

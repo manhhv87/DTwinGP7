@@ -12,9 +12,12 @@ Pure stdlib (csv) → no pandas dependency, usable anywhere.
 from __future__ import annotations
 
 import csv
+import json
 import logging
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
+from uuid import uuid4
 
 logger = logging.getLogger(__name__)
 
@@ -72,6 +75,7 @@ CONTEXT_FIELDNAMES = [
     # landed where it should. A part dropped in transfer scores success=1 here and
     # human_ok=0. Empty when nobody scored the trial.
     "human_ok",
+    "run_id",
 ]
 
 
@@ -88,12 +92,41 @@ class TrialLogger:
         self,
         csv_path: str | Path,
         extra_context: dict[str, Any] | None = None,
+        run_metadata: dict[str, Any] | Callable[[], dict[str, Any]] | None = None,
     ) -> None:
         self.csv_path = Path(csv_path)
         self.csv_path.parent.mkdir(parents=True, exist_ok=True)
-        self.context = extra_context or {}
+        self.context = dict(extra_context or {})
+        self.run_id = uuid4().hex
+        self.metadata_path = self.csv_path.with_name(
+            f"{self.csv_path.stem}.{self.run_id}.metadata.json")
+        self._metadata_source = run_metadata
+        self._created_at = datetime.now(timezone.utc).isoformat()
         self._rows: list[dict[str, Any]] = []
         self._fieldnames = self._resolve_fieldnames()
+        with self.csv_path.open(newline="", encoding="utf-8") as stream:
+            self._first_data_row = sum(1 for row in csv.reader(stream) if row)
+        self.write_run_metadata()
+
+    def write_run_metadata(self) -> None:
+        """Refresh runtime settings without recomputing the checkpoint hash.
+
+        A unique sidecar per invocation also preserves provenance when appending
+        to a legacy CSV without a run_id column. Data row numbers are one-based.
+        """
+        if self._metadata_source is None:
+            return
+        provenance = (self._metadata_source() if callable(self._metadata_source)
+                      else self._metadata_source)
+        payload = {"schema_version": 1, "run_id": self.run_id,
+                   "created_at_utc": self._created_at, "csv": str(self.csv_path.resolve()),
+                   "csv_has_run_id": "run_id" in self._fieldnames,
+                   "first_data_row": self._first_data_row,
+                   "rows_written": len(self._rows), "provenance": provenance}
+        temporary = self.metadata_path.with_suffix(".json.tmp")
+        temporary.write_text(json.dumps(payload, indent=2, ensure_ascii=False,
+                                        default=str) + "\n", encoding="utf-8")
+        temporary.replace(self.metadata_path)
 
     def _resolve_fieldnames(self) -> list[str]:
         """New files get the full schema; existing files keep their own header
@@ -143,11 +176,13 @@ class TrialLogger:
         }
         if extra:
             row.update(extra)
+        row["run_id"] = self.run_id
         # Restrict to the file's schema (old files → old columns; unknown keys dropped).
         row = {k: row.get(k, "") for k in self._fieldnames}
-        self._rows.append(row)
         with self.csv_path.open("a", newline="", encoding="utf-8") as f:
             csv.DictWriter(f, fieldnames=self._fieldnames).writerow(row)
+        self._rows.append(row)
+        self.write_run_metadata()
 
         status = "OK" if success else f"FAIL ({failure_reason})"
         logger.info("Trial %d logged: %s", trial_id, status)

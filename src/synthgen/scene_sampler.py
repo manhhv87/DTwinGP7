@@ -12,7 +12,8 @@ widths kappa*sigma; sigma comes from the bootstrap of the hand-eye calibration
 (config/calibration/T_base_camera_sigma.json) or, as a fallback, from
 config/synthgen.yaml. Task variables (object pose, count) are fully random.
 
-BLIND mode: identical factors, wide hand-set ranges, no calibration info.
+BLIND mode: wide hand-set perturbation ranges around the same camera reference,
+with a different appearance recipe. It is not independent of calibration.
 
 The sampler runs in the repo venv and writes plain-JSON scene specs; rendering
 happens separately under `blenderproc run` (render_blenderproc.py), which only
@@ -23,6 +24,7 @@ from __future__ import annotations
 
 import json
 import time
+from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
@@ -32,6 +34,7 @@ from .anchored_config import LIGHTING_CONDITION_SCALE, SynthgenConfig
 
 # Schema version of the scene-spec JSON contract with render_blenderproc.py.
 SPEC_VERSION = 1
+ABLATION_FACTORS = ("none", "illumination", "background", "distractors", "camera", "pose")
 
 
 def _rotvec_deg_to_matrix(rv_deg: np.ndarray) -> np.ndarray:
@@ -73,6 +76,9 @@ class SceneSampler:
             sigma_trans_mm [3] and sigma_rot_deg [3]; overrides YAML fallbacks.
         seed: Base RNG seed. Scene i uses default_rng(seed + i) → any subset of
             a run can be regenerated deterministically.
+        ablation: One E5 factor to fix/remove, or "none" for the full recipe.
+            Available only for unconditional anchored sampling. All factors are
+            drawn before applying the intervention, preserving paired RNG draws.
     """
 
     def __init__(
@@ -83,9 +89,14 @@ class SceneSampler:
         kappa: float = 2.0,
         sigma: dict[str, Any] | None = None,
         seed: int = 0,
+        ablation: str = "none",
     ) -> None:
         if mode not in ("anchored", "blind"):
             raise ValueError(f"mode must be 'anchored' or 'blind', got '{mode}'")
+        if ablation not in ABLATION_FACTORS:
+            raise ValueError(f"ablation must be one of {ABLATION_FACTORS}, got '{ablation}'")
+        if ablation != "none" and mode != "anchored":
+            raise ValueError("E5 ablation requires mode='anchored'")
         T = np.asarray(T_BC_mm, dtype=float)
         if T.shape != (4, 4):
             raise ValueError(f"T_BC_mm must be 4x4, got {T.shape}")
@@ -94,6 +105,7 @@ class SceneSampler:
         self.mode = mode
         self.kappa = float(kappa)
         self.seed = int(seed)
+        self.ablation = ablation
 
         cam = config.camera
         if sigma is not None:
@@ -104,6 +116,81 @@ class SceneSampler:
             self.sigma_trans = np.asarray(cam.sigma_trans_mm, dtype=float)
             self.sigma_rot = np.asarray(cam.sigma_rot_deg, dtype=float)
             self.sigma_source = "yaml_fallback"
+
+        self.ablation_protocol = {
+            "protocol_version": 1,
+            "factor": ablation,
+            "reference": self._ablation_reference(),
+        }
+
+    def _ablation_reference(self) -> dict[str, Any] | list[Any] | None:
+        """Resolve fixed settings once, from the supplied configuration only."""
+        if self.ablation == "none":
+            return None
+        if self.ablation == "camera":
+            return {"T_BC_mm": self.T_BC.tolist(),
+                    "intrinsics": dict(self.config.camera.intrinsics)}
+        if self.ablation == "illumination":
+            lit = self.config.lighting
+            return [{"type": "point", "position_mm": list(pos),
+                     "energy_w": float(lit.anchor_intensity_w),
+                     "color_temp_k": float(lit.anchor_color_temp_k)}
+                    for pos in lit.anchor_positions_mm]
+        if self.ablation == "background":
+            bg = self.config.background
+            return {"kind": "plane", "z_mm": self.config.objects.table_z_mm,
+                    "albedo_rgb": list(bg.anchor_albedo_rgb),
+                    "roughness": float(bg.anchor_roughness)}
+        if self.ablation == "distractors":
+            return []
+
+        # Pose is fixed conditional on count; class, size and material still vary.
+        # Slots are cell centres along the longer region axis (X breaks a tie).
+        obj = self.config.objects
+        ranges = np.asarray([obj.region_x_mm, obj.region_y_mm], dtype=float)
+        widths = ranges[:, 1] - ranges[:, 0]
+        axis = int(np.argmax(widths))
+        centre = ranges.mean(axis=1)
+        counts = obj.count_range
+        if len(counts) != 2 or counts[0] < 1 or counts[1] < counts[0]:
+            raise ValueError("pose ablation requires a positive ordered objects.count_range")
+        if counts[1] > 1 and widths[axis] / counts[1] < obj.min_separation_mm:
+            raise ValueError("pose reference slots cannot satisfy min_separation_mm; "
+                             "revise and document the reference region/count protocol")
+        poses_by_count = {}
+        yaw = float(np.mean(obj.yaw_range_deg))
+        for n in range(counts[0], counts[1] + 1):
+            poses = []
+            for i in range(n):
+                xy = centre.copy()
+                xy[axis] = ranges[axis, 0] + (i + 0.5) * widths[axis] / n
+                poses.append({"xyz_mm": [float(xy[0]), float(xy[1]), obj.table_z_mm],
+                              "yaw_deg": yaw})
+            poses_by_count[str(n)] = poses
+        return {"rule": "count_conditional_long_axis_cell_centres",
+                "axis": "xy"[axis], "poses_by_count": poses_by_count}
+
+    def _generator_profile(self) -> dict[str, Any]:
+        """Persist remaining distributions and effective camera widths for audit."""
+        return {"config": self.config.model_dump(mode="json"),
+                "T_BC_mm": self.T_BC.tolist(),
+                "sigma_trans_mm": self.sigma_trans.tolist(),
+                "sigma_rot_deg": self.sigma_rot.tolist()}
+
+    def _check_condition(self, condition: dict[str, Any] | None) -> None:
+        if self.ablation != "none" and condition:
+            raise ValueError("E5 ablation cannot be combined with failure conditioning")
+
+    def _apply_ablation(self, spec: dict[str, Any]) -> None:
+        reference = deepcopy(self.ablation_protocol["reference"])
+        if self.ablation == "pose":
+            poses = reference["poses_by_count"][str(len(spec["objects"]))]
+            for obj, pose in zip(spec["objects"], poses):
+                obj.update(pose)
+        elif self.ablation != "none":
+            key = "lights" if self.ablation == "illumination" else self.ablation
+            spec[key] = reference
+        spec["ablation"] = deepcopy(self.ablation_protocol)
 
     # ────────────────────────────────────────────────────────────
     # Per-factor sampling
@@ -346,9 +433,10 @@ class SceneSampler:
                  "lighting": str|None} — forces the first object's class/region
                 and scales lighting to the named regime.
         """
+        self._check_condition(condition)
         rng = np.random.default_rng(self.seed + index)
         lighting_condition = (condition or {}).get("lighting")
-        return {
+        spec = {
             "spec_version": SPEC_VERSION,
             "index": int(index),
             "seed": self.seed,
@@ -362,6 +450,8 @@ class SceneSampler:
             "distractors": self._sample_distractors(rng),
             "condition": condition or None,
         }
+        self._apply_ablation(spec)
+        return spec
 
     def write_specs(
         self,
@@ -371,16 +461,11 @@ class SceneSampler:
         start_index: int = 0,
     ) -> Path:
         """Write n scene specs + manifest.json to out_dir. Returns manifest path."""
+        self._check_condition(condition)
+        if n < 1 or start_index < 0:
+            raise ValueError("n must be positive and start_index non-negative")
         out = Path(out_dir)
-        out.mkdir(parents=True, exist_ok=True)
-        files = []
-        for i in range(start_index, start_index + n):
-            spec = self.sample(i, condition=condition)
-            name = f"scene_{i:06d}.json"
-            with (out / name).open("w", encoding="utf-8") as f:
-                json.dump(spec, f, indent=2)
-            files.append(name)
-
+        files = [f"scene_{i:06d}.json" for i in range(start_index, start_index + n)]
         manifest_path = out / "manifest.json"
         manifest = {
             "spec_version": SPEC_VERSION,
@@ -391,6 +476,8 @@ class SceneSampler:
             "kappa": self.kappa if self.mode == "anchored" else None,
             "seed": self.seed,
             "sigma_source": self.sigma_source,
+            "ablation": deepcopy(self.ablation_protocol),
+            "generator_profile": self._generator_profile(),
             "condition": condition or None,
             "files": files,
         }
@@ -398,11 +485,30 @@ class SceneSampler:
         if manifest_path.exists():
             with manifest_path.open("r", encoding="utf-8") as f:
                 old = json.load(f)
+            # Check BEFORE writing scenes: never mix arms or silently overwrite a
+            # run. Legacy manifests lack the profile needed to prove equivalence.
+            for key in ("spec_version", "mode", "kappa", "seed", "sigma_source",
+                        "ablation", "generator_profile"):
+                if old.get(key) != manifest[key]:
+                    raise ValueError(f"Existing manifest differs in '{key}'; use a new output directory")
+            if set(old.get("files", [])) & set(files):
+                raise ValueError("Scene indices already exist; use a new output directory or start_index")
             manifest["files"] = old.get("files", []) + files
             manifest["n"] = len(manifest["files"])
-            manifest["batches"] = old.get("batches", []) + [
+            manifest["start_index"] = min(old["start_index"], start_index)
+            manifest["batches"] = old.get("batches", [{
+                "start_index": old["start_index"], "n": old["n"],
+                "condition": old.get("condition"),
+            }]) + [
                 {"start_index": start_index, "n": n, "condition": condition or None}
             ]
+        if any((out / name).exists() for name in files):
+            raise ValueError("Scene file already exists; use a new output directory or start_index")
+        out.mkdir(parents=True, exist_ok=True)
+        for i, name in zip(range(start_index, start_index + n), files):
+            spec = self.sample(i, condition=condition)
+            with (out / name).open("w", encoding="utf-8") as f:
+                json.dump(spec, f, indent=2)
         with manifest_path.open("w", encoding="utf-8") as f:
             json.dump(manifest, f, indent=2)
         return manifest_path

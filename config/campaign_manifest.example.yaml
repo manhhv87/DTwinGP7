@@ -1,0 +1,283 @@
+# Scientific campaign record, NOT a runtime configuration file.
+# Copy and complete for a named campaign before final evaluation.
+# null means unresolved, not zero / false / an accepted default.
+schema_version: 1
+status: draft
+campaign_id: null
+prepared_by: null
+frozen_at: null
+frozen_by: null
+source:
+  code_commit: null
+  manuscript_revision_id: null
+  manifest_sha256_recorded_in: null  # Hash externally; avoid a self-referential hash.
+  environment_lock_path: null
+  environment_lock_sha256: null
+
+class_names: [carton, plastic_box, wood_box, metal_box, inox_box]
+
+calibration:
+  session_id: null
+  measured_at: null
+  operator: null
+  cell_layout_path: config/cell_layout_real.yaml
+  cell_layout_sha256: null
+  transform_path: config/calibration/T_base_camera.npy
+  transform_sha256: null
+  metadata_path: config/calibration/T_base_camera_meta.json
+  metadata_sha256: null
+  uncertainty_path: config/calibration/T_base_camera_sigma.json
+  uncertainty_sha256: null
+  table_plane_path: config/calibration/table_plane.json
+  table_plane_sha256: null
+  intrinsics_path: null
+  intrinsics_sha256: null
+  actual_board_square_mm: null
+  actual_board_marker_mm: null
+  tcp_offset_xyz_mm: null
+  taught_place_xyz_mm: null
+  calibration_pose_count: null
+  touch_test_path: null
+  touch_test_sha256: null
+  physical_validity_criteria: null
+  confirmed_real_measurement: null
+
+data:
+  real_train:
+    image_manifest_path: null
+    image_manifest_sha256: null
+    capture_sessions: null
+    verified_image_count: null
+    historical_paper_count: 1256
+    historical_linux_manifest_verified: null
+    local_observation_2026_09_21:
+      exported_train_image_count: 1318
+      declared_train_split_count: 1256
+      extra_negative_pool_count: 62
+      note: Windows export appends negatives; historical Linux training input is unresolved.
+    extra_negative_pool_policy: null
+  real_validation:
+    image_manifest_path: null
+    image_manifest_sha256: null
+    capture_sessions: null
+    verified_image_count: null
+    historical_paper_count: 223
+  fitted_generator_parameters:
+    source_image_manifest_path: null
+    source_image_manifest_sha256: null
+    parameter_fit_record_path: null
+    parameter_fit_record_sha256: null
+  legacy_standard_hard:
+    role: development
+    informed_generator_development: true
+    combined_hard_family_selected_post_baseline: true
+    image_manifest_path: null
+    image_manifest_sha256: null
+  final_real_images:
+    role: independent_final_evaluation
+    image_manifest_path: null
+    image_manifest_sha256: null
+    capture_sessions: null
+    verified_image_count: null
+    class_condition_counts: null
+  final_synthetic_images:
+    role: independent_final_evaluation
+    image_manifest_path: null
+    image_manifest_sha256: null
+    generation_seed: null
+    generation_start_index: null
+    rng_range_disjoint_from_training: null
+    verified_image_count: null
+    class_condition_counts: null
+  adaptation:
+    pose_list_path: null
+    pose_list_sha256: null
+    sessions: null
+    trial_file_allowlist_path: null
+    trial_file_allowlist_sha256: null
+  evaluation:
+    pose_list_path: null
+    pose_list_sha256: null
+    sessions: null
+    trial_file_allowlist_path: null
+    trial_file_allowlist_sha256: null
+  drift_reference:
+    pose_list_path: null
+    pose_list_sha256: null
+    block_design: null
+  disjointness_review:
+    checked_by: null
+    checked_at: null
+    adaptation_vs_evaluation_pose_ids: null
+    adaptation_vs_evaluation_sessions: null
+    final_images_vs_training_validation_fitting: null
+    evidence_path: null
+
+training:
+  ultralytics_version: 8.4.66
+  architecture: yolov8s-seg
+  initial_pretrained_checkpoint_path: null
+  initial_pretrained_checkpoint_sha256: null
+  epochs_E2_E3_E5: 130
+  epochs_per_E4_update: null  # Must be explicitly fixed before refinement.
+  imgsz: 1280
+  batch: 8
+  nbs: 64
+  patience: 0
+  optimizer: AdamW
+  lr0: 0.001111
+  momentum: 0.9
+  warmup_epochs: 3.0
+  warmup_bias_lr: 0.0
+  lrf: 0.01
+  cos_lr: false
+  close_mosaic: 10
+  effective_augmentation_config_path: null
+  effective_augmentation_config_sha256: null
+  seeds:
+    E2: [0, 1, 2, 3, 4]
+    E3: [0, 1, 2, 3, 4]
+    E4: [0, 1, 2]
+    E5: [0, 1, 2]
+  run_register_path: null  # Include GPU, update counts, data ratios, wall time, seed.
+  run_register_sha256: null
+
+selection:
+  score: validation_box_map50_95_plus_mask_map50_95
+  per_run_checkpoint: maximum_validation_score
+  kappa_candidates: [1, 2, 4]
+  kappa_rule: maximum_mean_validation_score_across_five_seeds
+  kappa_tie_break: smaller_kappa
+  deploy_rule: maximum_validation_score_within_configuration
+  deploy_tie_break: first_in_declared_seed_order
+  use_unrounded_scores: true
+  final_evaluation_may_inform_selection: false
+  selected_kappa: null
+  selected_E3_initial_checkpoint_path: null
+  selected_E3_initial_checkpoint_sha256: null
+  selection_record_path: null
+  selection_record_sha256: null
+  historical_E2_candidate:
+    path: models/e2_seed1_best.pt
+    tracked_commit: d736b75fd2089348cbf4d11b0d41fbcf68110f83
+    sha256: null
+    historical_between_seed_rule: maximum_validation_mask_map50_95
+    final_campaign_model_choice_confirmed: null
+
+experiments:
+  E1:
+    software_benchmark_plan_path: null
+    physical_measurement_plan_path: null
+    physical_counts: null
+    timestamp_boundaries: null
+  E2:
+    modes: [rgbd, plane, fusion]
+    same_checkpoint_all_modes: true
+    primary_class: inox_box
+    primary_layout_contrast: null
+    image_scoring_config_path: null
+  E3:
+    recipes: [real_only, wide_range, anchored_k1, anchored_k2, anchored_k4]
+    synthetic_train_images_per_recipe: 3000
+    synthetic_label_val_fraction: 0.0
+    generation_seed: 0
+    physical_contrasts_include_each_kappa: true
+    recipe_manifest_register_path: null
+  E4:
+    common_selected_E3_initial_checkpoint: true
+    initial_synthetic_train_images: 3000
+    added_synthetic_train_images_per_arm_per_update: 1000
+    cumulative_synthetic_train_images: [3000, 4000, 5000]
+    maximum_updates: 2
+    each_arm_retains_own_accumulated_synthetic_data: true
+    each_arm_finetunes_own_previous_checkpoint: true
+    later_updates_preserve_parent_checkpoint_per_arm_and_training_seed: true
+    parent_checkpoint_lineage_register_path: null
+    mine_only_explicit_adaptation_file_allowlist: true
+    adaptation_trial_counts: null
+    adaptation_generation_seeds: null
+    control_generation_seeds: null
+    generation_range_register_path: null  # seed + start_index through seed + last_index.
+    rng_ranges_disjoint_from_initial_and_previous_batches: null
+    no_failures_action: record_update_not_run_and_stop_without_reusing_old_allocation
+    final_evaluation_after_updates_fixed: true
+    final_evaluation_may_inform_update_or_stopping: false
+  E5:
+    full_recipe: none
+    factors: [illumination, background, distractors, camera, pose]
+    synthetic_train_images_per_configuration: 3000
+    synthetic_label_val_fraction: 0.0
+    same_generation_seed_as_full_recipe: true
+    generation_seed: 0
+    resolved_ablation_manifest_register_path: null
+    image_and_physical_outcomes_for_all_five_factors: true
+    difference_direction: ablation_minus_full
+  E6:
+    transfer_gap_percentage_points: 100_times_synthetic_map_minus_real_map
+    planned_complete_cycles: 100
+    timing_boundary_definition: null
+    stage_timestamp_instrumentation_record: null
+    failure_reset_operator_wait_policy: null
+    eligible_existing_trial_allowlist_path: null
+    total_percentiles_from_measured_total_cycles: true
+
+physical_protocol:
+  status: pending_measurements_and_final_allocation
+  proposed_paired_poses_per_configuration_per_condition: 200
+  final_paired_pose_counts: null
+  class_layout_condition_allocation: null
+  sessions_blocks_operators: null
+  planned_pose_list_seed: null
+  block_order_seed: null
+  block_size: null
+  blinding_key_record_path: null
+  independent_hardware_calibration_exclusion_criteria: null
+  exclusion_log_path: null
+  all_recorded_trial_sensitivity_if_exclusions: true
+  deployment:
+    models_per_configuration: 1
+    inference_scope: conditional_on_selected_checkpoint_not_training_run_variability
+    frozen_configuration_register_path: null
+    model_and_configuration_sha256_register_path: null
+    conf_threshold: 0.5
+    nms_iou_threshold: 0.45
+    geometry_depth_settings_path: null
+    geometry_depth_settings_sha256: null
+  endpoint:
+    name: complete_pick_and_place_success
+    score_column: human_ok
+    intended_part_picked: true
+    transported_without_drop: true
+    released_within_taught_place_tolerance: true
+    placement_tolerance_mm: 15
+    placement_reference_centre_or_edge: null
+    checked_axes: null
+    conveyor_state_during_scoring: null
+    carrier_continuity_evidence_method: null
+    assessor_training_record_path: null
+    missing_or_ambiguous_score_rule: null
+    retain_machine_success_as_separate_measure: true
+    predispatch_safety_rejections_count_as_task_failures: true
+
+analysis:
+  pairing_unit: pose_id
+  repeated_attempts_are_not_new_independent_pose_units: true
+  binary_test: two_sided_exact_mcnemar
+  effect_and_discordant_convention: n01_is_baseline_failure_comparator_success
+  effect: n01_minus_n10_divided_by_complete_pairs
+  paired_bootstrap_repetitions: 10000
+  paired_bootstrap_seed: 0
+  interval: pointwise_95_percent_percentile
+  multiplicity_method: Holm
+  contrast_family_register_path: null
+  primary_class_layout_family: null
+  cluster_sensitivity_plan: null
+  final_allocation_power_review_path: null
+  claim_equivalence_from_non_significant_result: false
+  image_summary: mask_map_mean_and_sample_sd_across_training_seeds
+  timing_summary: observed_count_and_P50_P95_from_complete_cycle_records
+
+changes_after_freeze:
+  change_log_path: null
+  preserve_original_manifest: true
+  identify_affected_results_as_deviations_or_exploratory: true

@@ -256,20 +256,14 @@ class ExperimentMixin:
         # Real perception requires YOLO weights — warn if missing.
         if perc_choice == "real":
             cfg = self._assemble_experiment_config_real(ik_source)
-            mp = cfg.get("model_path", "models/yolov8s-seg_best.pt")
-            wp = Path(mp)
-            if not wp.is_absolute():
-                wp = root / wp
-            if not wp.exists():
-                r = QMessageBox.question(
+            from ...perception.model_artifact import resolve_model_path
+            try:
+                resolve_model_path(cfg, root)
+            except (FileNotFoundError, ValueError) as exc:
+                QMessageBox.warning(
                     self, "Missing YOLO weights",
-                    f"Model not found:\n{wp}\n\n"
-                    "Use Perception = Mock (dry-run) to test the pipeline without a "
-                    "camera/model, or Cancel to adjust.\n\nContinue anyway?",
-                    QMessageBox.StandardButton.Yes
-                    | QMessageBox.StandardButton.Cancel)
-                if r != QMessageBox.StandardButton.Yes:
-                    return
+                    f"{exc}\n\nSet model_path to the intended checkpoint before running.")
+                return
 
         ip = self._hse_ip
         warn_mock = ("<br><br><b style='color:#d83b01'>⚠ Mock dry-run:</b> the robot "
@@ -372,6 +366,7 @@ class ExperimentMixin:
             from ..telemetry import TelemetryLogger
             from ..orchestrator import Orchestrator
             from ...logging import TrialLogger
+            from ...perception.model_artifact import capture_config_files, run_metadata
             from ...utils import timestamp
             from pathlib import Path
             import queue as _queue
@@ -413,6 +408,7 @@ class ExperimentMixin:
             twin.start_mirror()
 
             config = self._assemble_experiment_config_real(ik_source)
+            config_inputs = capture_config_files([root / "config" / "experiment.yaml"])
 
             qsize = (n + 1) if perc_choice == "mock" else 3
             det_queue: _queue.Queue = _queue.Queue(maxsize=max(3, qsize))
@@ -425,9 +421,18 @@ class ExperimentMixin:
 
             trial_logger = TrialLogger(
                 root / "results" / f"experiment_real_{ts}.csv",
-                extra_context={"mode": "real", "ik": ik_source})
+                extra_context={"mode": "real", "ik": ik_source},
+                run_metadata=lambda: run_metadata(
+                    orch.config if orch is not None else config,
+                    getattr(perception, "detector", None),
+                    entrypoint="gui.experiment",
+                    config_files=config_inputs,
+                    runtime={"perception": perc_choice, "ik_source": ik_source,
+                             "trials": n, "ultra_fast": ultra_fast,
+                             "config_assembly": "GUI overrides; not the full CLI real overlay"}))
             orch = Orchestrator(det_queue, config=config, robot=twin,
                                 logger_obj=trial_logger)
+            trial_logger.write_run_metadata()
 
             self._signals.status.emit(
                 f"Digital Twin experiment: {n} trials — IK={ik_source}, "
@@ -509,11 +514,13 @@ class ExperimentMixin:
         self._signals.exp_done.emit(stats if stats is not None else {})
 
     def _assemble_experiment_config_real(self, ik_source: str = "yrc") -> dict:
-        """Build config for a REAL-ROBOT experiment (matches `03_run_experiment.py --mode real`).
+        """Build the GUI experiment's real-mode configuration.
 
         Base from experiment.yaml (model_path/conf/place…) + real-mode flag overrides +
         base/home/tool from cell config. Returns an OVERRIDE dict; Orchestrator merges it
         with `_DEFAULT_CONFIG`.
+        This path does not yet apply the CLI's full nested real overlay or its
+        calibration/depth preflight; campaign runs should use the CLI protocol.
         """
         from pathlib import Path
         cfg: dict = {}
@@ -595,10 +602,9 @@ class ExperimentMixin:
             return PerceptionNode(camera, detector, det_queue), False
 
         from ...perception import D455Camera, ObjectDetector
+        from ...perception.model_artifact import load_configured_detector
+        detector = load_configured_detector(config, self._project_root, ObjectDetector)
         camera = D455Camera()
-        detector = ObjectDetector(
-            model_path=config.get("model_path", "models/yolov8s-seg_best.pt"),
-            conf=config.get("conf_threshold", 0.5))
         return PerceptionNode(camera, detector, det_queue), True
 
     # ── Main-thread slots for exp signals ────────────────────────────────
