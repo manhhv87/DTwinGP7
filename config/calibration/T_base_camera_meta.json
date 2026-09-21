@@ -1,0 +1,61 @@
+{
+  "date": "2026-09-18T10:19:28",
+  "cell_config": "config/cell_layout_real.yaml",
+  "robot_base_xyz_mm": [
+    0.0,
+    0.0,
+    630.0
+  ],
+  "robot_base_rpy_deg": [
+    0.0,
+    0.0,
+    0.0
+  ],
+  "handeye_gripper_frame": "tool0",
+  "gripper_tcp_offset_xyz_mm": [
+    0.0,
+    0.0,
+    0.0
+  ],
+  "gripper_tcp_offset_rpy_deg": [
+    0.0,
+    0.0,
+    0.0
+  ],
+  "method": "park",
+  "n_poses": 25,
+  "board": {
+    "squares": [
+      7,
+      5
+    ],
+    "square_mm": 45.0,
+    "marker_mm": 34.0,
+    "dictionary": "DICT_4X4_50"
+  },
+  "intrinsics": {
+    "serial": "241122301774",
+    "stream": [
+      1280,
+      720,
+      30
+    ],
+    "fx": 645.00732421875,
+    "fy": 644.201904296875,
+    "ppx": 647.2855224609375,
+    "ppy": 368.7839660644531,
+    "width": 1280,
+    "height": 720,
+    "model": "distortion.inverse_brown_conrady",
+    "coeffs": [
+      -0.05425490438938141,
+      0.06280827522277832,
+      -0.000731065112631768,
+      0.0005183194298297167,
+      -0.020119739696383476
+    ],
+    "depth_scale_m": 0.0010000000474974513
+  },
+  "pose_source": "YRC1000 Joints() -> DTwinGP7 URDF FK -> tool0",
+  "frame_note": "Includes robot.pose pedestal/world transform; matches experiment project frame."
+}

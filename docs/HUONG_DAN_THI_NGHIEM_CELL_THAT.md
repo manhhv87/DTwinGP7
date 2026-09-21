@@ -2,11 +2,11 @@
 
 ## 0. Chú ý
 
-- Hướng dẫn này được đồng bộ với Methods/Results ngày 21/09/2026. Trước chiến dịch chính,
-  điền và khóa [campaign manifest](CAMPAIGN_MANIFEST.md); các số lượt và ngày trong lệnh
-  dưới đây là ví dụ lập lịch, chưa phải xác nhận phân bổ lớp/layout hoặc đủ lực thống kê.
-- Quy trình đóng gói dữ liệu và huấn luyện Linux: [TRAINING_WORKFLOW.md](TRAINING_WORKFLOW.md).
-  Model dùng ở cell phải có ID, SHA-256, nguồn dữ liệu và biên bản chọn bằng validation.
+- Bản ngày 21/09/2026, khớp với Methods/Results của bài báo cùng ngày.
+- Người chạy cell làm theo đúng các lệnh trong đây; số lượt và tên buổi trong lệnh là số đã
+  dùng để lập lịch. Người huấn luyện giữ [campaign manifest](CAMPAIGN_MANIFEST.md) và
+  [TRAINING_WORKFLOW.md](TRAINING_WORKFLOW.md); hai file đó nằm trong `docs\` của mã nguồn,
+  người chạy cell không cần mở.
 - Ba mục đầu là chuẩn bị, sau đó là **5 pha, chặn nhau**: pha trước còn vướng mục DỪNG thì không chạy pha sau.
 - IP tủ điều khiển: **192.168.1.100**.
 
@@ -23,12 +23,12 @@
 | Bước | Chạy ở đâu | Robot | Người làm gì | Ra cái gì |
 |---|---|---|---|---|
 | Chuẩn bị, mục 1–3 | máy tính cạnh cell | không | đo bốn số, in và gá bàn cờ | các file cấu hình đã điền số thật |
-| Pha 1, hiệu chuẩn | cell, chế độ TEACH | người jog, robot không tự đi | 25–30 tư thế, rồi chạm thử 8 điểm | 4 file trong `config\calibration\` |
+| Pha 1, hiệu chuẩn | cell, chế độ TEACH | người jog, robot không tự đi | **đã làm 18/09/2026**; còn đo cạnh ô bàn cờ và chạm thử 8 điểm | 4 file trong `config\calibration\`, đã có trên git |
 | Pha 2, chạy thử | cell, chế độ REMOTE | robot tự chạy | 1 lượt rồi 5 lượt, đo lệch điểm thả, dán vạch 30 mm | 1 CSV + 1 telemetry |
-| Pha 3, E1 | cell | số mẫu theo manifest (lệnh ví dụ 50 lượt) | đặt vật, bấm ENTER, chấm y/n | `e1_*`, CSV, telemetry, 4 PNG |
-| Pha 4, E2 | cell | dự kiến 200 pose/nhánh/điều kiện, phân bổ và đối chứng cần khóa | đặt vật, chấm y/n, không mở file khoá | 24 CSV khối mỗi buổi, file khoá, thư mục khung ảnh |
+| Pha 3, E1 | cell | 50 lượt | đặt vật, bấm ENTER, chấm y/n | `e1_*`, CSV, telemetry, 4 PNG |
+| Pha 4, E2 | cell | 3 nhánh × 200 lượt, bộ khó 200 lượt, kèm đối chứng 20+20 mỗi buổi | đặt vật, chấm y/n, không mở file khoá | 24 CSV khối mỗi buổi, file khoá, thư mục khung ảnh |
 | Pha 5, sinh ảnh và huấn luyện | **máy GPU Linux** | không | khóa luật validation, train đủ seed, chọn κ cho E4/E5 | `specs`/`render`/`dataset`, package `dsv<k>/`, `runs/` |
-| Pha 5, đo lại | cell | như Pha 4 | chép mô hình mới về rồi chạy lại đúng danh sách thẻ cũ | CSV gắp của mô hình mới |
+| Pha 5, đo lại | cell | như Pha 4, số lượt do người huấn luyện gửi kèm mô hình | chép mô hình mới về rồi chạy lại đúng danh sách thẻ cũ | CSV gắp của mô hình mới |
 | Phân tích | máy tính | không | gõ đúng lệnh có `>` hoặc `\| tee` | `e2_phan_tich.txt`, `results_summary.png` |
 
 ### Mã trong bài báo nằm ở pha nào
@@ -41,7 +41,7 @@ theo pha, nên đây là bảng tra:
 | **C1** | Digital twin của cell, kèm cách đo độ trễ đồng bộ, sai số hình học, chi phí lập quỹ đạo | Pha 3 (E1) |
 | **C2** | Ảnh tổng hợp neo theo hiệu chuẩn, so với ngẫu nhiên hoá dải rộng cùng ngân sách | Pha 5 (E3) |
 | **C3** | Phân bổ ảnh theo lỗi, so với tăng cường ngẫu nhiên cùng ngân sách | Pha 5 (E4, có E5 bổ trợ) |
-| **C4** | Ba chế độ độ sâu `rgbd`, `plane`, `fusion`, gồm cả vật inox phản chiếu | **Pha 4 (E2)**, ba nhánh ghép cặp theo manifest |
+| **C4** | Ba chế độ độ sâu `rgbd`, `plane`, `fusion`, gồm cả vật inox phản chiếu | **Pha 4 (E2)**, 600 lượt của lệnh chiến dịch mù |
 
 E5 và E6 không mang mã đóng góp riêng: E5 khảo sát yếu tố của recipe sinh ảnh, E6 cho khoảng cách mô phỏng với thật và
 thời gian chu kỳ.
@@ -127,8 +127,9 @@ git pull
 .venv\Scripts\activate
 ```
 
-Nếu `git pull` báo `config/synthgen.yaml` đã bị sửa ở máy, chạy `git checkout -- config/synthgen.yaml`
-rồi `git pull` lại: bản trên git đã có sẵn thông số camera thật của cell.
+Nếu `git pull` báo `config/synthgen.yaml` hoặc file trong `config/calibration/` đã bị sửa ở máy,
+chạy `git checkout -- config/synthgen.yaml config/calibration/` rồi `git pull` lại: bản trên git
+đã có sẵn thông số camera thật và bốn file hiệu chuẩn ngày 18/09/2026 của chính cell này.
 
 Sau bước này đầu dòng lệnh sẽ hiện `(.venv)`. Nếu không hiện, môi trường ảo chưa bật, mọi lệnh phía sau sẽ báo thiếu thư viện.
 
@@ -143,8 +144,8 @@ Kiểm tra máy chạy được, chưa cần robot:
 pytest tests/ -q
 ```
 
-**DỪNG nếu:** có test thất bại hoặc không hoàn tất. Ghi commit, môi trường, số test passed/
-skipped và lý do skip; không dùng số lượng test của một phiên bản cũ làm điều kiện đạt.
+**DỪNG nếu:** dòng cuối có chữ `failed`, hoặc không chạy hết. Ghi số `passed` vào nhật ký (bản
+ngày 21/09/2026 in `849 passed`; số này tăng khi mã có thêm test, nên không lấy nó làm cửa chặn).
 
 ```
 python scripts/03_run_experiment.py --mode sim --headless --trials 5
@@ -214,6 +215,8 @@ bộ nhận dạng đọc sai.
 
 ### Gá tấm bàn cờ lên má kẹp
 
+*Chỉ cần khi phải làm lại Pha 1. Lần hiệu chuẩn 18/09/2026 đã gá xong và chụp đủ 25 tư thế.*
+
 ![Bố trí chung và kích thước tấm](ban_ve_ga_ban_co.png)
 
 ![Chi tiết gá và trình tự lắp](ban_ve_ga_3d.png)
@@ -232,7 +235,7 @@ thò ra ngoài mép tấm cũng không sao, nó nằm dưới tấm.
 - *Camera:* trên 505 mm hoa văn tràn khung, nghiêng tấm còn ăn thêm biên nên lấy trần **470 mm**. Dưới 250 mm hoa văn chỉ chiếm một phần ba bề ngang, đọc góc kém.
 - *Cơ khí:* lật kẹp lên thì mặt bích, xi lanh, càng ngang, giá đỡ đều nằm **dưới** tấm. Tấm ở độ cao h thì mặt bích ở **h − H**. Muốn mặt bích cách bàn ít nhất 50 mm thì **h ≥ H + 50**.
 
-H đo được khoảng 180 mm (mặt bích tới mặt dưới kẹp, người dùng báo 21/09/2026), nên ràng buộc cơ
+H đo được khoảng 180 mm (mặt bích tới mặt dưới kẹp, đo ngày 21/09/2026), nên ràng buộc cơ
 khí là h ≥ 230 mm; cộng giới hạn camera thì cửa sổ là **250 đến 470 mm**.
 
 **Về độ nghiêng:** nghiêng càng đa dạng phép giải càng chắc, nhưng nghiêng quá thì dấu bị bóp méo và
@@ -250,7 +253,20 @@ cả 25 tư thế nằm ngang y hệt nhau.
 `T_base_camera_meta.json`, `table_plane.json`, `T_base_camera_sigma.json`. Chép `tilt_deg` và
 `rms_mm` từ `table_plane.json` vào nhật ký. Đo tay: bảng chạm thử 8 điểm.
 
-**Cần có trước:** bốn số đo ở mục 3. Bàn dọn trống. Bàn cờ đã gá chắc lên má kẹp.
+**Trạng thái: đã làm ngày 18/09/2026.** Bốn file đã nằm trong `config\calibration\` trên git
+(25 tư thế, bootstrap 200/200, mặt bàn nghiêng 0,32°, `rms_mm` 0,67). Camera **không được đụng
+vào** từ hôm đó. Còn hai việc chưa có số:
+
+1. **Đo cạnh ô và cạnh dấu của tấm bàn cờ đã in** bằng thước kẹp, ghi vào nhật ký. File hiệu
+   chuẩn ghi đúng 45,0 và 34,0, tức số in danh nghĩa. Đo ra đúng 45,0 và 34,0, sai dưới 0,2 mm (tức
+   dưới 0,5%, cỡ độ bất định 2 mm của chính hiệu chuẩn), thì hiệu chuẩn hiện tại dùng được. Đo ra khác thì mọi khoảng cách đã co giãn theo, phải chạy
+   lại lệnh dưới với số đo được.
+2. **Chạm thử ít nhất 8 điểm**, ghi ở mục GHI SỐ.
+
+Phần còn lại của Pha 1 chỉ dùng khi phải làm lại: cạnh ô đo ra khác 45,0, hoặc camera đã bị
+đụng.
+
+**Cần có trước (khi làm lại):** bốn số đo ở mục 3. Bàn dọn trống. Bàn cờ đã gá chắc lên má kẹp.
 Robot để chế độ **TEACH** (chỉ đọc khớp, robot không tự chạy).
 
 > **Bàn cờ gắn lên robot, không đặt trên bàn.** Camera đứng yên, nên thứ phải di chuyển giữa
@@ -392,16 +408,15 @@ sánh sinh ra. Người chấm bằng mắt sau mỗi lượt, câu trả lời 
 
 **Cần có trước:** Pha 3 xong, không vướng mục DỪNG nào.
 
-**Thẻ** là mốc vị trí dán trên bàn, đánh số 1–20. Mỗi lượt chương trình gọi một thẻ và một góc:
+**Thẻ** là mốc vị trí dán trên bàn, đánh số 1–21. Mỗi lượt chương trình gọi một thẻ và một góc:
 
 ```
 ▶ Trial 7 — PLACE OBJECT: card=14  x=575.0 mm  y=80.0 mm  yaw=85.0 deg  class=metal_box
 ```
 
-Cùng một danh sách đã khóa được phát lại cho mọi cấu hình cần so sánh. Kế hoạch trong Methods
-là 200 pose ghép cặp mỗi cấu hình/điều kiện; số thực tế theo manifest. Ghép cặp bằng `pose_id`,
-không coi lần thử lặp lại tại cùng pose là một đơn vị độc lập mới. Danh sách adaptation của
-E4 phải tách khỏi danh sách evaluation, kể cả các phiên và ảnh đi kèm.
+Cùng một danh sách 300 tư thế được phát lại cho mọi cấu hình, 200 tư thế đầu cho chiến dịch
+chính, nên kết quả ghép cặp được từng lượt qua `pose_id`; đó là điều kiện của kiểm định McNemar.
+Đặt đại là mất ghép cặp. Chạy lại một lượt hỏng không tạo thêm một lượt mới.
 
 **Chuẩn bị bàn:**
 
@@ -450,7 +465,7 @@ lưới phải tính lại.
 **Đặt góc:** góc trong danh sách đã làm tròn về bội số 5 độ, đặt đúng vạch gần nhất. Dung sai vị
 trí ±15 mm.
 
-> Vật dài 190 mm, thẻ cách nhau 51 mm, nên vật đặt xuống **phủ kín thẻ**. Cầm vật lơ lửng, ngắm
+> Vật dài 190 mm, thẻ cách nhau 50 đến 60 mm, nên vật đặt xuống **phủ kín thẻ**. Cầm vật lơ lửng, ngắm
 > từ trên xuống, xoay cạnh dài song song vạch cần, rồi hạ thẳng.
 
 ### Chạy: xen kẽ và mù, bằng một lệnh
@@ -465,6 +480,8 @@ Một lệnh làm cả hai việc:
 python tools/run_blinded_campaign.py --arm rgbd "--depth-mode rgbd" --arm plane "--depth-mode plane" --arm fusion "--depth-mode fusion" --pose-list config/pose_lists/std_v2.csv --trials 200 --block 25 --session 2026-09-20-sang --operator AN --seed 7 --common "--mode real --ik-source yrc --tool-no 1 --confirm-each-trial --no-viewport-mirror --save-frames --frames-dir D:/Scientific/Dataset/DigitalTwin/frames"
 ```
 
+- Đổi `2026-09-20-sang` thành tên buổi thật (ngày và sáng/chiều), và **dùng đúng tên đó** cho mọi
+  lệnh và thư mục của buổi. `--operator AN` là tên viết tắt người đặt vật.
 - Chạy `--dry-run` trước để xem lịch.
 - Màn hình chỉ hiện `[A] Trial 7/25 — PLACE: card=14 yaw=85 class=inox_box`, rồi câu hỏi chấm
   `[y]/[n]` sau khi gắp xong. Mã A, B, C bốc ngẫu nhiên; máy chấm ra sao thì không hiện, nên
@@ -494,14 +511,12 @@ và phân tích độ nhạy trên tất cả lượt đã ghi nếu có loại 
 python tools/run_blinded_campaign.py --arm real_only "--depth-mode rgbd" --pose-list config/pose_lists/hard_v2.csv --trials 200 --block 25 --session 2026-09-21-sang --operator AN --seed 8 --common "--mode real --ik-source yrc --tool-no 1 --confirm-each-trial --no-viewport-mirror --save-frames --frames-dir D:/Scientific/Dataset/DigitalTwin/frames --lighting dim"
 ```
 
-### So sánh: nộp cả họ một lần
-
-*Việc của người huấn luyện, làm sau khi đã nhận đủ dữ liệu và mở file khoá.*
+### Cuối buổi: dồn file
 
 Chiến dịch mù sinh **một file CSV cho mỗi khối 25 lượt**, không phải một file cho mỗi nhánh: ba
 nhánh × 200 lượt là 24 file trong một buổi. Tên nhánh nằm trong **cột** `depth_mode` của từng
-dòng, không nằm trong tên file. Vậy nên cuối buổi phải dồn file vào thư mục của buổi, tách khối
-đối chứng ra riêng:
+dòng, không nằm trong tên file. Cuối buổi dồn file vào thư mục của buổi, tách khối đối chứng ra
+riêng:
 
 ```
 mkdir results\2026-09-20-sang
@@ -511,7 +526,13 @@ move results\telemetry_*.csv results\2026-09-20-sang\
 ```
 
 Hai file của khối đối chứng nhận ra bằng giờ chạy (đầu buổi và cuối buổi); chuyển hai file đó
-sang `results\2026-09-20-sang-doichung\`. Rồi so sánh cả họ trong một lệnh:
+sang `results\2026-09-20-sang-doichung\`. Rồi gửi đi theo mục Chia việc. **Không mở file khoá.**
+
+### So sánh: nộp cả họ một lần
+
+*Việc của người huấn luyện, làm sau khi đã nhận đủ dữ liệu và mở file khoá.*
+
+So sánh cả họ trong một lệnh:
 
 ```
 python scripts/04_analyze_results.py --csv "results/2026-09-20-sang/experiment_real_*.csv" --split-col depth_mode --baseline rgbd --pair-key pose_id --score-col human_ok > results/e2_phan_tich.txt
@@ -818,36 +839,23 @@ Rồi **sao lưu cả thư mục `results\` và `logs\` ra ổ ngoài**, đặt 
 
 ---
 
-## Phụ lục: ngân sách số lượt gắp — dự thảo cần khóa
+## Phụ lục: số lượt gắp người chạy cell sẽ làm
 
-Các số dưới đây mô tả phạm vi so sánh, không phải cam kết đã đủ lực thống kê. Methods đề xuất
-200 pose ghép cặp mỗi cấu hình/điều kiện; phân bổ theo lớp/layout, số phiên, các đối chứng và
-những lần thử lặp phải được điền vào manifest trước thu chính thức. Không suy ra 200 pose
-pooled là 200 pose cho riêng inox hoặc riêng stacked.
+| Lúc nào | Chạy gì | Số lượt | Từ lệnh nào |
+|---|---|---:|---|
+| Pha 2 | chạy thử | 1 rồi 5 | lệnh Pha 2 |
+| Pha 3 | E1 | 50 | lệnh thứ tư của Pha 3 |
+| Pha 4, bộ chuẩn | 3 chế độ độ sâu × 200 | 600 | lệnh chiến dịch mù, `--trials 200` cho mỗi nhánh |
+| Pha 4, bộ khó | real-only, nền lạ và thiếu sáng | 200 | lệnh bộ khó |
+| Pha 4, mỗi buổi | khối đối chứng đầu và cuối buổi | 20 + 20 | lệnh khối đối chứng |
+| Pha 5, đo lại | mỗi mô hình mới người huấn luyện gửi về | do người huấn luyện ghi kèm mô hình | lệnh chiến dịch mù, đổi `model_path` |
 
-| Thí nghiệm | Cấu hình cần có | Số lượt/phân bổ còn phải khóa |
-|---|---|---|
-| E1 | Đo RTT, telemetry, touch-test; benchmark phần mềm tách riêng | Số mẫu thật mỗi phép đo, mốc thời gian và hồ sơ hiệu chuẩn |
-| E2 (C4) | Cùng detector ở RGB-D, plane, fusion | Đề xuất 200 pose mỗi cấu hình/điều kiện; lớp × layout chưa khóa |
-| E3 | Real-only, wide-range, anchored κ=1/2/4 | Cùng evaluation list; đủ nhánh để so anchored–wide ở từng κ |
-| E4 adaptation | Model guided trước mỗi update | Danh sách/phiên riêng; số adaptation trials chưa khóa |
-| E4 evaluation | f0 và hai nhánh ở tối đa hai update | Chỉ chấm sau khi đã khóa update; cùng list giữa checkpoint |
-| E5 | Full recipe và cả năm ablation | Cùng list; cả năm đều đo task success và mask mAP |
-| E6 | Cùng model, 100 chu kỳ hoàn chỉnh | Xác định log nào được dùng lại và đủ mốc stage nào |
+Con số của Pha 5 chưa chốt: bài báo đang để ngỏ việc gắp thật ở cả ba κ hay chỉ ở κ đã chọn, và
+số vòng E4. Người huấn luyện chốt rồi ghi vào manifest trước khi gửi mô hình; người chạy cell
+không tự suy ra.
 
-Không cộng một tổng gắp cuối cùng trước khi chốt phạm vi và tái sử dụng đối chứng hợp lệ.
-Đối chứng chỉ dùng chung khi checkpoint, pose list, điều kiện, calibration và phiên/block
-cho phép so sánh theo protocol; tên recipe giống nhau chưa đủ. Khối drift, chạy thử và
-adaptation không được đếm thành evaluation. Thử nghiệm 80 lượt không chứng minh không thoái
-lui; không có kế hoạch equivalence/non-inferiority đã xác định thì báo hiệu ứng và bất định.
-
-Power phụ thuộc số cặp bất đồng, phân bố lớp/layout và hiệu chỉnh nhiều phép so sánh. Hiệu
-ứng dưới 10 điểm phần trăm vẫn có thể ước lượng; không có ngưỡng phát hiện chắc chắn chỉ từ
-n=200. Khi lịch/ngân sách buộc thay đổi, cập nhật manifest và Methods/Results trước khi thu
-hoặc xem kết quả liên quan, ghi lý do và các phân tích chuyển thành exploratory.
-
-Mỗi lượt cần đặt vật thủ công: đo thời gian của pilot riêng để dự trù lịch và nhân theo số
-lượt đã khóa; không đưa pilot vào final evaluation sau khi đã dùng nó để điều chỉnh hệ thống.
+Mỗi lượt đều phải đặt vật bằng tay. Trước khi bắt đầu một chiến dịch, bấm giờ 10 lượt đầu rồi
+nhân lên để biết 200 lượt mất bao lâu, đừng ước lượng.
 
 ---
 
