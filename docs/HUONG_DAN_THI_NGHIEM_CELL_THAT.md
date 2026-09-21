@@ -2,6 +2,11 @@
 
 ## 0. Chú ý
 
+- Hướng dẫn này được đồng bộ với Methods/Results ngày 21/09/2026. Trước chiến dịch chính,
+  điền và khóa [campaign manifest](CAMPAIGN_MANIFEST.md); các số lượt và ngày trong lệnh
+  dưới đây là ví dụ lập lịch, chưa phải xác nhận phân bổ lớp/layout hoặc đủ lực thống kê.
+- Quy trình đóng gói dữ liệu và huấn luyện Linux: [TRAINING_WORKFLOW.md](TRAINING_WORKFLOW.md).
+  Model dùng ở cell phải có ID, SHA-256, nguồn dữ liệu và biên bản chọn bằng validation.
 - Ba mục đầu là chuẩn bị, sau đó là **5 pha, chặn nhau**: pha trước còn vướng mục DỪNG thì không chạy pha sau.
 - IP tủ điều khiển: **192.168.1.100**.
 
@@ -20,9 +25,9 @@
 | Chuẩn bị, mục 1–3 | máy tính cạnh cell | không | đo bốn số, in và gá bàn cờ | các file cấu hình đã điền số thật |
 | Pha 1, hiệu chuẩn | cell, chế độ TEACH | người jog, robot không tự đi | 25–30 tư thế, rồi chạm thử 8 điểm | 4 file trong `config\calibration\` |
 | Pha 2, chạy thử | cell, chế độ REMOTE | robot tự chạy | 1 lượt rồi 5 lượt, đo lệch điểm thả, dán vạch 30 mm | 1 CSV + 1 telemetry |
-| Pha 3, E1 | cell | 50 lượt | đặt vật, bấm ENTER, chấm y/n | `e1_*`, CSV, telemetry, 4 PNG |
-| Pha 4, E2 | cell | 3 nhánh × 200 lượt, bộ khó 200 lượt, kèm đối chứng 20+20 mỗi buổi | đặt vật, chấm y/n, không mở file khoá | 24 CSV khối mỗi buổi, file khoá, thư mục khung ảnh |
-| Pha 5, sinh ảnh và huấn luyện | **máy GPU Linux** | không | viết luật chọn κ, chạy val, chọn ra một κ | `specs`/`render`/`dataset`, `dsv<k>.yaml`, `runs/` |
+| Pha 3, E1 | cell | số mẫu theo manifest (lệnh ví dụ 50 lượt) | đặt vật, bấm ENTER, chấm y/n | `e1_*`, CSV, telemetry, 4 PNG |
+| Pha 4, E2 | cell | dự kiến 200 pose/nhánh/điều kiện, phân bổ và đối chứng cần khóa | đặt vật, chấm y/n, không mở file khoá | 24 CSV khối mỗi buổi, file khoá, thư mục khung ảnh |
+| Pha 5, sinh ảnh và huấn luyện | **máy GPU Linux** | không | khóa luật validation, train đủ seed, chọn κ cho E4/E5 | `specs`/`render`/`dataset`, package `dsv<k>/`, `runs/` |
 | Pha 5, đo lại | cell | như Pha 4 | chép mô hình mới về rồi chạy lại đúng danh sách thẻ cũ | CSV gắp của mô hình mới |
 | Phân tích | máy tính | không | gõ đúng lệnh có `>` hoặc `\| tee` | `e2_phan_tich.txt`, `results_summary.png` |
 
@@ -36,9 +41,9 @@ theo pha, nên đây là bảng tra:
 | **C1** | Digital twin của cell, kèm cách đo độ trễ đồng bộ, sai số hình học, chi phí lập quỹ đạo | Pha 3 (E1) |
 | **C2** | Ảnh tổng hợp neo theo hiệu chuẩn, so với ngẫu nhiên hoá dải rộng cùng ngân sách | Pha 5 (E3) |
 | **C3** | Phân bổ ảnh theo lỗi, so với tăng cường ngẫu nhiên cùng ngân sách | Pha 5 (E4, có E5 bổ trợ) |
-| **C4** | Ba chế độ độ sâu `rgbd`, `plane`, `fusion`, gồm cả vật inox phản chiếu | **Pha 4 (E2)**, chính 600 lượt của lệnh chiến dịch mù |
+| **C4** | Ba chế độ độ sâu `rgbd`, `plane`, `fusion`, gồm cả vật inox phản chiếu | **Pha 4 (E2)**, ba nhánh ghép cặp theo manifest |
 
-E5 và E6 không mang mã đóng góp riêng: E5 bổ trợ cho C3, E6 cho khoảng cách mô phỏng với thật và
+E5 và E6 không mang mã đóng góp riêng: E5 khảo sát yếu tố của recipe sinh ảnh, E6 cho khoảng cách mô phỏng với thật và
 thời gian chu kỳ.
 
 ### Chia việc
@@ -63,9 +68,8 @@ mọi thứ trên máy GPU và phần phân tích.
 `logs\experiment.log`, thư mục khung ảnh trên ổ D, file khoá
 `results\blinding_keys\key_<buổi>.json` **còn nguyên chưa mở**, và trang nhật ký của buổi.
 
-**Người huấn luyện gửi lại:** file `.pt` của mô hình mới, κ đã chọn kèm luật chọn đã ghi trước,
-dòng `model_path` cần sửa trong `config\experiment.yaml`, và danh sách thẻ cho lượt đo lại nếu
-khác lần trước.
+**Người huấn luyện gửi lại:** file `.pt` của mô hình mới kèm SHA-256, κ đã chọn kèm luật validation đã ghi trước,
+dòng `model_path` cần sửa trong `config\experiment.yaml`, và ID danh sách pose evaluation đã khóa; không thay danh sách theo kết quả.
 
 **Hai ranh giới không được vượt.** Người chạy cell không mở file khoá và không xem tỷ lệ thành
 công đang chạy: biết cấu hình nào đang chạy là hỏng phần chấm bằng mắt. Người huấn luyện không
@@ -97,8 +101,8 @@ Ba việc chi phối cả quy trình:
 - `--no-viewport-mirror`: tắt gương 3D. Khi gương bật, đoạn mã bắt Ctrl+C nằm sai luồng và
   **không bao giờ chạy**.
 
-Riêng E6 đo chu kỳ không dùng `--confirm-each-trial`, nhưng cũng không ai đứng đặt vật: lấy chu
-kỳ từ telemetry E2, hoặc chạy với vật đặt sẵn và cell trống.
+E6 vẫn giữ xác nhận từng lượt khi có người đặt vật. Chỉ bỏ cờ trong bố trí cấp vật phù hợp
+và cell không có người; tách thời gian xác nhận/đặt vật khỏi chu kỳ tự động theo protocol.
 
 ---
 
@@ -123,11 +127,15 @@ git pull
 .venv\Scripts\activate
 ```
 
+Nếu `git pull` báo `config/synthgen.yaml` đã bị sửa ở máy, chạy `git checkout -- config/synthgen.yaml`
+rồi `git pull` lại: bản trên git đã có sẵn thông số camera thật của cell.
+
 Sau bước này đầu dòng lệnh sẽ hiện `(.venv)`. Nếu không hiện, môi trường ảo chưa bật, mọi lệnh phía sau sẽ báo thiếu thư viện.
 
-**File trọng số mô hình không có trên git**, vì git của dự án cố ý loại mọi file `.pt`. Người huấn
-luyện gửi riêng file `e2_seed1_best.pt`; chép vào thư mục `models\` của mã nguồn. Thiếu file này
-thì chạy thật báo lỗi thiếu mô hình.
+**Baseline `models/e2_seed1_best.pt` đã được đưa lên Git ở commit `d736b75`.**
+Clone đúng nhánh có commit này sẽ có file. Đây là ứng viên triển khai E2 lịch sử, chọn theo
+validation mask mAP, chưa phải bằng chứng đã chạy robot thành công. Các trọng số E3–E5 khác
+vẫn được chuyển riêng từ Linux; xem [models/README.md](../models/README.md).
 
 Kiểm tra máy chạy được, chưa cần robot:
 
@@ -135,7 +143,8 @@ Kiểm tra máy chạy được, chưa cần robot:
 pytest tests/ -q
 ```
 
-**DỪNG nếu:** dòng cuối không phải `766 passed`, hoặc có chữ `failed` ở bất kỳ đâu.
+**DỪNG nếu:** có test thất bại hoặc không hoàn tất. Ghi commit, môi trường, số test passed/
+skipped và lý do skip; không dùng số lượng test của một phiên bản cũ làm điều kiện đạt.
 
 ```
 python scripts/03_run_experiment.py --mode sim --headless --trials 5
@@ -160,7 +169,7 @@ Chưa có đủ thì phần mềm **từ chối chạy** chế độ thật.
 | 1 | Đo lại tấm bàn cờ **đã in** bằng thước kẹp: cạnh một ô, cạnh một dấu. Máy in có thể co giãn vài phần trăm | gõ vào lệnh ở Pha 1 | Tấm in sẵn 7×5 ô, ô 45 mm, dấu 34 mm. **Gõ số đo được, không gõ 45/34** |
 | 2 | TCP má kẹp thật, khai TOOL01 trên teach pendant (cách làm ở mục Khai TOOL01 ngay dưới) | `config/cell_layout_real.yaml` → `gripper.tcp_offset_xyz_mm` | `[0, 0, 100]`, số giữ chỗ |
 | 3 | Điểm thả trên băng tải. Mặt băng tải **không được cao hơn** mặt bàn; thấp hơn thì vật rơi đúng phần chênh, chỉ chấp nhận vài cm | `config/experiment.yaml` → `place_position` | `[700, 120, 700]`, số giữ chỗ |
-| 4 | Thông số camera D455 thật | `config/synthgen.yaml` → `camera.intrinsics` | `fx: 642`, số giữ chỗ |
+| 4 | Thông số camera D455 thật | `config/synthgen.yaml` → `camera.intrinsics` | **đã điền sẵn** từ hiệu chuẩn 18/09/2026 (fx 645,007); chỉ sửa khi thay camera |
 
 **Không sửa `robot.pose.xyz_mm`** (đang là `[0, 0, 630]`). Giá trị này phải giống nhau lúc
 hiệu chuẩn và lúc chạy; preflight tự kiểm và từ chối chạy nếu khác. Đã sửa thì hiệu chuẩn lại.
@@ -223,8 +232,8 @@ thò ra ngoài mép tấm cũng không sao, nó nằm dưới tấm.
 - *Camera:* trên 505 mm hoa văn tràn khung, nghiêng tấm còn ăn thêm biên nên lấy trần **470 mm**. Dưới 250 mm hoa văn chỉ chiếm một phần ba bề ngang, đọc góc kém.
 - *Cơ khí:* lật kẹp lên thì mặt bích, xi lanh, càng ngang, giá đỡ đều nằm **dưới** tấm. Tấm ở độ cao h thì mặt bích ở **h − H**. Muốn mặt bích cách bàn ít nhất 50 mm thì **h ≥ H + 50**.
 
-Ước lượng H khoảng 250–330 mm, tức cửa sổ thật có thể chỉ còn **380 đến 470 mm**. Đo H rồi tính
-lại, đừng lấy con số ước lượng này làm chuẩn.
+H đo được khoảng 180 mm (mặt bích tới mặt dưới kẹp, người dùng báo 21/09/2026), nên ràng buộc cơ
+khí là h ≥ 230 mm; cộng giới hạn camera thì cửa sổ là **250 đến 470 mm**.
 
 **Về độ nghiêng:** nghiêng càng đa dạng phép giải càng chắc, nhưng nghiêng quá thì dấu bị bóp méo và
 bộ nhận dạng bỏ qua tư thế đó. Không có ngưỡng đo được, nên lấy chính chương trình làm thước:
@@ -355,7 +364,7 @@ python scripts/17_compare_fk_ik.py --samples 500 --fair
 python tools/hse_rtt.py 192.168.1.100 --n 1000 --csv results/e1_hse_rtt.csv | tee results/e1_rtt_tomtat.txt
 ```
 ```
-python scripts/03_run_experiment.py --mode real --trials 50 --depth-mode rgbd --pose-list config/pose_lists/std_v1.csv --telemetry-hz 10 --confirm-each-trial --no-viewport-mirror
+python scripts/03_run_experiment.py --mode real --trials 50 --depth-mode rgbd --pose-list config/pose_lists/std_v2.csv --telemetry-hz 10 --confirm-each-trial --no-viewport-mirror
 ```
 ```
 python scripts/05_analyze_telemetry.py latest | tee results/e1_telemetry_tomtat.txt
@@ -386,28 +395,35 @@ sánh sinh ra. Người chấm bằng mắt sau mỗi lượt, câu trả lời 
 **Thẻ** là mốc vị trí dán trên bàn, đánh số 1–20. Mỗi lượt chương trình gọi một thẻ và một góc:
 
 ```
-▶ Trial 7 — PLACE OBJECT: card=14  x=470.8 mm  y=116.7 mm  yaw=85.0 deg  class=metal_box
+▶ Trial 7 — PLACE OBJECT: card=14  x=575.0 mm  y=80.0 mm  yaw=85.0 deg  class=metal_box
 ```
 
-Cùng một danh sách 300 tư thế được phát lại cho mọi cấu hình, nên kết quả ghép cặp được từng
-lượt; đó là điều kiện của kiểm định McNemar. Đặt đại là mất ghép cặp.
+Cùng một danh sách đã khóa được phát lại cho mọi cấu hình cần so sánh. Kế hoạch trong Methods
+là 200 pose ghép cặp mỗi cấu hình/điều kiện; số thực tế theo manifest. Ghép cặp bằng `pose_id`,
+không coi lần thử lặp lại tại cùng pose là một đơn vị độc lập mới. Danh sách adaptation của
+E4 phải tách khỏi danh sách evaluation, kể cả các phiên và ảnh đi kèm.
 
 **Chuẩn bị bàn:**
 
-1. In `position_cards.pdf` (20 thẻ, một trang A4) ở **100% / actual size**, đo vạch 50 mm
+Lưới 21 thẻ (3 hàng × 7 cột) chỉ phủ phần bàn mà camera nhìn trọn cả vật cao lẫn chồng hai lớp,
+tính cả dung sai ±15 mm, và robot với tới mọi tư thế tiếp cận. Lưới tính từ hiệu chuẩn 18/09/2026
+và dụng cụ khoảng 180 mm; lý do ghi trong `config/synthgen.yaml`. Đổi camera hoặc đổi dụng cụ thì
+lưới phải tính lại.
+
+1. In `position_cards.pdf` (21 thẻ, hai trang A4) ở **100% / actual size**, đo vạch 50 mm
    in sẵn, cắt theo viền.
 
-2. **Lấy dấu bằng robot.** Toạ độ của mỗi thẻ in sẵn trên chính thẻ đó (x từ 317 đến 522 mm,
-   y từ −350 đến +350 mm), tính theo **gốc robot**, không phải mép bàn. Trên teach pendant bấm
+2. **Lấy dấu bằng robot.** Toạ độ của mỗi thẻ in sẵn trên chính thẻ đó (x từ 525 đến 625 mm,
+   y từ −160 đến +200 mm), tính theo **gốc robot**, không phải mép bàn. Trên teach pendant bấm
    COORD chọn hệ Robot, jog tới đúng X, Y của thẻ, hạ Z sát mặt bàn, đánh dấu ngay dưới đầu TCP
-   rồi nhấc lên. Cần TOOL01 đã khai đúng. Hai mươi lần, hết một buổi.
+   rồi nhấc lên. Cần TOOL01 đã khai đúng. Hai mươi mốt lần, hết một buổi.
 
 ![Toạ độ thẻ đo từ gốc robot](ban_ve_toa_do_the.png)
 
 *Bản in: `ban_ve_toa_do_the.pdf`.*
 
 3. **Dán thẻ vào dấu**, tâm thẻ trùng dấu, mũi tên trên thẻ hướng **+x, tức ra xa robot**. Dán
-   băng dính trong phủ kín cả thẻ để nó không bong và không xê dịch. Dán xong cả 20, jog lại về
+   băng dính trong phủ kín cả thẻ để nó không bong và không xê dịch. Dán xong cả 21, jog lại về
    toạ độ thẻ số 1: mũi TCP phải rơi đúng tâm thẻ đó.
 
 4. Mỗi lượt, chương trình đọc to số thẻ và góc xoay, rồi **dừng chờ**. Người đặt vật:
@@ -446,7 +462,7 @@ chấm bằng mắt, nên không được biết đang chạy cấu hình nào.
 Một lệnh làm cả hai việc:
 
 ```
-python tools/run_blinded_campaign.py --arm rgbd "--depth-mode rgbd" --arm plane "--depth-mode plane" --arm fusion "--depth-mode fusion" --pose-list config/pose_lists/std_v1.csv --trials 200 --block 25 --session 2026-09-20-sang --operator AN --seed 7 --common "--mode real --ik-source yrc --tool-no 1 --confirm-each-trial --no-viewport-mirror --save-frames --frames-dir D:/Scientific/Dataset/DigitalTwin/frames"
+python tools/run_blinded_campaign.py --arm rgbd "--depth-mode rgbd" --arm plane "--depth-mode plane" --arm fusion "--depth-mode fusion" --pose-list config/pose_lists/std_v2.csv --trials 200 --block 25 --session 2026-09-20-sang --operator AN --seed 7 --common "--mode real --ik-source yrc --tool-no 1 --confirm-each-trial --no-viewport-mirror --save-frames --frames-dir D:/Scientific/Dataset/DigitalTwin/frames"
 ```
 
 - Chạy `--dry-run` trước để xem lịch.
@@ -464,16 +480,18 @@ lúc đầu buổi và một lần lúc cuối. Dùng đoạn 200:220 của danh
 đụng tới (chiến dịch chạy 0:200), nên hai khối này không đè `pose_id` của ai:
 
 ```
-python scripts/03_run_experiment.py --mode real --depth-mode rgbd --pose-list config/pose_lists/std_v1.csv --pose-slice 200:220 --session-id 2026-09-20-sang --block-id doichung-dau --operator-id AN --confirm-each-trial --no-viewport-mirror
+python scripts/03_run_experiment.py --mode real --depth-mode rgbd --pose-list config/pose_lists/std_v2.csv --pose-slice 200:220 --session-id 2026-09-20-sang --block-id doichung-dau --operator-id AN --confirm-each-trial --no-viewport-mirror
 ```
 
-Cuối buổi chạy lại đúng lệnh đó, đổi `--block-id doichung-cuoi`. Hai khối lệch nhau nhiều hơn
-hiệu ứng đang tìm thì buổi đó bỏ.
+Cuối buổi chạy lại đúng lệnh đó, đổi `--block-id doichung-cuoi`. Chênh lệch đầu–cuối dùng để
+đánh giá drift, không phải lý do loại buổi dựa trên độ lớn hiệu ứng giữa cấu hình. Chỉ loại
+theo tiêu chí hợp lệ phần cứng/hiệu chuẩn đã khóa độc lập trước khi đo; giữ bản gốc, ghi lý do
+và phân tích độ nhạy trên tất cả lượt đã ghi nếu có loại dữ liệu.
 
 **Bộ khó** (một điều kiện duy nhất: nền lạ và thiếu sáng cùng lúc, dựng một lần giữ cả buổi):
 
 ```
-python tools/run_blinded_campaign.py --arm real_only "--depth-mode rgbd" --pose-list config/pose_lists/hard_v1.csv --trials 200 --block 25 --session 2026-09-21-sang --operator AN --seed 8 --common "--mode real --ik-source yrc --tool-no 1 --confirm-each-trial --no-viewport-mirror --save-frames --frames-dir D:/Scientific/Dataset/DigitalTwin/frames --lighting dim"
+python tools/run_blinded_campaign.py --arm real_only "--depth-mode rgbd" --pose-list config/pose_lists/hard_v2.csv --trials 200 --block 25 --session 2026-09-21-sang --operator AN --seed 8 --common "--mode real --ik-source yrc --tool-no 1 --confirm-each-trial --no-viewport-mirror --save-frames --frames-dir D:/Scientific/Dataset/DigitalTwin/frames --lighting dim"
 ```
 
 ### So sánh: nộp cả họ một lần
@@ -509,9 +527,10 @@ Khối đối chứng đầu buổi so với cuối buổi thì so theo file, v�
 python scripts/04_analyze_results.py --csv results/2026-09-20-sang-doichung/<file đầu buổi>.csv --paired-with results/2026-09-20-sang-doichung/<file cuối buổi>.csv --label-a dau_buoi --labels-b cuoi_buoi --pair-key pose_id --score-col human_ok > results/e2_doichung.txt
 ```
 
-`--score-col human_ok` chấm theo mắt người, và đó là số bài báo báo cáo. Chạy thêm một lần **bỏ
-cờ đó** để lấy số của máy vào `results/e2_phan_tich_may.txt`: chênh lệch giữa hai số chính là số
-vật đã kẹp được nhưng rơi giữa đường hoặc thả sai chỗ. Báo cáo cả hai.
+`--score-col human_ok` dùng đánh giá toàn bộ thao tác; chấm đạt chỉ khi đúng vật được gắp,
+vận chuyển và thả đúng tiêu chí đã khóa. Chạy thêm một lần **bỏ cờ đó** để lấy số của máy vào
+`results/e2_phan_tich_may.txt`. Báo cáo hai cách ghi nhận và đối chiếu từng lượt bất đồng với
+log; chênh lệch tổng không tự xác định nguyên nhân là rơi vật hay sai vị trí thả.
 
 Script này **không tự ghi log ra file**, nên phần chuyển hướng `> results/e2_phan_tich.txt` là bắt
 buộc: không có nó thì p sau Holm chỉ nằm trên màn hình.
@@ -528,189 +547,203 @@ rõ rệt là một kết quả, không phải lần trượt: ghi lại, **khô
 ---
 
 
-## Pha 5 — E3 đến E6: cần máy GPU
+## Pha 5 — E3 đến E6: sinh ảnh và huấn luyện trên Linux GPU
 
 *Việc của người huấn luyện, trừ mục Mang mô hình mới về cell.*
 
-**Mục tiêu:** sinh ảnh tổng hợp, huấn luyện lại mô hình, rồi đo lại trên chính cell thật.
+Mỗi cấu hình phải lưu spec, render, nhãn, manifest ảnh, cấu hình đã giải quyết toàn bộ giá trị,
+log huấn luyện, trọng số và SHA-256. Nguồn cấu hình khóa là
+[campaign manifest](CAMPAIGN_MANIFEST.md); lệnh đóng gói/chạy GPU chi tiết ở
+[TRAINING_WORKFLOW.md](TRAINING_WORKFLOW.md).
 
-**Kết quả ra:** mỗi cấu hình một bộ ba thư mục `data/synth/<tên>/specs`, `/render`, `/dataset`;
-`data/packages/dsv<k>.yaml`; trên máy GPU, mỗi seed một thư mục `runs/dsv<k>_s<seed>/` chứa
-`weights/best.pt` và `results.csv`; `results/failure_modes.json` của E4. Chép từ màn hình vào nhật
-ký: mAP mask của từng seed, trung bình và độ lệch chuẩn, và κ đã chọn.
+Có thể chuẩn bị package và chạy thử phần mềm trước khi E2 vật lý hoàn tất. Tuy nhiên, dữ liệu
+anchored dùng cho bài phải dựa trên hiệu chuẩn thật đã kiểm tra, cùng phiên bản cell; không
+sinh lô chính bằng transform mô phỏng hoặc sigma dự phòng rồi gọi là hiệu chuẩn đo được.
+Sinh ảnh, render, huấn luyện và validation không cần robot chuyển động. Tỷ lệ hoàn thành
+pick-and-place của E3–E5 vẫn phải đo trên cell.
 
-**Cần có trước:** E2 xong, và **không đụng vào camera** từ lúc hiệu chuẩn tới giờ.
+### E3: so sánh wide-range với anchored và quét κ
 
-Pha này sinh ảnh tổng hợp bằng Blender rồi huấn luyện lại mô hình. Nặng, nên làm trên máy GPU
-Linux, không làm trên laptop.
+Mỗi recipe dùng cùng ngân sách **3000 ảnh synthetic đưa vào train**, ngoài tập real train đã
+khóa. Trong CLI, `--mode blind` là recipe wide-range của bài. Sinh bốn cấu hình:
 
-**Phần nào cần robot:** sinh ảnh, render, gán nhãn, huấn luyện, quét κ đều **không** cần robot,
-làm hoàn toàn trên máy GPU. Nhưng E3 và E4 chỉ có mAP là chưa đủ: mỗi mô hình mới phải mang về
-cell gắp thật thì mới có tỷ lệ gắp để so. E6 thì hoặc trích từ telemetry đã ghi, hoặc chạy thêm
-một buổi ở cell.
-
-### E3: hai nhánh tổng hợp
-
-**Cả hai nhánh** đều phải đi hết bốn bước: sinh spec, render, gán nhãn, huấn luyện. Bỏ sót
-nhánh blind ở bất kỳ bước nào là mất luôn nhánh so sánh chính của C2.
-
-```
-python scripts/20_generate_synth.py --mode anchored --kappa 2 --n 3000 --seed 0 --out data/synth/anchored_k2
+```bash
 python scripts/20_generate_synth.py --mode blind --n 3000 --seed 0 --out data/synth/blind
-```
-
-Render và gán nhãn **cả hai**:
-
-```
-blenderproc run --custom-blender-path <thư mục blender> src/synthgen/render_blenderproc.py -- --scenes data/synth/anchored_k2/specs --out data/synth/anchored_k2/render --samples 24 --device gpu
-python scripts/20_generate_synth.py --make-labels --out data/synth/anchored_k2
-
-blenderproc run --custom-blender-path <thư mục blender> src/synthgen/render_blenderproc.py -- --scenes data/synth/blind/specs --out data/synth/blind/render --samples 24 --device gpu
-python scripts/20_generate_synth.py --make-labels --out data/synth/blind
-```
-
-### Quét κ bằng mAP, không bằng gắp vật lý
-
-κ là tham số tự do duy nhất của phương pháp neo, chắc chắn sẽ bị hỏi. Nhưng trả lời bằng gắp
-vật lý tốn 400 lượt. Sinh và huấn luyện cả ba κ, **chọn κ theo mAP trên bộ khó chính**, rồi chỉ
-gắp vật lý ở κ đã chọn.
-
-**Chọn lúc nào:** ngồi ở máy GPU, sau khi huấn luyện xong ba κ, và **trước khi** quay lại cell.
-Không chọn trong lúc đang chạy cell, cũng không để tới lúc phân tích số liệu gắp. Thứ tự bốn
-bước, cả bốn đều không cần robot:
-
-1. Huấn luyện ba κ, mỗi κ 5 seed.
-2. Viết luật chọn vào nhật ký.
-3. Chạy `yolo segment val` cho cả ba κ, được 15 con số mAP.
-4. Áp luật, ra đúng một κ.
-
-Xong bước 4 mới mang mô hình của κ đó về cell gắp thật.
-
-```
 python scripts/20_generate_synth.py --mode anchored --kappa 1 --n 3000 --seed 0 --out data/synth/anchored_k1
+python scripts/20_generate_synth.py --mode anchored --kappa 2 --n 3000 --seed 0 --out data/synth/anchored_k2
 python scripts/20_generate_synth.py --mode anchored --kappa 4 --n 3000 --seed 0 --out data/synth/anchored_k4
 ```
 
-Render và gán nhãn hai thư mục đó y như trên.
+Seed 0 ở đây là seed **sinh dữ liệu**, khác seed huấn luyện. Dùng chung seed sinh cảnh khi
+so sánh recipe, lưu cả spec thực tế; seed giống nhau không chứng minh các cảnh hoàn toàn
+khớp nhau khi các recipe lấy mẫu khác nhau.
 
-**Chốt luật chọn trước khi nhìn số.** Ba κ cho ba con số mAP. Nhìn ba số rồi mới chọn là chọn
-theo dữ liệu, và phản biện gọi đúng tên nó là dò. Nên trước khi chạy lệnh đánh giá **đầu tiên**,
-chép nguyên khối này vào nhật ký và điền ngày, tên người viết:
+Render rồi gán nhãn từng cấu hình, ví dụ:
 
-```
-Luật chọn kappa — chốt ngày ........, người viết ........
-1. Số dùng để chọn: mAP50-95 của mask, đo trên bộ khó chính.
-2. Mỗi kappa lấy TRUNG BÌNH 5 seed. Không lấy seed tốt nhất.
-3. Kappa nào trung bình cao nhất thì chọn.
-4. Hai kappa hơn kém nhau dưới 0,01 thì coi là hoà, chọn kappa NHỎ hơn.
-5. Chỉ kappa được chọn mới đem đi gắp vật lý. Hai kappa còn lại dừng ở mAP.
+```bash
+blenderproc run --custom-blender-path <thu_muc_blender> src/synthgen/render_blenderproc.py -- --scenes data/synth/anchored_k2/specs --out data/synth/anchored_k2/render --samples 24 --device gpu
+python scripts/20_generate_synth.py --make-labels --val-frac 0 --out data/synth/anchored_k2
 ```
 
-Viết xong mới chạy `yolo segment val` cho cả ba κ. Rồi áp luật đúng như đã viết, kể cả khi nó ra
-κ mình không thích. Muốn đổi luật thì đổi **trước** khi chạy đánh giá, và ghi rõ đã đổi cái gì.
+Lặp lại cho `blind`, `anchored_k1`, `anchored_k4`. `--val-frac 0` giữ ngân sách train 3000;
+validation để chọn model dùng **real validation đã khóa**, không lấy synthetic validation
+thay thế. Kiểm tra số ảnh/nhãn sau chuyển đổi, không coi số spec là số ảnh train đã thành công.
+Ảnh synthetic để chấm E6 phải được sinh riêng với manifest và dải `seed + index`
+không giao dải training. Chỉ đổi seed từ 0 sang 1 không tạo một bộ ảnh độc lập.
 
-Luật này quyết định 15 lần huấn luyện (3 κ × 5 seed). Máy GPU không kham nổi thì hạ số seed của
-riêng vòng quét xuống, nhưng phải hạ **trong luật, trước khi chạy**, chứ không phải hạ giữa chừng
-lúc thấy lâu.
+### Chọn κ và checkpoint bằng validation
+
+Khóa luật dưới đây **trước** khi đọc điểm của loạt cấu hình mới:
+
+1. Với từng run, giữ checkpoint có tổng `box mAP@0.5:0.95 + mask mAP@0.5:0.95`
+   trên real validation cao nhất. Điểm số dùng thang 0–1 của mỗi metric, không cộng nhầm %.
+2. Với từng κ trong `{1, 2, 4}`, tính trung bình điểm validation này của đủ năm seed
+   `[0, 1, 2, 3, 4]`. Chọn κ có trung bình cao nhất; điểm bằng nhau thì chọn κ nhỏ hơn.
+   Không tự đặt vùng hòa 0,01, không làm tròn điểm trước khi chọn.
+3. Trong mỗi cấu hình, chọn deployed seed có cùng điểm validation cao nhất; nếu hòa,
+   chọn seed đứng trước trong thứ tự `[0, 1, 2, 3, 4]` (E4/E5 dùng `[0, 1, 2]`).
+4. κ được chọn quyết định checkpoint E3 khởi tạo E4 và recipe đầy đủ cho E5. Theo Results
+   hiện tại, **cả ba κ vẫn có so sánh vật lý với wide-range**; việc chọn κ không xóa các
+   nhánh còn lại khỏi đánh giá E3. Mỗi cấu hình triển khai một checkpoint đã khóa.
+5. Không dùng ảnh/kết quả của final evaluation để chọn κ, model, threshold hoặc thời điểm
+   dừng. Baseline `e2_seed1_best.pt` là lựa chọn lịch sử theo **mask-only validation**;
+   lưu riêng provenance này, không mô tả hồi tố rằng nó đã được chọn bằng tổng box+mask.
+
+Các ảnh mang tên `test-standard`/`test-hard` cũ đã tham gia phát triển generator, nên kết quả
+trên đó là **development analysis**. Bộ hard kết hợp nền lạ + thiếu sáng cũng được chọn sau
+khi xem baseline. Không đổi dòng `val:` sang bộ hard cũ để chọn κ rồi báo bộ đó là test độc lập.
+Tập ảnh xác nhận mới và danh sách pose evaluation phải tách khỏi mọi dữ liệu phát triển,
+hiệu chuẩn và adaptation. Thiếu tập xác nhận độc lập thì báo rõ giới hạn đó.
 
 ### Huấn luyện nhiều seed
 
-Bài báo báo cáo mAP dạng trung bình cộng độ lệch chuẩn, nên **mỗi cấu hình phải huấn luyện
-nhiều lần với seed khác nhau**: 5 seed cho E2 và E3, 3 seed cho E4 và E5. Đây là khối lượng GPU
-lớn nhất cả dự án, tính lịch trước.
+E2/E3 dùng năm seed `[0, 1, 2, 3, 4]`; E4/E5 dùng ba seed `[0, 1, 2]`. Giữ nguyên thứ tự
+và ngân sách cho mọi nhánh. Mỗi run có thư mục riêng; không ghi đè một run đã có kết quả.
 
-```
-python scripts/23_launch_retrain.py --synth data/synth/anchored_k2/dataset --real <thư mục dataset thật> --version 1
-```
+Recipe so sánh ban đầu: Ultralytics **8.4.66**, YOLOv8s-seg, 130 epochs, `imgsz=1280`,
+`batch=8`, `nbs=64`, `patience=0`, optimizer AdamW, `lr0=0.001111`, `momentum=0.9`,
+`warmup_epochs=3`, `warmup_bias_lr=0`, `lrf=0.01`, `cos_lr=False`, `close_mosaic=10`.
+Giữ augmentation và các tham số còn lại giống nhau, lưu effective args và môi trường từng run.
+Không để `optimizer=auto` thay optimizer khi tập ảnh tăng. Cùng epochs nhưng khác số ảnh
+vẫn khác số cập nhật optimizer; lưu số cập nhật, thời gian và tỷ lệ real/synthetic thực tế.
 
-Lệnh này **không huấn luyện**. Nó gộp dataset thành `data/packages/dsv1.yaml` (train trộn thật với
-tổng hợp, val giữ nguyên ảnh thật) rồi in ra lệnh huấn luyện. Huấn luyện chạy trên máy GPU, cùng
-một file yaml, đổi seed:
+Script `23_launch_retrain.py` chuẩn bị package portable, không tự chạy huấn luyện. Làm theo
+[TRAINING_WORKFLOW.md](TRAINING_WORKFLOW.md) để chốt manifest ảnh thật, đóng gói đủ năm lớp
+(kể cả `inox_box`), chuyển package sang Linux, chạy `train.py --dry-run` rồi mới chạy GPU.
+Đối chiếu ngày 21/09/2026: thư mục Windows `_work/yolo/images/train` có **1.318 ảnh**,
+trong khi split list và paper ghi **1.256 ảnh**; script export nối thêm **62 ảnh negative**
+vào train. Chưa xác minh bộ nào đã dùng trên máy Linux cho baseline. Vì vậy không tự bỏ
+62 ảnh, không tự đổi số trong Results và không lấy thư mục hiện tại làm bằng chứng lịch sử.
+Đối chiếu manifest/log Linux rồi khóa allowlist cùng số ảnh chính xác trước khi đóng gói.
 
-```
-for SEED in 1 2 3 4 5; do
-  yolo segment train data=data/packages/dsv1.yaml model=yolov8s-seg.pt epochs=100 imgsz=1280 seed=$SEED project=runs name=dsv1_s$SEED
-done
-```
+### Đo mAP và báo cáo
 
-`--version` là số thứ tự vòng lặp dataset, `seed` mới là hạt giống huấn luyện. Đổi nhầm hai cái
-này thì ra 5 phiên bản dataset chứ không phải 5 lần huấn luyện cùng một dataset.
+Phân biệt ba loại điểm: validation để chọn checkpoint/κ; development để phân tích các tập cũ;
+final test độc lập để báo cáo xác nhận sau khi khóa lựa chọn. Lưu điểm từng seed và trung bình
+± độ lệch chuẩn **mask mAP** cho các bảng Results. Điểm box+mask dùng chọn model là một đại
+lượng khác, không điền vào cột mask mAP. Độ lệch chuẩn giữa seed không thay thế bất định do
+lấy mẫu các cảnh test độc lập.
 
-Làm tương tự cho `blind`, `anchored_k1`, `anchored_k4`.
+Dùng `best.pt` đã chọn của từng run khi đánh giá, không lấy dòng cuối `results.csv` làm điểm
+của checkpoint tốt nhất. Lưu dataset YAML, manifest ảnh, metric/scoring settings, checkpoint
+SHA-256 và toàn bộ output đánh giá; `tee` là một cách lưu terminal output trên Linux.
 
-### Đo mAP
+### E4: adaptation riêng và đối chứng cùng ngân sách
 
-Huấn luyện xong một seed thì đánh giá ngay mô hình tốt nhất của seed đó:
+Từ cùng checkpoint E3 đã chọn `f0`, tạo hai nhánh guided và unguided-control. Cả hai giữ cùng
+real train và 3000 ảnh synthetic ban đầu. Mỗi update hoàn tất thêm **1000 ảnh train mỗi nhánh**;
+ngân sách tích lũy là 3000 → 4000 → 5000. Fine-tune từ checkpoint trước của chính nhánh đó,
+không vô tình khởi động lại từ pretrained COCO hoặc từ checkpoint nhánh kia.
 
-```
-yolo segment val model=runs/dsv1_s1/weights/best.pt data=data/packages/dsv1.yaml imgsz=1280 | tee results/map_dsv1_s1.txt
-```
+Trước update thứ k, chạy **adaptation** với model guided của vòng trước, trên pose/session
+adaptation đã khóa. Miner chỉ được đọc các CSV thuộc adaptation của đúng vòng. Ví dụ, thay
+các tên file mẫu bằng danh sách đã kiểm tra trong manifest:
 
-Lệnh in ra một bảng. Lấy dòng `all`, cột `mAP50-95` của phần **Mask**. Tập val khai trong
-`dsv1.yaml` là **ảnh thật** (lấy ảnh tổng hợp làm val sẽ thổi phồng mAP), nên số này so sánh được
-giữa các cấu hình.
-
-`tee` vừa hiện lên màn hình vừa giữ lại thành file, nên không phải chép tay. Chạy cho đủ 5 seed,
-đổi tên file theo seed, rồi tính trung bình và độ lệch chuẩn của 5 con số. Đó là số điền vào cột
-mAP của bảng anchored và cột ΔmAP của bảng ablation.
-
-**Đo trên bộ khó** (để quét κ): chép `dsv1.yaml` thành file mới, sửa dòng `val:` trỏ vào thư mục
-ảnh bộ khó, rồi chạy lại lệnh trên với `data=` file mới đó.
-
-`runs/dsv1_s1/results.csv` cũng ghi mAP từng epoch ở cột `metrics/mAP50-95(M)`. Đừng lấy dòng cuối
-file này: đó là epoch cuối, còn `best.pt` là epoch tốt nhất, hai cái thường khác nhau.
-
-### E4: vòng lặp học từ lỗi, và nhánh đối chứng
-
-Vòng lặp một mình không chứng minh được gì: ảnh sinh thêm có thể giúp chỉ vì **nhiều ảnh hơn**,
-không phải vì **hướng theo lỗi**. Phải có nhánh đối chứng dùng **đúng cùng số ảnh** nhưng sinh
-ngẫu nhiên.
-
-```
-python scripts/21_mine_failures.py --runs "results/experiment_real_*.csv" --n-budget 1000
-python scripts/20_generate_synth.py --from-failures results/failure_modes.json --out data/synth/loop_k1 --seed 1000
-python scripts/20_generate_synth.py --mode anchored --kappa 2 --n 1000 --seed 2000 --out data/synth/control_k1
+```bash
+python scripts/21_mine_failures.py --runs results/adaptation/e4_k1/block_001.csv results/adaptation/e4_k1/block_002.csv --n-budget 1000 --out results/adaptation/e4_k1/failure_modes.json
+python scripts/20_generate_synth.py --from-failures results/adaptation/e4_k1/failure_modes.json --kappa <kappa_da_chon> --seed 10000 --out data/synth/loop_k1
+python scripts/20_generate_synth.py --mode anchored --kappa <kappa_da_chon> --n 1000 --seed 20000 --out data/synth/control_k1
 ```
 
-`--n-budget 1000` chính là **N_k**, số ảnh mỗi vòng. Nhánh đối chứng phải dùng đúng con số đó.
-Render, gán nhãn, huấn luyện 3 seed cho **cả hai** nhánh, rồi làm tiếp vòng 2 y hệt.
+Không dùng wildcard toàn cục `results/experiment_real_*.csv`: nó có thể trộn final evaluation,
+chạy thử và các vòng khác vào tập mining. Công cụ không tự chứng minh dữ liệu độc lập; người
+lập manifest phải kiểm tra vai trò, pose ID và session của từng file. Không khóa κ thành 2;
+thay `<kappa_da_chon>` bằng kết quả validation đã ghi trước khi refinement.
 
-### E5: bỏ từng yếu tố — CHƯA CHẠY ĐƯỢC
+Sampler dùng `seed + index`, nên khóa các dải không chồng nhau: E3 ban đầu dùng 0–2999;
+ví dụ update 1 guided dùng 10000–10999, control 20000–20999; update 2 dùng seed 30000/40000
+tương ứng. Đừng dùng seed control 2000 cho 1000 ảnh: với cùng recipe nó lặp lại draw của
+1000 ảnh cuối E3, không phải thêm dữ liệu mới. Ghi dải thật đã dùng trong manifest; dành
+một dải riêng không giao các dải này cho synthetic evaluation E6.
 
-> **`20_generate_synth.py` chưa có cờ tắt một yếu tố ngẫu nhiên hoá.** Không xếp lịch và không
-> tính ngân sách gắp cho E5 cho tới khi có cờ đó.
->
-> Việc phải làm trước là việc khoa học, không phải việc lập trình: chốt **"tắt một yếu tố" nghĩa
-> là gì.** Ghim yếu tố đó ở giá trị neo đo được, hay ghim ở một giá trị mặc định? Hai cách cho hai
-> kết luận khác nhau về tầm quan trọng của yếu tố ấy. Ghi định nghĩa đã chốt vào nhật ký trước khi
-> viết cờ.
->
-> Chốt xong thì thêm cờ không khó: mỗi nhóm yếu tố đã là một hàm riêng trong
-> `src/synthgen/scene_sampler.py` (`_sample_lights`, `_sample_material`, `_sample_background`,
-> `_sample_camera`, `_sample_distractors`).
+Nếu adaptation không có failure, ghi update không thực hiện và dừng theo thuật toán; không
+đọc lại `failure_modes.json` cũ. Sau render, `--make-labels --val-frac 0` cho cả hai nhánh.
+Package vòng 1 chứa initial + batch vòng 1; vòng 2 chứa initial + batch 1 + batch 2 của đúng
+nhánh. Ba seed fine-tuning dùng cùng lịch giữa hai nhánh; khóa số epochs cho E4 trước khi chạy
+và truyền tường minh như hướng dẫn training. Equal budget không có nghĩa số ảnh là đủ để
+chứng minh hiệu quả; cần đối chiếu outcomes và bất định.
 
-Khi có công cụ rồi thì chỉ ba yếu tố có gắp vật lý. Hai yếu tố còn lại chỉ báo cáo ΔmAP, vì với
-n = 200 thì hiệu ứng dưới 10 điểm phần trăm không phát hiện được, mà hai yếu tố đó gần như chắc
-chắn nằm dưới ngưỡng. Nói rõ lý do đó trong bài thay vì im lặng bỏ qua.
+Ở update 1, ba seed cùng bắt đầu từ `f0` đã chọn. Từ update 2, mỗi nhánh **và mỗi seed**
+tiếp tục checkpoint của chính nó ở update trước. Vì một package nhận một `--model`, tạo
+package riêng cho từng cặp nhánh/seed ở update 2, truyền `--seeds <seed>` và `--model`
+trỏ đúng parent, cùng `--epochs` đã khóa. Không đưa checkpoint tốt nhất giữa các seed của
+update 1 làm parent chung cho cả ba seed update 2; cách đó thay đổi thiết kế đang mô tả.
+
+Chỉ chấm các checkpoint đã lưu trên **evaluation** sau khi đã cố định toàn bộ update.
+Không dùng kết quả evaluation để phân bổ ảnh, đổi threshold hoặc dừng vì tăng ít. Ghi riêng
+failure counts/denominators của adaptation và evaluation. Một lỗi cơ khí bị miner gom theo
+context không có nghĩa retraining sẽ sửa được nguyên nhân cơ khí.
+
+### E5: ablation đủ năm yếu tố
+
+CLI dùng `--ablation none|illumination|background|distractors|camera|pose`, chỉ với
+`--mode anchored`. Tạo full recipe và năm ablation, mỗi cấu hình **3000 ảnh train**, cùng
+κ đã chọn và cùng generation seed. Ví dụ:
+
+```bash
+python scripts/20_generate_synth.py --mode anchored --kappa <kappa_da_chon> --ablation illumination --n 3000 --seed 0 --out data/synth/e5_illumination
+```
+
+Lặp cho `none`, `background`, `distractors`, `camera`, `pose`; render/gán nhãn với
+`--val-frac 0`, rồi huấn luyện ba seed `[0, 1, 2]`. Lưu cấu hình và giá trị cố định thật của
+mỗi ablation cùng spec; kiểm tra từng biến đổi trước lô render chính. Bỏ biến thiên pose phải
+có phân bố pose tham chiếu đã xác định, không diễn giải là đặt mọi vật chồng lên một điểm.
+
+Cả năm yếu tố đều có **mask mAP và task success** so với full recipe theo kế hoạch hiện tại.
+Không dự đoán hai yếu tố nào yếu rồi bỏ phép đo. Hiệu ứng là `ablation − full` theo điểm phần
+trăm, âm/dương đều báo cáo; kiểm định năm contrast cùng họ với Holm. Nếu ngân sách phải đổi,
+đổi protocol và bản thảo trước khi nhìn kết quả, đồng thời ghi rõ phạm vi suy luận mới.
 
 ### Mang mô hình mới về cell
 
-Chép file `.pt` về thư mục `models\`, sửa `model_path` trong `config\experiment.yaml`, rồi chạy
-**đúng danh sách thẻ cũ**, vẫn chia khối xen kẽ và vẫn mù, bằng chính lệnh ở Pha 4. Bước này bắt
-buộc phải có robot; không có nó thì E3 với E4 chỉ còn mAP.
+Chép file `.pt` đã chọn và ghi SHA-256 vào `models\`, tạo cấu hình riêng cho từng model với
+`model_path` tương ứng. Chạy cùng danh sách **evaluation đã khóa** giữa các cấu hình, vẫn chia
+khối xen kẽ và mù theo Pha 4. Không dùng danh sách adaptation làm final evaluation. Các cờ
+CLI về depth mode, calibration và class geometry phải được giữ đúng; nút Experiment trong
+GUI không mặc nhiên tương đương quy trình CLI này. Bước đo task success cần robot thật.
 
-### E6: đo chu kỳ
+### E6: transfer và thời gian chu kỳ
 
-**Không dùng `--confirm-each-trial`**, nhưng cũng không đứng đặt vật. Hai cách, chọn một:
+Chấm cùng checkpoint trên tập synthetic đánh giá riêng và tập real đánh giá riêng, báo cáo
+`100 × (mAP_synthetic − mAP_real)` theo điểm phần trăm cho từng metric. Số dương nghĩa là
+điểm synthetic cao hơn; không dùng số này để chọn lại checkpoint. Lưu cả thành phần lớp,
+điều kiện và nguồn gốc của hai tập, không lấy ảnh synthetic train làm tập đánh giá.
 
-1. **Lấy từ telemetry đã có.** Chiến dịch C4 đã ghi telemetry mọi lượt; trích thời gian chu kỳ
-   của các lượt thành công từ đó. Không tốn thêm lượt gắp nào, và không ai phải đứng trong cell.
-2. **Chạy riêng với vật đặt sẵn.** Đặt sẵn vật, chạy, **không ai đứng trong cell**, robot lặp
-   trên cùng một vật.
+Kế hoạch thời gian là **100 chu kỳ hoàn chỉnh**. Chốt mốc bắt đầu/kết thúc, cấu hình, điều kiện
+và cách xử lý failure/reset trước khi đo. Có thể tận dụng log E2 nếu các mốc và metadata đáp
+ứng đúng định nghĩa đó. Tách thời gian người đặt vật khỏi chu kỳ tự động, nhưng giữ thông tin
+reset và can thiệp để không gọi chu kỳ máy là throughput sản xuất.
 
-```
-python scripts/05_analyze_telemetry.py latest
-```
+`05_analyze_telemetry.py` suy ra đoạn chuyển động từ ngưỡng vận tốc khớp; biểu đồ của nó là
+chẩn đoán, không tự cung cấp timestamp inference, localization, planning và gripper. Lưu raw
+telemetry cùng log từng trial và instrument các mốc còn thiếu trước khi điền bảng stage timing.
+Tính P50/P95 tổng từ tổng thời gian đo trực tiếp từng chu kỳ, không cộng percentile từng stage.
+Thống kê chỉ trên lượt thành công phải ghi rõ số failure bị loại và là phân tích bổ sung.
+
+Giữ `--confirm-each-trial` khi có người đặt vật. Chỉ xét chu kỳ không cần xác nhận trong một
+bố trí cấp vật đã được chuẩn bị và cell không có người; không coi lệnh lặp lại trên một vật
+đã được chuyển sang băng tải là một kế hoạch cấp vật hợp lệ. Mục tiêu 10 giây là mốc ứng dụng,
+chưa phải kết quả đã đo.
 
 **Những điều dễ sai ở pha này:**
 
@@ -785,29 +818,36 @@ Rồi **sao lưu cả thư mục `results\` và `logs\` ra ổ ngoài**, đặt 
 
 ---
 
-## Phụ lục: ngân sách số lượt gắp
+## Phụ lục: ngân sách số lượt gắp — dự thảo cần khóa
 
-| Thí nghiệm | Cấu hình | Số lượt | Ghi chú |
-|---|---|---:|---|
-| E2 (C4) | 3 chế độ độ sâu × 200 trên bộ chuẩn | 600 | 100 lượt inox mỗi chế độ, 40 lượt xếp chồng |
-| E2 (bộ khó) | real-only trên bộ khó chính | 200 | điều kiện hai yếu tố |
-| E3 | blind + anchored (κ đã chọn) trên bộ khó chính | 400 | κ còn lại quét bằng mAP, không gắp |
-| E3 | kiểm không thoái lui trên bộ chuẩn, 2 nhánh × 80 | 160 | chỉ cần đủ để thấy không tụt |
-| E4 | 2 vòng × 2 nhánh trên bộ khó chính | 800 | nhánh thứ hai là đối chứng cùng ngân sách |
-| E5 | 3 yếu tố × 200 | 600 | hai yếu tố còn lại báo cáo bằng ΔmAP |
-| E6 | đo chu kỳ | 100 chu kỳ | lấy từ telemetry E2 nếu được |
-| | **Tổng** | **2760** | cộng 100 chu kỳ |
+Các số dưới đây mô tả phạm vi so sánh, không phải cam kết đã đủ lực thống kê. Methods đề xuất
+200 pose ghép cặp mỗi cấu hình/điều kiện; phân bổ theo lớp/layout, số phiên, các đối chứng và
+những lần thử lặp phải được điền vào manifest trước thu chính thức. Không suy ra 200 pose
+pooled là 200 pose cho riêng inox hoặc riêng stacked.
 
-**Bốn thứ cố tình không làm, để khỏi ai đó thêm lại:**
+| Thí nghiệm | Cấu hình cần có | Số lượt/phân bổ còn phải khóa |
+|---|---|---|
+| E1 | Đo RTT, telemetry, touch-test; benchmark phần mềm tách riêng | Số mẫu thật mỗi phép đo, mốc thời gian và hồ sơ hiệu chuẩn |
+| E2 (C4) | Cùng detector ở RGB-D, plane, fusion | Đề xuất 200 pose mỗi cấu hình/điều kiện; lớp × layout chưa khóa |
+| E3 | Real-only, wide-range, anchored κ=1/2/4 | Cùng evaluation list; đủ nhánh để so anchored–wide ở từng κ |
+| E4 adaptation | Model guided trước mỗi update | Danh sách/phiên riêng; số adaptation trials chưa khóa |
+| E4 evaluation | f0 và hai nhánh ở tối đa hai update | Chỉ chấm sau khi đã khóa update; cùng list giữa checkpoint |
+| E5 | Full recipe và cả năm ablation | Cùng list; cả năm đều đo task success và mask mAP |
+| E6 | Cùng model, 100 chu kỳ hoàn chỉnh | Xác định log nào được dùng lại và đủ mốc stage nào |
 
-- Không chạy plane và fusion trên bộ khó: bảng chế độ độ sâu không tách theo điều kiện sáng.
-- Không quét κ bằng gắp vật lý: quét bằng mAP, chỉ gắp ở κ đã chọn.
-- Không gắp cho hai yếu tố E5 yếu nhất: với n = 200 chúng nằm dưới ngưỡng phát hiện, báo cáo
-  bằng ΔmAP.
-- Không chạy E1 riêng: gộp vào chiến dịch C4-rgbd, giữ 10 lượt làm cổng an toàn.
+Không cộng một tổng gắp cuối cùng trước khi chốt phạm vi và tái sử dụng đối chứng hợp lệ.
+Đối chứng chỉ dùng chung khi checkpoint, pose list, điều kiện, calibration và phiên/block
+cho phép so sánh theo protocol; tên recipe giống nhau chưa đủ. Khối drift, chạy thử và
+adaptation không được đếm thành evaluation. Thử nghiệm 80 lượt không chứng minh không thoái
+lui; không có kế hoạch equivalence/non-inferiority đã xác định thì báo hiệu ứng và bất định.
 
-Mỗi lượt phải đặt vật bằng tay. Trước khi bắt đầu, bấm giờ 10 lượt đầu rồi nhân lên để biết
-200 lượt mất bao lâu, đừng ước lượng.
+Power phụ thuộc số cặp bất đồng, phân bố lớp/layout và hiệu chỉnh nhiều phép so sánh. Hiệu
+ứng dưới 10 điểm phần trăm vẫn có thể ước lượng; không có ngưỡng phát hiện chắc chắn chỉ từ
+n=200. Khi lịch/ngân sách buộc thay đổi, cập nhật manifest và Methods/Results trước khi thu
+hoặc xem kết quả liên quan, ghi lý do và các phân tích chuyển thành exploratory.
+
+Mỗi lượt cần đặt vật thủ công: đo thời gian của pilot riêng để dự trù lịch và nhân theo số
+lượt đã khóa; không đưa pilot vào final evaluation sau khi đã dùng nó để điều chỉnh hệ thống.
 
 ---
 
