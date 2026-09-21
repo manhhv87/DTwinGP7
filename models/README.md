@@ -1,28 +1,46 @@
 # models/ — Trọng số model + mesh
 
-Model YOLOv8-seg được **train trên máy Linux GPU** (việc train nằm ngoài
-repo này). Thư mục này chứa trọng số đã train để inference + các file mesh.
+Model YOLOv8-seg được **train trên máy Linux GPU**. Repo cung cấp quy trình
+[đóng gói và huấn luyện](../docs/TRAINING_WORKFLOW.md); thư mục này chứa trọng số
+được chọn để inference và các file mesh. Việc có trọng số chưa xác nhận cell đã hiệu chuẩn
+hoặc đã hoàn tất thí nghiệm vật lý.
 
 ## ⭐ File trọng số cần có (cho `--mode real`)
 
 | File | Mô tả | Nguồn |
 |---|---|---|
-| `yolov8s-seg_best.pt` | Trọng số production (variant `s`) | Copy từ máy train |
+| `e2_seed1_best.pt` | Ứng viên baseline E2, YOLOv8s-seg, năm lớp | Được commit riêng tại `d736b75`; có trên nhánh `feat/synthgen-c2-c3-dataset` |
+| Các file E3/E4/E5 | Checkpoint riêng của từng cấu hình, seed/vòng | Chuyển từ máy train cùng manifest, log và SHA-256 |
 
-`config/experiment.yaml :: model_path` trỏ tới `models/yolov8s-seg_best.pt`.
-Đổi giá trị này nếu dùng tên/đường dẫn khác.
+`config/experiment.yaml :: model_path` hiện trỏ tới `models/e2_seed1_best.pt`.
+Link artifact cố định theo commit:
+[e2_seed1_best.pt trên GitHub](https://github.com/manhhv87/DTwinGP7/blob/d736b75fd2089348cbf4d11b0d41fbcf68110f83/models/e2_seed1_best.pt).
+Khi clone nhánh có commit này, Git lấy file cùng mã nguồn. Nếu checkout khác, kiểm tra
+commit chứa file trước khi kết luận rằng trọng số đã có.
 
-> **Sim mode (`--headless` hoặc default `--mode sim`)** dùng `MockDetector` →
+Seed 1 này được chọn lịch sử theo **validation mask mAP@0.5:0.95** cao nhất giữa các seed.
+Checkpoint trong mỗi run dùng tổng box+mask validation mAP@0.5:0.95. Không gọi lựa chọn
+seed 1 lịch sử là quy tắc composite giữa các seed của chiến dịch sắp tới. Quy tắc mới,
+seeds và cách khóa model nằm trong [campaign manifest](../docs/CAMPAIGN_MANIFEST.md).
+
+> **Sim mode (`--mode sim`)** dùng `MockDetector` →
 > KHÔNG cần file `.pt`. Chỉ cần khi `--mode real` (D455 + GP7 thật).
+> `--headless` chỉ tắt giao diện; không tự chuyển một lệnh `--mode real` thành mô phỏng.
 
 ## ⭐ Đưa trọng số từ máy train về
 
-Sau khi train xong trên máy Linux, copy file trọng số tốt nhất về máy chạy
-và đặt đúng tên mà `experiment.yaml` trỏ tới:
+Sau khi train và chọn bằng validation trên Linux, chuyển `best.pt` được chọn về máy chạy
+với tên riêng cho cấu hình, seed và vòng. Ví dụ sau khi đã chuyển file tới Windows:
 
-```bash
-copy best.pt  models\yolov8s-seg_best.pt
+```powershell
+Copy-Item -LiteralPath '<file_da_chuyen_ve>\best.pt' -Destination 'models\e3_anchored_k2_seed0_best.pt'
+Get-FileHash -Algorithm SHA256 -LiteralPath 'models\e3_anchored_k2_seed0_best.pt'
 ```
+
+Tên trên chỉ là ví dụ, không xác nhận κ=2/seed=0 đã được chọn. Trỏ `model_path` của cấu hình
+thí nghiệm tới đúng file; ghi đường dẫn gốc, SHA-256, seed, recipe, package manifest và điểm
+validation vào hồ sơ model. So khớp SHA-256 ở Linux và Windows sau chuyển. Không ghi đè
+baseline để thay cấu hình, không chọn lại checkpoint sau khi xem final-test outcomes.
 
 ## ⭐ Định dạng hỗ trợ
 
@@ -78,7 +96,11 @@ mô tả chi tiết ở đây — tài liệu đầy đủ (tránh trùng lặp)
 ## ⭐ Ghi chú policy commit
 
 - `.stl` (cell asset, ~5MB tổng) **được commit** vào repo để clone là dùng được ngay.
-- `.pt` / `.onnx` (YOLO weights, vài chục–vài trăm MB) **KHÔNG commit** — copy về từ máy train.
+- `.gitignore` loại file mới khớp `*.pt`. Ngoại lệ đã theo dõi trong Git là
+  `models/e2_seed1_best.pt` ở commit `d736b75`; ignore không xóa một file đã tracked.
+  Các trọng số mới chuyển riêng từ Linux, không mặc nhiên có trên GitHub.
+- `.onnx` là artifact export; không mặc nhiên tương đương pipeline `.pt` đã đánh giá.
+  Lưu phiên bản export, tham số và kiểm tra đầu ra trước khi dùng trong một chiến dịch.
 - `T_base_camera.npy` (calibration sim) **được commit** — sinh tự động từ `calibration_from_layout.py`.
 - `.rdk` (RoboDK station save) **KHÔNG commit** — repo không còn dùng RoboDK
   cho viewport/motion. RoboDK chỉ cần khi chạy `scripts/13_verify_vs_robodk.py`

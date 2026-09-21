@@ -14,14 +14,22 @@ Three-step flow (rendering runs in the blenderproc env, NOT the repo venv):
            --seed 0 --out data/synth/blind
      C3 loop iteration (budget from 21_mine_failures.py):
        python scripts/20_generate_synth.py --from-failures results/failure_modes.json \
-           --out data/synth/loop_k1 --seed 1000
+           --out data/synth/loop_k1 --seed 10000
+     E5 single-factor intervention (same seed/index as the full anchored recipe):
+       python scripts/20_generate_synth.py --mode anchored --ablation camera \
+           --kappa 2 --n 3000 --seed 0 --out data/synth/e5_camera
 
   2) Render (any env with `pip install blenderproc`):
        blenderproc run src/synthgen/render_blenderproc.py -- \
            --scenes data/synth/anchored_k2/specs --out data/synth/anchored_k2/render
 
   3) Convert to YOLO-seg dataset (this script, repo venv):
-       python scripts/20_generate_synth.py --make-labels --out data/synth/anchored_k2
+       python scripts/20_generate_synth.py --make-labels --out data/synth/anchored_k2 \
+           --val-frac 0
+
+For paper training budgets use --val-frac 0 and the separately locked real
+validation set. Generation draws use seed + index: additional batches must use
+non-overlapping ranges, not merely different seed values.
 """
 from __future__ import annotations
 
@@ -34,13 +42,17 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.synthgen import SceneSampler, SynthgenConfig, load_sigma_json  # noqa: E402
+from src.synthgen.scene_sampler import ABLATION_FACTORS  # noqa: E402
 from src.utils import setup_logging  # noqa: E402
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--mode", choices=["anchored", "blind"], default="anchored")
+    parser.add_argument("--ablation", choices=ABLATION_FACTORS, default="none",
+                        help="E5: fix/remove one factor of the unconditional anchored "
+                             "recipe; see docs/E5_ABLATION_PROTOCOL.md")
     parser.add_argument("--kappa", type=float, default=2.0,
                         help="Width multiplier of Eq. (1); E3 selects among {1,2,4}")
     parser.add_argument("--n", type=int, default=3000, help="Number of scenes")
@@ -58,8 +70,20 @@ def parse_args() -> argparse.Namespace:
                              "per-mode batches per its 'allocation' (C3 loop)")
     parser.add_argument("--make-labels", action="store_true",
                         help="Convert <out>/render → <out>/dataset (after step 2)")
-    parser.add_argument("--val-frac", type=float, default=0.1)
-    return parser.parse_args()
+    parser.add_argument("--val-frac", type=float, default=0.1,
+                        help="Synthetic validation fraction (default 0.1); use 0 for "
+                             "paper training budgets with separate real validation")
+    args = parser.parse_args(argv)
+    if args.ablation != "none":
+        if args.mode != "anchored":
+            parser.error("--ablation requires --mode anchored")
+        if args.from_failures:
+            parser.error("--ablation cannot be combined with --from-failures")
+        if args.make_labels:
+            parser.error("--ablation applies when sampling; omit it for --make-labels")
+    if not 0.0 <= args.val_frac < 1.0:
+        parser.error("--val-frac must be in [0, 1)")
+    return args
 
 
 def main() -> int:
@@ -126,16 +150,17 @@ def main() -> int:
         total = start
     else:
         sampler = SceneSampler(config, T_BC, mode=args.mode, kappa=args.kappa,
-                               sigma=sigma, seed=args.seed)
+                               sigma=sigma, seed=args.seed, ablation=args.ablation)
         sampler.write_specs(specs_dir, args.n)
         total = args.n
 
-    log.info("Wrote %d scene specs → %s (sigma source: %s)",
-             total, specs_dir, sampler.sigma_source)
+    log.info("Wrote %d scene specs → %s (sigma source: %s; ablation: %s)",
+             total, specs_dir, sampler.sigma_source, sampler.ablation)
     log.info("Next step — render in the blenderproc env:")
     log.info("  blenderproc run src/synthgen/render_blenderproc.py -- "
              "--scenes %s --out %s", specs_dir, out / "render")
-    log.info("Then: python scripts/20_generate_synth.py --make-labels --out %s",
+    log.info("Then (paper training budget): python scripts/20_generate_synth.py "
+             "--make-labels --val-frac 0 --out %s",
              args.out)
     return 0
 

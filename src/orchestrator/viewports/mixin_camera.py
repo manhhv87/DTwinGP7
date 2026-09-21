@@ -411,7 +411,14 @@ class CameraMixin:
                 detector = self._open_detector(ObjectDetector, MockDetector)
             except Exception as e:                          # noqa: BLE001
                 self._signals.status.emit(
-                    f"Detector error → running without detection: {e}", "warn")
+                    f"Detector setup failed: {e}", "err")
+                try:
+                    camera.stop()
+                except Exception:                          # noqa: BLE001
+                    pass
+                self._cam_running = False
+                self._signals.camera_result.emit({"stopped": True})
+                return
         extractor = PoseExtractor(camera.intrinsics)
         self._signals.status.emit(
             f"Camera ON — source {source_label}"
@@ -495,15 +502,20 @@ class CameraMixin:
         return MockCamera(rgb_frames=[self._synthetic_mock_frame()]), "Mock"
 
     def _open_detector(self, ObjectDetector, MockDetector):
-        """YOLO if weights models/*.pt|onnx are present, else MockDetector (1 fake object)."""
-        weights = (sorted(self._project_root.glob("models/*.pt"))
-                   + sorted(self._project_root.glob("models/*.onnx")))
-        if weights:
-            return ObjectDetector(model_path=str(weights[0]))
-        self._signals.status.emit(
-            "No YOLO weights yet (models/*.pt) → MockDetector", "warn")
-        return MockDetector(scripted=[[
-            MockDetector.make_detection("tray", mask_box=_MOCK_BOX)]])
+        """Use the configured model; fake detections require explicit Mock selection."""
+        from pathlib import Path
+        from ...utils import load_yaml
+        from ...perception.model_artifact import load_configured_detector
+
+        if getattr(self, "_cam_source", "").split()[0:1] == ["Mock"]:
+            return MockDetector(scripted=[[
+                MockDetector.make_detection("tray", mask_box=_MOCK_BOX)]])
+        config = load_yaml(Path(self._project_root) / "config" / "experiment.yaml")
+        # The live detector uses the real-perception keys, while the experiment
+        # GUI continues to own its separate motion/config assembly.
+        config = dict(config)
+        config.update(config.pop("real", None) or {})
+        return load_configured_detector(config, self._project_root, ObjectDetector)
 
     @staticmethod
     def _synthetic_mock_frame() -> np.ndarray:

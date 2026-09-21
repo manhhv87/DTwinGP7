@@ -35,6 +35,9 @@ from src.cell import CellConfig  # noqa: E402
 from src.logging import TrialLogger  # noqa: E402
 from src.orchestrator import Orchestrator  # noqa: E402
 from src.perception import PerceptionNode  # noqa: E402
+from src.perception.model_artifact import (  # noqa: E402
+    capture_config_files, load_configured_detector, run_metadata,
+)
 from src.utils import load_yaml, setup_logging, timestamp  # noqa: E402
 
 
@@ -308,16 +311,9 @@ def build_perception(mode: str, config: dict, args=None, cell_config=None):
     if mode == "real":
         from src.perception import D455Camera, ObjectDetector
 
-        camera = D455Camera()
-        model_path = Path(config.get("model_path", "models/yolov8s-seg_best.pt"))
-        if not model_path.is_absolute():
-            model_path = PROJECT_ROOT / model_path      # independent of the working dir
         heights = config.get("class_heights_mm") or {}
-        detector = ObjectDetector(
-            model_path=str(model_path),
-            conf=config.get("conf_threshold", 0.5),
-            class_heights_mm=heights,
-        )
+        detector = load_configured_detector(config, PROJECT_ROOT, ObjectDetector)
+        camera = D455Camera()
         missing = [c for c in detector.class_names if c not in heights]
         if missing:
             logging.getLogger("experiment").warning(
@@ -448,6 +444,8 @@ def main() -> int:
         log.info("Auto-pick cell-config: %s (theo --mode=%s)", args.cell_config, args.mode)
 
     config = load_yaml(PROJECT_ROOT / args.config)
+    config_inputs = capture_config_files(
+        [PROJECT_ROOT / args.config, PROJECT_ROOT / args.cell_config])
     # Settings for the physical cell and the paper's five parts live under "real:"
     # and override the top-level (simulation) keys only in real mode, so the
     # simulated tray/bottle/cup/bolt scenario keeps its behaviour.
@@ -526,7 +524,14 @@ def main() -> int:
     # Built BEFORE the robot connection, so a missing model, a camera fault or a part
     # without a height stops the run without touching the controller.
     # Pass cell_config so mock detection auto-matches the real object pose.
-    camera, detector = build_perception(args.mode, config, args, cell_config)
+    try:
+        camera, detector = build_perception(args.mode, config, args, cell_config)
+    except Exception as exc:
+        if not args.blind_label:
+            raise
+        log.info("Perception setup detail: %s", exc, exc_info=True)
+        log.error("Perception setup failed; ask the campaign administrator to check the run log.")
+        return 5
     extractor = None
     if args.mode == "real":
         extractor = build_extractor(camera.intrinsics, detector, config, args.depth_mode,
@@ -700,15 +705,22 @@ def main() -> int:
 
     # ─── Logger ───
     label = "headless" if args.headless else args.mode
+    orch = None
     trial_logger = TrialLogger(
         PROJECT_ROOT / f"results/experiment_{label}_{ts}.csv",
         extra_context={"lighting": args.lighting, "overlap": args.overlap,
                        "mode": label, "depth_mode": args.depth_mode},
+        run_metadata=lambda: run_metadata(
+            orch.config if orch is not None else config,
+            detector, entrypoint="scripts/03_run_experiment.py",
+            config_files=config_inputs,
+            runtime=vars(args)),
     )
 
     # ─── Orchestrator ───
     orch = Orchestrator(det_queue, config=config, robot=sim_robot,
                         logger_obj=trial_logger)
+    trial_logger.write_run_metadata()
 
     # ─── Pose list (paired McNemar design, paper §3.7) ───
     pose_rows = None

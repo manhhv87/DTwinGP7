@@ -7,7 +7,9 @@ Encodes the paper's factor table: which rendering factors are ANCHORED
 (distributions centred on the twin's calibrated/measured values, widths
 kappa*sigma) and which are FREE task variables (fully randomized under both
 the anchored and the blind treatment). The blind baseline uses the blind_*
-ranges and NO calibration information (Tobin-2017 / Zhu-2025 style).
+ranges around the same camera reference, with a different appearance recipe;
+it is not independent of calibration. E5 ablations fix/remove one factor after
+the full anchored draw; their intervention is recorded in scene manifests.
 
 Pure pydantic + yaml — no heavy imports; testable everywhere.
 """
