@@ -27,7 +27,7 @@
 | Pha 2, chạy thử | cell, chế độ REMOTE | robot tự chạy | 1 lượt rồi 5 lượt, đo lệch điểm thả, dán vạch 30 mm | 1 CSV + 1 telemetry |
 | Pha 3, E1 | cell | 50 lượt | đặt vật, bấm ENTER, chấm y/n | `e1_*`, CSV, telemetry, 4 PNG |
 | Pha 4, E2 | cell | 3 nhánh × 200 lượt, bộ khó 200 lượt, kèm đối chứng 20+20 mỗi buổi | đặt vật, chấm y/n, không mở file khoá | 24 CSV khối mỗi buổi, file khoá, thư mục khung ảnh |
-| Pha 5, sinh ảnh và huấn luyện | **máy GPU Linux** | không | khóa luật validation, train đủ seed, chọn κ cho E4/E5 | `specs`/`render`/`dataset`, package `dsv<k>/`, `runs/` |
+| Pha 5, sinh ảnh và huấn luyện | **máy GPU Linux** | không | viết luật chọn κ trước, huấn luyện đủ seed, chọn κ và mô hình | `specs`/`render`/`dataset`, gói `dsv<k>/`, `runs/seed<n>/` |
 | Pha 5, đo lại | cell | như Pha 4, số lượt do người huấn luyện gửi kèm mô hình | chép mô hình mới về rồi chạy lại đúng danh sách thẻ cũ | CSV gắp của mô hình mới |
 | Phân tích | máy tính | không | gõ đúng lệnh có `>` hoặc `\| tee` | `e2_phan_tich.txt`, `results_summary.png` |
 
@@ -101,8 +101,8 @@ Ba việc chi phối cả quy trình:
 - `--no-viewport-mirror`: tắt gương 3D. Khi gương bật, đoạn mã bắt Ctrl+C nằm sai luồng và
   **không bao giờ chạy**.
 
-E6 vẫn giữ xác nhận từng lượt khi có người đặt vật. Chỉ bỏ cờ trong bố trí cấp vật phù hợp
-và cell không có người; tách thời gian xác nhận/đặt vật khỏi chu kỳ tự động theo protocol.
+Riêng E6 đo chu kỳ: nếu lấy chu kỳ từ telemetry của Pha 4 thì không phải chạy thêm. Nếu chạy
+riêng, chỉ được bỏ `--confirm-each-trial` khi vật đã đặt sẵn và **không còn ai trong cell**.
 
 ---
 
@@ -133,10 +133,9 @@ chạy `git checkout -- config/synthgen.yaml config/calibration/` rồi `git pul
 
 Sau bước này đầu dòng lệnh sẽ hiện `(.venv)`. Nếu không hiện, môi trường ảo chưa bật, mọi lệnh phía sau sẽ báo thiếu thư viện.
 
-**Baseline `models/e2_seed1_best.pt` đã được đưa lên Git ở commit `d736b75`.**
-Clone đúng nhánh có commit này sẽ có file. Đây là ứng viên triển khai E2 lịch sử, chọn theo
-validation mask mAP, chưa phải bằng chứng đã chạy robot thành công. Các trọng số E3–E5 khác
-vẫn được chuyển riêng từ Linux; xem [models/README.md](../models/README.md).
+**Mô hình nhận dạng** `models/e2_seed1_best.pt` có sẵn trên git và `model_path` trong
+`config/experiment.yaml` đã trỏ tới nó; không đổi. Các mô hình huấn luyện lại ở Pha 5 sẽ do
+người huấn luyện gửi riêng kèm mã SHA-256.
 
 Kiểm tra máy chạy được, chưa cần robot:
 
@@ -505,7 +504,11 @@ Cuối buổi chạy lại đúng lệnh đó, đổi `--block-id doichung-cuoi`
 theo tiêu chí hợp lệ phần cứng/hiệu chuẩn đã khóa độc lập trước khi đo; giữ bản gốc, ghi lý do
 và phân tích độ nhạy trên tất cả lượt đã ghi nếu có loại dữ liệu.
 
-**Bộ khó** (một điều kiện duy nhất: nền lạ và thiếu sáng cùng lúc, dựng một lần giữ cả buổi):
+**Bộ khó**: một điều kiện duy nhất, nền lạ và thiếu sáng cùng lúc, dựng một lần và giữ nguyên cả
+buổi. Phải dựng **đúng như buổi chụp `novelbg_dim` ngày 27/08/2026** trong dataset (thư mục
+`novelbg_dim/mixed`, 110 ảnh): tấm nền xanh lá phủ kín mặt bàn, đèn để ở mức "dim" của buổi đó;
+mở vài ảnh trong thư mục ấy ra so trước khi chạy. Tấm nền che mất thẻ đã dán trên bàn, nên dán
+một bộ thẻ thứ hai lên tấm nền, lấy dấu lại bằng robot y như Pha 4, đúng 21 toạ độ cũ.
 
 ```
 python tools/run_blinded_campaign.py --arm real_only "--depth-mode rgbd" --pose-list config/pose_lists/hard_v2.csv --trials 200 --block 25 --session 2026-09-21-sang --operator AN --seed 8 --common "--mode real --ik-source yrc --tool-no 1 --confirm-each-trial --no-viewport-mirror --save-frames --frames-dir D:/Scientific/Dataset/DigitalTwin/frames --lighting dim"
@@ -568,25 +571,30 @@ rõ rệt là một kết quả, không phải lần trượt: ghi lại, **khô
 ---
 
 
-## Pha 5 — E3 đến E6: sinh ảnh và huấn luyện trên Linux GPU
+## Pha 5 — E3 đến E6: sinh ảnh và huấn luyện trên máy GPU Linux
 
 *Việc của người huấn luyện, trừ mục Mang mô hình mới về cell.*
 
-Mỗi cấu hình phải lưu spec, render, nhãn, manifest ảnh, cấu hình đã giải quyết toàn bộ giá trị,
-log huấn luyện, trọng số và SHA-256. Nguồn cấu hình khóa là
-[campaign manifest](CAMPAIGN_MANIFEST.md); lệnh đóng gói/chạy GPU chi tiết ở
-[TRAINING_WORKFLOW.md](TRAINING_WORKFLOW.md).
+**Mục tiêu:** sinh ảnh tổng hợp, huấn luyện lại mô hình, chọn mô hình bằng tập validation ảnh
+thật, rồi đo lại tỷ lệ gắp trên chính cell.
 
-Có thể chuẩn bị package và chạy thử phần mềm trước khi E2 vật lý hoàn tất. Tuy nhiên, dữ liệu
-anchored dùng cho bài phải dựa trên hiệu chuẩn thật đã kiểm tra, cùng phiên bản cell; không
-sinh lô chính bằng transform mô phỏng hoặc sigma dự phòng rồi gọi là hiệu chuẩn đo được.
-Sinh ảnh, render, huấn luyện và validation không cần robot chuyển động. Tỷ lệ hoàn thành
-pick-and-place của E3–E5 vẫn phải đo trên cell.
+**Kết quả ra:** mỗi cấu hình một bộ `data/synth/<tên>/specs`, `/render`, `/dataset`; một gói
+`data/packages/<tên>/dsv<k>/` (kèm `manifest.json`, `training.json`, `train.py`); trên máy GPU,
+mỗi seed một thư mục `runs/seed<n>/` chứa `weights/best.pt`, `results.csv`, `run_record.json`;
+`results/adaptation/<vòng>/failure_modes.json` của E4. Mô hình đem về cell phải kèm SHA-256.
 
-### E3: so sánh wide-range với anchored và quét κ
+**Phần nào cần robot:** sinh ảnh, render, gán nhãn, huấn luyện, chọn κ đều **không** cần robot.
+Nhưng E3, E4, E5 chỉ có mAP là chưa đủ: mỗi mô hình mới phải mang về cell gắp thật.
 
-Mỗi recipe dùng cùng ngân sách **3000 ảnh synthetic đưa vào train**, ngoài tập real train đã
-khóa. Trong CLI, `--mode blind` là recipe wide-range của bài. Sinh bốn cấu hình:
+**Số lượt gắp thật của Pha 5 chưa chốt**, phải chốt trong campaign manifest trước khi gửi mô hình
+về cell. Bài báo (bản 21/09/2026) đang ghi bảng E3 có ba dòng κ và bảng E5 có cột task success
+cho cả năm yếu tố; ngân sách đã duyệt trước đó là gắp thật ở một κ và ba yếu tố. Hai bản chưa
+khớp; chốt một, sửa bản kia.
+
+### E3: wide-range so với anchored, và quét κ
+
+Mỗi recipe dùng cùng ngân sách **3000 ảnh tổng hợp** đưa vào train, cộng tập ảnh thật đã khóa.
+`--mode blind` trong lệnh là recipe wide-range của bài. Sinh bốn cấu hình, cùng seed sinh cảnh:
 
 ```bash
 python scripts/20_generate_synth.py --mode blind --n 3000 --seed 0 --out data/synth/blind
@@ -595,176 +603,125 @@ python scripts/20_generate_synth.py --mode anchored --kappa 2 --n 3000 --seed 0 
 python scripts/20_generate_synth.py --mode anchored --kappa 4 --n 3000 --seed 0 --out data/synth/anchored_k4
 ```
 
-Seed 0 ở đây là seed **sinh dữ liệu**, khác seed huấn luyện. Dùng chung seed sinh cảnh khi
-so sánh recipe, lưu cả spec thực tế; seed giống nhau không chứng minh các cảnh hoàn toàn
-khớp nhau khi các recipe lấy mẫu khác nhau.
-
-Render rồi gán nhãn từng cấu hình, ví dụ:
+Bộ sinh đọc `config/calibration/T_base_camera.npy` và `T_base_camera_sigma.json` (bản 18/09/2026,
+đã trên git) để neo; thiếu sigma thì nó dùng số dự phòng trong YAML và **báo cảnh báo**, lô như
+vậy không được dùng cho bài. Render rồi gán nhãn từng cấu hình:
 
 ```bash
-blenderproc run --custom-blender-path <thu_muc_blender> src/synthgen/render_blenderproc.py -- --scenes data/synth/anchored_k2/specs --out data/synth/anchored_k2/render --samples 24 --device gpu
+blenderproc run --custom-blender-path <thư mục blender> src/synthgen/render_blenderproc.py -- --scenes data/synth/anchored_k2/specs --out data/synth/anchored_k2/render --samples 24 --device gpu
 python scripts/20_generate_synth.py --make-labels --val-frac 0 --out data/synth/anchored_k2
 ```
 
-Lặp lại cho `blind`, `anchored_k1`, `anchored_k4`. `--val-frac 0` giữ ngân sách train 3000;
-validation để chọn model dùng **real validation đã khóa**, không lấy synthetic validation
-thay thế. Kiểm tra số ảnh/nhãn sau chuyển đổi, không coi số spec là số ảnh train đã thành công.
-Ảnh synthetic để chấm E6 phải được sinh riêng với manifest và dải `seed + index`
-không giao dải training. Chỉ đổi seed từ 0 sang 1 không tạo một bộ ảnh độc lập.
+`--val-frac 0` giữ đủ 3000 ảnh cho train; validation luôn là ảnh thật. Sau mỗi lô đếm lại số
+ảnh và số nhãn, số spec không phải số ảnh đã render xong.
 
-### Chọn κ và checkpoint bằng validation
+### Huấn luyện: đóng gói ở đây, chạy trên Linux
 
-Khóa luật dưới đây **trước** khi đọc điểm của loạt cấu hình mới:
+`23_launch_retrain.py` **không huấn luyện**; nó kiểm và đóng một gói mang sang máy GPU, val chỉ
+gồm ảnh thật, năm lớp đúng thứ tự (kể cả `inox_box`):
 
-1. Với từng run, giữ checkpoint có tổng `box mAP@0.5:0.95 + mask mAP@0.5:0.95`
-   trên real validation cao nhất. Điểm số dùng thang 0–1 của mỗi metric, không cộng nhầm %.
-2. Với từng κ trong `{1, 2, 4}`, tính trung bình điểm validation này của đủ năm seed
-   `[0, 1, 2, 3, 4]`. Chọn κ có trung bình cao nhất; điểm bằng nhau thì chọn κ nhỏ hơn.
-   Không tự đặt vùng hòa 0,01, không làm tròn điểm trước khi chọn.
-3. Trong mỗi cấu hình, chọn deployed seed có cùng điểm validation cao nhất; nếu hòa,
-   chọn seed đứng trước trong thứ tự `[0, 1, 2, 3, 4]` (E4/E5 dùng `[0, 1, 2]`).
-4. κ được chọn quyết định checkpoint E3 khởi tạo E4 và recipe đầy đủ cho E5. Theo Results
-   hiện tại, **cả ba κ vẫn có so sánh vật lý với wide-range**; việc chọn κ không xóa các
-   nhánh còn lại khỏi đánh giá E3. Mỗi cấu hình triển khai một checkpoint đã khóa.
-5. Không dùng ảnh/kết quả của final evaluation để chọn κ, model, threshold hoặc thời điểm
-   dừng. Baseline `e2_seed1_best.pt` là lựa chọn lịch sử theo **mask-only validation**;
-   lưu riêng provenance này, không mô tả hồi tố rằng nó đã được chọn bằng tổng box+mask.
+```powershell
+python scripts/23_launch_retrain.py --real D:/Scientific/Dataset/DigitalTwin/_work/yolo --synth data/synth/anchored_k2/dataset --experiment E3 --version 1 --out data/packages/e3_k2 --expected-real-train 1318 --expected-synth-train 3000 --zip
+```
 
-Các ảnh mang tên `test-standard`/`test-hard` cũ đã tham gia phát triển generator, nên kết quả
-trên đó là **development analysis**. Bộ hard kết hợp nền lạ + thiếu sáng cũng được chọn sau
-khi xem baseline. Không đổi dòng `val:` sang bộ hard cũ để chọn κ rồi báo bộ đó là test độc lập.
-Tập ảnh xác nhận mới và danh sách pose evaluation phải tách khỏi mọi dữ liệu phát triển,
-hiệu chuẩn và adaptation. Thiếu tập xác nhận độc lập thì báo rõ giới hạn đó.
+Số 1318 là số ảnh đang có trong `_work/yolo/images/train` (đếm 21/09/2026): 1256 ảnh của
+`splits/train.txt` cộng 62 ảnh negative mà `export_yolo.py` nối thêm. Chưa đối chiếu được
+baseline trên Linux đã học bộ nào; đối chiếu log Linux rồi mới khóa con số này.
 
-### Huấn luyện nhiều seed
+Trên máy GPU, giải nén gói rồi:
 
-E2/E3 dùng năm seed `[0, 1, 2, 3, 4]`; E4/E5 dùng ba seed `[0, 1, 2]`. Giữ nguyên thứ tự
-và ngân sách cho mọi nhánh. Mỗi run có thư mục riêng; không ghi đè một run đã có kết quả.
+```bash
+python -m pip install -r requirements-training.txt
+python train.py --dry-run
+python train.py --device 0 --seeds 0 1 2 3 4
+```
 
-Recipe so sánh ban đầu: Ultralytics **8.4.66**, YOLOv8s-seg, 130 epochs, `imgsz=1280`,
-`batch=8`, `nbs=64`, `patience=0`, optimizer AdamW, `lr0=0.001111`, `momentum=0.9`,
-`warmup_epochs=3`, `warmup_bias_lr=0`, `lrf=0.01`, `cos_lr=False`, `close_mosaic=10`.
-Giữ augmentation và các tham số còn lại giống nhau, lưu effective args và môi trường từng run.
-Không để `optimizer=auto` thay optimizer khi tập ảnh tăng. Cùng epochs nhưng khác số ảnh
-vẫn khác số cập nhật optimizer; lưu số cập nhật, thời gian và tỷ lệ real/synthetic thực tế.
+Recipe cố định theo bài báo: Ultralytics 8.4.66, YOLOv8s-seg, 130 epoch, `imgsz=1280`,
+`batch=8`, AdamW `lr0=0.001111`, `warmup_epochs=3`, `close_mosaic=10`; gói đã ghi sẵn trong
+`training.json`, không sửa tay. E2 và E3 dùng năm seed `0..4`, E4 và E5 dùng ba seed `0..2`.
+Mỗi seed một thư mục `runs/seed<n>/`, không ghi đè run đã có.
 
-Script `23_launch_retrain.py` chuẩn bị package portable, không tự chạy huấn luyện. Làm theo
-[TRAINING_WORKFLOW.md](TRAINING_WORKFLOW.md) để chốt manifest ảnh thật, đóng gói đủ năm lớp
-(kể cả `inox_box`), chuyển package sang Linux, chạy `train.py --dry-run` rồi mới chạy GPU.
-Đối chiếu ngày 21/09/2026: thư mục Windows `_work/yolo/images/train` có **1.318 ảnh**,
-trong khi split list và paper ghi **1.256 ảnh**; script export nối thêm **62 ảnh negative**
-vào train. Chưa xác minh bộ nào đã dùng trên máy Linux cho baseline. Vì vậy không tự bỏ
-62 ảnh, không tự đổi số trong Results và không lấy thư mục hiện tại làm bằng chứng lịch sử.
-Đối chiếu manifest/log Linux rồi khóa allowlist cùng số ảnh chính xác trước khi đóng gói.
+### Chọn κ và mô hình bằng validation, luật viết trước khi nhìn số
 
-### Đo mAP và báo cáo
+Luật đúng theo Methods, chép vào nhật ký trước khi chạy đánh giá:
 
-Phân biệt ba loại điểm: validation để chọn checkpoint/κ; development để phân tích các tập cũ;
-final test độc lập để báo cáo xác nhận sau khi khóa lựa chọn. Lưu điểm từng seed và trung bình
-± độ lệch chuẩn **mask mAP** cho các bảng Results. Điểm box+mask dùng chọn model là một đại
-lượng khác, không điền vào cột mask mAP. Độ lệch chuẩn giữa seed không thay thế bất định do
-lấy mẫu các cảnh test độc lập.
+1. Trong mỗi run, giữ checkpoint có **tổng box mAP@0.5:0.95 + mask mAP@0.5:0.95** trên
+   validation ảnh thật cao nhất (thang 0–1, không cộng phần trăm).
+2. Với mỗi κ, lấy trung bình điểm đó của đủ năm seed. **κ có trung bình cao nhất thắng; bằng nhau
+   thì lấy κ nhỏ hơn.** Không có vùng hoà, không làm tròn trước khi so.
+3. Trong cấu hình đã chọn, seed đem đi gắp là seed có điểm cao nhất; bằng nhau thì seed đứng
+   trước trong `0, 1, 2, 3, 4`.
+4. Không dùng bất kỳ kết quả gắp thật hay ảnh test nào để chọn.
 
-Dùng `best.pt` đã chọn của từng run khi đánh giá, không lấy dòng cuối `results.csv` làm điểm
-của checkpoint tốt nhất. Lưu dataset YAML, manifest ảnh, metric/scoring settings, checkpoint
-SHA-256 và toàn bộ output đánh giá; `tee` là một cách lưu terminal output trên Linux.
+`e2_seed1_best.pt` được chọn từ trước theo mask mAP, không phải theo tổng box + mask; ghi đúng
+như vậy, không viết lại lịch sử.
 
-### E4: adaptation riêng và đối chứng cùng ngân sách
+### Đo mAP
 
-Từ cùng checkpoint E3 đã chọn `f0`, tạo hai nhánh guided và unguided-control. Cả hai giữ cùng
-real train và 3000 ảnh synthetic ban đầu. Mỗi update hoàn tất thêm **1000 ảnh train mỗi nhánh**;
-ngân sách tích lũy là 3000 → 4000 → 5000. Fine-tune từ checkpoint trước của chính nhánh đó,
-không vô tình khởi động lại từ pretrained COCO hoặc từ checkpoint nhánh kia.
+Chấm `best.pt` đã chọn của từng run, không lấy dòng cuối `results.csv`:
 
-Trước update thứ k, chạy **adaptation** với model guided của vòng trước, trên pose/session
-adaptation đã khóa. Miner chỉ được đọc các CSV thuộc adaptation của đúng vòng. Ví dụ, thay
-các tên file mẫu bằng danh sách đã kiểm tra trong manifest:
+```bash
+yolo segment val model=runs/seed0/weights/best.pt data=dataset.yaml imgsz=1280 | tee val_seed0.txt
+```
+
+Lấy dòng `all`, cột `mAP50-95` của phần **Mask** cho bảng kết quả; điểm box + mask chỉ để chọn
+mô hình. Bộ ảnh `test-hard` cũ đã dùng khi phát triển bộ sinh, nên kết quả trên nó là phân tích
+phát triển, không phải kiểm định độc lập; bài báo ghi rõ giới hạn này.
+
+### E4: vòng lặp học từ lỗi và nhánh đối chứng cùng ngân sách
+
+Từ checkpoint E3 đã chọn `f0`, hai nhánh: guided (ảnh sinh theo lỗi) và control (ảnh sinh
+ngẫu nhiên, **cùng số ảnh**). Mỗi vòng thêm 1000 ảnh mỗi nhánh; hai vòng. Khai thác lỗi chỉ từ
+các CSV của **buổi adaptation** đúng vòng, không quét `results/experiment_real_*.csv`:
 
 ```bash
 python scripts/21_mine_failures.py --runs results/adaptation/e4_k1/block_001.csv results/adaptation/e4_k1/block_002.csv --n-budget 1000 --out results/adaptation/e4_k1/failure_modes.json
-python scripts/20_generate_synth.py --from-failures results/adaptation/e4_k1/failure_modes.json --kappa <kappa_da_chon> --seed 10000 --out data/synth/loop_k1
-python scripts/20_generate_synth.py --mode anchored --kappa <kappa_da_chon> --n 1000 --seed 20000 --out data/synth/control_k1
+python scripts/20_generate_synth.py --from-failures results/adaptation/e4_k1/failure_modes.json --kappa <κ đã chọn> --seed 10000 --out data/synth/loop_k1
+python scripts/20_generate_synth.py --mode anchored --kappa <κ đã chọn> --n 1000 --seed 20000 --out data/synth/control_k1
 ```
 
-Không dùng wildcard toàn cục `results/experiment_real_*.csv`: nó có thể trộn final evaluation,
-chạy thử và các vòng khác vào tập mining. Công cụ không tự chứng minh dữ liệu độc lập; người
-lập manifest phải kiểm tra vai trò, pose ID và session của từng file. Không khóa κ thành 2;
-thay `<kappa_da_chon>` bằng kết quả validation đã ghi trước khi refinement.
+Seed ở đây là seed **sinh cảnh**, và bộ sinh dùng `seed + chỉ số ảnh`: E3 đã chiếm 0–2999, nên
+vòng 1 dùng 10000 (guided) và 20000 (control), vòng 2 dùng 30000 và 40000. Dùng seed 2000 cho
+1000 ảnh control là sinh lại đúng 1000 ảnh cuối của E3, không phải ảnh mới.
 
-Sampler dùng `seed + index`, nên khóa các dải không chồng nhau: E3 ban đầu dùng 0–2999;
-ví dụ update 1 guided dùng 10000–10999, control 20000–20999; update 2 dùng seed 30000/40000
-tương ứng. Đừng dùng seed control 2000 cho 1000 ảnh: với cùng recipe nó lặp lại draw của
-1000 ảnh cuối E3, không phải thêm dữ liệu mới. Ghi dải thật đã dùng trong manifest; dành
-một dải riêng không giao các dải này cho synthetic evaluation E6.
+Đóng gói E4 bắt buộc truyền `--model` (checkpoint cha) và `--epochs` (đã khóa); từ vòng 2 mỗi
+seed nối tiếp checkpoint của chính nó nên mỗi cặp nhánh/seed một gói riêng, `--seeds <n>`.
+Không có lỗi trong buổi adaptation thì ghi "không cập nhật" và dừng, không đọc lại file lỗi cũ.
 
-Nếu adaptation không có failure, ghi update không thực hiện và dừng theo thuật toán; không
-đọc lại `failure_modes.json` cũ. Sau render, `--make-labels --val-frac 0` cho cả hai nhánh.
-Package vòng 1 chứa initial + batch vòng 1; vòng 2 chứa initial + batch 1 + batch 2 của đúng
-nhánh. Ba seed fine-tuning dùng cùng lịch giữa hai nhánh; khóa số epochs cho E4 trước khi chạy
-và truyền tường minh như hướng dẫn training. Equal budget không có nghĩa số ảnh là đủ để
-chứng minh hiệu quả; cần đối chiếu outcomes và bất định.
+### E5: bỏ từng yếu tố
 
-Ở update 1, ba seed cùng bắt đầu từ `f0` đã chọn. Từ update 2, mỗi nhánh **và mỗi seed**
-tiếp tục checkpoint của chính nó ở update trước. Vì một package nhận một `--model`, tạo
-package riêng cho từng cặp nhánh/seed ở update 2, truyền `--seeds <seed>` và `--model`
-trỏ đúng parent, cùng `--epochs` đã khóa. Không đưa checkpoint tốt nhất giữa các seed của
-update 1 làm parent chung cho cả ba seed update 2; cách đó thay đổi thiết kế đang mô tả.
-
-Chỉ chấm các checkpoint đã lưu trên **evaluation** sau khi đã cố định toàn bộ update.
-Không dùng kết quả evaluation để phân bổ ảnh, đổi threshold hoặc dừng vì tăng ít. Ghi riêng
-failure counts/denominators của adaptation và evaluation. Một lỗi cơ khí bị miner gom theo
-context không có nghĩa retraining sẽ sửa được nguyên nhân cơ khí.
-
-### E5: ablation đủ năm yếu tố
-
-CLI dùng `--ablation none|illumination|background|distractors|camera|pose`, chỉ với
-`--mode anchored`. Tạo full recipe và năm ablation, mỗi cấu hình **3000 ảnh train**, cùng
-κ đã chọn và cùng generation seed. Ví dụ:
+Cờ `--ablation` nhận `illumination`, `background`, `distractors`, `camera`, `pose`, chỉ đi với
+`--mode anchored`; mỗi cấu hình 3000 ảnh, cùng κ đã chọn và cùng seed sinh cảnh với recipe đầy đủ:
 
 ```bash
-python scripts/20_generate_synth.py --mode anchored --kappa <kappa_da_chon> --ablation illumination --n 3000 --seed 0 --out data/synth/e5_illumination
+python scripts/20_generate_synth.py --mode anchored --kappa <κ đã chọn> --ablation illumination --n 3000 --seed 0 --out data/synth/e5_illumination
 ```
 
-Lặp cho `none`, `background`, `distractors`, `camera`, `pose`; render/gán nhãn với
-`--val-frac 0`, rồi huấn luyện ba seed `[0, 1, 2]`. Lưu cấu hình và giá trị cố định thật của
-mỗi ablation cùng spec; kiểm tra từng biến đổi trước lô render chính. Bỏ biến thiên pose phải
-có phân bố pose tham chiếu đã xác định, không diễn giải là đặt mọi vật chồng lên một điểm.
-
-Cả năm yếu tố đều có **mask mAP và task success** so với full recipe theo kế hoạch hiện tại.
-Không dự đoán hai yếu tố nào yếu rồi bỏ phép đo. Hiệu ứng là `ablation − full` theo điểm phần
-trăm, âm/dương đều báo cáo; kiểm định năm contrast cùng họ với Holm. Nếu ngân sách phải đổi,
-đổi protocol và bản thảo trước khi nhìn kết quả, đồng thời ghi rõ phạm vi suy luận mới.
+Định nghĩa "tắt một yếu tố" của từng cờ ghi trong `docs/E5_ABLATION_PROTOCOL.md`; đọc trước khi
+sinh lô lớn. Huấn luyện ba seed mỗi cấu hình. Hiệu ứng báo cáo là `ablation − full` theo điểm
+phần trăm, âm hay dương đều ghi, năm phép so sánh hiệu chỉnh Holm chung một họ. Số yếu tố được
+gắp thật: xem ghi chú "chưa chốt" ở đầu Pha 5.
 
 ### Mang mô hình mới về cell
 
-Chép file `.pt` đã chọn và ghi SHA-256 vào `models\`, tạo cấu hình riêng cho từng model với
-`model_path` tương ứng. Chạy cùng danh sách **evaluation đã khóa** giữa các cấu hình, vẫn chia
-khối xen kẽ và mù theo Pha 4. Không dùng danh sách adaptation làm final evaluation. Các cờ
-CLI về depth mode, calibration và class geometry phải được giữ đúng; nút Experiment trong
-GUI không mặc nhiên tương đương quy trình CLI này. Bước đo task success cần robot thật.
+Chép `best.pt` đã chọn vào `models\` với tên riêng theo cấu hình và seed, tính SHA-256 hai đầu
+Linux và Windows phải trùng, sửa `model_path` trong `config\experiment.yaml`. Rồi chạy **đúng
+danh sách thẻ cũ**, vẫn chia khối xen kẽ và mù bằng chính lệnh chiến dịch ở Pha 4. Bước này bắt
+buộc có robot; không có nó thì E3, E4, E5 chỉ còn mAP. Nút Experiment trong giao diện đồ hoạ
+không thay được lệnh này: nó không chạy preflight hiệu chuẩn và độ sâu.
 
-### E6: transfer và thời gian chu kỳ
+### E6: khoảng cách mô phỏng với thật, và thời gian chu kỳ
 
-Chấm cùng checkpoint trên tập synthetic đánh giá riêng và tập real đánh giá riêng, báo cáo
-`100 × (mAP_synthetic − mAP_real)` theo điểm phần trăm cho từng metric. Số dương nghĩa là
-điểm synthetic cao hơn; không dùng số này để chọn lại checkpoint. Lưu cả thành phần lớp,
-điều kiện và nguồn gốc của hai tập, không lấy ảnh synthetic train làm tập đánh giá.
+Khoảng cách mô phỏng với thật: chấm cùng một checkpoint trên một tập ảnh tổng hợp **sinh riêng
+để đánh giá** (dải seed không giao dải huấn luyện) và trên tập ảnh thật đánh giá, báo
+`100 × (mAP tổng hợp − mAP thật)`.
 
-Kế hoạch thời gian là **100 chu kỳ hoàn chỉnh**. Chốt mốc bắt đầu/kết thúc, cấu hình, điều kiện
-và cách xử lý failure/reset trước khi đo. Có thể tận dụng log E2 nếu các mốc và metadata đáp
-ứng đúng định nghĩa đó. Tách thời gian người đặt vật khỏi chu kỳ tự động, nhưng giữ thông tin
-reset và can thiệp để không gọi chu kỳ máy là throughput sản xuất.
-
-`05_analyze_telemetry.py` suy ra đoạn chuyển động từ ngưỡng vận tốc khớp; biểu đồ của nó là
-chẩn đoán, không tự cung cấp timestamp inference, localization, planning và gripper. Lưu raw
-telemetry cùng log từng trial và instrument các mốc còn thiếu trước khi điền bảng stage timing.
-Tính P50/P95 tổng từ tổng thời gian đo trực tiếp từng chu kỳ, không cộng percentile từng stage.
-Thống kê chỉ trên lượt thành công phải ghi rõ số failure bị loại và là phân tích bổ sung.
-
-Giữ `--confirm-each-trial` khi có người đặt vật. Chỉ xét chu kỳ không cần xác nhận trong một
-bố trí cấp vật đã được chuẩn bị và cell không có người; không coi lệnh lặp lại trên một vật
-đã được chuyển sang băng tải là một kế hoạch cấp vật hợp lệ. Mục tiêu 10 giây là mốc ứng dụng,
-chưa phải kết quả đã đo.
+Thời gian chu kỳ: kế hoạch **100 chu kỳ hoàn chỉnh**. Lấy từ telemetry và CSV của Pha 4 nếu đủ
+mốc; `05_analyze_telemetry.py` suy đoạn chuyển động từ vận tốc khớp, chưa có mốc riêng cho nhận
+dạng, định vị, lập quỹ đạo và kẹp, nên bảng theo từng công đoạn cần thêm mốc ghi trước khi đo.
+P50 và P95 tính trên tổng thời gian của từng chu kỳ, không cộng percentile từng đoạn. Thống kê
+chỉ trên lượt thành công phải ghi rõ số lượt hỏng đã bỏ. Mốc 10 giây là mục tiêu ứng dụng, chưa
+phải số đo.
 
 **Những điều dễ sai ở pha này:**
 
