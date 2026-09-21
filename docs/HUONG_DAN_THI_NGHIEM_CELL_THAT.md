@@ -145,6 +145,8 @@ pytest tests/ -q
 
 **DỪNG nếu:** dòng cuối có chữ `failed`, hoặc không chạy hết. Ghi số `passed` vào nhật ký (bản
 ngày 21/09/2026 in `849 passed`; số này tăng khi mã có thêm test, nên không lấy nó làm cửa chặn).
+Có một bài kiểm đo nhịp thời gian, thỉnh thoảng trượt khi máy đang bận việc khác: hỏng đúng một
+bài, tắt các chương trình nặng rồi chạy lại; qua thì đi tiếp.
 
 ```
 python scripts/03_run_experiment.py --mode sim --headless --trials 5
