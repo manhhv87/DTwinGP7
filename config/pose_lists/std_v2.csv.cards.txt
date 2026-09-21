@@ -1,0 +1,24 @@
+Template card layout 3x7 over pick region x[510.0,640.0] y[-175.0,215.0] mm (margin 15.0 mm)
+Print, cut, and fix the cards at these BASE-frame coordinates:
+
+  card  1: x=  525.0 mm  y= -160.0 mm
+  card  2: x=  575.0 mm  y= -160.0 mm
+  card  3: x=  625.0 mm  y= -160.0 mm
+  card  4: x=  525.0 mm  y= -100.0 mm
+  card  5: x=  575.0 mm  y= -100.0 mm
+  card  6: x=  625.0 mm  y= -100.0 mm
+  card  7: x=  525.0 mm  y=  -40.0 mm
+  card  8: x=  575.0 mm  y=  -40.0 mm
+  card  9: x=  625.0 mm  y=  -40.0 mm
+  card 10: x=  525.0 mm  y=   20.0 mm
+  card 11: x=  575.0 mm  y=   20.0 mm
+  card 12: x=  625.0 mm  y=   20.0 mm
+  card 13: x=  525.0 mm  y=   80.0 mm
+  card 14: x=  575.0 mm  y=   80.0 mm
+  card 15: x=  625.0 mm  y=   80.0 mm
+  card 16: x=  525.0 mm  y=  140.0 mm
+  card 17: x=  575.0 mm  y=  140.0 mm
+  card 18: x=  625.0 mm  y=  140.0 mm
+  card 19: x=  525.0 mm  y=  200.0 mm
+  card 20: x=  575.0 mm  y=  200.0 mm
+  card 21: x=  625.0 mm  y=  200.0 mm
