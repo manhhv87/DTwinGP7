@@ -255,7 +255,7 @@ cả 25 tư thế nằm ngang y hệt nhau.
 `rms_mm` từ `table_plane.json` vào nhật ký. Đo tay: bảng chạm thử 8 điểm.
 
 **Trạng thái: đã làm ngày 18/09/2026.** Bốn file đã nằm trong `config\calibration\` trên git
-(25 tư thế, bootstrap 200/200, mặt bàn nghiêng 0,32°, `rms_mm` 0,67). Camera **không được đụng
+(25 tư thế, bootstrap 200/200, camera cách mặt bàn 713 mm, mặt bàn nghiêng 0,32°, `rms_mm` 0,67). Camera **không được đụng
 vào** từ hôm đó. Còn hai việc chưa có số:
 
 1. **Đo cạnh ô và cạnh dấu của tấm bàn cờ đã in** bằng thước kẹp, ghi vào nhật ký. File hiệu
