@@ -10,21 +10,22 @@
 #     sigma_* dưới đây chỉ là FALLBACK khi chưa có file đó.
 #   - Factor "free" (biến nhiệm vụ: pose vật, số vật): randomize toàn dải
 #     ở CẢ hai chế độ anchored lẫn blind.
-#   - Chế độ --blind: cùng factor, biên rộng cố định kiểu Tobin 2017 / Zhu 2025,
-#     KHÔNG dùng thông tin calibration (các khóa blind_* dưới đây).
+#   - Chế độ --mode blind: biên rộng cố định ở các khóa blind_* và recipe vật liệu
+#     khác; vẫn dùng CÙNG camera reference T_BC và intrinsics. Vì vậy đây không phải
+#     đối chứng độc lập với calibration hoặc chỉ khác một nguồn uncertainty.
 #
 # ⚠ Các giá trị đánh dấu [MEASURE] là proxy tạm — phải đo tại cell thật rồi
 #   cập nhật trước khi chạy E3 (xem WORKFLOW_CODE_TO_PAPER.md mục 5).
 # =============================================================================
 
 camera:
-  # Anchor nội tại: thay bằng số ĐO từ camera.intrinsics của D455 thật
-  # (in ra bằng: python -c "from src.perception.camera import D455Camera; print(D455Camera().intrinsics)")
-  intrinsics:            # [MEASURE] nominal D455 1280x720
-    fx: 642.0
-    fy: 641.0
-    ppx: 640.0
-    ppy: 360.0
+  # Anchor nội tại: số ĐO của chính camera trên cell, đọc từ T_base_camera_meta.json của
+  # lần hiệu chuẩn 18/09/2026 (D455 serial 241122301774, luồng màu 1280x720).
+  intrinsics:
+    fx: 645.007
+    fy: 644.202
+    ppx: 647.286
+    ppy: 368.784
     width: 1280
     height: 720
   # Fallback σ khi chưa có T_base_camera_sigma.json (đơn vị mm / deg / px)
@@ -104,17 +105,21 @@ objects:
     metal_box: 3
     inox_box: 4
   count_range: [1, 3]
-  # Vùng PICK = mặt BÀN CẤP LIỆU dưới camera (vật random pose). Số dưới suy TỪ CHÍNH
-  # dataset (7098 nhãn người duyệt) cộng hình học đo ngày 2026-09-11: mép trong bàn cách
-  # robot 140 mm, vạch đen 640 mm, bàn dài 1000 mm. Tâm vật thực tế nằm trong khoảng
-  # 277..562 mm tính từ robot và lệch ngang tối đa 390 mm (bách phân vị 1..99). Lấy đúng
-  # bao QUAN SÁT ĐƯỢC chứ không lấy cả mặt bàn, để DR neo quanh điểm làm việc thật và để
-  # thẻ pose không rơi vào chỗ ngoài tầm với.
-  # ⚠ Trục X/Y theo quy ước base frame của bố cục cell; phải xác nhận lại sau khi hiệu
-  #   chuẩn tay-mắt thật rồi chỉnh nếu lệch.
-  region_x_mm: [277.0, 562.0]
-  region_y_mm: [-390.0, 390.0]
-  table_z_mm: 500.0              # [MEASURE] đỉnh mặt bàn trong base frame — CHỜ hiệu chuẩn
+  # Vùng ĐẶT VẬT (placement envelope): nơi đặt vật khi gắp thật, dùng chung cho ba chỗ:
+  # lưới thẻ (22_make_pose_lists.py, lề 15 mm = dung sai đặt vật), ô chia lỗi của vòng C3
+  # (21_mine_failures.py) và vị trí vật trong ảnh tổng hợp.
+  # Tính từ hiệu chuẩn tay-mắt 18/09/2026 (camera tại x = 634.6 mm, cách bàn 712.7 mm), GIỮ
+  # NGUYÊN camera và dataset. Hai giới hạn kẹp nhau:
+  #   - phía gần robot: dưới x ~ 510, vật cao và chồng hai lớp (tới 235 mm) bị cắt ở mép ảnh;
+  #   - phía xa: trên x ~ 640, tư thế tiếp cận 200 mm trên chồng 235 mm vượt tầm với GP7 khi
+  #     dụng cụ dài 180-190 mm (người dùng báo mặt bích tới mặt dưới kẹp ~180 mm, 21/09/2026).
+  # Đã kiểm mọi lớp, mọi kiểu chồng, mọi góc 5 độ, cộng dung sai ±15 mm: lề ảnh nhỏ nhất 14 px,
+  # IK giải hết với dụng cụ 180 và 190 mm. Dataset: 50-65% vật của từng lớp, ở cả bốn tập
+  # train/val/test chuẩn/test khó, nằm ở x >= 510, nên vùng này nằm trong phân bố ảnh thật.
+  # Số cũ 277..562 x ±390 suy từ một mô hình camera ước lượng trước khi có hiệu chuẩn, sai ~100 mm.
+  region_x_mm: [510.0, 640.0]
+  region_y_mm: [-175.0, 215.0]
+  table_z_mm: 593.9              # đỉnh mặt bàn, world frame: z_top_mm của table_plane.json 18/09/2026
   yaw_range_deg: [-90.0, 90.0]
   min_separation_mm: 120.0
 

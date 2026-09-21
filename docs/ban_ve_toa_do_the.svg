@@ -1,5 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1120 700" width="1120" height="700"
-     role="img" aria-label="Toa do the tinh tu goc robot chu khong phai tu mep ban: nhin tu tren xuong voi truc x huong ra xa robot va truc y sang ngang, luoi 20 the; kem cach dua the vao dung cho bang cach ra robot tren teach pendant roi danh dau va dan the vao dau">
+     role="img" aria-label="Toa do the tinh tu goc robot chu khong phai tu mep ban: nhin tu tren xuong voi truc x huong ra xa robot va truc y sang ngang, luoi 21 the; kem cach dua the vao dung cho bang cach ra robot tren teach pendant roi danh dau va dan the vao dau">
   <defs>
     <marker id="d" viewBox="0 0 10 10" refX="5" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
       <path d="M 0 0 L 10 5 L 0 10 z" fill="#5a6673"/>
@@ -15,88 +15,90 @@
   <g font-family="'Segoe UI',system-ui,sans-serif" fill="#1f2933">
     <text x="26" y="32" font-size="16" fill="#1f2933" font-weight="700">Toạ độ đo từ đâu</text>
     <text x="26" y="52" font-size="12" fill="#5a6673">Nhìn từ trên xuống. Gốc là GỐC ROBOT, không phải mép bàn.</text>
-    <rect x="146.4" y="90.0" width="180.0" height="360.0" fill="#f7f9fb" stroke="#c3ccd4" stroke-width="1.2"/>
-    <rect x="195.7" y="129.6" width="102.6" height="280.8" fill="none" stroke="#2f5d8a" stroke-width="1.2" stroke-dasharray="6 4"/>
+    <rect x="146.4" y="90.0" width="223.2" height="360.0" fill="#f7f9fb" stroke="#c3ccd4" stroke-width="1.2"/>
+    <rect x="279.6" y="192.6" width="46.8" height="140.4" fill="none" stroke="#2f5d8a" stroke-width="1.2" stroke-dasharray="6 4"/>
     <line x1="96.0" y1="270.0" x2="150.0" y2="270.0" stroke="#1f2933" stroke-width="2" marker-end="url(#ax)"/>
     <line x1="96.0" y1="270.0" x2="96.0" y2="216.0" stroke="#1f2933" stroke-width="2" marker-end="url(#ax)"/>
     <text x="153" y="275" font-size="14" fill="#1f2933" font-weight="700">x</text>
     <text x="91" y="212" font-size="14" fill="#1f2933" font-weight="700" text-anchor="end">y</text>
     <circle cx="96.0" cy="270.0" r="9" fill="#ffffff" stroke="#1f2933" stroke-width="2"/>
     <circle cx="96.0" cy="270.0" r="3" fill="#1f2933"/>
-    <line x1="204.1" y1="396.0" x2="216.1" y2="396.0" stroke="#b45309" stroke-width="1.4"/>
-    <line x1="210.1" y1="390.0" x2="210.1" y2="402.0" stroke="#b45309" stroke-width="1.4"/>
-    <text x="201" y="409" font-size="10.5" fill="#b45309" font-weight="600" text-anchor="end">1</text>
-    <line x1="222.6" y1="396.0" x2="234.6" y2="396.0" stroke="#b45309" stroke-width="1.4"/>
-    <line x1="228.6" y1="390.0" x2="228.6" y2="402.0" stroke="#b45309" stroke-width="1.4"/>
-    <line x1="241.0" y1="396.0" x2="253.0" y2="396.0" stroke="#b45309" stroke-width="1.4"/>
-    <line x1="247.0" y1="390.0" x2="247.0" y2="402.0" stroke="#b45309" stroke-width="1.4"/>
-    <line x1="259.5" y1="396.0" x2="271.5" y2="396.0" stroke="#b45309" stroke-width="1.4"/>
-    <line x1="265.5" y1="390.0" x2="265.5" y2="402.0" stroke="#b45309" stroke-width="1.4"/>
-    <line x1="277.9" y1="396.0" x2="289.9" y2="396.0" stroke="#b45309" stroke-width="1.4"/>
-    <line x1="283.9" y1="390.0" x2="283.9" y2="402.0" stroke="#b45309" stroke-width="1.4"/>
-    <text x="293" y="409" font-size="10.5" fill="#b45309" font-weight="600" text-anchor="start">5</text>
-    <line x1="204.1" y1="312.0" x2="216.1" y2="312.0" stroke="#b45309" stroke-width="1.4"/>
-    <line x1="210.1" y1="306.0" x2="210.1" y2="318.0" stroke="#b45309" stroke-width="1.4"/>
-    <line x1="222.6" y1="312.0" x2="234.6" y2="312.0" stroke="#b45309" stroke-width="1.4"/>
-    <line x1="228.6" y1="306.0" x2="228.6" y2="318.0" stroke="#b45309" stroke-width="1.4"/>
-    <line x1="241.0" y1="312.0" x2="253.0" y2="312.0" stroke="#b45309" stroke-width="1.4"/>
-    <line x1="247.0" y1="306.0" x2="247.0" y2="318.0" stroke="#b45309" stroke-width="1.4"/>
-    <line x1="259.5" y1="312.0" x2="271.5" y2="312.0" stroke="#b45309" stroke-width="1.4"/>
-    <line x1="265.5" y1="306.0" x2="265.5" y2="318.0" stroke="#b45309" stroke-width="1.4"/>
-    <line x1="277.9" y1="312.0" x2="289.9" y2="312.0" stroke="#b45309" stroke-width="1.4"/>
-    <line x1="283.9" y1="306.0" x2="283.9" y2="318.0" stroke="#b45309" stroke-width="1.4"/>
-    <line x1="204.1" y1="228.0" x2="216.1" y2="228.0" stroke="#b45309" stroke-width="1.4"/>
-    <line x1="210.1" y1="222.0" x2="210.1" y2="234.0" stroke="#b45309" stroke-width="1.4"/>
-    <line x1="222.6" y1="228.0" x2="234.6" y2="228.0" stroke="#b45309" stroke-width="1.4"/>
-    <line x1="228.6" y1="222.0" x2="228.6" y2="234.0" stroke="#b45309" stroke-width="1.4"/>
-    <line x1="241.0" y1="228.0" x2="253.0" y2="228.0" stroke="#b45309" stroke-width="1.4"/>
-    <line x1="247.0" y1="222.0" x2="247.0" y2="234.0" stroke="#b45309" stroke-width="1.4"/>
-    <line x1="259.5" y1="228.0" x2="271.5" y2="228.0" stroke="#b45309" stroke-width="1.4"/>
-    <line x1="265.5" y1="222.0" x2="265.5" y2="234.0" stroke="#b45309" stroke-width="1.4"/>
-    <line x1="277.9" y1="228.0" x2="289.9" y2="228.0" stroke="#b45309" stroke-width="1.4"/>
-    <line x1="283.9" y1="222.0" x2="283.9" y2="234.0" stroke="#b45309" stroke-width="1.4"/>
-    <line x1="204.1" y1="144.0" x2="216.1" y2="144.0" stroke="#b45309" stroke-width="1.4"/>
-    <line x1="210.1" y1="138.0" x2="210.1" y2="150.0" stroke="#b45309" stroke-width="1.4"/>
-    <text x="201" y="157" font-size="10.5" fill="#b45309" font-weight="600" text-anchor="end">16</text>
-    <line x1="222.6" y1="144.0" x2="234.6" y2="144.0" stroke="#b45309" stroke-width="1.4"/>
-    <line x1="228.6" y1="138.0" x2="228.6" y2="150.0" stroke="#b45309" stroke-width="1.4"/>
-    <line x1="241.0" y1="144.0" x2="253.0" y2="144.0" stroke="#b45309" stroke-width="1.4"/>
-    <line x1="247.0" y1="138.0" x2="247.0" y2="150.0" stroke="#b45309" stroke-width="1.4"/>
-    <line x1="259.5" y1="144.0" x2="271.5" y2="144.0" stroke="#b45309" stroke-width="1.4"/>
-    <line x1="265.5" y1="138.0" x2="265.5" y2="150.0" stroke="#b45309" stroke-width="1.4"/>
-    <line x1="277.9" y1="144.0" x2="289.9" y2="144.0" stroke="#b45309" stroke-width="1.4"/>
-    <line x1="283.9" y1="138.0" x2="283.9" y2="150.0" stroke="#b45309" stroke-width="1.4"/>
-    <text x="293" y="157" font-size="10.5" fill="#b45309" font-weight="600" text-anchor="start">20</text>
-    <line x1="96.0" y1="466.2" x2="210.1" y2="466.2" stroke="#5a6673" stroke-width="1" marker-start="url(#d)" marker-end="url(#d)"/>
-    <text x="153" y="481" font-size="11" fill="#5a6673" text-anchor="middle">317</text>
-    <line x1="96.0" y1="486.0" x2="283.9" y2="486.0" stroke="#5a6673" stroke-width="1" marker-start="url(#d)" marker-end="url(#d)"/>
-    <text x="190" y="501" font-size="11" fill="#5a6673" text-anchor="middle">522</text>
-    <line x1="312.0" y1="396.0" x2="312.0" y2="144.0" stroke="#5a6673" stroke-width="1" marker-start="url(#d)" marker-end="url(#d)"/>
-    <text x="326" y="270" font-size="11" fill="#5a6673" text-anchor="middle" transform="rotate(-90 326 270)">700</text>
+    <line x1="279.0" y1="327.6" x2="291.0" y2="327.6" stroke="#b45309" stroke-width="1.4"/>
+    <line x1="285.0" y1="321.6" x2="285.0" y2="333.6" stroke="#b45309" stroke-width="1.4"/>
+    <text x="276" y="332" font-size="10.5" fill="#b45309" font-weight="600" text-anchor="end">1</text>
+    <line x1="297.0" y1="327.6" x2="309.0" y2="327.6" stroke="#b45309" stroke-width="1.4"/>
+    <line x1="303.0" y1="321.6" x2="303.0" y2="333.6" stroke="#b45309" stroke-width="1.4"/>
+    <line x1="315.0" y1="327.6" x2="327.0" y2="327.6" stroke="#b45309" stroke-width="1.4"/>
+    <line x1="321.0" y1="321.6" x2="321.0" y2="333.6" stroke="#b45309" stroke-width="1.4"/>
+    <text x="330" y="332" font-size="10.5" fill="#b45309" font-weight="600" text-anchor="start">3</text>
+    <line x1="279.0" y1="306.0" x2="291.0" y2="306.0" stroke="#b45309" stroke-width="1.4"/>
+    <line x1="285.0" y1="300.0" x2="285.0" y2="312.0" stroke="#b45309" stroke-width="1.4"/>
+    <line x1="297.0" y1="306.0" x2="309.0" y2="306.0" stroke="#b45309" stroke-width="1.4"/>
+    <line x1="303.0" y1="300.0" x2="303.0" y2="312.0" stroke="#b45309" stroke-width="1.4"/>
+    <line x1="315.0" y1="306.0" x2="327.0" y2="306.0" stroke="#b45309" stroke-width="1.4"/>
+    <line x1="321.0" y1="300.0" x2="321.0" y2="312.0" stroke="#b45309" stroke-width="1.4"/>
+    <line x1="279.0" y1="284.4" x2="291.0" y2="284.4" stroke="#b45309" stroke-width="1.4"/>
+    <line x1="285.0" y1="278.4" x2="285.0" y2="290.4" stroke="#b45309" stroke-width="1.4"/>
+    <line x1="297.0" y1="284.4" x2="309.0" y2="284.4" stroke="#b45309" stroke-width="1.4"/>
+    <line x1="303.0" y1="278.4" x2="303.0" y2="290.4" stroke="#b45309" stroke-width="1.4"/>
+    <line x1="315.0" y1="284.4" x2="327.0" y2="284.4" stroke="#b45309" stroke-width="1.4"/>
+    <line x1="321.0" y1="278.4" x2="321.0" y2="290.4" stroke="#b45309" stroke-width="1.4"/>
+    <line x1="279.0" y1="262.8" x2="291.0" y2="262.8" stroke="#b45309" stroke-width="1.4"/>
+    <line x1="285.0" y1="256.8" x2="285.0" y2="268.8" stroke="#b45309" stroke-width="1.4"/>
+    <line x1="297.0" y1="262.8" x2="309.0" y2="262.8" stroke="#b45309" stroke-width="1.4"/>
+    <line x1="303.0" y1="256.8" x2="303.0" y2="268.8" stroke="#b45309" stroke-width="1.4"/>
+    <line x1="315.0" y1="262.8" x2="327.0" y2="262.8" stroke="#b45309" stroke-width="1.4"/>
+    <line x1="321.0" y1="256.8" x2="321.0" y2="268.8" stroke="#b45309" stroke-width="1.4"/>
+    <line x1="279.0" y1="241.2" x2="291.0" y2="241.2" stroke="#b45309" stroke-width="1.4"/>
+    <line x1="285.0" y1="235.2" x2="285.0" y2="247.2" stroke="#b45309" stroke-width="1.4"/>
+    <line x1="297.0" y1="241.2" x2="309.0" y2="241.2" stroke="#b45309" stroke-width="1.4"/>
+    <line x1="303.0" y1="235.2" x2="303.0" y2="247.2" stroke="#b45309" stroke-width="1.4"/>
+    <line x1="315.0" y1="241.2" x2="327.0" y2="241.2" stroke="#b45309" stroke-width="1.4"/>
+    <line x1="321.0" y1="235.2" x2="321.0" y2="247.2" stroke="#b45309" stroke-width="1.4"/>
+    <line x1="279.0" y1="219.6" x2="291.0" y2="219.6" stroke="#b45309" stroke-width="1.4"/>
+    <line x1="285.0" y1="213.6" x2="285.0" y2="225.6" stroke="#b45309" stroke-width="1.4"/>
+    <line x1="297.0" y1="219.6" x2="309.0" y2="219.6" stroke="#b45309" stroke-width="1.4"/>
+    <line x1="303.0" y1="213.6" x2="303.0" y2="225.6" stroke="#b45309" stroke-width="1.4"/>
+    <line x1="315.0" y1="219.6" x2="327.0" y2="219.6" stroke="#b45309" stroke-width="1.4"/>
+    <line x1="321.0" y1="213.6" x2="321.0" y2="225.6" stroke="#b45309" stroke-width="1.4"/>
+    <line x1="279.0" y1="198.0" x2="291.0" y2="198.0" stroke="#b45309" stroke-width="1.4"/>
+    <line x1="285.0" y1="192.0" x2="285.0" y2="204.0" stroke="#b45309" stroke-width="1.4"/>
+    <text x="276" y="202" font-size="10.5" fill="#b45309" font-weight="600" text-anchor="end">19</text>
+    <line x1="297.0" y1="198.0" x2="309.0" y2="198.0" stroke="#b45309" stroke-width="1.4"/>
+    <line x1="303.0" y1="192.0" x2="303.0" y2="204.0" stroke="#b45309" stroke-width="1.4"/>
+    <line x1="315.0" y1="198.0" x2="327.0" y2="198.0" stroke="#b45309" stroke-width="1.4"/>
+    <line x1="321.0" y1="192.0" x2="321.0" y2="204.0" stroke="#b45309" stroke-width="1.4"/>
+    <text x="330" y="202" font-size="10.5" fill="#b45309" font-weight="600" text-anchor="start">21</text>
+    <line x1="96.0" y1="466.2" x2="285.0" y2="466.2" stroke="#5a6673" stroke-width="1" marker-start="url(#d)" marker-end="url(#d)"/>
+    <text x="190" y="481" font-size="11" fill="#5a6673" text-anchor="middle">525</text>
+    <line x1="96.0" y1="486.0" x2="321.0" y2="486.0" stroke="#5a6673" stroke-width="1" marker-start="url(#d)" marker-end="url(#d)"/>
+    <text x="208" y="501" font-size="11" fill="#5a6673" text-anchor="middle">625</text>
+    <line x1="344.4" y1="327.6" x2="344.4" y2="198.0" stroke="#5a6673" stroke-width="1" marker-start="url(#d)" marker-end="url(#d)"/>
+    <text x="358" y="263" font-size="11" fill="#5a6673" text-anchor="middle" transform="rotate(-90 358 263)">360</text>
     <line x1="65.0" y1="209.8" x2="96.0" y2="270.0" stroke="#3d474f" stroke-width="1"/>
     <circle cx="60.0" cy="200.0" r="11" fill="#ffffff" stroke="#3d474f" stroke-width="1.4"/>
     <text x="60.0" y="204.5" font-size="13" font-weight="700" text-anchor="middle">1</text>
-    <line x1="289.4" y1="122.8" x2="210.1" y2="144.0" stroke="#3d474f" stroke-width="1"/>
-    <circle cx="300.0" cy="120.0" r="11" fill="#ffffff" stroke="#3d474f" stroke-width="1.4"/>
-    <text x="300.0" y="124.5" font-size="13" font-weight="700" text-anchor="middle">2</text>
-    <line x1="304.7" y1="215.9" x2="298.3" y2="270.0" stroke="#3d474f" stroke-width="1"/>
-    <circle cx="306.0" cy="205.0" r="11" fill="#ffffff" stroke="#3d474f" stroke-width="1.4"/>
-    <text x="306.0" y="209.5" font-size="13" font-weight="700" text-anchor="middle">3</text>
-    <line x1="322.6" y1="408.8" x2="326.4" y2="414.0" stroke="#3d474f" stroke-width="1"/>
-    <circle cx="316.0" cy="400.0" r="11" fill="#ffffff" stroke="#3d474f" stroke-width="1.4"/>
-    <text x="316.0" y="404.5" font-size="13" font-weight="700" text-anchor="middle">4</text>
+    <line x1="235.8" y1="119.3" x2="285.0" y2="198.0" stroke="#3d474f" stroke-width="1"/>
+    <circle cx="230.0" cy="110.0" r="11" fill="#ffffff" stroke="#3d474f" stroke-width="1.4"/>
+    <text x="230.0" y="114.5" font-size="13" font-weight="700" text-anchor="middle">2</text>
+    <line x1="409.4" y1="357.0" x2="326.4" y2="333.0" stroke="#3d474f" stroke-width="1"/>
+    <circle cx="420.0" cy="360.0" r="11" fill="#ffffff" stroke="#3d474f" stroke-width="1.4"/>
+    <text x="420.0" y="364.5" font-size="13" font-weight="700" text-anchor="middle">3</text>
+    <line x1="419.5" y1="436.7" x2="369.6" y2="421.2" stroke="#3d474f" stroke-width="1"/>
+    <circle cx="430.0" cy="440.0" r="11" fill="#ffffff" stroke="#3d474f" stroke-width="1.4"/>
+    <text x="430.0" y="444.5" font-size="13" font-weight="700" text-anchor="middle">4</text>
     <circle cx="38" cy="522" r="10.5" fill="none" stroke="#3d474f" stroke-width="1.4"/>
     <text x="38" y="526" font-size="12.5" font-weight="700" text-anchor="middle">1</text>
     <text x="58" y="523" font-size="12.5" fill="#1f2933" font-weight="600">Gốc robot, x = 0, y = 0</text>
     <text x="58" y="539" font-size="11.5" fill="#5a6673">x hướng ra xa robot, y sang ngang</text>
     <circle cx="38" cy="560" r="10.5" fill="none" stroke="#3d474f" stroke-width="1.4"/>
     <text x="38" y="564" font-size="12.5" font-weight="700" text-anchor="middle">2</text>
-    <text x="58" y="561" font-size="12.5" fill="#1f2933" font-weight="600">20 thẻ, đánh số theo hàng</text>
-    <text x="58" y="577" font-size="11.5" fill="#5a6673">x từ 317 đến 522, y từ −350 đến +350</text>
+    <text x="58" y="561" font-size="12.5" fill="#1f2933" font-weight="600">21 thẻ, 3 hàng × 7 cột</text>
+    <text x="58" y="577" font-size="11.5" fill="#5a6673">x 525, 575, 625; y từ −160 đến +200, cách 60</text>
     <circle cx="38" cy="598" r="10.5" fill="none" stroke="#3d474f" stroke-width="1.4"/>
     <text x="38" y="602" font-size="12.5" font-weight="700" text-anchor="middle">3</text>
-    <text x="58" y="599" font-size="12.5" fill="#1f2933" font-weight="600">Vùng gắp</text>
-    <text x="58" y="615" font-size="11.5" fill="#5a6673">x 277–562, y ±390, lấy từ config/synthgen.yaml</text>
+    <text x="58" y="599" font-size="12.5" fill="#1f2933" font-weight="600">Vùng đặt vật</text>
+    <text x="58" y="615" font-size="11.5" fill="#5a6673">x 510–640, y −175…+215, lấy từ config/synthgen.yaml</text>
     <circle cx="38" cy="636" r="10.5" fill="none" stroke="#3d474f" stroke-width="1.4"/>
     <text x="38" y="640" font-size="12.5" font-weight="700" text-anchor="middle">4</text>
     <text x="58" y="637" font-size="12.5" fill="#1f2933" font-weight="600">Mép bàn</text>
@@ -107,8 +109,8 @@
     <rect x="592.0" y="72.0" width="230.0" height="288.0" fill="#f7f9fb" stroke="#e2e8ee" stroke-width="1"/>
     <rect x="852.0" y="72.0" width="230.0" height="288.0" fill="#f7f9fb" stroke="#e2e8ee" stroke-width="1"/>
     <rect x="724.0" y="94.0" width="94.0" height="64.0" fill="#182029" stroke="#182029" stroke-width="1"/>
-    <text x="736" y="118" font-size="11.5" fill="#dde6ee">X 470.8</text>
-    <text x="736" y="134" font-size="11.5" fill="#dde6ee">Y 116.7</text>
+    <text x="736" y="118" font-size="11.5" fill="#dde6ee">X 575.0</text>
+    <text x="736" y="134" font-size="11.5" fill="#dde6ee">Y 80.0</text>
     <text x="736" y="150" font-size="9.5" fill="#8fa3b5">COORD: Robot</text>
     <line x1="604.0" y1="310.0" x2="810.0" y2="310.0" stroke="#1f2933" stroke-width="2.5"/>
     <rect x="612.0" y="242.0" width="34.0" height="68.0" fill="#eceff2" stroke="#3d474f" stroke-width="1.1"/>
@@ -147,7 +149,7 @@
     <circle cx="860" cy="400" r="10.5" fill="none" stroke="#3d474f" stroke-width="1.4"/>
     <text x="860" y="404" font-size="12.5" font-weight="700" text-anchor="middle">3</text>
     <text x="880" y="401" font-size="12.5" fill="#1f2933" font-weight="600">Dấu bút trên mặt bàn</text>
-    <text x="880" y="417" font-size="11.5" fill="#5a6673">một dấu cho một thẻ, đủ 20 dấu</text>
+    <text x="880" y="417" font-size="11.5" fill="#5a6673">một dấu cho một thẻ, đủ 21 dấu</text>
     <circle cx="860" cy="440" r="10.5" fill="none" stroke="#3d474f" stroke-width="1.4"/>
     <text x="860" y="444" font-size="12.5" font-weight="700" text-anchor="middle">4</text>
     <text x="880" y="441" font-size="12.5" fill="#1f2933" font-weight="600">Dán thẻ vào dấu</text>
@@ -155,7 +157,7 @@
     <text x="600" y="492" font-size="11.5" fill="#5a6673">Cần TOOL01 đã khai đúng. Nếu không, màn hình đang báo vị trí mặt bích</text>
     <text x="600" y="508" font-size="11.5" fill="#5a6673">chứ không phải đầu má kẹp.</text>
     <rect x="592.0" y="540.0" width="490.0" height="80.0" fill="none" stroke="#b45309" stroke-width="1.5"/>
-    <text x="608" y="568" font-size="12" fill="#7a4d06" font-weight="700">Sai hệ toạ độ thì cả 20 thẻ cùng lệch, mà không có gì báo lỗi.</text>
-    <text x="608" y="592" font-size="12" fill="#7a4d06">Dán xong cả 20, jog lại về toạ độ thẻ số 1: mũi TCP phải rơi đúng tâm thẻ.</text>
+    <text x="608" y="568" font-size="12" fill="#7a4d06" font-weight="700">Sai hệ toạ độ thì cả 21 thẻ cùng lệch, mà không có gì báo lỗi.</text>
+    <text x="608" y="592" font-size="12" fill="#7a4d06">Dán xong cả 21, jog lại về toạ độ thẻ số 1: mũi TCP phải rơi đúng tâm thẻ.</text>
   </g>
 </svg>
