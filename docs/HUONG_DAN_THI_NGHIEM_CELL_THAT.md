@@ -588,10 +588,10 @@ mỗi seed một thư mục `runs/seed<n>/` chứa `weights/best.pt`, `results.c
 **Phần nào cần robot:** sinh ảnh, render, gán nhãn, huấn luyện, chọn κ đều **không** cần robot.
 Nhưng E3, E4, E5 chỉ có mAP là chưa đủ: mỗi mô hình mới phải mang về cell gắp thật.
 
-**Số lượt gắp thật của Pha 5 chưa chốt**, phải chốt trong campaign manifest trước khi gửi mô hình
-về cell. Bài báo (bản 21/09/2026) đang ghi bảng E3 có ba dòng κ và bảng E5 có cột task success
-cho cả năm yếu tố; ngân sách đã duyệt trước đó là gắp thật ở một κ và ba yếu tố. Hai bản chưa
-khớp; chốt một, sửa bản kia.
+**Số lượt gắp thật của Pha 5, chốt ngày 21/09/2026 theo hướng ít lượt nhất**, đã sửa bài báo cho
+khớp: E3 gắp ở một κ đã chọn (400); E4 chạy adaptation 80 lượt mỗi vòng và chỉ đánh giá sau vòng
+cuối (400); E5 gắp ba yếu tố neo (600). Bảng đầy đủ ở phụ lục cuối. Mọi lượt Pha 5 đều chạy trên
+**bộ khó** (`hard_v2.csv`, nền xanh và thiếu sáng như Pha 4).
 
 ### E3: wide-range so với anchored, và quét κ
 
@@ -673,8 +673,17 @@ phát triển, không phải kiểm định độc lập; bài báo ghi rõ gi�
 ### E4: vòng lặp học từ lỗi và nhánh đối chứng cùng ngân sách
 
 Từ checkpoint E3 đã chọn `f0`, hai nhánh: guided (ảnh sinh theo lỗi) và control (ảnh sinh
-ngẫu nhiên, **cùng số ảnh**). Mỗi vòng thêm 1000 ảnh mỗi nhánh; hai vòng. Khai thác lỗi chỉ từ
-các CSV của **buổi adaptation** đúng vòng, không quét `results/experiment_real_*.csv`:
+ngẫu nhiên, **cùng số ảnh**). Mỗi vòng thêm 1000 ảnh mỗi nhánh; hai vòng.
+
+Lỗi để khai thác lấy từ **buổi adaptation**, chạy trên đoạn 220:300 của `hard_v2.csv` (80 tư thế
+mà chiến dịch chính 0:200 và khối đối chứng 200:220 không đụng tới), bằng mô hình guided của vòng
+trước (vòng 1 là `f0`), một nhánh, không cần mù:
+
+```
+python scripts/03_run_experiment.py --mode real --depth-mode rgbd --pose-list config/pose_lists/hard_v2.csv --pose-slice 220:300 --session-id <buổi> --block-id adapt-vong1 --operator-id AN --confirm-each-trial --no-viewport-mirror --save-frames --frames-dir D:/Scientific/Dataset/DigitalTwin/frames --lighting dim
+```
+
+Chỉ khai thác đúng các CSV của buổi đó, không quét `results/experiment_real_*.csv`:
 
 ```bash
 python scripts/21_mine_failures.py --runs results/adaptation/e4_k1/block_001.csv results/adaptation/e4_k1/block_002.csv --n-budget 1000 --out results/adaptation/e4_k1/failure_modes.json
@@ -690,6 +699,10 @@ vòng 1 dùng 10000 (guided) và 20000 (control), vòng 2 dùng 30000 và 40000.
 seed nối tiếp checkpoint của chính nó nên mỗi cặp nhánh/seed một gói riêng, `--seeds <n>`.
 Không có lỗi trong buổi adaptation thì ghi "không cập nhật" và dừng, không đọc lại file lỗi cũ.
 
+Đánh giá gắp thật **một lần, sau vòng 2**: hai nhánh guided-2 và control-2 chạy chung một chiến
+dịch mù trên `hard_v2.csv` 0:200; `f0` không chạy lại, lấy đúng lượt của nhánh anchored ở E3.
+Checkpoint vòng 1 chỉ chấm bằng mAP validation.
+
 ### E5: bỏ từng yếu tố
 
 Cờ `--ablation` nhận `illumination`, `background`, `distractors`, `camera`, `pose`, chỉ đi với
@@ -701,8 +714,12 @@ python scripts/20_generate_synth.py --mode anchored --kappa <κ đã chọn> --a
 
 Định nghĩa "tắt một yếu tố" của từng cờ ghi trong `docs/E5_ABLATION_PROTOCOL.md`; đọc trước khi
 sinh lô lớn. Huấn luyện ba seed mỗi cấu hình. Hiệu ứng báo cáo là `ablation − full` theo điểm
-phần trăm, âm hay dương đều ghi, năm phép so sánh hiệu chỉnh Holm chung một họ. Số yếu tố được
-gắp thật: xem ghi chú "chưa chốt" ở đầu Pha 5.
+phần trăm, âm hay dương đều ghi, các phép so sánh hiệu chỉnh Holm chung một họ.
+
+**Gắp thật cho ba yếu tố neo**: `camera`, `illumination`, `background`, ba nhánh trong một chiến
+dịch mù trên `hard_v2.csv` 0:200; recipe đầy đủ không chạy lại, lấy lượt của nhánh anchored ở E3.
+`distractors` và `pose` chỉ so bằng mAP: hai yếu tố đó cả hai recipe đều ngẫu nhiên hoá như nhau
+(bảng yếu tố trong bài), nên không nói gì về việc neo theo hiệu chuẩn.
 
 ### Mang mô hình mới về cell
 
@@ -807,11 +824,18 @@ Rồi **sao lưu cả thư mục `results\` và `logs\` ra ổ ngoài**, đặt 
 | Pha 4, bộ chuẩn | 3 chế độ độ sâu × 200 | 600 | lệnh chiến dịch mù, `--trials 200` cho mỗi nhánh |
 | Pha 4, bộ khó | real-only, nền lạ và thiếu sáng | 200 | lệnh bộ khó |
 | Pha 4, mỗi buổi | khối đối chứng đầu và cuối buổi | 20 + 20 | lệnh khối đối chứng |
-| Pha 5, đo lại | mỗi mô hình mới người huấn luyện gửi về | do người huấn luyện ghi kèm mô hình | lệnh chiến dịch mù, đổi `model_path` |
+| Pha 5, E3 | anchored κ đã chọn và wide-range, bộ khó | 200 + 200 | lệnh chiến dịch mù, 2 nhánh, `hard_v2.csv` |
+| Pha 5, E4 adaptation | mô hình guided của vòng trước, đoạn 220:300 | 80 + 80 | lệnh adaptation ở mục E4 |
+| Pha 5, E4 đánh giá | guided-2 và control-2, bộ khó | 200 + 200 | lệnh chiến dịch mù, 2 nhánh |
+| Pha 5, E5 | ba ablation camera, illumination, background, bộ khó | 3 × 200 | lệnh chiến dịch mù, 3 nhánh |
+| E6 | không chạy thêm | 0 | trích từ telemetry Pha 4 |
+| | **Tổng** | **2360** | |
 
-Con số của Pha 5 chưa chốt: bài báo đang để ngỏ việc gắp thật ở cả ba κ hay chỉ ở κ đã chọn, và
-số vòng E4. Người huấn luyện chốt rồi ghi vào manifest trước khi gửi mô hình; người chạy cell
-không tự suy ra.
+Không chạy lại: real-only trên bộ khó (đã có ở Pha 4) là nhánh real-only của E3; nhánh anchored
+của E3 là `f0` của E4 và là recipe đầy đủ của E5. Muốn dùng lại được thì ba chiến dịch đó phải
+cùng danh sách `hard_v2.csv` 0:200, cùng cách dựng bộ khó, và mỗi buổi đều có khối đối chứng.
+
+Chốt ngày 21/09/2026 theo hướng ít lượt nhất; bài báo đã sửa cho khớp. Đổi nữa thì sửa cả hai.
 
 Mỗi lượt đều phải đặt vật bằng tay. Trước khi bắt đầu một chiến dịch, bấm giờ 10 lượt đầu rồi
 nhân lên để biết 200 lượt mất bao lâu, đừng ước lượng.
