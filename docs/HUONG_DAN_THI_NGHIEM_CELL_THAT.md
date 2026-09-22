@@ -93,7 +93,7 @@ Tám việc, từ không đụng robot tới jog tay; robot **không tự chạy
 
 | # | Việc | Đạt khi | Ghi lại |
 |---|---|---|---|
-| 1 | Lấy mã và kiểm máy (mục 2) | `git log -1` là `3fffc36` hoặc mới hơn; `pytest` không có `failed`; lệnh mô phỏng tạo được CSV | số `passed` |
+| 1 | Lấy mã và kiểm máy (mục 2) | `git log -1` là `6bc2a67` hoặc mới hơn; `pytest` không có `failed`; lệnh mô phỏng tạo được CSV | số `passed` |
 | 2 | Đúng camera đã hiệu chuẩn: cắm D455, chạy lệnh đọc thông số ở mục 3 | `fx` 645,0 · `fy` 644,2 · `ppx` 647,3 · `ppy` 368,8, lệch dưới 0,1 | bốn số in ra |
 | 3 | Camera chưa xê dịch: bàn dọn trống, chạy `python scripts/02_run_calibration.py --table-only` | dòng `Table plane:` cho `top` ≈ 593,9 mm và `tilt` ≈ 0,32°, lệch dưới 2 mm và 0,2° (ba buổi chụp tháng 8 lệch nhau dưới 0,3 mm và 0,2°) | `top`, `rms`, `tilt`; khớp thì chạy `git checkout -- config/calibration/table_plane.json` để trả lại bản gốc, vì lệnh này ghi đè file đó |
 | 4 | Cạnh ô và cạnh dấu của bàn cờ đã in, thước kẹp, đo ba ô rồi lấy trung bình | 45,0 và 34,0 ± 0,2 mm | hai số đo |
@@ -170,7 +170,7 @@ pytest tests/ -q
 ```
 
 **DỪNG nếu:** dòng cuối có chữ `failed`, hoặc không chạy hết. Ghi số `passed` vào nhật ký (bản
-ngày 21/09/2026 in `849 passed`; số này tăng khi mã có thêm test, nên không lấy nó làm cửa chặn).
+ngày 21/09/2026 in `852 passed`; số này tăng khi mã có thêm test, nên không lấy nó làm cửa chặn).
 Có một bài kiểm đo nhịp thời gian, thỉnh thoảng trượt khi máy đang bận việc khác: hỏng đúng một
 bài, tắt các chương trình nặng rồi chạy lại; qua thì đi tiếp.
 
