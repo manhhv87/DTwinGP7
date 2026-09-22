@@ -90,7 +90,7 @@ pytest tests/ -q
 python scripts/03_run_experiment.py --mode sim --headless --trials 5
 ```
 
-**Đạt khi:** `git log -1` hiện mã `PIN_HASH` hoặc một mã mới hơn; dòng cuối của `pytest` không có
+**Đạt khi:** `git log -1` hiện mã `22ff8c4` hoặc một mã mới hơn; dòng cuối của `pytest` không có
 chữ `failed`; lệnh thứ ba tạo một file mới `results\experiment_headless_*.csv` (tỷ lệ `0.0%` ở lệnh
 này là bình thường). Một bài test đo nhịp thời gian thỉnh thoảng trượt khi máy bận: hỏng đúng một
 bài thì chạy lại `pytest`.
