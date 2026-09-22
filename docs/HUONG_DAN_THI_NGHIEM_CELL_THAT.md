@@ -59,7 +59,7 @@ Robot không tự chạy ở việc nào; việc 5 đến 7 chỉ jog tay ở ch
 
 | # | Việc | Đạt khi | Ghi lại |
 |---|---|---|---|
-| 1 | Mục 1 ở trên | `git log -1` là `335e365` hoặc mới hơn; không `failed` | số `passed` |
+| 1 | Mục 1 ở trên | `git log -1` là `16aa6b9` hoặc mới hơn; không `failed` | số `passed` |
 | 2 | Cắm D455, chạy `python -c "from src.perception.camera import D455Camera; print(D455Camera().intrinsics)"` | `fx` 645,0 · `fy` 644,2 · `ppx` 647,3 · `ppy` 368,8 (lệch dưới 0,1) | bốn số |
 | 3 | Bàn trống, chạy `python scripts/02_run_calibration.py --table-only` | dòng `Table plane:` cho `top` ≈ 593,9 mm, `tilt` ≈ 0,32° (lệch dưới 2 mm và 0,2°) | `top`, `rms`, `tilt`; khớp thì `git checkout -- config/calibration/table_plane.json` |
 | 4 | Thước kẹp đo cạnh ô và cạnh dấu của tấm bàn cờ đã in, ba ô, lấy trung bình | 45,0 và 34,0 ± 0,2 mm | hai số |
