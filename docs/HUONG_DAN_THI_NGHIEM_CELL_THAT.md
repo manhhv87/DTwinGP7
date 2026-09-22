@@ -1,33 +1,30 @@
-# HƯỚNG DẪN CHẠY THÍ NGHIỆM TRÊN CELL GP7
+# HƯỚNG DẪN CHẠY THÍ NGHIỆM
 
-Bản 22/09/2026, cho người chạy cell.
-
-**Hiệu chuẩn tay–mắt đã xong ngày 18/09/2026**, file đã có trên git, không làm lại. Chỉ còn kiểm
-lại bằng thước kẹp (A3) và chạm thử (A5).
+**Hiệu chuẩn tay–mắt đã xong, các file kết quả đã có trên git, không làm lại. Chỉ còn kiểm lại bằng thước kẹp (A3) và chạm thử (A5).
 
 **Luật chung**
 
 - Robot chỉ tự chạy từ Pha 2. Chép nguyên lệnh trong hướng dẫn, không thêm bớt.
-- **DỪNG** nghĩa là: dừng ngay, ghi lại, gửi về, chờ trả lời. Không tự sửa rồi chạy tiếp.
+- **DỪNG** nghĩa là: dừng ngay, ghi lại, gửi cho thầy, chờ trả lời. Không tự sửa rồi chạy tiếp.
 - Nút dừng khẩn luôn trong tầm tay. Không đưa tay vào cell khi servo bật. Không đổi tốc độ.
 - Mọi lệnh gõ trong PowerShell, ở thư mục `DTwinGP7`, sau khi đã chạy `.venv\Scripts\activate`.
   IP tủ điều khiển: `192.168.1.100`.
 
 ## Tóm tắt
 
-**Phần A. Ngày đầu: robot chỉ jog tay**
+**Phần A. Robot chỉ jog tay**
 
 | # | Việc | Ghi lại |
 |---|---|---|
 | A1 | Lấy mã về, chạy `pytest` | số bài `passed` |
-| A2 | Kiểm camera còn đúng chỗ (2 lệnh, khoảng 5 phút) | 4 thông số camera; `top`, `tilt` mặt bàn |
+| A2 | Kiểm camera còn đúng chỗ | 4 thông số camera; `top`, `tilt` mặt bàn |
 | A3 | Thước kẹp đo tấm bàn cờ | cạnh ô, cạnh dấu, độ dày |
 | A4 | Khai TOOL01, làm cây chỉ | Z của TOOL01 |
 | A5 | Chạm thử 8 điểm | mean, RMS, max |
 | A6 | Lấy dấu bằng robot, dán 21 thẻ | đạt hoặc không |
 | A7 | Đo điểm thả trên băng tải, dán vạch 30 mm | X, Y điểm thả; Z băng tải, Z mặt bàn |
 
-Xong A1 đến A7, gửi các số trên về rồi sang phần B, không cần chờ trả lời.
+Xong A1 đến A7, gửi các số trên cho thầy rồi sang phần B.
 
 **Phần B. Robot tự chạy**
 
@@ -48,7 +45,7 @@ hai bộ thẻ vị trí đã in, một thanh gỗ hoặc nhựa cứng và mộ
 
 # PHẦN A. NGÀY ĐẦU
 
-Robot không tự chạy ở phần này: chỉ jog tay, chế độ TEACH, tốc độ thấp. Bước nào không đạt thì
+Chỉ jog tay, chế độ TEACH, tốc độ thấp. Bước nào không đạt thì
 DỪNG.
 
 ## A1. Lấy mã và kiểm máy
@@ -131,29 +128,36 @@ trung bình cạnh dấu; đo độ dày tấm.
 
 ## A4. Khai TOOL01, làm cây chỉ
 
-TOOL01 là điểm gắp: điểm giữa hai đầu má kẹp. Chỉ dùng một tool này cho mọi việc.
+TOOL01 là điểm gắp: điểm giữa hai đầu má kẹp. Nếu tấm bàn cờ còn kẹp trên má thì mở má lấy ra
+trước.
 
-1. Đóng kẹp. Thước đo từ mặt bích tới đầu dưới má kẹp, dọc trục cổ tay: gọi là Z.
-2. Pendant: MAIN MENU → ROBOT → TOOL, chọn tool số 1, nhập X = 0, Y = 0, Z = số vừa đo.
+1. Dùng thước đo từ mặt bích tới đầu dưới má kẹp, dọc trục cổ tay: gọi là Z.
+2. Pendant, chế độ bảo mật MANAGEMENT: MAIN MENU → ROBOT → TOOL, chọn tool số 1, nhập X = 0,
+   Y = 0, Z = số vừa đo.
 3. Mở `config\cell_layout_real.yaml`, sửa dòng `tcp_offset_xyz_mm: [0, 0, 100]` thành
    `tcp_offset_xyz_mm: [0, 0, Z]` với Z vừa đo. Lưu file.
-4. **Làm cây chỉ** để chạm được điểm (điểm gắp nằm giữa hai má, không có gì để chạm): thanh gỗ
-   hoặc nhựa cứng dài 200 mm (má kẹp chỉ kẹp được vật rộng từ 180 đến 216 mm), đóng một đinh xuyên
-   qua giữa thanh, vuông góc với thanh. Kẹp thanh vào má: thanh nằm ngang, đinh thẳng đứng, mũi
-   hướng xuống, mũi thấp hơn đầu má kẹp từ 20 đến 30 mm.
-5. Kiểm: chấm một dấu trên bàn. Chọn TOOL01, hệ Robot, jog cho mũi đinh chạm dấu, rồi bấm phím
-   xoay Rz.
+4. **Làm cây chỉ** để chạm được điểm (điểm gắp nằm giữa hai má, không có gì để chạm):
+   - Thanh gỗ hoặc nhựa cứng, dài 200 mm (má kẹp chỉ kẹp được vật rộng từ 180 đến 216 mm), tiết
+     diện chừng 20 × 30 mm.
+   - Kẻ dấu đúng giữa thanh: cách hai đầu 100 mm, cách hai cạnh bằng nhau. Đóng một đinh 50 mm
+     xuyên qua dấu đó, vuông góc với thanh, mũi thò ra phía dưới 20 đến 30 mm.
+   - Kẹp thanh vào má: thanh nằm ngang, đinh hướng xuống, mặt dưới thanh ngang với đầu má kẹp
+     (không đẩy sâu vào trong). Mũi đinh giờ thấp hơn đầu má kẹp 20 đến 30 mm.
+5. Kiểm: chấm một dấu trên bàn. Chọn TOOL01, hệ Robot, cổ tay chúc thẳng xuống, jog cho mũi đinh
+   nằm ngay trên dấu, cách mặt bàn 1 đến 2 mm. Bấm phím xoay Rz sang trái rồi sang phải.
 
-**Đạt khi:** mũi đinh đứng yên trên dấu khi xoay Rz. Mũi chạy thành vòng tròn nghĩa là bộ kẹp lệch
-tâm mặt bích: DỪNG, đo đường kính vòng, gửi về.
+**Đạt khi:** mũi đinh đứng yên trên dấu khi xoay Rz. Mũi chạy thành vòng tròn thì mở má, dịch
+thanh dọc theo má một đoạn bằng bán kính vòng đó, kẹp lại, kiểm lại. Đã chắc đinh ở đúng giữa
+thanh mà mũi vẫn chạy vòng thì bộ kẹp lệch tâm mặt bích: DỪNG, đo đường kính vòng, gửi cho thầy.
 **Ghi:** Z đã nhập.
 
-**Cách chạm ở A5, A6, A7:** cây chỉ kẹp trong má, TOOL01, hệ Robot, cây chỉ thẳng đứng. Chỉ jog
-tịnh tiến X, Y, Z, không bấm phím xoay. X, Y hiện trên pendant chính là X, Y của mũi đinh.
+**Cách chạm ở A5, A6, A7:** cây chỉ kẹp trong má, TOOL01, hệ Robot, cổ tay chúc thẳng xuống. Chỉ
+jog tịnh tiến X, Y, Z, không bấm phím xoay. X, Y hiện trên pendant chính là X, Y của mũi đinh.
+Mỗi lần tháo rồi kẹp lại cây chỉ, làm lại phép kiểm ở bước 5.
 
 ## A5. Chạm thử 8 điểm
 
-1. Nếu tấm bàn cờ còn gắn trên má kẹp, tháo nó ra. Lắp cây chỉ, chạm như cuối A4.
+1. Lắp cây chỉ, chạm như cuối A4.
 2. Jog mũi cây chỉ tới X 575, Y 20, hạ xuống sát bàn. Đặt tấm bàn cờ nằm phẳng trên bàn, mặt in
    lên, tâm tấm ngay dưới mũi. Nâng mũi lên, jog robot ra ngoài cho khuất camera.
 3. Chạy, thay ba số đo ở A3:
@@ -395,18 +399,15 @@ Dựng xong, không đổi gì cho đến hết buổi. Hết buổi, cất tấ
 
 Mọi buổi Pha 5 dùng **điều kiện khó**, trình tự như B4.
 
-**Nhận mô hình.** Người huấn luyện gửi các file mô hình (đuôi `.pt`), mỗi file kèm một mã SHA-256.
-Chép file vào thư mục `models\`, giữ đúng tên, rồi kiểm từng file, ví dụ:
+**Nhận mô hình.** Chép file vào thư mục `models\`, giữ đúng tên, ví dụ:
 
 ```
-Get-FileHash models\e3_anchored.pt
+models\e3_anchored.pt
 ```
 
-Mã in ra (cột `Hash`) phải trùng mã được gửi, không kể chữ hoa hay chữ thường; không trùng thì
-DỪNG. **Không sửa** `model_path` trong `config\experiment.yaml`: khối đối chứng luôn chạy bằng mô
-hình gốc ghi ở đó, còn mô hình mới đã ghi sẵn trong lệnh chiến dịch.
+**Không sửa** `model_path` trong `config\experiment.yaml`: khối đối chứng luôn chạy bằng mô hình gốc ghi ở đó, còn mô hình mới đã ghi sẵn trong lệnh.
 
-**Các buổi**, chạy theo thứ tự trong bảng. Buổi nào cần file chưa có thì chờ người huấn luyện gửi.
+**Các buổi**, chạy theo thứ tự trong bảng. Buổi nào cần file chưa có thì đợi thầy gửi.
 
 | Dòng biến | Cần file trong `models\` | Lệnh | Số lượt |
 |---|---|---|---:|
