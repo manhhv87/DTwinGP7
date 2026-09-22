@@ -160,6 +160,12 @@ def parse_args() -> argparse.Namespace:
              "they are an unblinded assessor of the primary endpoint. Use "
              "tools/run_blinded_campaign.py, which allocates the codes and seals the key.")
     parser.add_argument(
+        "--model-path", default=None, metavar="PT",
+        help="Checkpoint for this run, replacing model_path from --config. This is how "
+             "one blinded campaign gives each arm its own model: tools/run_blinded_campaign.py "
+             "--arm anchored \"--model-path models/e3_anchored.pt\" --arm wide \"--model-path "
+             "models/e3_wide.pt\". The file's SHA-256 goes into the run metadata as usual.")
+    parser.add_argument(
         "--pose-slice", default=None, metavar="A:B",
         help="Run rows A..B-1 of the pose list (0-based, Python slice) instead of the "
              "first --trials rows. This is what makes interleaving possible: run block "
@@ -209,6 +215,12 @@ def parse_args() -> argparse.Namespace:
         help="(headless) RNG seed for reproducible results.",
     )
     return parser.parse_args()
+
+
+def apply_model_override(config: dict, model_path: str | None) -> None:
+    """--model-path wins over model_path in the YAML, after the real: overrides."""
+    if model_path:
+        config["model_path"] = model_path
 
 
 DEFAULT_OBJECT_HEIGHTS_MM = {"tray": 25, "bottle": 150, "cup": 40, "bolt": 25}
@@ -452,6 +464,7 @@ def main() -> int:
     real_overrides = config.pop("real", None) or {}
     if args.mode == "real":
         config.update(real_overrides)
+    apply_model_override(config, args.model_path)
 
     # Real mode: enable C2 safety layer (reach envelope + predictive safety over full trajectory).
     # Overrides the sim-friendly defaults in orchestrator _DEFAULT_CONFIG.

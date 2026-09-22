@@ -21,7 +21,7 @@ Usage:
         --arm rgbd   "--depth-mode rgbd" \\
         --arm plane  "--depth-mode plane" \\
         --arm fusion "--depth-mode fusion" \\
-        --pose-list config/pose_lists/std_v1.csv --trials 200 --block 25 \\
+        --pose-list config/pose_lists/std_v2.csv --trials 200 --block 25 \\
         --session 2026-09-20-morning --operator AN --seed 7 \\
         --common "--mode real --ik-source yrc --tool-no 1 --confirm-each-trial --no-viewport-mirror"
 
@@ -57,6 +57,12 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--pose-list", required=True)
     p.add_argument("--trials", type=int, required=True,
                    help="Trials per arm. Must divide evenly by --block.")
+    p.add_argument("--first-pose", type=int, default=0,
+                   help="First pose-list row (0-based) of this sitting. A campaign too long "
+                        "for one sitting is split into sittings that each cover their own "
+                        "rows with every arm: --first-pose 0 --trials 100, then "
+                        "--first-pose 100 --trials 100, each with its own --session. "
+                        "Must be a multiple of --block. Default 0.")
     p.add_argument("--block", type=int, default=25,
                    help="Trials per block. Short blocks mix the arms through the "
                         "session; long ones cost less restaging. Default 25.")
@@ -81,6 +87,21 @@ def main() -> int:
               f"blocks; the arms would not get equal coverage of the pose list.",
               file=sys.stderr)
         return 2
+    if args.first_pose < 0 or args.first_pose % args.block:
+        print(f"--first-pose {args.first_pose} must be a non-negative multiple of --block "
+              f"{args.block}, so sittings line up with whole blocks.", file=sys.stderr)
+        return 2
+    last = args.first_pose + args.trials
+    pose_list = Path(args.pose_list)
+    if not pose_list.is_absolute():
+        pose_list = PROJECT_ROOT / pose_list
+    if pose_list.exists():
+        with pose_list.open(encoding="utf-8") as f:
+            n_rows = sum(1 for line in f if line.strip()) - 1
+        if last > n_rows:
+            print(f"Rows {args.first_pose}:{last} run past the {n_rows} poses of "
+                  f"{args.pose_list}.", file=sys.stderr)
+            return 2
 
     import random
     rng = random.Random(args.seed)
@@ -94,7 +115,7 @@ def main() -> int:
     # Schedule: one round per pose-list block, arm order drawn fresh each round, so
     # no arm is systematically first (first-of-session and last-of-session differ).
     schedule = []
-    for lo in range(0, args.trials, args.block):
+    for lo in range(args.first_pose, last, args.block):
         order = [name for name, _ in arms]
         rng.shuffle(order)
         for name in order:
@@ -108,6 +129,7 @@ def main() -> int:
         "pose_list": args.pose_list,
         "block": args.block,
         "trials_per_arm": args.trials,
+        "first_pose": args.first_pose,
         "arm_of_code": {code_of[n]: n for n, _ in arms},
         "schedule": [{"block_id": f"{args.session}-b{i + 1:03d}",
                       "code": code_of[n], "arm": n, "slice": f"{lo}:{hi}"}

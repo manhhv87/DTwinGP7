@@ -25,22 +25,27 @@ thời gian chu kỳ.
 
 ## So sánh E2: nộp cả họ một lần
 
-Làm sau khi đã nhận đủ dữ liệu của buổi và mở file khoá.
+Làm sau khi đã nhận đủ dữ liệu của các buổi. Người chạy cell dồn mỗi buổi vào `results/<tên buổi>/`,
+khối đối chứng vào `results/<tên buổi>/doichung/`, file khoá ở `results/blinding_keys/key_<tên buổi>.json`.
+Mỗi chiến dịch mù chia hai buổi: buổi 1 chạy tư thế 0:100, buổi 2 chạy 100:200, mọi nhánh trong
+cùng buổi (cờ `--first-pose` của `run_blinded_campaign.py`), nên mỗi `pose_id` gặp mỗi nhánh đúng
+một lần. Tên buổi và lịch ở mục 7, 8 của hướng dẫn cell.
 
 So sánh cả họ trong một lệnh:
 
 ```
-python scripts/04_analyze_results.py --csv "results/2026-09-20-sang/experiment_real_*.csv" --split-col depth_mode --baseline rgbd --pair-key pose_id --score-col human_ok > results/e2_phan_tich.txt
+python scripts/04_analyze_results.py --csv "results/e2chuan-*/experiment_real_*.csv" --split-col depth_mode --baseline rgbd --pair-key pose_id --score-col human_ok > results/e2_phan_tich.txt
 ```
 
-`--split-col depth_mode` tự gom các khối rời của cùng một nhánh lại, nên không phải nối file bằng
-tay. Chương trình áp Holm cho cả họ. Chạy từng cặp riêng thì mỗi cặp tự thấy mình có ý nghĩa. Ví
-dụ: hai kiểm định p = 0,03 và 0,04, sau Holm cả hai đều không.
+Mẫu `results/e2chuan-*/experiment_real_*.csv` lấy file của hai buổi, không lấy thư mục con
+`doichung`. `--split-col depth_mode` tự gom các khối rời của cùng một nhánh lại, nên không phải nối
+file bằng tay. Chương trình áp Holm cho cả họ. Chạy từng cặp riêng thì mỗi cặp tự thấy mình có ý
+nghĩa. Ví dụ: hai kiểm định p = 0,03 và 0,04, sau Holm cả hai đều không.
 
-Khối đối chứng đầu buổi so với cuối buổi thì so theo file, vì cùng một nhánh:
+Khối đối chứng đầu buổi so với cuối buổi, từng buổi một (hai khối phân biệt bằng cột `block_id`):
 
 ```
-python scripts/04_analyze_results.py --csv results/2026-09-20-sang-doichung/<file đầu buổi>.csv --paired-with results/2026-09-20-sang-doichung/<file cuối buổi>.csv --label-a dau_buoi --labels-b cuoi_buoi --pair-key pose_id --score-col human_ok > results/e2_doichung.txt
+python scripts/04_analyze_results.py --csv "results/e2chuan-1/doichung/experiment_real_*.csv" --split-col block_id --baseline doichung-dau --pair-key pose_id --score-col human_ok > results/e2chuan-1_doichung.txt
 ```
 
 `--score-col human_ok` dùng đánh giá toàn bộ thao tác; chấm đạt chỉ khi đúng vật được gắp,
@@ -78,7 +83,7 @@ Nhưng E3, E4, E5 chỉ có mAP là chưa đủ: mỗi mô hình mới phải ma
 
 **Số lượt gắp thật của Pha 5, chốt ngày 21/09/2026 theo hướng ít lượt nhất**, đã sửa bài báo cho
 khớp: E3 gắp ở một κ đã chọn (400); E4 chạy adaptation 80 lượt mỗi vòng và chỉ đánh giá sau vòng
-cuối (400); E5 gắp ba yếu tố neo (600). Bảng đầy đủ ở phụ lục cuối. Mọi lượt Pha 5 đều chạy trên
+cuối (400); E5 gắp ba yếu tố neo (600). Lịch từng buổi, tên file mô hình và bảng tổng số lượt ở mục 7, 8 của hướng dẫn cell. Mọi lượt Pha 5 đều chạy trên
 **bộ khó** (`hard_v2.csv`, nền xanh và thiếu sáng như Pha 4).
 
 ### E3: wide-range so với anchored, và quét κ
@@ -165,16 +170,13 @@ ngẫu nhiên, **cùng số ảnh**). Mỗi vòng thêm 1000 ảnh mỗi nhánh;
 
 Lỗi để khai thác lấy từ **buổi adaptation**, chạy trên đoạn 220:300 của `hard_v2.csv` (80 tư thế
 mà chiến dịch chính 0:200 và khối đối chứng 200:220 không đụng tới), bằng mô hình guided của vòng
-trước (vòng 1 là `f0`), một nhánh, không cần mù:
+trước (vòng 1 là `f0` = `e3_anchored.pt`, vòng 2 là `e4_guided1.pt`), một nhánh, không cần mù:
+buổi `e4adapt-1` và `e4adapt-2`, lệnh D của hướng dẫn cell.
 
-```
-python scripts/03_run_experiment.py --mode real --depth-mode rgbd --pose-list config/pose_lists/hard_v2.csv --pose-slice 220:300 --session-id <buổi> --block-id adapt-vong1 --operator-id AN --confirm-each-trial --no-viewport-mirror --save-frames --frames-dir D:/Scientific/Dataset/DigitalTwin/frames --lighting dim
-```
-
-Chỉ khai thác đúng các CSV của buổi đó, không quét `results/experiment_real_*.csv`:
+Chỉ khai thác đúng CSV chính của buổi đó, không lấy thư mục `doichung`:
 
 ```bash
-python scripts/21_mine_failures.py --runs results/adaptation/e4_k1/block_001.csv results/adaptation/e4_k1/block_002.csv --n-budget 1000 --out results/adaptation/e4_k1/failure_modes.json
+python scripts/21_mine_failures.py --runs "results/e4adapt-1/experiment_real_*.csv" --n-budget 1000 --out results/adaptation/e4_k1/failure_modes.json
 python scripts/20_generate_synth.py --from-failures results/adaptation/e4_k1/failure_modes.json --kappa <κ đã chọn> --seed 10000 --out data/synth/loop_k1
 python scripts/20_generate_synth.py --mode anchored --kappa <κ đã chọn> --n 1000 --seed 20000 --out data/synth/control_k1
 ```
@@ -211,11 +213,38 @@ dịch mù trên `hard_v2.csv` 0:200; recipe đầy đủ không chạy lại, l
 
 ### Mang mô hình mới về cell
 
-Chép `best.pt` đã chọn vào `models\` với tên riêng theo cấu hình và seed, tính SHA-256 hai đầu
-Linux và Windows phải trùng, sửa `model_path` trong `config\experiment.yaml`. Rồi chạy **đúng
-danh sách thẻ cũ**, vẫn chia khối xen kẽ và mù bằng chính lệnh chiến dịch ở Pha 4. Bước này bắt
-buộc có robot; không có nó thì E3, E4, E5 chỉ còn mAP. Nút Experiment trong giao diện đồ hoạ
-không thay được lệnh này: nó không chạy preflight hiệu chuẩn và độ sâu.
+Đổi tên `best.pt` đã chọn theo đúng bảng dưới (lệnh chiến dịch của người chạy cell đã ghi sẵn các
+tên này), gửi kèm SHA-256 (`sha256sum <file>`); người chạy cell kiểm bằng `Get-FileHash`.
+
+| File | Là gì | Buổi dùng |
+|---|---|---|
+| `e3_anchored.pt` | anchored ở κ đã chọn, seed đã chọn; cũng là `f0` của E4 | `e3-1`, `e3-2`, `e4adapt-1` |
+| `e3_wide.pt` | wide-range, seed đã chọn | `e3-1`, `e3-2` |
+| `e4_guided1.pt` | guided sau vòng 1 | `e4adapt-2` |
+| `e4_guided2.pt`, `e4_control2.pt` | hai nhánh sau vòng 2 | `e4-1`, `e4-2` |
+| `e5_camera.pt`, `e5_illumination.pt`, `e5_background.pt` | ba ablation neo | `e5-1`, `e5-2` |
+
+`model_path` trong `config\experiment.yaml` **giữ nguyên** `e2_seed1_best.pt`: khối đối chứng mọi
+buổi chạy bằng nó, nên đối chứng so được giữa các buổi. Mô hình của từng nhánh đi qua cờ
+`--model-path` trong tham số nhánh (`--arm anchored "--depth-mode rgbd --model-path models/e3_anchored.pt"`),
+SHA-256 của file ghi vào metadata của từng lần chạy. Bước này bắt buộc có robot; không có nó thì
+E3, E4, E5 chỉ còn mAP. Nút Experiment trong giao diện đồ hoạ không thay được lệnh này: nó không
+chạy preflight hiệu chuẩn và độ sâu.
+
+Các nhánh Pha 5 khác nhau ở mô hình, CSV không có cột nào nói điều đó, nên nhánh được đọc từ file
+khoá theo `block_id` (`--key`, tạo cột `arm`); `--only` giữ đúng các nhánh của một họ so sánh:
+
+```
+python scripts/04_analyze_results.py --csv "results/e3-*/experiment_real_*.csv" "results/e2kho-*/experiment_real_*.csv" --key "results/blinding_keys/key_e3-*.json" "results/blinding_keys/key_e2kho-*.json" --split-col arm --baseline anchored --pair-key pose_id --score-col human_ok > results/e3_phan_tich.txt
+python scripts/04_analyze_results.py --csv "results/e4-*/experiment_real_*.csv" --key "results/blinding_keys/key_e4-*.json" --split-col arm --baseline control2 --pair-key pose_id --score-col human_ok > results/e4_phan_tich.txt
+python scripts/04_analyze_results.py --csv "results/e4-*/experiment_real_*.csv" "results/e3-*/experiment_real_*.csv" --key "results/blinding_keys/key_e4-*.json" "results/blinding_keys/key_e3-*.json" --split-col arm --only guided2 control2 anchored --baseline anchored --pair-key pose_id --score-col human_ok > results/e4_so_voi_f0.txt
+python scripts/04_analyze_results.py --csv "results/e5-*/experiment_real_*.csv" "results/e3-*/experiment_real_*.csv" --key "results/blinding_keys/key_e5-*.json" "results/blinding_keys/key_e3-*.json" --split-col arm --only camera illumination background anchored --baseline anchored --pair-key pose_id --score-col human_ok > results/e5_phan_tich.txt
+```
+
+Họ Holm theo Methods: E3 gồm mọi so sánh của E3 (anchored với wide-range, anchored với real-only
+lấy từ nhánh `real_only` của E2 khó); E4 là so sánh loop với control (lệnh thứ hai, so hai nhánh
+với `f0` là nhánh `anchored` của E3, để đọc kèm); E5 là các yếu tố so với recipe đầy đủ (nhánh
+`anchored` của E3), gắp thật ba yếu tố, hai yếu tố còn lại chỉ có mAP.
 
 ### E6: khoảng cách mô phỏng với thật, và thời gian chu kỳ
 
