@@ -5,8 +5,9 @@ Mọi file nhắc tới dưới đây nằm cùng thư mục với file này.
 
 ## Đọc gì trước
 
-`HUONG_DAN_THI_NGHIEM_CELL_THAT.md`: đọc mục **Quy trình tổng thể** và **Chia việc** trước, rồi mới
-đọc lần lượt từ mục 1. Cách lấy mã nguồn về máy và cài đặt nằm ở mục 2; cách khai TOOL01 trên
+`HUONG_DAN_THI_NGHIEM_CELL_THAT.md`: đọc mục **Quy trình tổng thể** và **Chia việc** trước. Việc
+đầu tiên khi có file là mục **Ngày đầu tiên**: tám kiểm tra theo thứ tự, không cho robot tự chạy,
+gửi tám dòng số về rồi mới sang Pha 2. Sau đó mới đọc lần lượt từ mục 1. Cách lấy mã nguồn về máy và cài đặt nằm ở mục 2; cách khai TOOL01 trên
 teach pendant nằm ở mục 3.
 
 Trong thư mục `docs\` của mã nguồn có file `HUONG_DAN_CAI_DAT.md`, viết từ trước và nhiều chỗ đã cũ (thông số bàn
