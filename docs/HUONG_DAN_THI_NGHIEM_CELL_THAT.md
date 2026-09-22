@@ -1,23 +1,38 @@
 # HƯỚNG DẪN CHẠY THÍ NGHIỆM TRÊN CELL GP7
 
-Bản 22/09/2026, cho người chạy cell. Phần sinh ảnh, huấn luyện và phân tích ở
-`HUONG_DAN_HUAN_LUYEN.md`, không cần đọc.
+Bản 22/09/2026, cho người chạy cell. Sinh ảnh, huấn luyện và phân tích do người huấn luyện làm.
 
-**Ba điều giữ suốt:**
+**Luật chung**
 
-- Robot chỉ tự chạy từ Pha 2. Mọi lệnh chạy thật phải có `--confirm-each-trial` (dừng chờ ENTER
-  trước mỗi lượt) và `--no-viewport-mirror` (thiếu nó, Ctrl+C không dừng được robot).
-- **DỪNG** = dừng ngay, ghi lại, gửi số về, không tự sửa rồi chạy tiếp. **GHI SỐ** = ghi vào nhật ký
-  rồi đi tiếp.
+- Robot chỉ tự chạy từ Pha 2. Chép nguyên lệnh trong hướng dẫn, không thêm bớt. Mọi lệnh chạy
+  thật đã có `--confirm-each-trial` (robot chờ ENTER trước mỗi lượt) và `--no-viewport-mirror`
+  (thiếu nó, Ctrl+C không dừng được robot).
+- **DỪNG** nghĩa là: dừng ngay, ghi lại, gửi về, chờ trả lời. Không tự sửa rồi chạy tiếp.
 - Nút dừng khẩn luôn trong tầm tay. Không đưa tay vào cell khi servo bật. Không đổi tốc độ.
+- Mọi lệnh gõ trong PowerShell, ở thư mục `DTwinGP7`, sau khi đã chạy `.venv\Scripts\activate`.
+  IP tủ điều khiển: `192.168.1.100`.
 
-IP tủ điều khiển: `192.168.1.100`.
+**Thứ tự công việc**
+
+| # | Việc | Robot | Mục |
+|---|---|---|---|
+| 1 | Lấy mã, kiểm máy | không | 1 |
+| 2 | Chuẩn bị cell: kiểm camera, làm tool, chạm thử, dán thẻ, đo điểm thả | chỉ jog tay | 2 |
+| 3 | Đọc cách đặt vật và chấm một lượt | | 3 |
+| 4 | Pha 2: chạy thử 1 lượt rồi 5 lượt | tự chạy | 4 |
+| 5 | Pha 3 (E1): 50 lượt | tự chạy | 5 |
+| 6 | Pha 4 (E2): 4 buổi | tự chạy | 6, 7 |
+| 7 | Pha 5 (E3, E4, E5): 8 buổi, khi người huấn luyện gửi mô hình | tự chạy | 6, 8 |
+
+**Cần sẵn:** thước kẹp, thước lá, bút dạ, băng dính giấy, băng dính trong, tấm bàn cờ A3 đã in,
+hai bộ thẻ vị trí đã in, một thanh gỗ hoặc nhựa cứng và một đinh dài (làm cây chỉ, mục 2.4),
+thêm một đinh nữa làm điểm mốc.
 
 ---
 
 ## 1. Lấy mã và kiểm máy
 
-Máy cần Python 3.10 trở lên và Git. Mở PowerShell. Lần đầu:
+Máy cần Python 3.10 trở lên và Git. Lần đầu:
 
 ```
 git clone -b feat/synthgen-c2-c3-dataset https://github.com/manhhv87/DTwinGP7.git
@@ -31,282 +46,484 @@ Những lần sau:
 
 ```
 cd DTwinGP7
-git pull
 .venv\Scripts\activate
+git pull
 ```
 
-`git pull` báo `config/synthgen.yaml` hoặc `config/calibration/` bị sửa ở máy thì chạy
-`git checkout -- config/synthgen.yaml config/calibration/` rồi pull lại.
+Nếu `git pull` báo lỗi vì file ở máy đã sửa (sẽ gặp sau khi làm mục 2.4 và 2.7), chạy bốn lệnh
+này; các số đã sửa ở máy vẫn được giữ:
+
+```
+git checkout -- config/calibration/
+git stash
+git pull
+git stash pop
+```
 
 Kiểm máy, chưa cần robot:
 
 ```
+git log -1
 pytest tests/ -q
 python scripts/03_run_experiment.py --mode sim --headless --trials 5
 ```
 
-**DỪNG nếu** có chữ `failed`, hoặc lệnh thứ hai không tạo file mới trong `results\`. Tỷ lệ `0.0%`
-ở lệnh mô phỏng là bình thường. Một bài test đo nhịp thời gian thỉnh thoảng trượt khi máy bận:
-hỏng đúng một bài thì chạy lại.
+**Đạt khi:** `git log -1` hiện mã `PIN_HASH` hoặc một mã mới hơn; dòng cuối của `pytest` không có
+chữ `failed`; lệnh thứ ba tạo một file mới `results\experiment_headless_*.csv` (tỷ lệ `0.0%` ở lệnh
+này là bình thường). Một bài test đo nhịp thời gian thỉnh thoảng trượt khi máy bận: hỏng đúng một
+bài thì chạy lại `pytest`.
 
-Mô hình nhận dạng `models/e2_seed1_best.pt` có sẵn trên git; không đổi `model_path`.
-
----
-
-## 2. Ngày đầu tiên: tám việc, theo thứ tự, đạt hết mới sang Pha 2
-
-Robot không tự chạy ở việc nào; việc 5 đến 7 chỉ jog tay ở chế độ TEACH.
-
-| # | Việc | Đạt khi | Ghi lại |
-|---|---|---|---|
-| 1 | Mục 1 ở trên | `git log -1` là `16aa6b9` hoặc mới hơn; không `failed` | số `passed` |
-| 2 | Cắm D455, chạy `python -c "from src.perception.camera import D455Camera; print(D455Camera().intrinsics)"` | `fx` 645,0 · `fy` 644,2 · `ppx` 647,3 · `ppy` 368,8 (lệch dưới 0,1) | bốn số |
-| 3 | Bàn trống, chạy `python scripts/02_run_calibration.py --table-only` | dòng `Table plane:` cho `top` ≈ 593,9 mm, `tilt` ≈ 0,32° (lệch dưới 2 mm và 0,2°) | `top`, `rms`, `tilt`; khớp thì `git checkout -- config/calibration/table_plane.json` |
-| 4 | Thước kẹp đo cạnh ô và cạnh dấu của tấm bàn cờ đã in, ba ô, lấy trung bình | 45,0 và 34,0 ± 0,2 mm | hai số |
-| 5 | Làm cây chỉ, khai TOOL02 và TOOL01 (mục 3) | xoay quanh điểm mốc mà mũi cây chỉ không rời | Z của TOOL02 và TOOL01 |
-| 6 | Hệ Robot, jog TCP tới (525, −160), (625, −160), (625, 200), (525, 200) | tới cả bốn, không báo giới hạn khớp | có/không |
-| 7 | Chạm thử 8 điểm (mục 4) | có file `results\touch_test_*.json` | mean / RMS / max |
-| 8 | Đo điểm thả và độ cao băng tải (mục 3) | băng tải không cao hơn mặt bàn | `place_position` |
-
-Việc 2 và 3: đúng camera đã hiệu chuẩn, chưa xê dịch. Việc 4: hiệu chuẩn 18/09 đúng tỷ lệ. Chỉ
-việc 3 hoặc 4 hỏng mới phải làm lại hiệu chuẩn (mục 4). Việc 7 lệch mà 3, 4 đạt thì xem lại TOOL02
-trước: sai tool cho độ lệch cùng chiều ở mọi điểm, công cụ in riêng độ lệch trung bình theo x, y.
-
-Xong tám việc, gửi tám dòng số về, rồi mới sang Pha 2.
+**Ghi:** số `passed`.
 
 ---
 
-## 3. Ba số phải đo tay
+## 2. Chuẩn bị cell (một lần, đúng thứ tự)
 
-| # | Việc | Ghi vào đâu | Hiện tại |
-|---|---|---|---|
-| 1 | Cạnh ô, cạnh dấu tấm bàn cờ đã in | gõ vào lệnh hiệu chuẩn, nếu phải làm lại | in danh nghĩa 45 / 34 |
-| 2 | TCP má kẹp (TOOL01) và mũi cây chỉ (TOOL02) | TOOL01 vào `config/cell_layout_real.yaml` → `gripper.tcp_offset_xyz_mm` | `[0, 0, 100]`, số giữ chỗ |
-| 3 | Điểm thả trên băng tải | `config/experiment.yaml` → `place_position` | `[700, 120, 700]`, số giữ chỗ |
+Robot không tự chạy ở mục này: chỉ jog tay, chế độ TEACH, tốc độ thấp. Mỗi bước có **Đạt khi**
+và **Ghi**; bước nào không đạt thì DỪNG.
 
-Mặt băng tải không được cao hơn mặt bàn; thấp hơn thì vật rơi đúng phần chênh, chỉ chấp nhận vài cm.
-Thông số camera đã điền sẵn. **Không sửa `robot.pose.xyz_mm`** (`[0, 0, 630]`); preflight từ chối
-chạy nếu khác lúc hiệu chuẩn.
+### 2.1 Đúng camera đã hiệu chuẩn
 
-**Hai tool, vì sao cần cả hai.** TOOL01 là điểm gắp: điểm giữa hai thanh má kẹp, ngang đầu
-thanh. Nó nằm trong không khí, không chạm được gì. Mọi việc phải *chạm* (kiểm tool, lấy dấu thẻ,
-chạm thử) dùng TOOL02 = mũi một **cây chỉ** kẹp trong má.
-
-**Làm cây chỉ:** một thanh gỗ hoặc nhựa cứng, dài khoảng 190 mm để hai má kẹp được (má đóng hết
-còn 180 mm, mở hết 216 mm), đóng một đinh hoặc vít nhọn xuống ở giữa, mũi thò ra chừng 30 đến
-50 mm. Kẹp thanh vào giữa hai má, đẩy sát lên càng ngang cho khỏi xoay, mũi hướng xuống.
-
-**Khai TOOL02 bằng chức năng hiệu chuẩn tool trên pendant**, không đo tay: chìa MAINTENANCE hoặc
-MANAGEMENT, chọn TOOL: 2, vào UTILITY → CALIBRATION, đưa mũi cây chỉ chạm **cùng một điểm mốc**
-(đầu một đinh dựng đứng trên bàn) từ **5 hướng cổ tay khác nhau**, mỗi lần bấm ghi điểm, rồi
-COMPLETE; pendant tự tính X, Y, Z của mũi. Kiểm: chọn TOOL02, hệ Robot, mũi chạm mốc, bấm phím
-xoay; mũi không rời mốc là đạt. Tên nút có thể khác đôi chút theo phiên bản, xem mục Tool
-calibration trong sổ tay pendant.
-
-**Suy TOOL01 từ TOOL02:** thước kẹp đo khoảng cách theo phương thẳng đứng từ **mũi cây chỉ** tới
-**đầu dưới thanh má kẹp** khi đang kẹp: gọi là d. Khai TOOL01 với Z = Z(TOOL02) − d, X = Y = 0
-(cây chỉ tự vào giữa vì hai má đóng đối xứng). Ghi Z của TOOL01 vào `cell_layout_real.yaml`.
-Lệnh gắp dùng TOOL01 (`--tool-no 1`); mọi việc chạm dùng TOOL02. Đổi cây chỉ là khai lại TOOL02.
-
----
-
-## 4. Pha 1: hiệu chuẩn tay–mắt. Đã làm ngày 18/09/2026
-
-Bốn file kết quả đã có trên git (`config\calibration\`): 25 tư thế, camera cách bàn 713 mm, mặt
-bàn nghiêng 0,32°. **Không đụng vào camera.** Còn hai việc: đo tấm bàn cờ (việc 4 ngày đầu) và
-chạm thử.
-
-**Chạm thử 8 điểm** (cần TOOL02 đã khai): **tháo tấm bàn cờ khỏi má kẹp** (mở má là tấm rời ra), đặt
-nó nằm phẳng trên bàn trống trong tầm nhìn camera, lắp cây chỉ vào má, chọn TOOL02, rồi chạy với
-hai số vừa đo:
+Cắm camera D455, chạy:
 
 ```
-python tools/touch_test.py --square-mm <cạnh ô> --marker-mm <cạnh dấu> --board-thickness-mm 3
+python -c "from src.perception.camera import D455Camera; print(D455Camera().intrinsics)"
 ```
 
-Công cụ chụp một khung, chọn 8 góc ô rải khắp tấm, lưu ảnh đánh số và in X, Y của từng góc theo
-gốc robot. Với từng góc: jog mũi cây chỉ chạm đúng góc đó, đọc X, Y trên pendant (COORD = Robot), gõ
-hai số vào. Kết quả ra `results\touch_test_*.csv` và `.json`. Mục tiêu 3 mm là mục tiêu, không
-phải cửa chặn: 3,4 mm vẫn chạy, báo cáo đúng 3,4.
+**Đạt khi:** `fx` 645,0; `fy` 644,2; `ppx` 647,3; `ppy` 368,8; mỗi số lệch dưới 0,1.
+**Ghi:** bốn số in ra.
 
-**Chỉ làm lại hiệu chuẩn khi** cạnh ô đo khác 45,0 quá 0,2 mm, hoặc camera đã bị đụng. Khi đó:
+### 2.2 Camera chưa bị xê dịch
 
-1. In `charuco_a3_o45mm.pdf` ở **100%**, đo vạch 100 mm in sẵn, giấy mờ, dán lên alu 3 mm. Gá lên
-   má kẹp bằng hai thanh nhôm hộp 20 × 40 dán ở lưng tấm, hai mặt ngoài cách nhau 200 mm; mặt in
-   ngửa lên; tấm cao 250 đến 470 mm trên bàn (xem hai bản vẽ).
-2. Robot ở TEACH, bàn trống, chạy:
+Dọn bàn trống, jog robot ra ngoài vùng bàn cho khuất camera, rồi chạy:
+
+```
+python scripts/02_run_calibration.py --table-only
+```
+
+**Đạt khi:** dòng `Table plane:` in `top` từ 591,9 đến 595,9 mm và `tilt` từ 0,12 đến 0,52°.
+**Ghi:** `top`, `rms`, `tilt`.
+
+Lệnh này ghi đè file mặt bàn. Đạt thì trả lại file gốc:
+
+```
+git checkout -- config/calibration/table_plane.json
+```
+
+Không đạt nghĩa là camera đã bị dịch: DỪNG.
+
+### 2.3 Đo tấm bàn cờ
+
+Thước kẹp: đo ba ô vuông đen rồi lấy trung bình cạnh ô; đo ba ô dấu ArUco (ô có hoa văn) rồi lấy
+trung bình cạnh dấu; đo độ dày tấm.
+
+**Đạt khi:** cạnh ô từ 44,8 đến 45,2 mm; cạnh dấu từ 33,8 đến 34,2 mm.
+**Ghi:** ba số. Không đạt: DỪNG.
+
+### 2.4 Làm cây chỉ, khai TOOL02 và TOOL01
+
+Robot dùng hai tool:
+
+- **TOOL01** là điểm gắp: điểm giữa hai đầu má kẹp. Nó nằm trong không khí nên không chạm được
+  gì. Lệnh gắp dùng tool này.
+- **TOOL02** là mũi một **cây chỉ** kẹp trong má. Mọi việc phải chạm (chạm thử, lấy dấu thẻ, đo
+  điểm thả) đều dùng tool này.
+
+**a) Làm cây chỉ.** Lấy một thanh gỗ hoặc nhựa cứng dài 200 mm (má kẹp chỉ kẹp được vật rộng từ
+180 đến 216 mm). Đóng một đinh hoặc bu lông dài xuyên qua giữa thanh, vuông góc với thanh. Kẹp
+thanh vào má: thanh nằm ngang, đinh thẳng đứng, mũi hướng xuống. Mũi đinh phải thò xuống **thấp
+hơn đầu má kẹp ít nhất 20 mm**; ngắn hơn thì má kẹp chạm bàn trước mũi, phải thay đinh dài hơn.
+
+**b) Khai TOOL02** bằng chức năng hiệu chuẩn tool 5 điểm của pendant:
+
+1. Dựng đinh thứ hai thẳng đứng trên bàn, mũi hướng lên, cố định chắc. Đầu đinh này là **điểm mốc**.
+2. Trên pendant: đặt chế độ bảo mật MANAGEMENT, vào MAIN MENU → ROBOT → TOOL, chọn tool số 2, rồi
+   vào menu UTILITY → CALIBRATION.
+3. Chọn TC1. Jog cho mũi cây chỉ chạm đúng điểm mốc, cây chỉ thẳng đứng. Bấm MODIFY rồi ENTER.
+4. Lần lượt chọn TC2 đến TC5. Mỗi lần nghiêng cổ tay theo một hướng khác (trước, sau, trái, phải),
+   mũi vẫn chạm đúng điểm mốc, bấm MODIFY rồi ENTER.
+5. Bấm COMPLETE. Pendant tự tính X, Y, Z của mũi và lưu vào tool 2.
+6. Kiểm: chọn TOOL02, hệ Robot, đưa mũi chạm điểm mốc, bấm các phím xoay (Rx, Ry, Rz).
+
+Tên menu có thể khác đôi chút theo phiên bản; xem mục Tool calibration trong sổ tay YRC1000.
+
+**c) Khai TOOL01** từ TOOL02:
+
+1. Vẫn kẹp cây chỉ. Thước kẹp đo **d**: khoảng cách theo phương thẳng đứng từ mũi đinh lên tới
+   ngang đầu dưới má kẹp.
+2. Mở tool 2 trên pendant, đọc X, Y, Z.
+3. Mở tool 1, nhập: X và Y giống tool 2; Z bằng Z của tool 2 trừ d.
+4. Mở `config\cell_layout_real.yaml`, tìm dòng `tcp_offset_xyz_mm: [0, 0, 100]`, thay ba số trong
+   ngoặc bằng X, Y, Z của tool 1. Lưu file.
+
+**Đạt khi:** ở bước b6, mũi không rời điểm mốc khi xoay.
+**Ghi:** X, Y, Z của tool 2; d; X, Y, Z của tool 1.
+
+Mỗi lần tháo rồi lắp lại cây chỉ, làm lại phép kiểm b6. Mũi rời điểm mốc thì khai lại tool 2 (phần
+b). Tool 1 không phải khai lại.
+
+### 2.5 Chạm thử 8 điểm
+
+1. Nếu tấm bàn cờ còn gắn trên má kẹp, tháo nó ra. Lắp cây chỉ, chọn TOOL02, hệ Robot.
+2. Jog mũi cây chỉ tới X 575, Y 20, hạ xuống sát bàn. Đặt tấm bàn cờ nằm phẳng trên bàn, mặt in
+   lên, tâm tấm ngay dưới mũi. Nâng mũi lên, jog robot ra ngoài cho khuất camera.
+3. Chạy, thay ba số đo ở mục 2.3:
 
    ```
-   python scripts/02_run_calibration.py --hse-ip 192.168.1.100 --squares 7 5 --square-mm <cạnh ô> --marker-mm <cạnh dấu> --dict DICT_4X4_50 --method park --bootstrap 200
+   python tools/touch_test.py --square-mm <cạnh ô> --marker-mm <cạnh dấu> --board-thickness-mm <độ dày>
    ```
 
-3. Mỗi tư thế: jog cho camera thấy rõ cả tấm, bấm ENTER, đợi `Captured pose #n`. Đủ **25 đến 30
-   tư thế, xoay mặt bích nhiều hướng, rải khắp bàn**. Gõ `s` để giải. Rồi dọn bàn, đưa robot ra
-   khỏi tầm nhìn, ENTER để đo mặt bàn.
+4. Công cụ lưu ảnh `results\touch_test_<giờ>.png`, trên đó 8 góc ô được khoanh và đánh số, rồi hỏi
+   lần lượt từng góc. Mở ảnh. Với góc số 1: jog mũi cây chỉ chạm đúng góc đó trên tấm, đọc X và Y
+   trên pendant (hệ Robot, TOOL02), gõ hai số cách nhau một dấu cách rồi ENTER. Làm tiếp đến góc
+   số 8. Góc nào không với tới thì gõ `s`.
 
-**DỪNG nếu** không đủ bốn file, dưới 25 tư thế, hoặc các tư thế na ná nhau. **GHI SỐ:** `tilt_deg`,
-`rms_mm` trong `table_plane.json`. Chỉ xê dịch bàn thì chạy lại với `--table-only`.
+**Đạt khi:** có file `results\touch_test_<giờ>.json`. Mục tiêu sai số là 3 mm; vượt vẫn làm tiếp,
+chỉ cần ghi đúng số.
+**Ghi:** trung bình (mean), RMS, lớn nhất (max), và độ lệch trung bình dx, dy mà công cụ in ra.
 
-![Bố trí chung và kích thước tấm](ban_ve_ga_ban_co.png)
+Nếu dx hoặc dy lớn hơn hẳn các số còn lại (mọi điểm lệch cùng một chiều), khai lại TOOL02 rồi chạm
+thử lại một lần.
 
-![Chi tiết gá và trình tự lắp](ban_ve_ga_3d.png)
+### 2.6 Lấy dấu và dán 21 thẻ
+
+In `position_cards.pdf` ở 100%, kiểm vạch 50 mm in sẵn phải đúng 50 mm, cắt 21 thẻ theo viền.
+
+1. Lắp cây chỉ, chọn TOOL02, hệ Robot. Với từng thẻ: jog mũi tới đúng X, Y in trên thẻ, hạ mũi chạm
+   bàn, chấm một dấu bút dạ. Thẻ 1, 2, 3 ở Y = −160 với X = 525, 575, 625; mỗi hàng sau Y tăng
+   60 mm; thẻ 19, 20, 21 ở Y = 200 (hình dưới).
+2. Dán thẻ: chữ thập giữa thẻ trùng dấu, mũi tên trên thẻ chỉ ra xa robot (hướng +X). Băng dính
+   trong phủ kín thẻ.
+3. Kiểm: jog mũi về thẻ 1 (X 525, Y −160) và thẻ 21 (X 625, Y 200).
+
+**Đạt khi:** tới được cả 21 điểm mà pendant không báo giới hạn khớp, và ở bước 3 mũi rơi đúng tâm
+chữ thập.
+**Ghi:** đạt hoặc không.
+
+![Toạ độ thẻ đo từ gốc robot](ban_ve_toa_do_the.png)
+
+### 2.7 Điểm thả trên băng tải
+
+Robot luôn thả vật tại cùng một X, Y. Độ cao lúc thả bằng độ cao lúc gắp, nên khi má mở đáy vật
+ngang mặt bàn; băng tải thấp hơn bàn bao nhiêu thì vật rơi xuống bấy nhiêu.
+
+1. Tắt băng tải. Chọn một điểm giữa băng, giữa hai thanh chắn.
+2. TOOL02, hệ Robot: hạ mũi chạm mặt băng tải tại điểm đó, đọc X, Y, Z. Hạ mũi chạm mặt bàn ở chỗ
+   bất kỳ trong vùng thẻ, đọc Z.
+3. Mở `config\experiment.yaml`, tìm dòng `place_position: [700.0, 120.0, 700.0]`: thay hai số đầu
+   bằng X, Y vừa đọc, giữ nguyên số thứ ba (không dùng). Lưu file.
+4. Chấm dấu điểm đó trên băng tải. Dán hai vạch băng dính **cắt ngang băng tải** (vuông góc với
+   chiều băng chạy), mép trong mỗi vạch cách dấu 15 mm về hai phía: khoảng trống giữa hai vạch rộng
+   30 mm, dấu nằm chính giữa. Đây là **vạch thả**.
+
+**Đạt khi:** Z mặt băng tải không cao hơn Z mặt bàn. Cao hơn: DỪNG (vật sẽ va vào băng tải).
+**Ghi:** X, Y, Z mặt băng tải; Z mặt bàn.
+
+### 2.8 Gửi về
+
+Gửi các số đã ghi ở mục 1 và 2.1 đến 2.7. Mọi bước đạt thì tháo cây chỉ và sang mục 3, không cần
+chờ trả lời.
 
 ---
 
-## 5. Pha 2: chạy thử, một lượt rồi năm lượt
+## 3. Một lượt gắp: đặt vật và chấm
 
-**Chuyển TEACH sang REMOTE là lúc nguy hiểm nhất.** Trước khi xoay chìa: dọn vật lạ, đếm người,
-không còn tay ai trong cell, nút dừng khẩn trong tầm tay, nói to cho cả phòng. Xoay chìa xong mới
-bật servo. Đặt sẵn một vật lên bàn.
+Trước mỗi lượt, màn hình in một dòng có `card=` (số thẻ), `yaw=` (góc) và `class=` (loại vật), ví dụ
+`card=14  yaw=85.0 deg  class=metal_box`, rồi dừng chờ.
+
+1. Đặt đúng loại vật: tâm vật lên chữ thập giữa thẻ, cạnh dài trùng vạch góc trên thẻ. Dung sai
+   ±15 mm. Có dòng `STACKED` thì đặt vật đế trước, vật được gọi đặt lên trên.
+2. **Rút tay ra**, bấm ENTER. Không nhìn màn hình nhận dạng trong lúc đặt.
+3. Robot gắp và thả xong, màn hình hỏi `part in the right place? [y]=yes [n]=no`. Băng tải vẫn tắt.
+   Gõ **y** nếu tâm vật nằm giữa hai vạch thả. Gõ **n** nếu kẹp trượt, vật rơi giữa đường, hoặc tâm
+   vật nằm ngoài vạch.
+4. Lấy vật khỏi băng tải trong lúc màn hình chờ ENTER của lượt sau. Không với ra băng tải khi robot
+   đang chạy về.
+
+---
+
+## 4. Pha 2: chạy thử
+
+**Chuyển chìa từ TEACH sang REMOTE là lúc nguy hiểm nhất.** Trước khi xoay chìa: tháo cây chỉ khỏi
+má, dọn vật lạ trên bàn, đếm người, không còn tay ai trong cell, nút dừng khẩn trong tầm tay, nói
+to cho cả phòng. Xoay chìa xong mới bật servo.
+
+Đặt một hộp carton lên thẻ 11, rồi chạy:
 
 ```
 python scripts/03_run_experiment.py --mode real --trials 1 --depth-mode rgbd --ik-source yrc --tool-no 1 --confirm-each-trial --no-viewport-mirror
 ```
 
 Phần mềm tự kiểm tra (preflight) trước khi robot nhúc nhích; thiếu gì nó từ chối chạy và in cách
-sửa. Chạy được 1 lượt thì chạy `--trials 5`.
+sửa. Lượt đầu chạy được thì chạy lại lệnh trên với `--trials 5` thay cho `--trials 1`. Lệnh này
+không gọi thẻ: mỗi lượt tự đặt một vật bất kỳ lên một thẻ bất kỳ, rồi làm bước 2 đến 4 của mục 3.
 
-**DỪNG nếu:** preflight báo lỗi; đầu má kẹp xuống thấp hơn mặt bàn cộng khoảng an toàn; robot đi
-sai hướng, hoặc `motion_error` lặp lại.
+**DỪNG nếu:** preflight báo lỗi; đầu má kẹp xuống gần mặt bàn hơn 20 mm (phần mềm không cho xuống
+thấp hơn, xuống thấp hơn là TOOL01 sai); vật hoặc má kẹp va vào băng tải hay thanh chắn; robot đi
+sai hướng; lỗi `motion_error` lặp lại.
 
-**GHI SỐ:** vật rơi lệch bao nhiêu so với điểm dạy (thước); số lượt hỏng trên 5 và lý do.
+**Ghi:** mỗi lượt, tâm vật rơi cách dấu điểm thả bao nhiêu mm (thước lá); số lượt hỏng trên 6 và lý do.
 
-**Xong Pha 2:** dán hai vạch băng dính ở điểm thả, cách nhau 30 mm (±15 mm quanh tâm). Từ đây chấm
-đạt hay hỏng là chấm theo vạch này. Ghi vào nhật ký so vạch với tâm vật hay mép vật, giữ nguyên
-suốt chiến dịch.
+Xong, dồn file vào thư mục riêng:
+
+```
+mkdir results\pha2
+move results\experiment_real_* results\pha2\
+move results\telemetry_* results\pha2\
+```
 
 ---
 
-## 6. Pha 3: E1, đo nền tảng
+## 5. Pha 3: E1, đo nền tảng
+
+`AN` là tên viết tắt người đặt vật: đổi thành tên thật, giữ nguyên trong mọi lệnh về sau.
 
 ```
 pytest tests/ -q > results/e1_tests.txt
 python scripts/17_compare_fk_ik.py --samples 500 --fair
 python tools/hse_rtt.py 192.168.1.100 --n 1000 --csv results/e1_hse_rtt.csv | tee results/e1_rtt_tomtat.txt
-python scripts/03_run_experiment.py --mode real --trials 50 --depth-mode rgbd --pose-list config/pose_lists/std_v2.csv --telemetry-hz 10 --confirm-each-trial --no-viewport-mirror
+python scripts/03_run_experiment.py --mode real --trials 50 --depth-mode rgbd --pose-list config/pose_lists/std_v2.csv --telemetry-hz 10 --session-id e1 --operator-id AN --ik-source yrc --tool-no 1 --confirm-each-trial --no-viewport-mirror
 python scripts/05_analyze_telemetry.py latest | tee results/e1_telemetry_tomtat.txt
 ```
 
-Ba lệnh đầu không di chuyển robot. Lệnh thứ tư gắp 50 lượt theo thẻ (cần thẻ đã dán, mục 7).
-`tee` giữ lại màn hình thành file; thiếu nó thì số mất.
+Ba lệnh đầu không di chuyển robot. Lệnh thứ tư gắp 50 lượt theo thẻ, mỗi lượt làm như mục 3.
 
-**DỪNG nếu** robot tự dừng ngoài ý muốn hoặc mất kết nối. **GHI SỐ:** `p50`/`p95`/`p99` của RTT
-và tần số telemetry đạt được (có trong hai file `_tomtat.txt`). `p95` trên 100 ms là cảnh báo,
-không phải lỗi.
+**DỪNG nếu:** robot tự dừng ngoài ý muốn hoặc mất kết nối.
+**Ghi:** `p50`, `p95`, `p99` của RTT và tần số telemetry đạt được (có trong hai file `_tomtat.txt`).
+`p95` trên 100 ms là cảnh báo, không phải lỗi.
+
+Xong, dồn file:
+
+```
+mkdir results\e1
+move results\experiment_real_* results\e1\
+move results\telemetry_* results\e1\
+```
 
 ---
 
-## 7. Pha 4: E2, chiến dịch chính
+## 6. Cách chạy một buổi (dùng cho Pha 4 và Pha 5)
 
-### Thẻ vị trí
+Mỗi buổi có một dòng **biến** lấy từ bảng ở mục 7 hoặc 8, và một **điều kiện**: *chuẩn* (bàn trống,
+đèn phòng bình thường) hoặc *khó* (dựng như mục 7.2). Các lệnh dưới đây chép nguyên, không sửa chữ
+nào: biến đã mang tên buổi và các số riêng của buổi.
 
-21 thẻ, 3 hàng × 7 cột, chỉ phủ phần bàn mà camera nhìn trọn cả vật cao và chồng hai lớp, robot
-với tới. Đổi camera hoặc đổi dụng cụ thì lưới phải tính lại.
+1. **Đặt biến và dựng điều kiện.** Mở PowerShell, `cd DTwinGP7`, `.venv\Scripts\activate`, rồi dán
+   dòng biến của buổi, ví dụ buổi đầu tiên:
 
-1. In `position_cards.pdf` (2 trang A4) ở **100%**, đo vạch 50 mm in sẵn, cắt theo viền.
-2. **Lấy dấu bằng robot:** lắp cây chỉ, chọn TOOL02, hệ Robot, jog tới đúng X, Y in trên thẻ
-   (x 525 / 575 / 625; y từ −160 đến 200), hạ mũi chạm bàn, đánh dấu. 21 lần. Xong tháo cây chỉ.
-3. **Dán thẻ vào dấu**, mũi tên hướng +x (ra xa robot), băng dính trong phủ kín. Dán xong jog lại về
-   thẻ 1: TCP phải rơi đúng tâm.
+   ```
+   $B = "e2chuan-1"; $F = 0; $S = 1
+   ```
 
-![Toạ độ thẻ đo từ gốc robot](ban_ve_toa_do_the.png)
+   Đóng cửa sổ PowerShell giữa buổi thì mở lại và dán lại dòng này. Dựng điều kiện của buổi. Kiểm
+   không còn file rời của buổi trước:
 
-### Mỗi lượt
+   ```
+   dir results\experiment_real_*
+   ```
 
-Chương trình gọi thẻ và góc, ví dụ `card=14  x=575.0 mm  y=80.0 mm  yaw=85.0 deg  class=metal_box`,
-rồi dừng chờ.
+   Không in ra gì là đúng. Còn file thì dồn về thư mục của buổi trước đã.
 
-1. Đặt đúng loại vật, tâm vật lên chữ thập giữa thẻ, cạnh dài trùng vạch góc (bội số 5°). Dung
-   sai ±15 mm. Có dòng `STACKED` thì đặt vật đế trước, vật gọi lên trên.
-2. **Rút tay ra**, bấm ENTER. Không nhìn màn hình nhận dạng lúc đặt.
-3. Gắp xong, màn hình hỏi `part in the right place? [y]=yes [n]=no`. **y** khi vật nằm gọn trong vạch
-   30 mm ở điểm thả; **n** khi kẹp trượt, rơi giữa đường, hoặc ngoài vạch. Trả lời theo mắt thấy.
-4. Lấy vật về khỏi điểm thả trong lúc chờ ENTER lượt kế. Không với ra băng tải lúc robot đang về.
+2. **Khối đối chứng đầu buổi**, 20 lượt, luôn chạy bằng mô hình gốc. Buổi *chuẩn*:
 
-### Chạy mù, một lệnh
+   ```
+   python scripts/03_run_experiment.py --mode real --depth-mode rgbd --pose-list config/pose_lists/std_v2.csv --pose-slice 200:220 --session-id $B --block-id doichung-dau --operator-id AN --ik-source yrc --tool-no 1 --confirm-each-trial --no-viewport-mirror
+   ```
 
-Đổi `2026-09-20-sang` thành tên buổi thật, dùng đúng tên đó cho mọi lệnh trong buổi; `AN` là tên
-viết tắt người đặt vật. Chạy `--dry-run` trước để xem lịch.
+   Buổi *khó*:
 
-```
-python tools/run_blinded_campaign.py --arm rgbd "--depth-mode rgbd" --arm plane "--depth-mode plane" --arm fusion "--depth-mode fusion" --pose-list config/pose_lists/std_v2.csv --trials 200 --block 25 --session 2026-09-20-sang --operator AN --seed 7 --common "--mode real --ik-source yrc --tool-no 1 --confirm-each-trial --no-viewport-mirror --save-frames --frames-dir D:/Scientific/Dataset/DigitalTwin/frames"
-```
+   ```
+   python scripts/03_run_experiment.py --mode real --depth-mode rgbd --pose-list config/pose_lists/hard_v2.csv --pose-slice 200:220 --session-id $B --block-id doichung-dau --operator-id AN --ik-source yrc --tool-no 1 --confirm-each-trial --no-viewport-mirror --lighting dim
+   ```
 
-Màn hình chỉ hiện `[A] Trial 7/25 — PLACE: card=14 ...`; mã A, B, C bốc ngẫu nhiên, kết quả không
-hiện. File khoá `results\blinding_keys\key_<buổi>.json` nói mã nào là cấu hình nào: **không mở**.
-Một lỗi lộ tên chế độ thì ghi vào nhật ký khối đó đã lộ.
+   Xong, dồn file:
 
-**Khối đối chứng**, đầu buổi và cuối buổi, cùng 20 tư thế:
+   ```
+   mkdir results\$B\doichung
+   move results\experiment_real_* results\$B\doichung\
+   move results\telemetry_* results\$B\doichung\
+   ```
 
-```
-python scripts/03_run_experiment.py --mode real --depth-mode rgbd --pose-list config/pose_lists/std_v2.csv --pose-slice 200:220 --session-id 2026-09-20-sang --block-id doichung-dau --operator-id AN --confirm-each-trial --no-viewport-mirror
-```
+3. **Chiến dịch chính**: lệnh của buổi ở mục 7 hoặc 8. Với lệnh A, B, C, E, F: chạy trước một lần
+   có thêm `--dry-run` ở cuối lệnh để xem lịch (robot không chạy), rồi chạy thật, bỏ `--dry-run`.
+   Màn hình chỉ hiện mã A, B, C; mã nào là cấu hình nào nằm trong file khoá
+   `results\blinding_keys\key_<tên buổi>.json`: **không mở file này**. Thấy dòng nào lộ tên cấu hình
+   thì ghi vào nhật ký. Lệnh D chạy thẳng, không có `--dry-run`. Xong, dồn file:
 
-Cuối buổi chạy lại, đổi `--block-id doichung-cuoi`.
+   ```
+   move results\experiment_real_* results\$B\
+   move results\telemetry_* results\$B\
+   ```
 
-**Bộ khó**, một buổi riêng: dựng đúng như buổi chụp `novelbg_dim` ngày 27/08/2026 (tấm nền xanh lá
-phủ kín bàn, đèn mức "dim"; mở vài ảnh trong thư mục đó ra so). Tấm nền che thẻ, nên dán một bộ thẻ
-thứ hai lên nền, lấy dấu lại bằng robot, đúng 21 toạ độ. Rồi:
+4. **Khối đối chứng cuối buổi**: chạy lại đúng lệnh của bước 2, chỉ đổi `doichung-dau` thành
+   `doichung-cuoi`. Xong, dồn file:
 
-```
-python tools/run_blinded_campaign.py --arm real_only "--depth-mode rgbd" --pose-list config/pose_lists/hard_v2.csv --trials 200 --block 25 --session 2026-09-21-sang --operator AN --seed 8 --common "--mode real --ik-source yrc --tool-no 1 --confirm-each-trial --no-viewport-mirror --save-frames --frames-dir D:/Scientific/Dataset/DigitalTwin/frames --lighting dim"
-```
+   ```
+   move results\experiment_real_* results\$B\doichung\
+   move results\telemetry_* results\$B\doichung\
+   ```
 
-### Cuối buổi
+5. **Gửi về:** thư mục `results\<tên buổi>\`, file khoá (chưa mở), `logs\experiment.log`, các thư
+   mục con mới trong `D:\Scientific\Dataset\DigitalTwin\frames`, trang nhật ký. Sao lưu `results\`
+   và `logs\` ra ổ ngoài.
 
-Mỗi khối 25 lượt là một file CSV. Dồn vào thư mục của buổi, tách hai file đối chứng (nhận ra bằng
-giờ chạy) sang thư mục riêng:
+Chiến dịch dừng giữa chừng (lỗi, bấm dừng khẩn, mất điện): DỪNG. Không chạy lại lệnh chiến dịch với
+cùng tên buổi (phần mềm sẽ từ chối). Ghi lượt cuối cùng đã chạy rồi gửi về.
 
-```
-mkdir results\2026-09-20-sang
-mkdir results\2026-09-20-sang-doichung
-move results\experiment_real_*.csv results\2026-09-20-sang\
-move results\telemetry_*.csv results\2026-09-20-sang\
-```
-
-**Gửi về:** thư mục của buổi, `logs\experiment.log`, thư mục khung ảnh trên ổ D, file khoá **chưa
-mở**, và trang nhật ký. Sao lưu `results\` và `logs\` ra ổ ngoài.
+Một buổi được phép nghỉ giữa chừng, miễn không đổi gì trong cell: camera, đèn, nền, thẻ, người đặt
+vật. Bấm giờ 10 lượt đầu của buổi đầu tiên để biết một buổi mất bao lâu.
 
 ---
 
-## 8. Pha 5: đo lại với mô hình mới
+## 7. Pha 4: E2, bốn buổi
 
-Người huấn luyện gửi về file `.pt` kèm mã SHA-256, tên danh sách thẻ và số lượt. Chép file vào
-`models\`, kiểm SHA-256 trùng, sửa `model_path` trong `config\experiment.yaml`, rồi chạy đúng lệnh
-chiến dịch mù ở mục 7 với danh sách được chỉ định. Mọi buổi Pha 5 đều trên **bộ khó**.
+### 7.1 Các buổi
 
-Riêng buổi adaptation của E4 (80 lượt, một nhánh, không mù):
+| Dòng biến | Điều kiện | Lệnh | Số lượt |
+|---|---|---|---:|
+| `$B = "e2chuan-1"; $F = 0; $S = 1` | chuẩn | A | 300 + 40 đối chứng |
+| `$B = "e2chuan-2"; $F = 100; $S = 2` | chuẩn | A | 300 + 40 đối chứng |
+| `$B = "e2kho-1"; $F = 0; $S = 3` | khó | B | 100 + 40 đối chứng |
+| `$B = "e2kho-2"; $F = 100; $S = 4` | khó | B | 100 + 40 đối chứng |
+
+**Lệnh A** (chuẩn, ba cấu hình độ sâu):
 
 ```
-python scripts/03_run_experiment.py --mode real --depth-mode rgbd --pose-list config/pose_lists/hard_v2.csv --pose-slice 220:300 --session-id <buổi> --block-id adapt-vong1 --operator-id AN --confirm-each-trial --no-viewport-mirror --save-frames --frames-dir D:/Scientific/Dataset/DigitalTwin/frames --lighting dim
+python tools/run_blinded_campaign.py --arm rgbd "--depth-mode rgbd" --arm plane "--depth-mode plane" --arm fusion "--depth-mode fusion" --pose-list config/pose_lists/std_v2.csv --first-pose $F --trials 100 --block 25 --session $B --operator AN --seed $S --common "--mode real --ik-source yrc --tool-no 1 --confirm-each-trial --no-viewport-mirror --save-frames --frames-dir D:/Scientific/Dataset/DigitalTwin/frames"
 ```
 
-| Lúc nào | Chạy gì | Số lượt |
-|---|---|---:|
-| Pha 2 | chạy thử | 1 rồi 5 |
-| Pha 3 | E1 | 50 |
-| Pha 4 | 3 chế độ độ sâu × 200, bộ chuẩn | 600 |
-| Pha 4 | real-only, bộ khó | 200 |
-| mỗi buổi Pha 4, 5 | đối chứng đầu và cuối buổi | 20 + 20 |
-| Pha 5, E3 | anchored và wide-range | 200 + 200 |
-| Pha 5, E4 | adaptation 2 vòng; đánh giá guided-2 và control-2 | 80 + 80; 200 + 200 |
-| Pha 5, E5 | ba ablation | 3 × 200 |
+**Lệnh B** (khó, một cấu hình):
 
-Mỗi lượt đặt vật bằng tay: bấm giờ 10 lượt đầu rồi nhân lên để biết một buổi mất bao lâu.
+```
+python tools/run_blinded_campaign.py --arm real_only "--depth-mode rgbd" --pose-list config/pose_lists/hard_v2.csv --first-pose $F --trials 100 --block 25 --session $B --operator AN --seed $S --common "--mode real --ik-source yrc --tool-no 1 --confirm-each-trial --no-viewport-mirror --save-frames --frames-dir D:/Scientific/Dataset/DigitalTwin/frames --lighting dim"
+```
+
+### 7.2 Dựng điều kiện khó
+
+Điều kiện khó phải giống buổi chụp ngày 27/08/2026. Hai ảnh mẫu chụp từ chính camera của cell:
+`anh_mau_bo_kho_1.jpg` và `anh_mau_bo_kho_2.jpg`.
+
+1. Tấm nền xanh lá phủ kín mặt bàn như trong ảnh mẫu.
+2. Giảm đèn phòng cho tới khi ảnh camera tối như ảnh mẫu: mặt nền gần như đen, vật vẫn nhận ra được.
+3. Tấm nền che mất thẻ, nên dán **bộ thẻ thứ hai** lên tấm nền, lấy dấu bằng robot đúng như mục 2.6.
+   Bộ thẻ này để luôn trên tấm nền, dùng lại cho mọi buổi khó.
+
+Dựng xong, không đổi gì cho đến hết buổi. Hết buổi, cất tấm nền, bật đèn lại.
+
+![Ảnh mẫu điều kiện khó](anh_mau_bo_kho_2.jpg)
+
+---
+
+## 8. Pha 5: tám buổi, khi có mô hình mới
+
+Mọi buổi Pha 5 dùng **điều kiện khó**, trình tự như mục 6.
+
+### 8.1 Nhận mô hình
+
+Người huấn luyện gửi các file mô hình (đuôi `.pt`), mỗi file kèm một mã SHA-256. Chép file vào thư
+mục `models\`, giữ đúng tên, rồi kiểm từng file, ví dụ:
+
+```
+Get-FileHash models\e3_anchored.pt
+```
+
+Mã in ra (cột `Hash`) phải trùng mã được gửi, không kể chữ hoa hay chữ thường; không trùng thì
+DỪNG. **Không sửa** `model_path` trong
+`config\experiment.yaml`: khối đối chứng luôn chạy bằng mô hình gốc ghi ở đó, còn mô hình mới đã
+ghi sẵn trong lệnh chiến dịch.
+
+### 8.2 Các buổi
+
+Chạy theo thứ tự trong bảng. Buổi nào cần file chưa có thì chờ người huấn luyện gửi.
+
+| Dòng biến | Cần file trong `models\` | Lệnh | Số lượt |
+|---|---|---|---:|
+| `$B = "e3-1"; $F = 0; $S = 5` | `e3_anchored.pt`, `e3_wide.pt` | C | 200 + 40 đối chứng |
+| `$B = "e3-2"; $F = 100; $S = 6` | như trên | C | 200 + 40 đối chứng |
+| `$B = "e4adapt-1"; $M = "models/e3_anchored.pt"` | `e3_anchored.pt` | D | 80 + 40 đối chứng |
+| `$B = "e4adapt-2"; $M = "models/e4_guided1.pt"` | `e4_guided1.pt` | D | 80 + 40 đối chứng |
+| `$B = "e4-1"; $F = 0; $S = 7` | `e4_guided2.pt`, `e4_control2.pt` | E | 200 + 40 đối chứng |
+| `$B = "e4-2"; $F = 100; $S = 8` | như trên | E | 200 + 40 đối chứng |
+| `$B = "e5-1"; $F = 0; $S = 9` | `e5_camera.pt`, `e5_illumination.pt`, `e5_background.pt` | F | 300 + 40 đối chứng |
+| `$B = "e5-2"; $F = 100; $S = 10` | như trên | F | 300 + 40 đối chứng |
+
+**Lệnh C** (E3):
+
+```
+python tools/run_blinded_campaign.py --arm anchored "--depth-mode rgbd --model-path models/e3_anchored.pt" --arm wide "--depth-mode rgbd --model-path models/e3_wide.pt" --pose-list config/pose_lists/hard_v2.csv --first-pose $F --trials 100 --block 25 --session $B --operator AN --seed $S --common "--mode real --ik-source yrc --tool-no 1 --confirm-each-trial --no-viewport-mirror --save-frames --frames-dir D:/Scientific/Dataset/DigitalTwin/frames --lighting dim"
+```
+
+**Lệnh D** (E4, buổi adaptation): một cấu hình, không có mã A, B, không có file khoá; bước 3 của
+mục 6 vẫn dồn file như thường.
+
+```
+python scripts/03_run_experiment.py --mode real --depth-mode rgbd --model-path $M --pose-list config/pose_lists/hard_v2.csv --pose-slice 220:300 --session-id $B --block-id adapt --operator-id AN --ik-source yrc --tool-no 1 --confirm-each-trial --no-viewport-mirror --save-frames --frames-dir D:/Scientific/Dataset/DigitalTwin/frames --lighting dim
+```
+
+**Lệnh E** (E4, đánh giá):
+
+```
+python tools/run_blinded_campaign.py --arm guided2 "--depth-mode rgbd --model-path models/e4_guided2.pt" --arm control2 "--depth-mode rgbd --model-path models/e4_control2.pt" --pose-list config/pose_lists/hard_v2.csv --first-pose $F --trials 100 --block 25 --session $B --operator AN --seed $S --common "--mode real --ik-source yrc --tool-no 1 --confirm-each-trial --no-viewport-mirror --save-frames --frames-dir D:/Scientific/Dataset/DigitalTwin/frames --lighting dim"
+```
+
+**Lệnh F** (E5):
+
+```
+python tools/run_blinded_campaign.py --arm camera "--depth-mode rgbd --model-path models/e5_camera.pt" --arm illumination "--depth-mode rgbd --model-path models/e5_illumination.pt" --arm background "--depth-mode rgbd --model-path models/e5_background.pt" --pose-list config/pose_lists/hard_v2.csv --first-pose $F --trials 100 --block 25 --session $B --operator AN --seed $S --common "--mode real --ik-source yrc --tool-no 1 --confirm-each-trial --no-viewport-mirror --save-frames --frames-dir D:/Scientific/Dataset/DigitalTwin/frames --lighting dim"
+```
+
+### 8.3 Tổng số lượt
+
+| Pha | Việc | Lượt chính | Đối chứng |
+|---|---|---:|---:|
+| 2 | chạy thử | 1 + 5 | |
+| 3 | E1 | 50 | |
+| 4 | E2 chuẩn, 2 buổi | 600 | 80 |
+| 4 | E2 khó, 2 buổi | 200 | 80 |
+| 5 | E3, 2 buổi | 400 | 80 |
+| 5 | E4 adaptation, 2 buổi | 160 | 80 |
+| 5 | E4 đánh giá, 2 buổi | 400 | 80 |
+| 5 | E5, 2 buổi | 600 | 80 |
 
 ---
 
 ## 9. Nhật ký
 
-Máy tự ghi từng lượt vào CSV (thành công, `human_ok` người chấm, lý do hỏng, thời gian, toạ độ,
-`pose_id`, buổi, khối, người), telemetry, và toàn bộ màn hình vào `logs\experiment.log`. Người chỉ
-ghi thứ máy không biết. Sau mỗi buổi, điền:
+Máy tự ghi từng lượt vào CSV (kết quả máy, câu trả lời y/n, lý do hỏng, thời gian, toạ độ, thẻ,
+buổi, khối, người đặt), telemetry, và toàn bộ màn hình vào `logs\experiment.log`. Người chỉ ghi thứ
+máy không biết. Sau mỗi buổi, điền một trang:
 
 | Mục | Ghi gì |
 |---|---|
-| Ngày, giờ bắt đầu và kết thúc | |
-| Pha nào, cấu hình gì | ví dụ: Pha 4, bộ chuẩn |
-| Số lượt chạy, số lượt hỏng | |
-| Tên các file trong `results\` | |
-| Điều kiện phòng | đèn gì, có che nắng không, ai đi qua chắn sáng |
-| Bất thường | robot dừng, vật rơi, thẻ xê dịch, camera bị chạm, lỗi lộ tên chế độ |
+| Tên buổi, ngày, giờ bắt đầu và kết thúc | |
+| Người đặt vật | |
+| Số lượt đã chạy, số lượt hỏng | |
+| Điều kiện phòng | đèn nào bật, có che nắng không, ai đi qua chắn sáng |
+| Bất thường | robot dừng, vật rơi, thẻ xê dịch, camera bị chạm, dòng lỗi lộ tên cấu hình |
+
+---
+
+## Phụ lục: hiệu chuẩn lại (chỉ làm khi người huấn luyện yêu cầu)
+
+Chỉ cần khi mục 2.2 hoặc 2.3 không đạt.
+
+1. In `charuco_a3_o45mm.pdf` ở 100%, kiểm vạch 100 mm in sẵn, giấy mặt mờ, dán lên tấm alu 3 mm. Gá
+   lên má kẹp bằng hai thanh nhôm hộp 20 × 40 dán ở lưng tấm, hai mặt ngoài cách nhau 200 mm, mặt in
+   ngửa lên, tấm cao 250 đến 470 mm trên bàn (hai bản vẽ dưới).
+2. Robot ở TEACH, bàn trống, chạy (thay hai số đo mới của tấm):
+
+   ```
+   python scripts/02_run_calibration.py --hse-ip 192.168.1.100 --squares 7 5 --square-mm <cạnh ô> --marker-mm <cạnh dấu> --dict DICT_4X4_50 --method park --bootstrap 200
+   ```
+
+3. Mỗi tư thế: jog cho camera thấy rõ cả tấm, bấm ENTER, đợi dòng `Captured pose #n`. Lấy 25 đến 30
+   tư thế, xoay mặt bích nhiều hướng, rải khắp bàn. Gõ `s` để giải. Rồi tháo tấm, dọn bàn, đưa robot
+   ra khỏi tầm nhìn, bấm ENTER để đo mặt bàn.
+
+**DỪNG nếu:** không ra đủ bốn file trong `config\calibration\`, hoặc dưới 25 tư thế.
+**Ghi:** `tilt_deg`, `rms_mm` trong `table_plane.json`. Gửi cả bốn file về. Không chạy `git pull`
+cho tới khi người huấn luyện báo đã đưa bốn file này lên git. Sau đó làm lại mục 2.5.
+
+![Bố trí chung và kích thước tấm](ban_ve_ga_ban_co.png)
+
+![Chi tiết gá và trình tự lắp](ban_ve_ga_3d.png)

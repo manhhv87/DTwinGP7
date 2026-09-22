@@ -62,6 +62,17 @@ def parse_args() -> argparse.Namespace:
                              "An interleaved blinded campaign writes one CSV per BLOCK, "
                              "so the arm is a column, not a filename, and there is no "
                              "per-arm file to hand to --paired-with.")
+    parser.add_argument("--key", nargs="+", default=None,
+                        help="Sealed key file(s) from tools/run_blinded_campaign.py "
+                             "(wildcard supported). Adds an 'arm' column from each row's "
+                             "block_id, so arms that differ in something the CSV does not "
+                             "record (the model, for E3 to E5) can be split with "
+                             "--split-col arm. Every loaded row must belong to a keyed "
+                             "block: control blocks go in their own folder.")
+    parser.add_argument("--only", nargs="+", default=None, metavar="VALUE",
+                        help="With --split-col: keep only these values. The comparison "
+                             "family is then exactly these arms, e.g. E5's three factors "
+                             "against E3's anchored arm without E3's wide arm.")
     parser.add_argument("--baseline", default=None,
                         help="With --split-col: the value that plays A in every "
                              "comparison. Default: the first value alphabetically.")
@@ -78,6 +89,38 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--label-b", default="run_b", help="Name of the --paired-with run")
     return parser.parse_args()
 
+
+
+def _decode_arms(log, df, patterns):
+    """Add the 'arm' column from sealed campaign keys, matched on block_id."""
+    import json
+
+    files = sorted({str(Path(p).resolve()) for pat in patterns
+                    for p in glob.glob(str(PROJECT_ROOT / pat)) + glob.glob(pat)})
+    if not files:
+        log.error("--key %s matched no file", patterns)
+        return None
+    arm_of: dict[str, str] = {}
+    for f in files:
+        for entry in json.loads(Path(f).read_text(encoding="utf-8"))["schedule"]:
+            if entry["block_id"] in arm_of and arm_of[entry["block_id"]] != entry["arm"]:
+                log.error("block_id %s appears in two keys with different arms",
+                          entry["block_id"])
+                return None
+            arm_of[entry["block_id"]] = entry["arm"]
+    if "block_id" not in df.columns:
+        log.error("--key needs a block_id column in the runs")
+        return None
+    df = df.copy()
+    df["arm"] = df["block_id"].astype(str).map(arm_of)
+    stray = df["arm"].isna()
+    if stray.any():
+        log.error("%d row(s) belong to no keyed block (block_id %s): control blocks and "
+                  "other runs must not be loaded with the campaign", int(stray.sum()),
+                  sorted(df.loc[stray, "block_id"].astype(str).unique())[:5])
+        return None
+    log.info("Decoded %d block(s) from %d key file(s)", df["block_id"].nunique(), len(files))
+    return df
 
 
 def _pair(log, a, b, key):
@@ -188,6 +231,24 @@ def main() -> int:
 
     df = pd.concat([pd.read_csv(p) for p in paths], ignore_index=True)
     log.info("Loaded %d trials from %d file(s)", len(df), len(paths))
+
+    if args.key:
+        df = _decode_arms(log, df, args.key)
+        if df is None:
+            return 1
+
+    if args.only:
+        if not args.split_col or args.split_col not in df.columns:
+            log.error("--only needs --split-col naming a column of the loaded runs")
+            return 1
+        values = df[args.split_col].astype(str)
+        missing = [v for v in args.only if v not in set(values)]
+        if missing:
+            log.error("--only %s not found in '%s' (values: %s)", missing, args.split_col,
+                      sorted(set(values)))
+            return 1
+        df = df[values.isin(args.only)].reset_index(drop=True)
+        log.info("Kept %d trial(s) of %s = %s", len(df), args.split_col, args.only)
 
     df = _apply_score_col(log, df, args.score_col, "--csv")
     if df is None:
