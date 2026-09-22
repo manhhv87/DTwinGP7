@@ -22,7 +22,7 @@ lại bằng thước kẹp (A3) và chạm thử (A5).
 | A1 | Lấy mã về, chạy `pytest` | số bài `passed` |
 | A2 | Kiểm camera còn đúng chỗ (2 lệnh, khoảng 5 phút) | 4 thông số camera; `top`, `tilt` mặt bàn |
 | A3 | Thước kẹp đo tấm bàn cờ | cạnh ô, cạnh dấu, độ dày |
-| A4 | Làm cây chỉ, khai TOOL02 trên pendant, suy ra TOOL01 | X, Y, Z của TOOL02; d; X, Y, Z của TOOL01 |
+| A4 | Khai TOOL01, làm cây chỉ | Z của TOOL01 |
 | A5 | Chạm thử 8 điểm | mean, RMS, max |
 | A6 | Lấy dấu bằng robot, dán 21 thẻ | đạt hoặc không |
 | A7 | Đo điểm thả trên băng tải, dán vạch 30 mm | X, Y điểm thả; Z băng tải, Z mặt bàn |
@@ -42,8 +42,7 @@ Từ phần B không đo tay gì nữa: máy tự ghi từng lượt, người �
 (B1). Mỗi buổi Pha 4, Pha 5 làm theo đúng trình tự B4.
 
 **Cần sẵn:** thước kẹp, thước lá, bút dạ, băng dính giấy, băng dính trong, tấm bàn cờ A3 đã in,
-hai bộ thẻ vị trí đã in, một thanh gỗ hoặc nhựa cứng và một đinh dài (làm cây chỉ), thêm một đinh
-làm điểm mốc.
+hai bộ thẻ vị trí đã in, một thanh gỗ hoặc nhựa cứng và một đinh dài (làm cây chỉ).
 
 ---
 
@@ -130,50 +129,31 @@ trung bình cạnh dấu; đo độ dày tấm.
 **Đạt khi:** cạnh ô từ 44,8 đến 45,2 mm; cạnh dấu từ 33,8 đến 34,2 mm.
 **Ghi:** ba số. Không đạt: DỪNG.
 
-## A4. Làm cây chỉ, khai TOOL02 và TOOL01
+## A4. Khai TOOL01, làm cây chỉ
 
-Robot dùng hai tool:
+TOOL01 là điểm gắp: điểm giữa hai đầu má kẹp. Chỉ dùng một tool này cho mọi việc.
 
-- **TOOL01** là điểm gắp: điểm giữa hai đầu má kẹp. Nó nằm trong không khí nên không chạm được
-  gì. Lệnh gắp dùng tool này.
-- **TOOL02** là mũi một **cây chỉ** kẹp trong má. Mọi việc phải chạm (A5, A6, A7) đều dùng tool này.
+1. Đóng kẹp. Thước đo từ mặt bích tới đầu dưới má kẹp, dọc trục cổ tay: gọi là Z.
+2. Pendant: MAIN MENU → ROBOT → TOOL, chọn tool số 1, nhập X = 0, Y = 0, Z = số vừa đo.
+3. Mở `config\cell_layout_real.yaml`, sửa dòng `tcp_offset_xyz_mm: [0, 0, 100]` thành
+   `tcp_offset_xyz_mm: [0, 0, Z]` với Z vừa đo. Lưu file.
+4. **Làm cây chỉ** để chạm được điểm (điểm gắp nằm giữa hai má, không có gì để chạm): thanh gỗ
+   hoặc nhựa cứng dài 200 mm (má kẹp chỉ kẹp được vật rộng từ 180 đến 216 mm), đóng một đinh xuyên
+   qua giữa thanh, vuông góc với thanh. Kẹp thanh vào má: thanh nằm ngang, đinh thẳng đứng, mũi
+   hướng xuống, mũi thấp hơn đầu má kẹp từ 20 đến 30 mm.
+5. Kiểm: chấm một dấu trên bàn. Chọn TOOL01, hệ Robot, jog cho mũi đinh chạm dấu, rồi bấm phím
+   xoay Rz.
 
-**a) Làm cây chỉ.** Lấy một thanh gỗ hoặc nhựa cứng dài 200 mm (má kẹp chỉ kẹp được vật rộng từ
-180 đến 216 mm). Đóng một đinh hoặc bu lông dài xuyên qua giữa thanh, vuông góc với thanh. Kẹp
-thanh vào má: thanh nằm ngang, đinh thẳng đứng, mũi hướng xuống. Mũi đinh phải thò xuống **thấp
-hơn đầu má kẹp ít nhất 20 mm**; ngắn hơn thì má kẹp chạm bàn trước mũi, phải thay đinh dài hơn.
+**Đạt khi:** mũi đinh đứng yên trên dấu khi xoay Rz. Mũi chạy thành vòng tròn nghĩa là bộ kẹp lệch
+tâm mặt bích: DỪNG, đo đường kính vòng, gửi về.
+**Ghi:** Z đã nhập.
 
-**b) Khai TOOL02** bằng chức năng hiệu chuẩn tool 5 điểm của pendant:
-
-1. Dựng đinh thứ hai thẳng đứng trên bàn, mũi hướng lên, cố định chắc. Đầu đinh này là **điểm mốc**.
-2. Trên pendant: đặt chế độ bảo mật MANAGEMENT, vào MAIN MENU → ROBOT → TOOL, chọn tool số 2, rồi
-   vào menu UTILITY → CALIBRATION.
-3. Chọn TC1. Jog cho mũi cây chỉ chạm đúng điểm mốc, cây chỉ thẳng đứng. Bấm MODIFY rồi ENTER.
-4. Lần lượt chọn TC2 đến TC5. Mỗi lần nghiêng cổ tay theo một hướng khác (trước, sau, trái, phải),
-   mũi vẫn chạm đúng điểm mốc, bấm MODIFY rồi ENTER.
-5. Bấm COMPLETE. Pendant tự tính X, Y, Z của mũi và lưu vào tool 2.
-6. Kiểm: chọn TOOL02, hệ Robot, đưa mũi chạm điểm mốc, bấm các phím xoay (Rx, Ry, Rz).
-
-Tên menu có thể khác đôi chút theo phiên bản; xem mục Tool calibration trong sổ tay YRC1000.
-
-**c) Khai TOOL01** từ TOOL02:
-
-1. Vẫn kẹp cây chỉ. Thước kẹp đo **d**: khoảng cách theo phương thẳng đứng từ mũi đinh lên tới
-   ngang đầu dưới má kẹp.
-2. Mở tool 2 trên pendant, đọc X, Y, Z.
-3. Mở tool 1, nhập: X và Y giống tool 2; Z bằng Z của tool 2 trừ d.
-4. Mở `config\cell_layout_real.yaml`, tìm dòng `tcp_offset_xyz_mm: [0, 0, 100]`, thay ba số trong
-   ngoặc bằng X, Y, Z của tool 1. Lưu file.
-
-**Đạt khi:** ở bước b6, mũi không rời điểm mốc khi xoay.
-**Ghi:** X, Y, Z của tool 2; d; X, Y, Z của tool 1.
-
-Mỗi lần tháo rồi lắp lại cây chỉ, làm lại phép kiểm b6. Mũi rời điểm mốc thì khai lại tool 2 (phần
-b). Tool 1 không phải khai lại.
+**Cách chạm ở A5, A6, A7:** cây chỉ kẹp trong má, TOOL01, hệ Robot, cây chỉ thẳng đứng. Chỉ jog
+tịnh tiến X, Y, Z, không bấm phím xoay. X, Y hiện trên pendant chính là X, Y của mũi đinh.
 
 ## A5. Chạm thử 8 điểm
 
-1. Nếu tấm bàn cờ còn gắn trên má kẹp, tháo nó ra. Lắp cây chỉ, chọn TOOL02, hệ Robot.
+1. Nếu tấm bàn cờ còn gắn trên má kẹp, tháo nó ra. Lắp cây chỉ, chạm như cuối A4.
 2. Jog mũi cây chỉ tới X 575, Y 20, hạ xuống sát bàn. Đặt tấm bàn cờ nằm phẳng trên bàn, mặt in
    lên, tâm tấm ngay dưới mũi. Nâng mũi lên, jog robot ra ngoài cho khuất camera.
 3. Chạy, thay ba số đo ở A3:
@@ -184,21 +164,21 @@ b). Tool 1 không phải khai lại.
 
 4. Công cụ lưu ảnh `results\touch_test_<giờ>.png`, trên đó 8 góc ô được khoanh và đánh số, rồi hỏi
    lần lượt từng góc. Mở ảnh. Với góc số 1: jog mũi cây chỉ chạm đúng góc đó trên tấm, đọc X và Y
-   trên pendant (hệ Robot, TOOL02), gõ hai số cách nhau một dấu cách rồi ENTER. Làm tiếp đến góc
+   trên pendant, gõ hai số cách nhau một dấu cách rồi ENTER. Làm tiếp đến góc
    số 8. Góc nào không với tới thì gõ `s`.
 
 **Đạt khi:** có file `results\touch_test_<giờ>.json`. Mục tiêu sai số là 3 mm; vượt vẫn làm tiếp,
 chỉ cần ghi đúng số.
 **Ghi:** trung bình (mean), RMS, lớn nhất (max), và độ lệch trung bình dx, dy mà công cụ in ra.
 
-Nếu dx hoặc dy lớn hơn hẳn các số còn lại (mọi điểm lệch cùng một chiều), khai lại TOOL02 rồi chạm
-thử lại một lần.
+Nếu dx hoặc dy lớn hơn hẳn các số còn lại (mọi điểm lệch cùng một chiều), làm lại phép kiểm xoay
+Rz ở A4, dựng lại cây chỉ cho thẳng đứng, rồi chạm thử lại một lần.
 
 ## A6. Lấy dấu và dán 21 thẻ
 
 In `position_cards.pdf` ở 100%, kiểm vạch 50 mm in sẵn phải đúng 50 mm, cắt 21 thẻ theo viền.
 
-1. Lắp cây chỉ, chọn TOOL02, hệ Robot. Với từng thẻ: jog mũi tới đúng X, Y in trên thẻ, hạ mũi chạm
+1. Lắp cây chỉ, chạm như cuối A4. Với từng thẻ: jog mũi tới đúng X, Y in trên thẻ, hạ mũi chạm
    bàn, chấm một dấu bút dạ. Thẻ 1, 2, 3 ở Y = −160 với X = 525, 575, 625; mỗi hàng sau Y tăng
    60 mm; thẻ 19, 20, 21 ở Y = 200 (hình dưới).
 2. Dán thẻ: chữ thập giữa thẻ trùng dấu, mũi tên trên thẻ chỉ ra xa robot (hướng +X). Băng dính
@@ -217,7 +197,7 @@ Robot luôn thả vật tại cùng một X, Y. Độ cao lúc thả bằng đ�
 ngang mặt bàn; băng tải thấp hơn bàn bao nhiêu thì vật rơi xuống bấy nhiêu.
 
 1. Tắt băng tải. Chọn một điểm giữa băng, giữa hai thanh chắn.
-2. TOOL02, hệ Robot: hạ mũi chạm mặt băng tải tại điểm đó, đọc X, Y, Z. Hạ mũi chạm mặt bàn ở chỗ
+2. Lắp cây chỉ, chạm như cuối A4: hạ mũi chạm mặt băng tải tại điểm đó, đọc X, Y, Z. Hạ mũi chạm mặt bàn ở chỗ
    bất kỳ trong vùng thẻ, đọc Z.
 3. Mở `config\experiment.yaml`, tìm dòng `place_position: [700.0, 120.0, 700.0]`: thay hai số đầu
    bằng X, Y vừa đọc, giữ nguyên số thứ ba (không dùng). Lưu file.
