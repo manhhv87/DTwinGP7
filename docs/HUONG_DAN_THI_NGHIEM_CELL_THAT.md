@@ -86,6 +86,32 @@ Ba việc chi phối cả quy trình:
 
 ---
 
+## Ngày đầu tiên: kiểm theo thứ tự này, đạt hết rồi mới sang Pha 2
+
+Tám việc, từ không đụng robot tới jog tay; robot **không tự chạy** ở bất kỳ việc nào. Mỗi việc có
+điều kiện đạt; việc nào không đạt thì dừng ở đó và gửi số về, không tự sửa rồi đi tiếp.
+
+| # | Việc | Đạt khi | Ghi lại |
+|---|---|---|---|
+| 1 | Lấy mã và kiểm máy (mục 2) | `git log -1` là `3fffc36` hoặc mới hơn; `pytest` không có `failed`; lệnh mô phỏng tạo được CSV | số `passed` |
+| 2 | Đúng camera đã hiệu chuẩn: cắm D455, chạy lệnh đọc thông số ở mục 3 | `fx` 645,0 · `fy` 644,2 · `ppx` 647,3 · `ppy` 368,8, lệch dưới 0,1 | bốn số in ra |
+| 3 | Camera chưa xê dịch: bàn dọn trống, chạy `python scripts/02_run_calibration.py --table-only` | dòng `Table plane:` cho `top` ≈ 593,9 mm và `tilt` ≈ 0,32°, lệch dưới 2 mm và 0,2° (ba buổi chụp tháng 8 lệch nhau dưới 0,3 mm và 0,2°) | `top`, `rms`, `tilt`; khớp thì chạy `git checkout -- config/calibration/table_plane.json` để trả lại bản gốc, vì lệnh này ghi đè file đó |
+| 4 | Cạnh ô và cạnh dấu của bàn cờ đã in, thước kẹp, đo ba ô rồi lấy trung bình | 45,0 và 34,0 ± 0,2 mm | hai số đo |
+| 5 | Dụng cụ: đo mặt bích tới đầu má kẹp, khai TOOL01, sửa `cell_layout_real.yaml`, kiểm xoay quanh đầu bút (mục 3) | xoay mà đầu kẹp không rời đầu bút | Z đã khai |
+| 6 | Tầm với lưới thẻ: hệ Robot, jog TCP tới (525, −160), (625, −160), (625, 200), (525, 200) | tới được cả bốn, không báo giới hạn khớp, đầu kẹp ở sát mặt bàn | có/không |
+| 7 | Chạm thử 8 điểm (Pha 1, mục GHI SỐ) | có file `touch_test_*.json`; mục tiêu 3 mm | mean / RMS / max |
+| 8 | Điểm thả và độ cao băng tải (mục 3, dòng 3) | băng tải không cao hơn mặt bàn | `place_position` |
+
+Việc 2 và 3 nói camera còn đúng là camera đã hiệu chuẩn và chưa bị dịch; việc 4 nói hiệu chuẩn
+18/09 có đúng tỷ lệ không; việc 7 đo sai số thật của cả chuỗi camera, hiệu chuẩn, TOOL01. Chỉ khi
+việc 3 hoặc 4 hỏng mới phải làm lại Pha 1. Việc 7 lệch lớn mà việc 3, 4 đạt thì xem lại TOOL01
+trước, vì sai TOOL01 cho độ lệch **cùng chiều ở mọi điểm**; công cụ in riêng độ lệch trung bình
+theo x và y để nhìn ra điều đó.
+
+Xong tám việc, gửi tám dòng số về cho người huấn luyện, rồi mới sang Pha 2.
+
+---
+
 ## 1. An toàn — đọc trước
 
 1. **Nút dừng khẩn luôn trong tầm tay.**
@@ -252,7 +278,8 @@ cả 25 tư thế nằm ngang y hệt nhau.
 
 **Kết quả ra:** bốn file trong `config\calibration\`: `T_base_camera.npy`,
 `T_base_camera_meta.json`, `table_plane.json`, `T_base_camera_sigma.json`. Chép `tilt_deg` và
-`rms_mm` từ `table_plane.json` vào nhật ký. Đo tay: bảng chạm thử 8 điểm.
+`rms_mm` từ `table_plane.json` vào nhật ký. Chạm thử 8 điểm bằng `tools/touch_test.py`, ra
+`results\touch_test_<thời điểm>.csv`, `.json` và ảnh `.png` đánh số điểm.
 
 **Trạng thái: đã làm ngày 18/09/2026.** Bốn file đã nằm trong `config\calibration\` trên git
 (25 tư thế, bootstrap 200/200, camera cách mặt bàn 713 mm, mặt bàn nghiêng 0,32°, `rms_mm` 0,67). Camera **không được đụng
@@ -303,8 +330,20 @@ python scripts/02_run_calibration.py --hse-ip 192.168.1.100 --squares 7 5 --squa
 - `tilt_deg` mặt bàn. Phần mềm cảnh báo trên 2 nhưng không chặn; bàn nghiêng 2,3 độ là sự
   thật về cái bàn. Lớn thì kiểm xem bàn có nghiêng thật không.
 - `rms_mm` mặt bàn. Chưa có ngưỡng; dùng để so giữa các lần hiệu chuẩn.
-- **Chạm thử ít nhất 8 điểm** rải khắp vùng gắp, ghi trung bình, RMS, lớn nhất. Mục tiêu 3 mm
-  là mục tiêu, không phải cửa chặn: cell đạt 3,4 mm vẫn chạy, báo cáo đúng 3,4.
+- **Chạm thử 8 điểm.** Cần TOOL01 đã khai đúng. Đặt tấm bàn cờ nằm phẳng trên bàn trống, trong
+  tầm nhìn camera, rồi chạy (thay hai số đo của tấm, và độ dày tấm nếu khác 3 mm):
+
+  ```
+  python tools/touch_test.py --square-mm <cạnh ô> --marker-mm <cạnh dấu> --board-thickness-mm 3
+  ```
+
+  Công cụ chụp một khung, tìm các góc ô bàn cờ, chọn 8 góc rải khắp tấm, tính X, Y của chúng theo
+  gốc robot từ hiệu chuẩn, và lưu ảnh có đánh số 8 góc. Mở ảnh, với từng góc: jog đầu TCP chạm
+  đúng góc đó, đọc X, Y trên pendant (COORD = Robot), gõ hai số vào. Công cụ in trung bình, RMS,
+  lớn nhất, và độ lệch trung bình theo x, y; lưu CSV và JSON. Robot chỉ do người jog, công cụ
+  không gửi lệnh nào. Mục tiêu 3 mm là mục tiêu, không phải cửa chặn: cell đạt 3,4 mm vẫn chạy,
+  báo cáo đúng 3,4. Độ lệch trung bình theo x hoặc y lớn hơn hẳn độ tản mát là dấu hiệu sai
+  TOOL01 hoặc sai hiệu chuẩn, không phải nhiễu.
 
 Sau này chỉ xê dịch **bàn**: chạy lại với `--table-only`. Đụng vào **camera**: làm lại toàn bộ Pha 1.
 
