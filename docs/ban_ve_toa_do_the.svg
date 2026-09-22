@@ -1,5 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1120 700" width="1120" height="700"
-     role="img" aria-label="Toa do the tinh tu goc robot chu khong phai tu mep ban: nhin tu tren xuong voi truc x huong ra xa robot va truc y sang ngang, luoi 21 the; kem cach dua the vao dung cho bang cach ra robot tren teach pendant roi danh dau va dan the vao dau">
+     role="img" aria-label="Toa do the tinh tu goc robot chu khong phai tu mep ban: nhin tu tren xuong voi truc x huong ra xa robot va truc y sang ngang, luoi 21 the; kem cach dua the vao dung cho bang cach ra robot voi cay chi kep trong ma (TOOL02) tren teach pendant roi danh dau va dan the vao dau">
   <defs>
     <marker id="d" viewBox="0 0 10 10" refX="5" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
       <path d="M 0 0 L 10 5 L 0 10 z" fill="#5a6673"/>
@@ -144,7 +144,7 @@
     <text x="620" y="417" font-size="11.5" fill="#5a6673">X, Y đúng bằng số in trên thẻ</text>
     <circle cx="600" cy="440" r="10.5" fill="none" stroke="#3d474f" stroke-width="1.4"/>
     <text x="600" y="444" font-size="12.5" font-weight="700" text-anchor="middle">2</text>
-    <text x="620" y="441" font-size="12.5" fill="#1f2933" font-weight="600">Hạ mũi TCP sát mặt bàn</text>
+    <text x="620" y="441" font-size="12.5" fill="#1f2933" font-weight="600">Hạ mũi cây chỉ (TOOL02) sát bàn</text>
     <text x="620" y="457" font-size="11.5" fill="#5a6673">đánh dấu ngay dưới mũi, rồi nhấc lên</text>
     <circle cx="860" cy="400" r="10.5" fill="none" stroke="#3d474f" stroke-width="1.4"/>
     <text x="860" y="404" font-size="12.5" font-weight="700" text-anchor="middle">3</text>
@@ -158,6 +158,6 @@
     <text x="600" y="508" font-size="11.5" fill="#5a6673">chứ không phải đầu má kẹp.</text>
     <rect x="592.0" y="540.0" width="490.0" height="80.0" fill="none" stroke="#b45309" stroke-width="1.5"/>
     <text x="608" y="568" font-size="12" fill="#7a4d06" font-weight="700">Sai hệ toạ độ thì cả 21 thẻ cùng lệch, mà không có gì báo lỗi.</text>
-    <text x="608" y="592" font-size="12" fill="#7a4d06">Dán xong cả 21, jog lại về toạ độ thẻ số 1: mũi TCP phải rơi đúng tâm thẻ.</text>
+    <text x="608" y="592" font-size="12" fill="#7a4d06">Dán xong cả 21, jog lại về toạ độ thẻ số 1: mũi cây chỉ phải rơi đúng tâm thẻ.</text>
   </g>
 </svg>

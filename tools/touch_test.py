@@ -6,12 +6,14 @@ the only thing in the cell that knows exactly where it is. Lay the ChArUco board
 on the empty table. The tool grabs one frame, detects the chessboard corners, and
 turns eight of them into robot base-frame X, Y through the calibrated camera pose and
 the measured table plane. It draws those eight corners, numbered, on a snapshot. Then,
-one by one, jog the TOOL01 tip onto each drawn corner by hand and type the X and Y the
+one by one, jog the tip of a pointer clamped in the jaws (its own tool number active on the
+pendant) onto each drawn corner by hand and type the X and Y the
 pendant shows (COORD = Robot). Camera-predicted minus pendant-measured is the touch-test
 error the paper reports as mean / RMS / max.
 
 Sends nothing to the robot. Needs config/calibration/T_base_camera.npy and
-table_plane.json, and TOOL01 registered on the pendant.
+table_plane.json, and the pointer tool registered on the pendant. The board must be OFF the
+gripper and lying on the table.
 
 Usage:
     python tools/touch_test.py --square-mm <measured square> --marker-mm <measured marker>
@@ -175,7 +177,7 @@ def main() -> int:
     if args.no_prompt:
         return 0
 
-    print("\nOpen the snapshot. For each numbered corner: jog the TOOL01 tip onto that corner,")
+    print("\nOpen the snapshot. For each numbered corner: jog the pointer tip onto that corner,")
     print("read X and Y on the pendant (COORD = Robot), type them as two numbers, ENTER.")
     print("Type s to skip a corner you cannot reach.\n")
     errs = []
@@ -217,7 +219,7 @@ def main() -> int:
         print(f"\nTouch test over {a.size} points: mean {summary['mean_mm']} mm, "
               f"RMS {summary['rms_mm']} mm, max {summary['max_mm']} mm; "
               f"mean offset dx {summary['bias_dx_mm']:+.2f}, dy {summary['bias_dy_mm']:+.2f} mm")
-        print("A mean offset well above the spread means a systematic shift: TOOL01 or the "
+        print("A mean offset well above the spread means a systematic shift: the pointer tool or the "
               "calibration, not noise.")
     (out_dir / f"touch_test_{ts}.json").write_text(json.dumps(
         {"calibration_dir": str(calib_dir), "board": {"squares": list(args.squares),

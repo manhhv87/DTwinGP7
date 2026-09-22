@@ -63,14 +63,14 @@ Robot không tự chạy ở việc nào; việc 5 đến 7 chỉ jog tay ở ch
 | 2 | Cắm D455, chạy `python -c "from src.perception.camera import D455Camera; print(D455Camera().intrinsics)"` | `fx` 645,0 · `fy` 644,2 · `ppx` 647,3 · `ppy` 368,8 (lệch dưới 0,1) | bốn số |
 | 3 | Bàn trống, chạy `python scripts/02_run_calibration.py --table-only` | dòng `Table plane:` cho `top` ≈ 593,9 mm, `tilt` ≈ 0,32° (lệch dưới 2 mm và 0,2°) | `top`, `rms`, `tilt`; khớp thì `git checkout -- config/calibration/table_plane.json` |
 | 4 | Thước kẹp đo cạnh ô và cạnh dấu của tấm bàn cờ đã in, ba ô, lấy trung bình | 45,0 và 34,0 ± 0,2 mm | hai số |
-| 5 | Khai TOOL01 (mục 3) | xoay quanh đầu bút mà đầu kẹp không rời | Z đã khai |
+| 5 | Làm cây chỉ, khai TOOL02 và TOOL01 (mục 3) | xoay quanh điểm mốc mà mũi cây chỉ không rời | Z của TOOL02 và TOOL01 |
 | 6 | Hệ Robot, jog TCP tới (525, −160), (625, −160), (625, 200), (525, 200) | tới cả bốn, không báo giới hạn khớp | có/không |
 | 7 | Chạm thử 8 điểm (mục 4) | có file `results\touch_test_*.json` | mean / RMS / max |
 | 8 | Đo điểm thả và độ cao băng tải (mục 3) | băng tải không cao hơn mặt bàn | `place_position` |
 
 Việc 2 và 3: đúng camera đã hiệu chuẩn, chưa xê dịch. Việc 4: hiệu chuẩn 18/09 đúng tỷ lệ. Chỉ
-việc 3 hoặc 4 hỏng mới phải làm lại hiệu chuẩn (mục 4). Việc 7 lệch mà 3, 4 đạt thì xem lại TOOL01
-trước: sai TOOL01 cho độ lệch cùng chiều ở mọi điểm, công cụ in riêng độ lệch trung bình theo x, y.
+việc 3 hoặc 4 hỏng mới phải làm lại hiệu chuẩn (mục 4). Việc 7 lệch mà 3, 4 đạt thì xem lại TOOL02
+trước: sai tool cho độ lệch cùng chiều ở mọi điểm, công cụ in riêng độ lệch trung bình theo x, y.
 
 Xong tám việc, gửi tám dòng số về, rồi mới sang Pha 2.
 
@@ -81,22 +81,32 @@ Xong tám việc, gửi tám dòng số về, rồi mới sang Pha 2.
 | # | Việc | Ghi vào đâu | Hiện tại |
 |---|---|---|---|
 | 1 | Cạnh ô, cạnh dấu tấm bàn cờ đã in | gõ vào lệnh hiệu chuẩn, nếu phải làm lại | in danh nghĩa 45 / 34 |
-| 2 | TCP má kẹp, khai TOOL01 | `config/cell_layout_real.yaml` → `gripper.tcp_offset_xyz_mm` | `[0, 0, 100]`, số giữ chỗ |
+| 2 | TCP má kẹp (TOOL01) và mũi cây chỉ (TOOL02) | TOOL01 vào `config/cell_layout_real.yaml` → `gripper.tcp_offset_xyz_mm` | `[0, 0, 100]`, số giữ chỗ |
 | 3 | Điểm thả trên băng tải | `config/experiment.yaml` → `place_position` | `[700, 120, 700]`, số giữ chỗ |
 
 Mặt băng tải không được cao hơn mặt bàn; thấp hơn thì vật rơi đúng phần chênh, chỉ chấp nhận vài cm.
 Thông số camera đã điền sẵn. **Không sửa `robot.pose.xyz_mm`** (`[0, 0, 630]`); preflight từ chối
 chạy nếu khác lúc hiệu chuẩn.
 
-**Khai TOOL01:**
+**Hai tool, vì sao cần cả hai.** TOOL01 là điểm gắp: điểm giữa hai thanh má kẹp, ngang đầu
+thanh. Nó nằm trong không khí, không chạm được gì. Mọi việc phải *chạm* (kiểm tool, lấy dấu thẻ,
+chạm thử) dùng TOOL02 = mũi một **cây chỉ** kẹp trong má.
 
-1. Kẹp đóng, thước kẹp đo từ mặt bích tới đầu má kẹp dọc trục cổ tay: đó là Z (X, Y = 0 nếu kẹp
-   đúng tâm).
-2. Chìa MAINTENANCE, servo tắt: MAIN MENU → ROBOT → TOOL → TOOL: 1 → SELECT → sửa Z →
-   COMPLETE/REGISTER. DISP xem lại.
-3. Ghi đúng số đó vào `cell_layout_real.yaml` (dòng 2 bảng trên).
-4. Kiểm: TEACH, tốc độ thấp, dựng đầu bút trên bàn, jog đầu má kẹp chạm đầu bút, chọn hệ Robot rồi
-   bấm phím xoay. Khai đúng thì đầu kẹp không rời đầu bút. Nâng lên hạ xuống không kiểm được.
+**Làm cây chỉ:** một thanh gỗ hoặc nhựa cứng, dài khoảng 190 mm để hai má kẹp được (má đóng hết
+còn 180 mm, mở hết 216 mm), đóng một đinh hoặc vít nhọn xuống ở giữa, mũi thò ra chừng 30 đến
+50 mm. Kẹp thanh vào giữa hai má, đẩy sát lên càng ngang cho khỏi xoay, mũi hướng xuống.
+
+**Khai TOOL02 bằng chức năng hiệu chuẩn tool trên pendant**, không đo tay: chìa MAINTENANCE hoặc
+MANAGEMENT, chọn TOOL: 2, vào UTILITY → CALIBRATION, đưa mũi cây chỉ chạm **cùng một điểm mốc**
+(đầu một đinh dựng đứng trên bàn) từ **5 hướng cổ tay khác nhau**, mỗi lần bấm ghi điểm, rồi
+COMPLETE; pendant tự tính X, Y, Z của mũi. Kiểm: chọn TOOL02, hệ Robot, mũi chạm mốc, bấm phím
+xoay; mũi không rời mốc là đạt. Tên nút có thể khác đôi chút theo phiên bản, xem mục Tool
+calibration trong sổ tay pendant.
+
+**Suy TOOL01 từ TOOL02:** thước kẹp đo khoảng cách theo phương thẳng đứng từ **mũi cây chỉ** tới
+**đầu dưới thanh má kẹp** khi đang kẹp: gọi là d. Khai TOOL01 với Z = Z(TOOL02) − d, X = Y = 0
+(cây chỉ tự vào giữa vì hai má đóng đối xứng). Ghi Z của TOOL01 vào `cell_layout_real.yaml`.
+Lệnh gắp dùng TOOL01 (`--tool-no 1`); mọi việc chạm dùng TOOL02. Đổi cây chỉ là khai lại TOOL02.
 
 ---
 
@@ -106,15 +116,16 @@ Bốn file kết quả đã có trên git (`config\calibration\`): 25 tư thế,
 bàn nghiêng 0,32°. **Không đụng vào camera.** Còn hai việc: đo tấm bàn cờ (việc 4 ngày đầu) và
 chạm thử.
 
-**Chạm thử 8 điểm** (cần TOOL01 đã khai): đặt tấm bàn cờ nằm phẳng trên bàn trống, trong tầm nhìn
-camera, chạy với hai số vừa đo:
+**Chạm thử 8 điểm** (cần TOOL02 đã khai): **tháo tấm bàn cờ khỏi má kẹp** (mở má là tấm rời ra), đặt
+nó nằm phẳng trên bàn trống trong tầm nhìn camera, lắp cây chỉ vào má, chọn TOOL02, rồi chạy với
+hai số vừa đo:
 
 ```
 python tools/touch_test.py --square-mm <cạnh ô> --marker-mm <cạnh dấu> --board-thickness-mm 3
 ```
 
 Công cụ chụp một khung, chọn 8 góc ô rải khắp tấm, lưu ảnh đánh số và in X, Y của từng góc theo
-gốc robot. Với từng góc: jog đầu TCP chạm đúng góc đó, đọc X, Y trên pendant (COORD = Robot), gõ
+gốc robot. Với từng góc: jog mũi cây chỉ chạm đúng góc đó, đọc X, Y trên pendant (COORD = Robot), gõ
 hai số vào. Kết quả ra `results\touch_test_*.csv` và `.json`. Mục tiêu 3 mm là mục tiêu, không
 phải cửa chặn: 3,4 mm vẫn chạy, báo cáo đúng 3,4.
 
@@ -193,8 +204,8 @@ không phải lỗi.
 với tới. Đổi camera hoặc đổi dụng cụ thì lưới phải tính lại.
 
 1. In `position_cards.pdf` (2 trang A4) ở **100%**, đo vạch 50 mm in sẵn, cắt theo viền.
-2. **Lấy dấu bằng robot:** hệ Robot, jog tới đúng X, Y in trên thẻ (x 525 / 575 / 625; y từ −160
-   đến 200), hạ Z sát bàn, đánh dấu dưới đầu TCP. 21 lần.
+2. **Lấy dấu bằng robot:** lắp cây chỉ, chọn TOOL02, hệ Robot, jog tới đúng X, Y in trên thẻ
+   (x 525 / 575 / 625; y từ −160 đến 200), hạ mũi chạm bàn, đánh dấu. 21 lần. Xong tháo cây chỉ.
 3. **Dán thẻ vào dấu**, mũi tên hướng +x (ra xa robot), băng dính trong phủ kín. Dán xong jog lại về
    thẻ 1: TCP phải rơi đúng tâm.
 
