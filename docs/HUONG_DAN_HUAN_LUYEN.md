@@ -29,7 +29,7 @@ Làm sau khi đã nhận đủ dữ liệu của các buổi. Người chạy ce
 khối đối chứng vào `results/<tên buổi>/doichung/`, file khoá ở `results/blinding_keys/key_<tên buổi>.json`.
 Mỗi chiến dịch mù chia hai buổi: buổi 1 chạy tư thế 0:100, buổi 2 chạy 100:200, mọi nhánh trong
 cùng buổi (cờ `--first-pose` của `run_blinded_campaign.py`), nên mỗi `pose_id` gặp mỗi nhánh đúng
-một lần. Tên buổi và lịch ở mục 7, 8 của hướng dẫn cell.
+một lần. Tên buổi và lịch ở B5, B6 của hướng dẫn cell.
 
 So sánh cả họ trong một lệnh:
 
@@ -83,7 +83,7 @@ Nhưng E3, E4, E5 chỉ có mAP là chưa đủ: mỗi mô hình mới phải ma
 
 **Số lượt gắp thật của Pha 5, chốt ngày 21/09/2026 theo hướng ít lượt nhất**, đã sửa bài báo cho
 khớp: E3 gắp ở một κ đã chọn (400); E4 chạy adaptation 80 lượt mỗi vòng và chỉ đánh giá sau vòng
-cuối (400); E5 gắp ba yếu tố neo (600). Lịch từng buổi, tên file mô hình và bảng tổng số lượt ở mục 7, 8 của hướng dẫn cell. Mọi lượt Pha 5 đều chạy trên
+cuối (400); E5 gắp ba yếu tố neo (600). Lịch từng buổi, tên file mô hình và bảng tổng số lượt ở B5, B6 của hướng dẫn cell. Mọi lượt Pha 5 đều chạy trên
 **bộ khó** (`hard_v2.csv`, nền xanh và thiếu sáng như Pha 4).
 
 ### E3: wide-range so với anchored, và quét κ
