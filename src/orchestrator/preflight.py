@@ -32,6 +32,9 @@ SIM_PLACEHOLDER_T_BC = np.array([[1.0, 0.0, 0.0, 700.0],
                                  [0.0, 0.0, 0.0, 1.0]])
 META_SUFFIX = "_meta.json"
 TABLE_PLANE_FILE = "table_plane.json"
+# Invented values the repo ships with, to be replaced by measurements of the cell.
+PLACEHOLDER_PLACE_XY = (700.0, 120.0)
+PLACEHOLDER_TCP_XYZ = (0.0, 0.0, 100.0)
 
 
 def is_sim_placeholder(T_BC) -> bool:
@@ -46,7 +49,8 @@ def meta_path_for(calib_path) -> Path:
 
 
 def check_real_mode(config: dict, calib_path, robot_base_xyz_mm,
-                    robot_base_rpy_deg) -> tuple[list[str], float | None]:
+                    robot_base_rpy_deg,
+                    tcp_offset_xyz_mm=None) -> tuple[list[str], float | None]:
     """Return (problems, table_top_z_mm). An empty problem list means go."""
     from .coord_conv import load_calibration
 
@@ -98,6 +102,21 @@ def check_real_mode(config: dict, calib_path, robot_base_xyz_mm,
 
     if not (config.get("class_heights_mm") or {}):
         problems.append("class_heights_mm is empty: the grasp depth would ignore part heights.")
+
+    # Two numbers only the cell can give. Shipped as invented placeholders, and both
+    # move the robot: the parts would be released over empty floor, and the safety
+    # layer would predict the trajectory of a tool the arm does not carry.
+    place = [float(v) for v in (config.get("place_position") or [])]
+    if place[:2] == list(PLACEHOLDER_PLACE_XY):
+        problems.append(
+            "place_position is still the placeholder [700, 120, ...] in experiment.yaml: "
+            "measure the drop point on the conveyor (guide A7) and write its X and Y.")
+    if tcp_offset_xyz_mm is not None and (
+            [float(v) for v in tcp_offset_xyz_mm] == list(PLACEHOLDER_TCP_XYZ)):
+        problems.append(
+            "gripper.tcp_offset_xyz_mm is still the placeholder [0, 0, 100] in the cell "
+            "layout: measure flange to jaw tip and write it there and into TOOL01 on the "
+            "pendant (guide A4).")
     return problems, (None if z is None else float(z))
 
 
