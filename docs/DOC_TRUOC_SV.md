@@ -8,6 +8,7 @@
 |---|---|---|---|
 | `position_cards.pdf` | A4 dọc, 2 trang | **100% / actual size**, in **hai bộ** (bộ thứ hai cho điều kiện khó) | đo vạch 50 mm in sẵn, cắt 21 thẻ mỗi bộ |
 | `ban_ve_toa_do_the.pdf` | A4 ngang | in thường | bản vẽ để đọc |
+| `ban_ve_cay_chi.pdf` | A4 ngang | in thường | bản vẽ cây chỉ, làm theo khi ở bước A4 |
 | `charuco_a3_o45mm.pdf` | A3 ngang | **100% / actual size**, giấy mặt mờ | chỉ in khi phải hiệu chuẩn lại; đo vạch 100 mm in sẵn |
 | `ban_ve_ga_ban_co.pdf`, `ban_ve_ga_3d.pdf` | A4 ngang | in thường | chỉ cần khi phải hiệu chuẩn lại |
 
