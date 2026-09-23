@@ -139,6 +139,24 @@ class TestPreflight:
         problems, _ = check_real_mode(_cfg(class_heights_mm={}), p, BASE, RPY)
         assert any("class_heights_mm" in s for s in problems)
 
+    def test_placeholder_place_point_refused(self, tmp_path):
+        """Shipped as an invented number; parts would be released over the floor."""
+        p = _calib(tmp_path, REAL_T, plane_z=935.0)
+        problems, _ = check_real_mode(
+            _cfg(place_position=[700.0, 120.0, 700.0]), p, BASE, RPY)
+        assert any("place_position" in s for s in problems)
+
+    def test_placeholder_tcp_refused(self, tmp_path):
+        p = _calib(tmp_path, REAL_T, plane_z=935.0)
+        problems, _ = check_real_mode(_cfg(), p, BASE, RPY, [0, 0, 100])
+        assert any("tcp_offset_xyz_mm" in s for s in problems)
+
+    def test_measured_place_point_and_tcp_pass(self, tmp_path):
+        p = _calib(tmp_path, REAL_T, plane_z=935.0)
+        problems, _ = check_real_mode(
+            _cfg(place_position=[812.0, -95.0, 700.0]), p, BASE, RPY, [0.4, -1.2, 183.5])
+        assert problems == []
+
     def test_all_good_returns_measured_table(self, tmp_path):
         p = _calib(tmp_path, REAL_T, plane_z=935.4)
         problems, z = check_real_mode(_cfg(), p, BASE, RPY)

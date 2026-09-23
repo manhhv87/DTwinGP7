@@ -507,7 +507,8 @@ def main() -> int:
 
         problems, table_z = check_real_mode(
             config, calib_path,
-            cell_config.robot.pose.xyz_mm, cell_config.robot.pose.rpy_deg)
+            cell_config.robot.pose.xyz_mm, cell_config.robot.pose.rpy_deg,
+            getattr(cell_config.gripper, "tcp_offset_xyz_mm", None))
         dm_problems, table_plane = check_depth_mode(config, calib_path, args.depth_mode)
         problems += dm_problems
         if problems:
