@@ -101,7 +101,9 @@ Cắm camera D455, chạy:
 python -c "from src.perception.camera import D455Camera; print(D455Camera().intrinsics)"
 ```
 
-**Đạt khi:** `fx` 645,0; `fy` 644,2; `ppx` 647,3; `ppy` 368,8; mỗi số lệch dưới 0,1.
+**Đạt khi:** `ppx` 647,29 và `ppy` 368,78, lệch dưới 0,1; `fx` 645,0 và `fy` 644,2, lệch dưới 1,0.
+Hai số `fx`, `fy` nhích vài phần mười giữa hai lần đọc là bình thường (camera tự bù theo nhiệt độ),
+không phải hỏng; lệch tới 1,0 chỉ làm sai vị trí dưới 0,4 mm ở thẻ xa nhất.
 
 Dọn bàn trống, jog robot ra ngoài vùng bàn cho khuất camera, rồi chạy:
 
