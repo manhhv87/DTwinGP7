@@ -23,10 +23,10 @@
     <rect x="185.8" y="320.8" width="53.0" height="18.4" rx="9.0" fill="#dfe4e9" stroke="#b9c2ca" stroke-width="1.0"/>
     <rect x="345.9" y="311.6" width="83.6" height="36.7" rx="4.0" fill="#f2f4f6" stroke="#3d474f" stroke-width="1.1"/>
     <rect x="361.2" y="320.8" width="53.0" height="18.4" rx="9.0" fill="#dfe4e9" stroke="#b9c2ca" stroke-width="1.0"/>
-    <rect x="181.7" y="270.8" width="16.3" height="118.3" rx="0.0" fill="#4a4f55" stroke="#3d474f" stroke-width="1.1"/>
-    <rect x="402.0" y="270.8" width="16.3" height="118.3" rx="0.0" fill="#4a4f55" stroke="#3d474f" stroke-width="1.1"/>
-    <text x="189.8" y="405.5" font-size="11.5" fill="#5a6673" text-anchor="middle">má kẹp</text>
-    <text x="410.2" y="405.5" font-size="11.5" fill="#5a6673" text-anchor="middle">má kẹp</text>
+    <rect x="185.8" y="270.8" width="12.2" height="118.3" rx="0.0" fill="#4a4f55" stroke="#3d474f" stroke-width="1.1"/>
+    <rect x="402.0" y="270.8" width="12.2" height="118.3" rx="0.0" fill="#4a4f55" stroke="#3d474f" stroke-width="1.1"/>
+    <text x="191.9" y="405.5" font-size="11.5" fill="#5a6673" text-anchor="middle">má kẹp</text>
+    <text x="408.1" y="405.5" font-size="11.5" fill="#5a6673" text-anchor="middle">má kẹp</text>
     <text x="212.3" y="295.3" font-size="11.5" fill="#5a6673" text-anchor="middle">tay kẹp</text>
     <text x="387.7" y="295.3" font-size="11.5" fill="#5a6673" text-anchor="middle">tay kẹp</text>
     <line x1="157.2" y1="330.0" x2="442.8" y2="330.0" stroke="#b45309" stroke-width="1.1" stroke-dasharray="7 5"/>
@@ -53,11 +53,11 @@
     <line x1="894.3" y1="323.3" x2="861.8" y2="337.2" stroke="#9aa5b1" stroke-width="1"/>
     <text x="896.6" y="318.6" font-size="11" fill="#5a6673">cảm biến X505</text>
     <rect x="686.7" y="369.7" width="95.1" height="13.9" rx="0.0" fill="#f2f4f6" stroke="#3d474f" stroke-width="1.1"/>
-    <rect x="690.2" y="383.6" width="23.2" height="30.2" rx="0.0" fill="#cbd3da" stroke="#3d474f" stroke-width="1.1"/>
-    <rect x="699.4" y="413.8" width="18.6" height="16.2" rx="0.0" fill="#4a4f55" stroke="#3d474f" stroke-width="1.1"/>
+    <rect x="686.7" y="383.6" width="17.4" height="30.2" rx="0.0" fill="#cbd3da" stroke="#3d474f" stroke-width="1.1"/>
+    <rect x="704.1" y="413.8" width="13.9" height="16.2" rx="0.0" fill="#4a4f55" stroke="#3d474f" stroke-width="1.1"/>
     <rect x="886.2" y="369.7" width="95.1" height="13.9" rx="0.0" fill="#f2f4f6" stroke="#3d474f" stroke-width="1.1"/>
-    <rect x="954.6" y="383.6" width="23.2" height="30.2" rx="0.0" fill="#cbd3da" stroke="#3d474f" stroke-width="1.1"/>
-    <rect x="950.0" y="413.8" width="18.6" height="16.2" rx="0.0" fill="#4a4f55" stroke="#3d474f" stroke-width="1.1"/>
+    <rect x="963.9" y="383.6" width="17.4" height="30.2" rx="0.0" fill="#cbd3da" stroke="#3d474f" stroke-width="1.1"/>
+    <rect x="950.0" y="413.8" width="13.9" height="16.2" rx="0.0" fill="#4a4f55" stroke="#3d474f" stroke-width="1.1"/>
     <text x="734.2" y="362.7" font-size="11.5" fill="#5a6673" text-anchor="middle">tay kẹp</text>
     <text x="933.8" y="362.7" font-size="11.5" fill="#5a6673" text-anchor="middle">tay kẹp</text>
     <text x="984.8" y="395.2" font-size="11.5" fill="#5a6673">gá nhôm</text>
@@ -79,11 +79,11 @@
     <text x="900.3" y="481.0" font-size="12" fill="#b45309" font-weight="700">TOOL01</text>
     <text x="900.3" y="498.0" font-size="11" fill="#5a6673">ngang mép dưới miếng đen</text>
     <line x1="781.8" y1="244.4" x2="635.4" y2="244.4" stroke="#c3ccd4" stroke-width="0.9"/>
-    <line x1="699.4" y1="430.0" x2="635.4" y2="430.0" stroke="#c3ccd4" stroke-width="0.9"/>
+    <line x1="704.1" y1="430.0" x2="635.4" y2="430.0" stroke="#c3ccd4" stroke-width="0.9"/>
     <line x1="641.4" y1="244.4" x2="641.4" y2="430.0" stroke="#2f5d8a" stroke-width="1.3" marker-start="url(#ds)" marker-end="url(#ds)"/>
     <text x="632.4" y="333.2" font-size="14" fill="#2f5d8a" font-weight="700" text-anchor="end">Z</text>
     <text x="632.4" y="350.2" font-size="11" fill="#5a6673" text-anchor="end">đo bằng thước</text>
-    <line x1="653.4" y1="464.0" x2="708.7" y2="433.0" stroke="#2f5d8a" stroke-width="1.2" marker-end="url(#ds)"/>
+    <line x1="653.4" y1="464.0" x2="711.0" y2="433.0" stroke="#2f5d8a" stroke-width="1.2" marker-end="url(#ds)"/>
     <text x="639.4" y="476.0" font-size="11.5" fill="#2f5d8a" font-weight="600">đầu dưới má kẹp</text>
     <text x="639.4" y="492.0" font-size="11" fill="#5a6673">mép dưới miếng đen, nơi Z kết thúc</text>
     <line x1="868.8" y1="430.0" x2="868.8" y2="450.9" stroke="#b45309" stroke-width="1.2" marker-start="url(#am)" marker-end="url(#am)"/>
