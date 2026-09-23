@@ -72,6 +72,7 @@
     <line x1="644.7" y1="193.6" x2="644.7" y2="412.0" stroke="#2f5d8a" stroke-width="1.3" marker-start="url(#ds)" marker-end="url(#ds)"/>
     <text x="635.7" y="298.8" font-size="14" fill="#2f5d8a" font-weight="700" text-anchor="end">Z</text>
     <text x="635.7" y="315.8" font-size="11" fill="#5a6673" text-anchor="end">đo bằng thước</text>
+    <line x1="748.7" y1="444.0" x2="724.5" y2="415.0" stroke="#2f5d8a" stroke-width="1.2" marker-end="url(#ds)"/>
     <text x="642.7" y="454.0" font-size="11.5" fill="#2f5d8a" font-weight="600">đầu dưới má kẹp</text>
     <text x="642.7" y="470.0" font-size="11" fill="#5a6673">chỗ thấp nhất của má, nơi Z kết thúc</text>
     <line x1="735.0" y1="363.7" x2="840.0" y2="363.7" stroke="#5a6673" stroke-width="1" marker-start="url(#d2)" marker-end="url(#d2)"/>
