@@ -71,6 +71,9 @@ from src.orchestrator.preflight import (  # noqa: E402
 )
 from src.utils import setup_logging  # noqa: E402
 
+# Depth frames thrown away before the table measurement, about one second of stream.
+WARMUP_FRAMES = 30
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__,
@@ -103,12 +106,24 @@ def parse_args() -> argparse.Namespace:
                              "existing T_BC only.")
     parser.add_argument("--table-frames", type=int, default=10,
                         help="Depth frames combined (median) for the table plane. Default 10.")
+    parser.add_argument("--table-warmup-frames", type=int, default=WARMUP_FRAMES,
+                        help=f"Depth frames discarded before those, to let the stream settle. "
+                             f"Default {WARMUP_FRAMES}.")
     return parser.parse_args()
 
 
-def _measure_table(camera, T_BC_mm: np.ndarray, calib_path: Path, n_frames: int, log) -> int:
+def _measure_table(camera, T_BC_mm: np.ndarray, calib_path: Path, n_frames: int, log,
+                   warmup_frames: int = WARMUP_FRAMES) -> int:
     """Fit the table plane from depth through T_BC and write table_plane.json."""
     from src.calibration.table_plane import depth_to_points, fit_table_plane
+
+    # The first frames out of a just-started stream carry holes and an unsettled
+    # temporal filter. Their median is a cloud no plane fits, which surfaces as
+    # "plane fit lost its inliers" on a table that is perfectly clear.
+    if warmup_frames:
+        log.info("Warming the depth stream up over %d frames", warmup_frames)
+        for _ in range(warmup_frames):
+            camera.get_frame()
 
     depths = []
     for _ in range(3 * n_frames):
@@ -177,7 +192,8 @@ def main() -> int:
             if is_sim_placeholder(T_BC_mm):
                 log.error("%s is still the simulation placeholder: calibrate first.", out_path)
                 return 1
-            return _measure_table(camera, T_BC_mm, out_path, args.table_frames, log)
+            return _measure_table(camera, T_BC_mm, out_path, args.table_frames, log,
+                                  args.table_warmup_frames)
 
         hse_ip = args.hse_ip or cell_config.robot_connection.ip
         if not hse_ip:
@@ -303,7 +319,8 @@ def main() -> int:
             log.warning("Table plane NOT measured: run --table-only before any real trial "
                         "(the experiment refuses to start without it).")
         else:
-            _measure_table(camera, T_BC_mm, out_path, args.table_frames, log)
+            _measure_table(camera, T_BC_mm, out_path, args.table_frames, log,
+                           args.table_warmup_frames)
 
         log.info("Verify further with touch test (section 6.4).")
         return 0
