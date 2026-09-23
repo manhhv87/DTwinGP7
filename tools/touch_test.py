@@ -20,8 +20,8 @@ Usage:
     python tools/touch_test.py --square-mm 45 --marker-mm 34 --image results/board.png --no-prompt
 
 The board thickness matters: its top face is above the table plane by that much, and
-the ray meets the lifted plane. Default 3 mm (alu composite carrier); pass the measured
-value with --board-thickness-mm.
+the ray meets the lifted plane. Default 4 mm, the board of this cell with calipers; pass
+your own measurement with --board-thickness-mm.
 """
 from __future__ import annotations
 
@@ -50,8 +50,9 @@ def parse_args() -> argparse.Namespace:
                    help="Measured side of one ArUco marker of the printed board.")
     p.add_argument("--squares", type=int, nargs=2, default=(7, 5), metavar=("COLS", "ROWS"))
     p.add_argument("--dict", default="DICT_4X4_50")
-    p.add_argument("--board-thickness-mm", type=float, default=3.0,
-                   help="Top face of the board above the table. Default 3.")
+    p.add_argument("--board-thickness-mm", type=float, default=4.0,
+                   help="Top face of the board above the table. Default 4, the board of "
+                        "this cell measured with calipers; measure your own.")
     p.add_argument("--points", type=int, default=8,
                    help="How many corners to touch (spread over the board). Default 8.")
     p.add_argument("--calib-dir", default="config/calibration")

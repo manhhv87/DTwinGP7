@@ -483,7 +483,7 @@ máy không biết. Sau mỗi buổi, điền một trang:
 
 Chỉ cần khi A2 hoặc A3 không đạt.
 
-1. In `charuco_a3_o45mm.pdf` ở 100%, kiểm vạch 100 mm in sẵn, giấy mặt mờ, dán lên tấm alu 3 mm. Gá
+1. In `charuco_a3_o45mm.pdf` ở 100%, kiểm vạch 100 mm in sẵn, giấy mặt mờ, dán lên tấm alu phẳng (tấm đang dùng dày 4 mm cả lớp in). Gá
    lên má kẹp bằng hai thanh nhôm hộp 20 × 40 dán ở lưng tấm, hai mặt ngoài cách nhau 200 mm, mặt in
    ngửa lên, tấm cao 250 đến 470 mm trên bàn (hai bản vẽ dưới).
 2. Robot ở TEACH, bàn trống, chạy (thay hai số đo mới của tấm):
