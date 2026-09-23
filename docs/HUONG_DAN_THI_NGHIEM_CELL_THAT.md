@@ -134,8 +134,10 @@ trung bình cạnh dấu; đo độ dày tấm.
 TOOL01 là điểm gắp: điểm giữa hai đầu má kẹp. Nếu tấm bàn cờ còn kẹp trên má thì mở má lấy ra
 trước.
 
-1. Dùng thước đo từ mặt bích tới đầu dưới má kẹp, dọc trục cổ tay: gọi là Z. Đầu dưới má kẹp là
-   chỗ thấp nhất của hai thanh má, chỗ chạm vào vật khi kẹp (kích thước Z trên hình 2 ở dưới).
+1. Dùng thước đo từ mặt bích tới đầu dưới má kẹp, dọc trục cổ tay: gọi là Z (kích thước Z trên
+   hình 2 ở dưới). **Mặt bích** là mặt phẳng cuối cổ tay robot, chỗ bắt bộ kẹp vào; nếu giữa cổ
+   tay và bộ kẹp có tấm đệm thì Z vẫn tính từ mặt cổ tay. **Đầu dưới má kẹp** là chỗ thấp nhất của
+   hai thanh má, chỗ chạm vào vật khi kẹp.
 2. Pendant, chế độ bảo mật MANAGEMENT: MAIN MENU → ROBOT → TOOL, chọn tool số 1, nhập X = 0,
    Y = 0, Z = số vừa đo.
 3. Mở `config\cell_layout_real.yaml`, sửa dòng `tcp_offset_xyz_mm: [0, 0, 100]` thành
