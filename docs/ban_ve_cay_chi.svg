@@ -1,5 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1120 700" width="1120" height="700"
-     role="img" aria-label="Vit chi de cham diem: hinh nhin tu duoi len cho thay con vit bat dung tam bo kep, hai doan tu vit toi hai ma kep bang nhau; hinh nhin ngang cho thay kich thuoc Z tu mat bich toi dau duoi ma kep, mui vit thap hon dau ma kep, va diem TOOL01 nam tren truc vit">
+     role="img" aria-label="Vit chi de cham diem, ve theo bo kep that: than bo kep mang hai tay kep trang, dau moi tay co ga nhom treo xuong va ma kep la mieng den co khia; vit bat duoi tam than bo kep, mui thap hon mep duoi mieng den; kich thuoc Z do tu mat bich toi mep duoi mieng den">
   <defs>
     <marker id="d2" viewBox="0 0 10 10" refX="5" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
       <path d="M 0 0 L 10 5 L 0 10 z" fill="#5a6673"/>
@@ -11,84 +11,100 @@
       <path d="M 0 0 L 10 5 L 0 10 z" fill="#2f5d8a"/>
     </marker>
   </defs>
-    <rect x="0.0" y="0.0" width="1120.0" height="700.0" fill="#ffffff" stroke="#ffffff" stroke-width="0"/>
+    <rect x="0.0" y="0.0" width="1120.0" height="700.0" rx="0.0" fill="#ffffff" stroke="#ffffff" stroke-width="0"/>
   <g font-family="'Segoe UI',system-ui,sans-serif" fill="#1f2933">
     <text x="26.0" y="34.0" font-size="16" fill="#1f2933" font-weight="700">Vít chỉ: con vít bắt dưới tâm bộ kẹp, chỉ dùng để CHẠM</text>
     <text x="26.0" y="54.0" font-size="12" fill="#5a6673">Mũi vít phải nằm đúng trên trục của điểm gắp TOOL01. Tháo vít ra trước khi chạy gắp.</text>
     <text x="36.0" y="108.0" font-size="14" fill="#1f2933" font-weight="700">1. Nhìn từ dưới lên: vít phải đúng tâm</text>
-    <text x="36.0" y="128.0" font-size="11.5" fill="#5a6673">Hai đoạn a bằng nhau, và vít nằm giữa bề rộng thanh.</text>
-    <rect x="139.0" y="309.3" width="322.0" height="41.4" fill="#dde3e8" stroke="#3d474f" stroke-width="1.1"/>
-    <rect x="162.0" y="263.3" width="23.0" height="133.4" fill="#6b7580" stroke="#3d474f" stroke-width="1.1"/>
-    <rect x="415.0" y="263.3" width="23.0" height="133.4" fill="#6b7580" stroke="#3d474f" stroke-width="1.1"/>
-    <text x="173.5" y="253.3" font-size="11.5" fill="#5a6673" text-anchor="middle">má kẹp</text>
-    <text x="426.5" y="253.3" font-size="11.5" fill="#5a6673" text-anchor="middle">má kẹp</text>
-    <line x1="121.8" y1="330.0" x2="478.2" y2="330.0" stroke="#b45309" stroke-width="1.1" stroke-dasharray="7 5"/>
-    <line x1="300.0" y1="240.3" x2="300.0" y2="419.7" stroke="#b45309" stroke-width="1.1" stroke-dasharray="7 5"/>
+    <text x="36.0" y="128.0" font-size="11.5" fill="#5a6673">Hai đoạn a tới mặt trong hai miếng đen bằng nhau.</text>
+    <rect x="254.1" y="284.1" width="91.8" height="91.8" rx="0.0" fill="none" stroke="#a9b4be" stroke-width="1.1" stroke-dasharray="6 4"/>
+    <text x="300.0" y="272.1" font-size="11" fill="#5a6673" text-anchor="middle">thân bộ kẹp (ở trên)</text>
+    <rect x="170.5" y="311.6" width="83.6" height="36.7" rx="4.0" fill="#f2f4f6" stroke="#3d474f" stroke-width="1.1"/>
+    <rect x="185.8" y="320.8" width="53.0" height="18.4" rx="9.0" fill="#dfe4e9" stroke="#b9c2ca" stroke-width="1.0"/>
+    <rect x="345.9" y="311.6" width="83.6" height="36.7" rx="4.0" fill="#f2f4f6" stroke="#3d474f" stroke-width="1.1"/>
+    <rect x="361.2" y="320.8" width="53.0" height="18.4" rx="9.0" fill="#dfe4e9" stroke="#b9c2ca" stroke-width="1.0"/>
+    <rect x="181.7" y="270.8" width="16.3" height="118.3" rx="0.0" fill="#4a4f55" stroke="#3d474f" stroke-width="1.1"/>
+    <rect x="402.0" y="270.8" width="16.3" height="118.3" rx="0.0" fill="#4a4f55" stroke="#3d474f" stroke-width="1.1"/>
+    <text x="189.8" y="405.5" font-size="11.5" fill="#5a6673" text-anchor="middle">má kẹp</text>
+    <text x="410.2" y="405.5" font-size="11.5" fill="#5a6673" text-anchor="middle">má kẹp</text>
+    <text x="212.3" y="295.3" font-size="11.5" fill="#5a6673" text-anchor="middle">tay kẹp</text>
+    <text x="387.7" y="295.3" font-size="11.5" fill="#5a6673" text-anchor="middle">tay kẹp</text>
+    <line x1="157.2" y1="330.0" x2="442.8" y2="330.0" stroke="#b45309" stroke-width="1.1" stroke-dasharray="7 5"/>
+    <line x1="300.0" y1="252.5" x2="300.0" y2="407.5" stroke="#b45309" stroke-width="1.1" stroke-dasharray="7 5"/>
     <circle cx="300.0" cy="330.0" r="9" fill="#8a8070" stroke="#3d474f" stroke-width="1.2"/>
     <circle cx="300.0" cy="330.0" r="3" fill="#4a5560" stroke="none" stroke-width="0"/>
-    <line x1="329.9" y1="290.9" x2="311.5" y2="323.1" stroke="#b45309" stroke-width="1.2" marker-end="url(#am)"/>
-    <text x="334.5" y="294.9" font-size="11.5" fill="#b45309" font-weight="600">mũi vít</text>
-    <line x1="185.0" y1="428.9" x2="300.0" y2="428.9" stroke="#5a6673" stroke-width="1" marker-start="url(#d2)" marker-end="url(#d2)"/>
-    <line x1="300.0" y1="428.9" x2="415.0" y2="428.9" stroke="#5a6673" stroke-width="1" marker-start="url(#d2)" marker-end="url(#d2)"/>
-    <line x1="185.0" y1="399.0" x2="185.0" y2="434.9" stroke="#c3ccd4" stroke-width="0.9"/>
-    <line x1="300.0" y1="399.0" x2="300.0" y2="434.9" stroke="#c3ccd4" stroke-width="0.9"/>
-    <line x1="415.0" y1="399.0" x2="415.0" y2="434.9" stroke="#c3ccd4" stroke-width="0.9"/>
-    <text x="242.5" y="421.9" font-size="12.5" fill="#5a6673" font-weight="600" text-anchor="middle">a</text>
-    <text x="357.5" y="421.9" font-size="12.5" fill="#5a6673" font-weight="600" text-anchor="middle">a</text>
+    <line x1="334.7" y1="370.8" x2="309.2" y2="338.2" stroke="#b45309" stroke-width="1.2" marker-end="url(#am)"/>
+    <text x="338.8" y="374.8" font-size="11.5" fill="#b45309" font-weight="600">mũi vít</text>
+    <line x1="198.0" y1="423.8" x2="300.0" y2="423.8" stroke="#5a6673" stroke-width="1" marker-start="url(#d2)" marker-end="url(#d2)"/>
+    <line x1="300.0" y1="423.8" x2="402.0" y2="423.8" stroke="#5a6673" stroke-width="1" marker-start="url(#d2)" marker-end="url(#d2)"/>
+    <line x1="198.0" y1="391.2" x2="198.0" y2="429.8" stroke="#c3ccd4" stroke-width="0.9"/>
+    <line x1="300.0" y1="391.2" x2="300.0" y2="429.8" stroke="#c3ccd4" stroke-width="0.9"/>
+    <line x1="402.0" y1="391.2" x2="402.0" y2="429.8" stroke="#c3ccd4" stroke-width="0.9"/>
+    <text x="249.0" y="416.8" font-size="12.5" fill="#5a6673" font-weight="600" text-anchor="middle">a</text>
+    <text x="351.0" y="416.8" font-size="12.5" fill="#5a6673" font-weight="600" text-anchor="middle">a</text>
     <line x1="600.0" y1="84.0" x2="600.0" y2="560.0" stroke="#dde3e8" stroke-width="1.2"/>
     <text x="636.0" y="108.0" font-size="14" fill="#1f2933" font-weight="700">2. Nhìn ngang: Z là số khai vào tool 1</text>
-    <text x="636.0" y="128.0" font-size="11.5" fill="#5a6673">Mũi vít thấp hơn đầu má kẹp thì mới chạm được bàn.</text>
-    <rect x="793.8" y="192.5" width="112.5" height="22.5" fill="#dfe6ec" stroke="#3d474f" stroke-width="1.1"/>
-    <text x="850.0" y="180.0" font-size="11.5" fill="#5a6673" text-anchor="middle">cổ tay robot</text>
-    <rect x="777.5" y="215.0" width="145.0" height="115.0" fill="#eceff2" stroke="#3d474f" stroke-width="1.1"/>
-    <text x="850.0" y="275.0" font-size="11.5" fill="#5a6673" text-anchor="middle">thân bộ kẹp</text>
-    <rect x="675.0" y="330.0" width="350.0" height="25.0" fill="#dde3e8" stroke="#3d474f" stroke-width="1.1"/>
-    <rect x="700.0" y="355.0" width="25.0" height="75.0" fill="#6b7580" stroke="#3d474f" stroke-width="1.1"/>
-    <rect x="975.0" y="355.0" width="25.0" height="75.0" fill="#6b7580" stroke="#3d474f" stroke-width="1.1"/>
-    <text x="695.0" y="387.5" font-size="11.5" fill="#5a6673" text-anchor="end">má kẹp</text>
-    <text x="1005.0" y="387.5" font-size="11.5" fill="#5a6673">má kẹp</text>
-    <text x="735.0" y="347.5" font-size="11.5" fill="#5a6673" text-anchor="middle">thanh ngang</text>
-    <line x1="762.5" y1="215.0" x2="937.5" y2="215.0" stroke="#2f5d8a" stroke-width="2.4"/>
-    <line x1="751.0" y1="210.0" x2="772.5" y2="214.0" stroke="#2f5d8a" stroke-width="1.2" marker-end="url(#ds)"/>
-    <text x="745.0" y="207.0" font-size="11.5" fill="#2f5d8a" font-weight="600" text-anchor="end">mặt bích</text>
-    <text x="745.0" y="224.0" font-size="11" fill="#5a6673" text-anchor="end">nơi Z bắt đầu</text>
-    <line x1="850.0" y1="180.0" x2="850.0" y2="487.5" stroke="#b45309" stroke-width="1.1" stroke-dasharray="7 5"/>
-    <rect x="838.8" y="352.5" width="22.5" height="7.5" fill="#8a8070" stroke="#3d474f" stroke-width="1"/>
-    <rect x="845.6" y="360.0" width="8.8" height="91.2" fill="#8a8070" stroke="#3d474f" stroke-width="1"/>
-    <polygon points="845.6,451.2 854.4,451.2 850.0,461.2" fill="#6b6355" stroke="#3d474f" stroke-width="1"/>
-    <line x1="662.5" y1="461.2" x2="1037.5" y2="461.2" stroke="#9aa5b1" stroke-width="2.0"/>
-    <text x="1043.5" y="465.2" font-size="11.5" fill="#5a6673">mặt bàn</text>
-    <circle cx="850.0" cy="430.0" r="4.6" fill="#ffffff" stroke="#b45309" stroke-width="2"/>
-    <line x1="930.0" y1="478.0" x2="856.0" y2="435.0" stroke="#b45309" stroke-width="1.2" marker-end="url(#am)"/>
-    <text x="936.0" y="479.0" font-size="12" fill="#b45309" font-weight="700">TOOL01</text>
-    <text x="936.0" y="496.0" font-size="11" fill="#5a6673">ngang đầu má kẹp, giữa hai má</text>
-    <line x1="777.5" y1="215.0" x2="624.0" y2="215.0" stroke="#c3ccd4" stroke-width="0.9"/>
-    <line x1="700.0" y1="430.0" x2="624.0" y2="430.0" stroke="#c3ccd4" stroke-width="0.9"/>
-    <line x1="630.0" y1="215.0" x2="630.0" y2="430.0" stroke="#2f5d8a" stroke-width="1.3" marker-start="url(#ds)" marker-end="url(#ds)"/>
-    <text x="621.0" y="318.5" font-size="14" fill="#2f5d8a" font-weight="700" text-anchor="end">Z</text>
-    <text x="621.0" y="335.5" font-size="11" fill="#5a6673" text-anchor="end">đo bằng thước</text>
-    <line x1="642.0" y1="462.0" x2="712.5" y2="433.0" stroke="#2f5d8a" stroke-width="1.2" marker-end="url(#ds)"/>
-    <text x="628.0" y="474.0" font-size="11.5" fill="#2f5d8a" font-weight="600">đầu dưới má kẹp</text>
-    <text x="628.0" y="490.0" font-size="11" fill="#5a6673">chỗ thấp nhất của má, nơi Z kết thúc</text>
-    <line x1="907.5" y1="430.0" x2="907.5" y2="461.2" stroke="#b45309" stroke-width="1.2" marker-start="url(#am)" marker-end="url(#am)"/>
-    <line x1="855.0" y1="430.0" x2="907.5" y2="430.0" stroke="#e2c7a3" stroke-width="0.9"/>
-    <line x1="855.0" y1="461.2" x2="907.5" y2="461.2" stroke="#e2c7a3" stroke-width="0.9"/>
-    <text x="917.5" y="449.6" font-size="11.5" fill="#b45309" font-weight="600">mũi vít thấp hơn</text>
-    <polyline points="804.1,523.0 804.4,524.1 805.0,525.1 805.8,526.1 806.8,527.1 808.0,528.1 809.4,529.0 811.0,529.9 812.8,530.8 814.8,531.6 816.9,532.4 819.2,533.1 821.7,533.8 824.3,534.4 827.0,535.0 829.8,535.5 832.8,535.9 835.8,536.3 838.9,536.6 842.0,536.8 845.2,536.9 848.4,537.0 851.6,537.0 854.8,536.9 858.0,536.8 861.1,536.6 864.2,536.3 867.2,535.9 870.2,535.5 873.0,535.0 875.7,534.4 878.3,533.8 880.8,533.1 883.1,532.4 885.2,531.6 887.2,530.8 889.0,529.9 890.6,529.0 892.0,528.1 893.2,527.1 894.2,526.1 895.0,525.1 895.6,524.1" fill="none" stroke="#b45309" stroke-width="1.6" stroke-linecap="round"/>
-    <polygon points="900.7,512.1 900.3,526.1 890.8,522.0" fill="#b45309" stroke="#b45309" stroke-width="1"/>
-    <text x="850.0" y="560.0" font-size="12" fill="#b45309" font-weight="600" text-anchor="middle">xoay Rz: mũi vít không được rời dấu</text>
+    <text x="636.0" y="128.0" font-size="11.5" fill="#5a6673">Mũi vít thấp hơn mép dưới miếng đen thì mới chạm được bàn.</text>
+    <rect x="787.6" y="223.5" width="92.8" height="20.9" rx="0.0" fill="#dfe6ec" stroke="#3d474f" stroke-width="1.1"/>
+    <text x="834.0" y="211.9" font-size="11.5" fill="#5a6673" text-anchor="middle">cổ tay robot</text>
+    <rect x="781.8" y="244.4" width="104.4" height="125.3" rx="0.0" fill="#e4e8eb" stroke="#3d474f" stroke-width="1.1"/>
+    <rect x="808.5" y="332.6" width="51.0" height="23.2" rx="0.0" fill="#3d434a" stroke="#3d474f" stroke-width="1"/>
+    <text x="834.0" y="290.8" font-size="11.5" fill="#5a6673" text-anchor="middle">thân bộ kẹp</text>
+    <line x1="894.3" y1="323.3" x2="861.8" y2="337.2" stroke="#9aa5b1" stroke-width="1"/>
+    <text x="896.6" y="318.6" font-size="11" fill="#5a6673">cảm biến X505</text>
+    <rect x="686.7" y="369.7" width="95.1" height="13.9" rx="0.0" fill="#f2f4f6" stroke="#3d474f" stroke-width="1.1"/>
+    <rect x="690.2" y="383.6" width="23.2" height="30.2" rx="0.0" fill="#cbd3da" stroke="#3d474f" stroke-width="1.1"/>
+    <rect x="699.4" y="413.8" width="18.6" height="16.2" rx="0.0" fill="#4a4f55" stroke="#3d474f" stroke-width="1.1"/>
+    <rect x="886.2" y="369.7" width="95.1" height="13.9" rx="0.0" fill="#f2f4f6" stroke="#3d474f" stroke-width="1.1"/>
+    <rect x="954.6" y="383.6" width="23.2" height="30.2" rx="0.0" fill="#cbd3da" stroke="#3d474f" stroke-width="1.1"/>
+    <rect x="950.0" y="413.8" width="18.6" height="16.2" rx="0.0" fill="#4a4f55" stroke="#3d474f" stroke-width="1.1"/>
+    <text x="734.2" y="362.7" font-size="11.5" fill="#5a6673" text-anchor="middle">tay kẹp</text>
+    <text x="933.8" y="362.7" font-size="11.5" fill="#5a6673" text-anchor="middle">tay kẹp</text>
+    <text x="984.8" y="395.2" font-size="11.5" fill="#5a6673">gá nhôm</text>
+    <text x="984.8" y="423.0" font-size="11.5" fill="#5a6673">má kẹp</text>
+    <line x1="766.7" y1="244.4" x2="901.3" y2="244.4" stroke="#2f5d8a" stroke-width="2.4"/>
+    <line x1="756.5" y1="239.4" x2="776.0" y2="243.4" stroke="#2f5d8a" stroke-width="1.2" marker-end="url(#ds)"/>
+    <text x="750.5" y="236.4" font-size="11.5" fill="#2f5d8a" font-weight="600" text-anchor="end">mặt bích</text>
+    <text x="750.5" y="253.4" font-size="11" fill="#5a6673" text-anchor="end">nơi Z bắt đầu</text>
+    <line x1="834.0" y1="211.9" x2="834.0" y2="471.8" stroke="#b45309" stroke-width="1.1" stroke-dasharray="7 5"/>
+    <rect x="824.7" y="369.7" width="18.6" height="7.0" rx="0.0" fill="#8a8070" stroke="#3d474f" stroke-width="1"/>
+    <rect x="830.5" y="376.6" width="7.0" height="67.3" rx="0.0" fill="#8a8070" stroke="#3d474f" stroke-width="1"/>
+    <polygon points="830.5,443.9 837.5,443.9 834.0,450.9" fill="#6b6355" stroke="#3d474f" stroke-width="1"/>
+    <line x1="861.8" y1="395.2" x2="838.6" y2="404.5" stroke="#b45309" stroke-width="1.2" marker-end="url(#am)"/>
+    <text x="866.5" y="399.2" font-size="11.5" fill="#b45309" font-weight="600">vít chỉ</text>
+    <line x1="660.0" y1="450.9" x2="1008.0" y2="450.9" stroke="#9aa5b1" stroke-width="2.0"/>
+    <text x="1010.3" y="454.9" font-size="11.5" fill="#5a6673">mặt bàn</text>
+    <circle cx="834.0" cy="430.0" r="4.6" fill="#ffffff" stroke="#b45309" stroke-width="2"/>
+    <line x1="894.3" y1="480.0" x2="840.0" y2="435.0" stroke="#b45309" stroke-width="1.2" marker-end="url(#am)"/>
+    <text x="900.3" y="481.0" font-size="12" fill="#b45309" font-weight="700">TOOL01</text>
+    <text x="900.3" y="498.0" font-size="11" fill="#5a6673">ngang mép dưới miếng đen</text>
+    <line x1="781.8" y1="244.4" x2="635.4" y2="244.4" stroke="#c3ccd4" stroke-width="0.9"/>
+    <line x1="699.4" y1="430.0" x2="635.4" y2="430.0" stroke="#c3ccd4" stroke-width="0.9"/>
+    <line x1="641.4" y1="244.4" x2="641.4" y2="430.0" stroke="#2f5d8a" stroke-width="1.3" marker-start="url(#ds)" marker-end="url(#ds)"/>
+    <text x="632.4" y="333.2" font-size="14" fill="#2f5d8a" font-weight="700" text-anchor="end">Z</text>
+    <text x="632.4" y="350.2" font-size="11" fill="#5a6673" text-anchor="end">đo bằng thước</text>
+    <line x1="653.4" y1="464.0" x2="708.7" y2="433.0" stroke="#2f5d8a" stroke-width="1.2" marker-end="url(#ds)"/>
+    <text x="639.4" y="476.0" font-size="11.5" fill="#2f5d8a" font-weight="600">đầu dưới má kẹp</text>
+    <text x="639.4" y="492.0" font-size="11" fill="#5a6673">mép dưới miếng đen, nơi Z kết thúc</text>
+    <line x1="868.8" y1="430.0" x2="868.8" y2="450.9" stroke="#b45309" stroke-width="1.2" marker-start="url(#am)" marker-end="url(#am)"/>
+    <line x1="838.6" y1="430.0" x2="868.8" y2="430.0" stroke="#e2c7a3" stroke-width="0.9"/>
+    <line x1="838.6" y1="450.9" x2="868.8" y2="450.9" stroke="#e2c7a3" stroke-width="0.9"/>
+    <text x="876.8" y="444.4" font-size="11.5" fill="#b45309" font-weight="600">mũi vít thấp hơn</text>
+    <polyline points="788.1,519.0 788.4,520.1 789.0,521.1 789.8,522.1 790.8,523.1 792.0,524.1 793.4,525.0 795.0,525.9 796.8,526.8 798.8,527.6 800.9,528.4 803.2,529.1 805.7,529.8 808.3,530.4 811.0,531.0 813.8,531.5 816.8,531.9 819.8,532.3 822.9,532.6 826.0,532.8 829.2,532.9 832.4,533.0 835.6,533.0 838.8,532.9 842.0,532.8 845.1,532.6 848.2,532.3 851.2,531.9 854.2,531.5 857.0,531.0 859.7,530.4 862.3,529.8 864.8,529.1 867.1,528.4 869.2,527.6 871.2,526.8 873.0,525.9 874.6,525.0 876.0,524.1 877.2,523.1 878.2,522.1 879.0,521.1 879.6,520.1" fill="none" stroke="#b45309" stroke-width="1.6" stroke-linecap="round"/>
+    <polygon points="884.7,508.1 884.3,522.1 874.8,518.0" fill="#b45309" stroke="#b45309" stroke-width="1"/>
+    <text x="834.0" y="554.0" font-size="12" fill="#b45309" font-weight="600" text-anchor="middle">xoay Rz: mũi vít không được rời dấu</text>
     <line x1="26.0" y1="578.0" x2="1094.0" y2="578.0" stroke="#dde3e8" stroke-width="1.2"/>
     <circle cx="40" cy="608" r="10.5" fill="none" stroke="#3d474f" stroke-width="1.4"/>
     <text x="40" y="612" font-size="12.5" font-weight="700" text-anchor="middle">1</text>
-    <text x="60.0" y="609.0" font-size="12.5" fill="#1f2933" font-weight="600">Vít bắt đúng tâm bộ kẹp, mũi chúc thẳng xuống</text>
+    <text x="60.0" y="609.0" font-size="12.5" fill="#1f2933" font-weight="600">Vít bắt đúng tâm thân bộ kẹp, mũi chúc thẳng xuống</text>
     <text x="60.0" y="625.0" font-size="11.5" fill="#5a6673">hai đoạn a ở hình 1 bằng nhau; lệch tâm là mũi vẽ vòng tròn khi xoay Rz</text>
     <circle cx="40" cy="654" r="10.5" fill="none" stroke="#3d474f" stroke-width="1.4"/>
     <text x="40" y="658" font-size="12.5" font-weight="700" text-anchor="middle">2</text>
-    <text x="60.0" y="655.0" font-size="12.5" fill="#1f2933" font-weight="600">Mũi vít thấp hơn đầu má kẹp</text>
+    <text x="60.0" y="655.0" font-size="12.5" fill="#1f2933" font-weight="600">Mũi vít thấp hơn mép dưới miếng đen</text>
     <text x="60.0" y="671.0" font-size="11.5" fill="#5a6673">cao hơn thì má kẹp chạm bàn trước mũi, không chạm điểm được</text>
     <circle cx="600" cy="608" r="10.5" fill="none" stroke="#3d474f" stroke-width="1.4"/>
     <text x="600" y="612" font-size="12.5" font-weight="700" text-anchor="middle">3</text>
-    <text x="620.0" y="609.0" font-size="12.5" fill="#1f2933" font-weight="600">Z đo từ mặt bích tới đầu dưới má kẹp</text>
+    <text x="620.0" y="609.0" font-size="12.5" fill="#1f2933" font-weight="600">Z đo từ mặt bích tới mép dưới miếng đen</text>
     <text x="620.0" y="625.0" font-size="11.5" fill="#5a6673">khai vào tool 1 trên pendant và vào cell_layout_real.yaml; không phải đo mũi vít</text>
     <circle cx="600" cy="654" r="10.5" fill="none" stroke="#3d474f" stroke-width="1.4"/>
     <text x="600" y="658" font-size="12.5" font-weight="700" text-anchor="middle">4</text>
