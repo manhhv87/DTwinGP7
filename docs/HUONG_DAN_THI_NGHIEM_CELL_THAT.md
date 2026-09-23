@@ -19,7 +19,7 @@
 | A1 | Lấy mã về, chạy `pytest` | số bài `passed` |
 | A2 | Kiểm camera còn đúng chỗ | 4 thông số camera; `top`, `tilt` mặt bàn |
 | A3 | Thước kẹp đo tấm bàn cờ | cạnh ô, cạnh dấu, độ dày |
-| A4 | Khai TOOL01, làm cây chỉ | Z của TOOL01 |
+| A4 | Khai TOOL01, kiểm vít chỉ | Z của TOOL01 |
 | A5 | Chạm thử 8 điểm | mean, RMS, max |
 | A6 | Lấy dấu bằng robot, dán 21 thẻ | đạt hoặc không |
 | A7 | Đo điểm thả trên băng tải, dán vạch 30 mm | X, Y điểm thả; Z băng tải, Z mặt bàn |
@@ -39,7 +39,7 @@ Từ phần B không đo tay gì nữa: máy tự ghi từng lượt, người �
 (B1). Mỗi buổi Pha 4, Pha 5 làm theo đúng trình tự B4.
 
 **Cần sẵn:** thước kẹp, thước lá, bút dạ, băng dính giấy, băng dính trong, tấm bàn cờ A3 đã in,
-hai bộ thẻ vị trí đã in, một thanh gỗ hoặc nhựa cứng và một đinh dài (làm cây chỉ).
+hai bộ thẻ vị trí đã in. Vít chỉ đã gắn sẵn dưới bộ kẹp.
 
 ---
 
@@ -129,7 +129,7 @@ trung bình cạnh dấu; đo độ dày tấm.
 **Đạt khi:** cạnh ô từ 44,8 đến 45,2 mm; cạnh dấu từ 33,8 đến 34,2 mm.
 **Ghi:** ba số. Không đạt: DỪNG.
 
-## A4. Khai TOOL01, làm cây chỉ
+## A4. Khai TOOL01, kiểm vít chỉ
 
 TOOL01 là điểm gắp: điểm giữa hai đầu má kẹp. Nếu tấm bàn cờ còn kẹp trên má thì mở má lấy ra
 trước.
@@ -142,31 +142,28 @@ trước.
    Y = 0, Z = số vừa đo.
 3. Mở `config\cell_layout_real.yaml`, sửa dòng `tcp_offset_xyz_mm: [0, 0, 100]` thành
    `tcp_offset_xyz_mm: [0, 0, Z]` với Z vừa đo. Lưu file.
-4. **Làm cây chỉ** để chạm được điểm (điểm gắp nằm giữa hai má, không có gì để chạm):
-   - Thanh gỗ hoặc nhựa cứng, dài 200 mm (má kẹp chỉ kẹp được vật rộng từ 180 đến 216 mm), tiết
-     diện chừng 20 × 30 mm.
-   - Kẻ dấu đúng giữa thanh: cách hai đầu 100 mm, cách hai cạnh bằng nhau. Đóng một đinh 50 mm
-     xuyên qua dấu đó, vuông góc với thanh, mũi thò ra phía dưới 20 đến 30 mm.
-   - Kẹp thanh vào má: thanh nằm ngang, đinh hướng xuống, mặt dưới thanh ngang với đầu má kẹp
-     (không đẩy sâu vào trong). Mũi đinh giờ thấp hơn đầu má kẹp 20 đến 30 mm.
-5. Kiểm: chấm một dấu trên bàn. Chọn TOOL01, hệ Robot, cổ tay chúc thẳng xuống, jog cho mũi đinh
+4. **Gắn vít chỉ** để chạm được điểm (điểm gắp nằm giữa hai má, không có gì để chạm): bắt hoặc dán
+   một con vít dưới **tâm bộ kẹp**, mũi chúc thẳng xuống, mũi thấp hơn đầu má kẹp. Vít đã có sẵn
+   trên cell, xem ảnh `anh_vit_chi.jpg` và hình dưới; tháo ra rồi lắp lại thì lắp đúng như cũ.
+5. Kiểm: chấm một dấu trên bàn. Chọn TOOL01, hệ Robot, cổ tay chúc thẳng xuống, jog cho mũi vít
    nằm ngay trên dấu, cách mặt bàn 1 đến 2 mm. Bấm phím xoay Rz sang trái rồi sang phải.
 
-![Cây chỉ: cách đóng đinh và cách kẹp](ban_ve_cay_chi.png)
+![Vít chỉ: vị trí và kích thước Z](ban_ve_cay_chi.png)
 
-**Đạt khi:** mũi đinh đứng yên trên dấu khi xoay Rz. Mũi chạy thành vòng tròn thì mở má, dịch
-thanh dọc theo má một đoạn bằng bán kính vòng đó, kẹp lại, kiểm lại. Đã chắc đinh ở đúng giữa
-thanh mà mũi vẫn chạy vòng thì bộ kẹp lệch tâm mặt bích: DỪNG, đo đường kính vòng, gửi cho thầy.
+**Đạt khi:** mũi vít đứng yên trên dấu khi xoay Rz. Mũi chạy thành vòng tròn nghĩa là vít lệch
+tâm: bắt lại vít cho đúng tâm rồi kiểm lại. Bắt đúng tâm mà vẫn chạy vòng thì bộ kẹp lệch tâm mặt
+bích: DỪNG, đo đường kính vòng, gửi cho thầy.
 **Ghi:** Z đã nhập.
 
-**Cách chạm ở A5, A6, A7:** cây chỉ kẹp trong má, TOOL01, hệ Robot, cổ tay chúc thẳng xuống. Chỉ
-jog tịnh tiến X, Y, Z, không bấm phím xoay. X, Y hiện trên pendant chính là X, Y của mũi đinh.
-Mỗi lần tháo rồi kẹp lại cây chỉ, làm lại phép kiểm ở bước 5.
+**Cách chạm ở A5, A6, A7:** vít chỉ đã gắn, TOOL01, hệ Robot, cổ tay chúc thẳng xuống. Chỉ jog
+tịnh tiến X, Y, Z, không bấm phím xoay. X, Y hiện trên pendant chính là X, Y của mũi vít. Mỗi lần
+tháo rồi gắn lại vít, làm lại phép kiểm ở bước 5. **Tháo vít trước khi sang phần B**, để nguyên
+thì vít va vào vật và vào mặt bàn khi robot gắp.
 
 ## A5. Chạm thử 8 điểm
 
-1. Lắp cây chỉ, chạm như cuối A4.
-2. Jog mũi cây chỉ tới X 575, Y 20, hạ xuống sát bàn. Đặt tấm bàn cờ nằm phẳng trên bàn, mặt in
+1. Gắn vít chỉ, chạm như cuối A4.
+2. Jog mũi vít tới X 575, Y 20, hạ xuống sát bàn. Đặt tấm bàn cờ nằm phẳng trên bàn, mặt in
    lên, tâm tấm ngay dưới mũi. Nâng mũi lên, jog robot ra ngoài cho khuất camera.
 3. Chạy, thay ba số đo ở A3:
 
@@ -175,7 +172,7 @@ Mỗi lần tháo rồi kẹp lại cây chỉ, làm lại phép kiểm ở bư�
    ```
 
 4. Công cụ lưu ảnh `results\touch_test_<giờ>.png`, trên đó 8 góc ô được khoanh và đánh số, rồi hỏi
-   lần lượt từng góc. Mở ảnh. Với góc số 1: jog mũi cây chỉ chạm đúng góc đó trên tấm, đọc X và Y
+   lần lượt từng góc. Mở ảnh. Với góc số 1: jog mũi vít chạm đúng góc đó trên tấm, đọc X và Y
    trên pendant, gõ hai số cách nhau một dấu cách rồi ENTER. Làm tiếp đến góc
    số 8. Góc nào không với tới thì gõ `s`.
 
@@ -184,13 +181,13 @@ chỉ cần ghi đúng số.
 **Ghi:** trung bình (mean), RMS, lớn nhất (max), và độ lệch trung bình dx, dy mà công cụ in ra.
 
 Nếu dx hoặc dy lớn hơn hẳn các số còn lại (mọi điểm lệch cùng một chiều), làm lại phép kiểm xoay
-Rz ở A4, dựng lại cây chỉ cho thẳng đứng, rồi chạm thử lại một lần.
+Rz ở A4, bắt lại vít cho đúng tâm, rồi chạm thử lại một lần.
 
 ## A6. Lấy dấu và dán 21 thẻ
 
 In `position_cards.pdf` ở 100%, kiểm vạch 50 mm in sẵn phải đúng 50 mm, cắt 21 thẻ theo viền.
 
-1. Lắp cây chỉ, chạm như cuối A4. Với từng thẻ: jog mũi tới đúng X, Y in trên thẻ, hạ mũi chạm
+1. Gắn vít chỉ, chạm như cuối A4. Với từng thẻ: jog mũi tới đúng X, Y in trên thẻ, hạ mũi chạm
    bàn, chấm một dấu bút dạ. Thẻ 1, 2, 3 ở Y = −160 với X = 525, 575, 625; mỗi hàng sau Y tăng
    60 mm; thẻ 19, 20, 21 ở Y = 200 (hình dưới).
 2. Dán thẻ: chữ thập giữa thẻ trùng dấu, mũi tên trên thẻ chỉ ra xa robot (hướng +X). Băng dính
@@ -209,7 +206,7 @@ Robot luôn thả vật tại cùng một X, Y. Độ cao lúc thả bằng đ�
 ngang mặt bàn; băng tải thấp hơn bàn bao nhiêu thì vật rơi xuống bấy nhiêu.
 
 1. Tắt băng tải. Chọn một điểm giữa băng, giữa hai thanh chắn.
-2. Lắp cây chỉ, chạm như cuối A4: hạ mũi chạm mặt băng tải tại điểm đó, đọc X, Y, Z. Hạ mũi chạm mặt bàn ở chỗ
+2. Gắn vít chỉ, chạm như cuối A4: hạ mũi chạm mặt băng tải tại điểm đó, đọc X, Y, Z. Hạ mũi chạm mặt bàn ở chỗ
    bất kỳ trong vùng thẻ, đọc Z.
 3. Mở `config\experiment.yaml`, tìm dòng `place_position: [700.0, 120.0, 700.0]`: thay hai số đầu
    bằng X, Y vừa đọc, giữ nguyên số thứ ba (không dùng). Lưu file.
@@ -220,7 +217,7 @@ ngang mặt bàn; băng tải thấp hơn bàn bao nhiêu thì vật rơi xuốn
 **Đạt khi:** Z mặt băng tải không cao hơn Z mặt bàn. Cao hơn: DỪNG (vật sẽ va vào băng tải).
 **Ghi:** X, Y, Z mặt băng tải; Z mặt bàn.
 
-Xong A7: gửi các số của A1 đến A7 về, tháo cây chỉ, sang phần B.
+Xong A7: gửi các số của A1 đến A7 về, tháo vít chỉ, sang phần B.
 
 ---
 
@@ -245,8 +242,7 @@ Trước mỗi lượt, màn hình in một dòng có `card=` (số thẻ), `yaw
 
 ## B2. Pha 2: chạy thử
 
-**Chuyển chìa từ TEACH sang REMOTE là lúc nguy hiểm nhất.** Trước khi xoay chìa: tháo cây chỉ khỏi
-má, dọn vật lạ trên bàn, đếm người, không còn tay ai trong cell, nút dừng khẩn trong tầm tay, nói
+**Chuyển chìa từ TEACH sang REMOTE là lúc nguy hiểm nhất.** Trước khi xoay chìa: tháo vít chỉ, dọn vật lạ trên bàn, đếm người, không còn tay ai trong cell, nút dừng khẩn trong tầm tay, nói
 to cho cả phòng. Xoay chìa xong mới bật servo.
 
 Đặt một hộp carton lên thẻ 11, rồi chạy:
