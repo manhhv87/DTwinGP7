@@ -149,6 +149,8 @@ trước.
 5. Kiểm: chấm một dấu trên bàn. Chọn TOOL01, hệ Robot, cổ tay chúc thẳng xuống, jog cho mũi đinh
    nằm ngay trên dấu, cách mặt bàn 1 đến 2 mm. Bấm phím xoay Rz sang trái rồi sang phải.
 
+![Cây chỉ: cách đóng đinh và cách kẹp](ban_ve_cay_chi.png)
+
 **Đạt khi:** mũi đinh đứng yên trên dấu khi xoay Rz. Mũi chạy thành vòng tròn thì mở má, dịch
 thanh dọc theo má một đoạn bằng bán kính vòng đó, kẹp lại, kiểm lại. Đã chắc đinh ở đúng giữa
 thanh mà mũi vẫn chạy vòng thì bộ kẹp lệch tâm mặt bích: DỪNG, đo đường kính vòng, gửi cho thầy.
