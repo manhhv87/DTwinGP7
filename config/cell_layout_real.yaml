@@ -111,7 +111,10 @@ camera:
 gripper:
   name: "TwoFingerGripper"
   mesh: "models/gripper.stl"
-  tcp_offset_xyz_mm: [0, 0, 100]          # PLACEHOLDER — đo lại sau khi lắp gripper thật
+  # Đo bằng thước ngày 24/09/2026: mặt bích tới mép dưới miếng đen của má kẹp, khi đã
+  # lắp đủ gá nhôm và má. Khai đúng số này vào tool 1 trên pendant. Tháo lắp lại gá mà
+  # nó lên xuống thì phải đo lại cả hai chỗ.
+  tcp_offset_xyz_mm: [0, 0, 178]
   tcp_offset_rpy_deg: [0, 0, 0]
 
 

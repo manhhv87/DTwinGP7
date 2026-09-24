@@ -140,8 +140,9 @@ trước.
    hai thanh má, chỗ chạm vào vật khi kẹp.
 2. Pendant, chế độ bảo mật MANAGEMENT: MAIN MENU → ROBOT → TOOL, chọn tool số 1, nhập X = 0,
    Y = 0, Z = số vừa đo.
-3. Mở `config\cell_layout_real.yaml`, sửa dòng `tcp_offset_xyz_mm: [0, 0, 100]` thành
-   `tcp_offset_xyz_mm: [0, 0, Z]` với Z vừa đo. Lưu file.
+3. Mở `config\cell_layout_real.yaml`, dòng `tcp_offset_xyz_mm` đang là `[0, 0, 178]`, số đo
+   ngày 24/09/2026 của chính cell này. Số bạn vừa đo khác quá 2 mm thì sửa dòng đó theo số
+   của mình và ghi vào nhật ký.
 4. **Gắn vít chỉ** để chạm được điểm (điểm gắp nằm giữa hai má, không có gì để chạm): bắt hoặc dán
    một con vít dưới **tâm bộ kẹp**, mũi chúc thẳng xuống, mũi thấp hơn đầu má kẹp. Vít đã có sẵn
    trên cell, xem ảnh `anh_vit_chi.jpg` và hình dưới; tháo ra rồi lắp lại thì lắp đúng như cũ.
