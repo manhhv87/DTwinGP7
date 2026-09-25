@@ -108,7 +108,8 @@ objects:
   # Vùng ĐẶT VẬT (placement envelope): nơi đặt vật khi gắp thật, dùng chung cho ba chỗ:
   # lưới thẻ (22_make_pose_lists.py, lề 15 mm = dung sai đặt vật), ô chia lỗi của vòng C3
   # (21_mine_failures.py) và vị trí vật trong ảnh tổng hợp.
-  # Tính từ hiệu chuẩn tay-mắt 18/09/2026 (camera tại x = 634.6 mm, cách bàn 712.7 mm), GIỮ
+  # Tính từ hiệu chuẩn tay-mắt 18/09/2026 (camera tại x = 638.6 mm sau khi bù phép chạm thử
+  # 24/09/2026, cách bàn 712.7 mm), GIỮ
   # NGUYÊN camera và dataset. Hai giới hạn kẹp nhau:
   #   - phía gần robot: dưới x ~ 510, vật cao và chồng hai lớp (tới 235 mm) bị cắt ở mép ảnh;
   #   - phía xa: trên x ~ 640, tư thế tiếp cận 200 mm trên chồng 235 mm vượt tầm với GP7 khi

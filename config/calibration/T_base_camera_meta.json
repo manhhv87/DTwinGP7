@@ -57,5 +57,17 @@
     "depth_scale_m": 0.0010000000474974513
   },
   "pose_source": "YRC1000 Joints() -> DTwinGP7 URDF FK -> tool0",
-  "frame_note": "Includes robot.pose pedestal/world transform; matches experiment project frame."
+  "frame_note": "Includes robot.pose pedestal/world transform; matches experiment project frame.",
+  "touch_correction": {
+    "date": "2026-09-25",
+    "dx_mm": 4.0,
+    "dy_mm": -0.82,
+    "dz_mm": 0.0,
+    "from": "results/touch_test_20260924_151123 (8 diem, tam ChArUco dan sat ban)",
+    "why": "Sai so cham thu la mot do lech he thong 4.00 mm theo x va 0.82 mm theo y; phan tan quanh do lech do chi 0.56 mm, nen phan xoay va ty le cua hieu chuan van dung, chi phan tinh tien lech. Mui vit da duoc xac nhan nam tren truc thang dung qua TOOL01 bang phep xoay Rz 0/45/90/180 o he de-cac, nen do lech khong phai do dung cu.",
+    "residual_after_mm": {
+      "mean": 0.6,
+      "max": 0.87
+    }
+  }
 }
