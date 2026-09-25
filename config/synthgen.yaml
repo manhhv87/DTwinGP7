@@ -114,8 +114,10 @@ objects:
   #   - phía gần robot: dưới x ~ 510, vật cao và chồng hai lớp (tới 235 mm) bị cắt ở mép ảnh;
   #   - phía xa: trên x ~ 640, tư thế tiếp cận 200 mm trên chồng 235 mm vượt tầm với GP7 khi
   #     dụng cụ dài 180-190 mm (người dùng báo mặt bích tới mặt dưới kẹp ~180 mm, 21/09/2026).
-  # Đã kiểm mọi lớp, mọi kiểu chồng, mọi góc 5 độ, cộng dung sai ±15 mm: lề ảnh nhỏ nhất 14 px,
-  # IK giải hết với dụng cụ 180 và 190 mm. Dataset: 50-65% vật của từng lớp, ở cả bốn tập
+  # Đã kiểm mọi lớp, mọi kiểu chồng, mọi góc 5 độ, cộng dung sai ±15 mm: lề ảnh nhỏ nhất 8,6 px
+  # (14 px trước khi bù phép chạm thử 24/09/2026; nadir camera dịch ra xa robot 4 mm), ở thẻ
+  # (525, −160). IK giải hết cho cả 300 tư thế của hai danh sách với dụng cụ 178 mm đo được
+  # ngày 24/09/2026, và với 180 mm. Dataset: 50-65% vật của từng lớp, ở cả bốn tập
   # train/val/test chuẩn/test khó, nằm ở x >= 510, nên vùng này nằm trong phân bố ảnh thật.
   # Số cũ 277..562 x ±390 suy từ một mô hình camera ước lượng trước khi có hiệu chuẩn, sai ~100 mm.
   region_x_mm: [510.0, 640.0]
