@@ -101,6 +101,24 @@ _DEFAULT_CONFIG: dict[str, Any] = {
 }
 
 
+def grasp_depth_offset(obj_height_mm: float | None, max_offset_mm: float,
+                       clearance_mm: float) -> float:
+    """How far below the part's top face the jaw tips go (mm).
+
+    Never deeper than the part itself minus ``clearance_mm``, so the tips stay
+    above whatever the part rests on: the table, or another part in a stacked
+    scene, which the table-level floor alone cannot protect. Without a known
+    height, fall back to ``max_offset_mm`` and rely on that floor.
+
+    The previous formula, min(max_offset, max(clearance, height - clearance)),
+    returned max_offset for every height whenever clearance >= max_offset (the
+    defaults are 100 and 50), so the grasp depth never adapted to the part.
+    """
+    if obj_height_mm is None or obj_height_mm <= 0:
+        return float(max_offset_mm)
+    return float(max(0.0, min(max_offset_mm, obj_height_mm - clearance_mm)))
+
+
 class Orchestrator:
     """Orchestrates the pick-and-place cycle via robot backend (SimRobot or HSE).
 
@@ -140,8 +158,32 @@ class Orchestrator:
         self.sm = PickPlaceStateMachine()
         self.stats = {"attempted": 0, "successful": 0, "failed": 0}
         self._current_joints: list[float] | None = None       # cache for SolveIK ref
+        # C3 failure context: pre-drawn pose-list id (set per trial by the
+        # experiment script) and the RGB frame saved by PerceptionNode at DETECT.
+        self.current_pose_id: str = ""
+        # Set per trial by the runner's pre-trial hook, and constant for a run.
+        self.current_condition: str = ""
+        self.current_stack_on: str = ""
+        # B3_EXPECTED_YAW_CONTEXT_V2
+        # Ground-truth placement yaw from the pose list. Safety reference only.
+        self.current_expected_yaw_deg: float | None = None
+        # Pose-list target class. When set, detections of every other class
+        # are ignored. This is essential for STACKED trials where both the
+        # target and support object may be detected.
+        self.current_expected_class: str = ""
+        self.session_id: str = ""
+        self.block_id: str = ""
+        self.operator_id: str = ""
+        self._last_frame_path: str = ""
+        # Optional callable(trial_id, machine_success) -> 1 | 0 | "", asked once per
+        # trial that actually moved the robot. The runner sets it under
+        # --confirm-each-trial; its answer goes to the `human_ok` column.
+        self.human_score_hook: Any = None
 
         self._set_speed()
+
+        self._last_support_height_mm: float = 0.0
+        self._last_place_z_mm: float | None = None
 
     # ────────────────────────────────────────────────────────────
     # Coordinate transform + control helpers
@@ -163,17 +205,78 @@ class Orchestrator:
             if not isinstance(pc, (list, tuple, np.ndarray)) or len(pc) < 4:
                 logger.warning("Skipping detection with malformed pose_camera: %r", pc)
                 continue
+
+            # POSE-LIST CLASS LOCK
+            #
+            # STACKED scenes contain at least two real objects. Never choose
+            # whichever detection merely happens to have the highest Z.
+            expected_cls = str(
+                getattr(self, "current_expected_class", "") or ""
+            ).strip().lower()
+
+            detected_cls = str(
+                o.get("class_name", "") or ""
+            ).strip().lower()
+
+            if expected_cls and detected_cls != expected_cls:
+                continue
+
             xyz_cam = np.array(pc[:3], dtype=float)
+
             # Transform the in-plane grasp YAW from the camera image frame into the
             # base frame with the SAME hand-eye rotation as the position. The PCA yaw
             # is a pixel-frame angle (x-right, y-down); carrying it straight into
             # rotz() about base Z leaves it off by the camera mounting rotation +
             # image handedness, mis-aligning the gripper with the object long axis.
-            yaw_base = camera_yaw_to_base(float(pc[3]), self.T_BC)
+            # Prefer metric BASE yaw produced by PoseExtractor:
+            # mask outline -> top plane -> BASE XY -> minAreaRect edge.
+            metric_yaw_base = o.get("yaw_base")
+            if metric_yaw_base is not None and np.isfinite(float(metric_yaw_base)):
+                yaw_base = float(metric_yaw_base)
+            else:
+                yaw_base = camera_yaw_to_base(float(pc[3]), self.T_BC)
+
+            logger.info(
+                "VISION YAW class=%s source=%s pca_cam=%+.2fdeg "
+                "edge_base=%+.2fdeg rect=%.1fx%.1fmm square=%s",
+                o.get("class_name", "?"),
+                o.get("yaw_source", "legacy_pca"),
+                float(np.rad2deg(float(pc[3]))),
+                float(np.rad2deg(yaw_base)),
+                float(o.get("yaw_rect_long_mm", float("nan"))),
+                float(o.get("yaw_rect_short_mm", float("nan"))),
+                o.get("yaw_near_square", False),
+            )
             objects.append({**o, "pose_base": camera_to_base(xyz_cam, self.T_BC),
                             "yaw_base": yaw_base})
         # Object with highest Z (closest to camera / on top) is grasped first.
+        # With current_expected_class set, all entries here are already the
+        # requested pose-list class.
         objects.sort(key=lambda o: o["pose_base"][2], reverse=True)
+
+        expected_cls = str(
+            getattr(self, "current_expected_class", "") or ""
+        ).strip().lower()
+
+        if expected_cls:
+            if objects:
+                logger.info(
+                    "POSE-LIST CLASS LOCK: expected=%s selected=%s",
+                    expected_cls,
+                    objects[0].get("class_name", "?"),
+                )
+            else:
+                seen = [
+                    str(x.get("class_name", "?"))
+                    for x in det_msg.get("objects", [])
+                ]
+                logger.warning(
+                    "POSE-LIST CLASS LOCK: expected=%s NOT FOUND; seen=%s "
+                    "-> motion refused for this trial",
+                    expected_cls,
+                    seen,
+                )
+
         return objects
 
     def _is_reachable(self, target_T: np.ndarray) -> bool:
@@ -589,6 +692,381 @@ class Orchestrator:
         base_rpy = tuple(self.config.get("robot_base_rpy_deg", (0.0, 0.0, 0.0)))
         return world_to_robot_base(T_world, base_xyz, base_rpy)
 
+    def _robot_base_to_world(self, T_base: np.ndarray) -> np.ndarray:
+        """Inverse of _world_to_robot_base(), using the exact same convention."""
+        from .frame_convert import world_to_robot_base
+
+        base_xyz = tuple(
+            self.config.get("robot_base_xyz_mm", (0.0, 0.0, 0.0))
+        )
+        base_rpy = tuple(
+            self.config.get("robot_base_rpy_deg", (0.0, 0.0, 0.0))
+        )
+
+        # world_to_robot_base(I) = inv(T_world_robot)
+        # therefore inverse(...) = T_world_robot.
+        T_robot_world = world_to_robot_base(
+            np.eye(4, dtype=float), base_xyz, base_rpy
+        )
+        T_world_robot = np.linalg.inv(T_robot_world)
+
+        return T_world_robot @ np.asarray(T_base, dtype=float)
+
+
+    def _table_z_base_at_xy(
+        self, x_base: float, y_base: float
+    ) -> float:
+        """Return calibrated table Z in YRC ROBOT BASE at fixed BASE X/Y.
+
+        table_plane is stored in the calibrated project/world frame:
+            z = a*x + b*y + c
+
+        Intersect that plane with the YRC BASE-Z line passing through
+        (x_base, y_base). This remains correct if the robot base has a
+        translation and avoids hard-coding the pedestal height.
+        """
+        plane = self.config.get("table_plane")
+
+        if not isinstance(plane, dict):
+            # SIM / unit-test fallback only.
+            #
+            # table_top_z_mm is expressed in the project/WORLD frame. Model
+            # the simulated table as a flat WORLD plane, then let the existing
+            # line/plane intersection below convert it to ROBOT BASE Z.
+            #
+            # REAL ROBOT MUST FAIL CLOSED: never guess the physical table plane.
+            if not self.config.get("is_real_mode", False):
+                table_z_world = self.config.get("table_top_z_mm")
+                if table_z_world is None:
+                    raise RuntimeError(
+                        "SIM PLACE-Z requires table_top_z_mm when "
+                        "table_plane is absent"
+                    )
+                try:
+                    table_z_world = float(table_z_world)
+                except (TypeError, ValueError) as exc:
+                    raise RuntimeError(
+                        f"Invalid SIM table_top_z_mm: {table_z_world!r}"
+                    ) from exc
+                if not np.isfinite(table_z_world):
+                    raise RuntimeError(
+                        f"Invalid SIM table_top_z_mm: {table_z_world!r}"
+                    )
+                plane = {
+                    "a": 0.0,
+                    "b": 0.0,
+                    "c": table_z_world,
+                }
+            else:
+                raise RuntimeError(
+                    "PLACE-Z requires calibrated table_plane; none was provided"
+                )
+
+        try:
+            a = float(plane["a"])
+            b = float(plane["b"])
+            c = float(plane["c"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise RuntimeError(
+                f"Invalid table_plane configuration: {plane!r}"
+            ) from exc
+
+        # Two points one millimetre apart along BASE +Z.
+        T0 = np.eye(4, dtype=float)
+        T1 = np.eye(4, dtype=float)
+
+        T0[:3, 3] = [float(x_base), float(y_base), 0.0]
+        T1[:3, 3] = [float(x_base), float(y_base), 1.0]
+
+        p0_w = self._robot_base_to_world(T0)[:3, 3]
+        p1_w = self._robot_base_to_world(T1)[:3, 3]
+
+        d = p1_w - p0_w
+
+        den = float(
+            d[2] - a * d[0] - b * d[1]
+        )
+
+        if not np.isfinite(den) or abs(den) < 1e-9:
+            raise RuntimeError(
+                "Robot BASE-Z is nearly parallel to calibrated table plane"
+            )
+
+        z_base = float(
+            (
+                a * p0_w[0]
+                + b * p0_w[1]
+                + c
+                - p0_w[2]
+            )
+            / den
+        )
+
+        if not np.isfinite(z_base):
+            raise RuntimeError(
+                f"Invalid calibrated table Z at BASE "
+                f"({x_base:.1f}, {y_base:.1f})"
+            )
+
+        return z_base
+
+
+    def _detected_target_height_mm(
+        self, obj: dict[str, Any]
+    ) -> tuple[float, float, float, float]:
+        """Measure target-part height from RGB-D top Z and the table plane.
+
+        For a normal trial:
+            H_target = Z_top - Z_table
+
+        For STACKED:
+            H_target = Z_top - Z_table - H_support
+
+        Returns:
+            target_height_mm,
+            support_height_mm,
+            detected_top_z_base,
+            table_z_at_pick_base
+        """
+        pose_world = np.asarray(
+            obj.get("pose_base"), dtype=float
+        )
+
+        if pose_world.size < 3:
+            raise RuntimeError(
+                f"Detection has invalid pose_base: {obj.get('pose_base')!r}"
+            )
+
+        # Detection pose_base is calibrated project/world XYZ.
+        # Convert the detected TOP point to the actual YRC ROBOT BASE.
+        T_top_world = np.eye(4, dtype=float)
+        T_top_world[:3, 3] = pose_world[:3]
+
+        top_base = self._world_to_robot_base(T_top_world)[:3, 3]
+
+        table_pick_z = self._table_z_base_at_xy(
+            float(top_base[0]),
+            float(top_base[1]),
+        )
+
+        stack_on = str(
+            getattr(self, "current_stack_on", "") or ""
+        ).strip().lower()
+
+        support_h_mm = 0.0
+
+        if stack_on:
+            heights = self.config.get("class_heights_mm") or {}
+
+            if stack_on not in heights:
+                raise RuntimeError(
+                    f"STACKED trial has no configured support height for "
+                    f"{stack_on!r}"
+                )
+
+            support_h_mm = float(heights[stack_on])
+
+            if (
+                not np.isfinite(support_h_mm)
+                or support_h_mm <= 0.0
+            ):
+                raise RuntimeError(
+                    f"Invalid support height for {stack_on!r}: "
+                    f"{support_h_mm}"
+                )
+
+        total_height_mm = float(
+            top_base[2] - table_pick_z
+        )
+
+        target_height_mm = float(
+            total_height_mm - support_h_mm
+        )
+
+        if (
+            not np.isfinite(target_height_mm)
+            or target_height_mm <= 0.0
+            or target_height_mm > 350.0
+        ):
+            raise RuntimeError(
+                "Unsafe/invalid detected target height: "
+                f"top={top_base[2]:.1f}, "
+                f"table={table_pick_z:.1f}, "
+                f"support={support_h_mm:.1f} "
+                f"-> target_h={target_height_mm:.1f} mm"
+            )
+
+        return (
+            target_height_mm,
+            support_h_mm,
+            float(top_base[2]),
+            float(table_pick_z),
+        )
+
+
+    def _build_dynamic_p2_base(
+        self,
+        p0_base: np.ndarray,
+        obj: dict[str, Any],
+        *,
+        emit_log: bool = False,
+    ) -> tuple[np.ndarray, float]:
+        """Build safe DTWINRUN P002 in YRC ROBOT BASE.
+
+        P2.Z is reconstructed from:
+            calibrated table Z at PLACE
+            + detected target-object height
+            + actual TCP-to-object-top offset used at PICK.
+
+        It therefore does NOT inherit the support object's height from P0.
+        """
+
+        # SIM_DYNAMIC_P2_FALLBACK_V2
+        # Measured dynamic PLACE-Z is a physical-cell feature. Mock/sim
+        # detections are not guaranteed to share the calibrated table
+        # geometry, so deriving target height from synthetic top-Z is invalid.
+        #
+        # SIM keeps the configured legacy place_position in WORLD/project
+        # coordinates, then converts that pose to ROBOT BASE because this
+        # helper's return contract is a BASE-frame pose.
+        #
+        # REAL mode does NOT enter this branch and continues through the
+        # calibrated, fail-closed measured-height PLACE-Z logic below.
+        if not self.config.get("is_real_mode", False):
+            place_xyz_world = np.asarray(
+                self.config["place_position"], dtype=float
+            ).copy()
+            if place_xyz_world.shape != (3,):
+                raise ValueError(
+                    "place_position must contain exactly X,Y,Z"
+                )
+            if not np.all(np.isfinite(place_xyz_world)):
+                raise RuntimeError(
+                    f"Invalid SIM place_position: {place_xyz_world.tolist()}"
+                )
+
+            place_yaw_deg = float(
+                self.config.get("place_yaw_deg", 5.3)
+            )
+            place_world = make_grasp_pose(
+                place_xyz_world,
+                yaw_rad=np.deg2rad(place_yaw_deg),
+                yaw_offset_deg=0.0,
+            )
+            return self._world_to_robot_base(place_world), place_yaw_deg
+
+        tool_offset = float(
+            self.config.get("robot_tool_offset_mm", 0.0)
+        )
+
+        if abs(tool_offset) > 1e-6:
+            raise RuntimeError(
+                "Dynamic P2 fixed-job path requires "
+                "robot_tool_offset_mm=0.0"
+            )
+
+        p0_base = np.asarray(p0_base, dtype=float)
+
+        if p0_base.shape != (4, 4):
+            raise ValueError(
+                f"p0_base must be 4x4, got {p0_base.shape}"
+            )
+
+        place_xyz = np.asarray(
+            self.config["place_position"], dtype=float
+        ).copy()
+
+        if place_xyz.shape != (3,):
+            raise ValueError(
+                "place_position must contain exactly X,Y,Z"
+            )
+
+        (
+            target_h_mm,
+            support_h_mm,
+            detected_top_z_base,
+            table_pick_z_base,
+        ) = self._detected_target_height_mm(obj)
+
+        # Preserve the exact TCP-to-object-top relation selected at PICK.
+        #
+        # Normal objects usually give ~0 mm.
+        # Plastic currently includes the configured +10 mm class bias.
+        tcp_top_offset_mm = float(
+            p0_base[2, 3] - detected_top_z_base
+        )
+
+        table_place_z_base = self._table_z_base_at_xy(
+            float(place_xyz[0]),
+            float(place_xyz[1]),
+        )
+
+        p2_z = float(
+            table_place_z_base
+            + target_h_mm
+            + tcp_top_offset_mm
+        )
+
+        if not np.isfinite(p2_z):
+            raise RuntimeError(
+                f"Invalid computed P2.Z: {p2_z}"
+            )
+
+        # ENVIRONMENT SAFETY GATE:
+        # P2 TCP must never be below the same jaw-tip/table floor used
+        # during PICK planning.
+        safety_margin_mm = float(
+            self.config.get("table_safety_margin_mm", 20.0)
+        )
+
+        min_safe_p2_z = float(
+            table_place_z_base + safety_margin_mm
+        )
+
+        if p2_z < min_safe_p2_z:
+            raise RuntimeError(
+                "UNSAFE P2 rejected before JOB_START: "
+                f"P2.Z={p2_z:.1f} < "
+                f"table_place.Z({table_place_z_base:.1f}) + "
+                f"safety({safety_margin_mm:.1f}) = "
+                f"{min_safe_p2_z:.1f} mm"
+            )
+
+        place_xyz[2] = p2_z
+
+        self._last_support_height_mm = support_h_mm
+        self._last_place_z_mm = p2_z
+
+        place_yaw_deg = float(
+            self.config.get("place_yaw_deg", 5.3)
+        )
+
+        p2_base = make_grasp_pose(
+            place_xyz,
+            yaw_rad=np.deg2rad(place_yaw_deg),
+            yaw_offset_deg=0.0,
+        )
+
+        if emit_log:
+            logger.info(
+                "PLACE-Z DETECTED: class=%s stack_on=%s | "
+                "topZ=%.1f tablePickZ=%.1f supportH=%.1f "
+                "-> targetH=%.1f | tcpTopOff=%+.1f | "
+                "tablePlaceZ=%.1f -> P2.Z=%.1f",
+                obj.get("class_name", "?"),
+                str(getattr(self, "current_stack_on", "") or "-"),
+                detected_top_z_base,
+                table_pick_z_base,
+                support_h_mm,
+                target_h_mm,
+                tcp_top_offset_mm,
+                table_place_z_base,
+                p2_z,
+            )
+
+        return p2_base, place_yaw_deg
+
+
     def _solve_ik_routed(self, target_T_world: np.ndarray):
         """Select IK source: YRC controller (Cartesian) or client-side (Pieper/DLS).
 
@@ -680,6 +1158,8 @@ class Orchestrator:
             True if grasp-and-place succeeded, False if failed or no objects detected.
         """
         self.sm.reset()
+        self._last_support_height_mm = 0.0
+        self._last_place_z_mm = None
         t_start = time.time()
         # Every cycle is one ATTEMPT. Counting here (not after reachability) so
         # detection-miss / timeout / unreachable failures are included in the
@@ -697,20 +1177,83 @@ class Orchestrator:
 
         # ─── DETECT ───
         self.sm.transition_to(PickState.DETECT)
-        try:
-            det_msg = self.queue.get(timeout=self.config["detection_timeout_s"])
-        except queue.Empty:
-            logger.warning("Trial %d: no detection received", trial_id)
-            self.stats["failed"] += 1
-            self._log_trial(trial_id, False, "detection_timeout", t_start, None)
-            return False
+        self._last_frame_path = ""
 
-        objects = self._select_objects(det_msg)
+        # IMPORTANT: detection_timeout_s is a WINDOW for finding a usable
+        # object, not merely a timeout for receiving one queue message.
+        #
+        # The old code consumed exactly one perception message and returned
+        # detection_miss immediately when that frame contained no usable pose.
+        # Reflective Inox can intermittently lose RGB-D depth for a frame, so a
+        # single bad frame caused false misses in ~0.1 s even though the config
+        # allowed 2 s.  Keep consuming fresh frames until a usable object is
+        # available or the whole detection window expires.
+        detect_timeout = float(self.config["detection_timeout_s"])
+        detect_deadline = time.monotonic() + detect_timeout
+        objects: list[dict[str, Any]] = []
+        received_frames = 0
+        empty_frames = 0
+
+        while True:
+            remaining = detect_deadline - time.monotonic()
+            if remaining <= 0.0:
+                break
+
+            try:
+                det_msg = self.queue.get(timeout=remaining)
+            except queue.Empty:
+                break
+
+            received_frames += 1
+            frame_path = det_msg.get("frame_path", "")
+            if frame_path:
+                self._last_frame_path = frame_path
+
+            objects = self._select_objects(det_msg)
+            if objects:
+                if empty_frames:
+                    logger.info(
+                        "Trial %d: detection recovered after %d empty frame(s) "
+                        "within %.2fs window",
+                        trial_id,
+                        empty_frames,
+                        detect_timeout,
+                    )
+                break
+
+            empty_frames += 1
+            # Keep logs useful without flooding them at camera/inference rate.
+            if empty_frames == 1 or empty_frames % 5 == 0:
+                logger.info(
+                    "Trial %d: no usable object in frame %d; retrying "
+                    "(%.2fs remaining)",
+                    trial_id,
+                    received_frames,
+                    max(0.0, detect_deadline - time.monotonic()),
+                )
+
         if not objects:
-            logger.info("Trial %d: no objects detected", trial_id)
-            self.sm.transition_to(PickState.IDLE, "no objects")
             self.stats["failed"] += 1
-            self._log_trial(trial_id, False, "detection_miss", t_start, None)
+            if received_frames == 0:
+                logger.warning(
+                    "Trial %d: no perception message received within %.2fs",
+                    trial_id,
+                    detect_timeout,
+                )
+                self._log_trial(
+                    trial_id, False, "detection_timeout", t_start, None
+                )
+            else:
+                logger.info(
+                    "Trial %d: no usable object after %d frame(s) in %.2fs",
+                    trial_id,
+                    received_frames,
+                    detect_timeout,
+                )
+                self.sm.transition_to(PickState.IDLE, "no objects")
+                self._log_trial(
+                    trial_id, False, "detection_miss", t_start, None
+                )
             return False
 
         # ─── PLAN: try each object until one is reachable ───
@@ -729,11 +1272,7 @@ class Orchestrator:
             # pose_base[2] is Z of the object TOP (camera looks down → depth is top).
             # Adaptive offset: clipped to object height so fingertip enters the body.
             obj_height = obj.get("height_mm")
-            if obj_height and obj_height > 0:
-                effective_offset = min(max_offset,
-                                       max(safety_margin, obj_height - safety_margin))
-            else:
-                effective_offset = max_offset
+            effective_offset = grasp_depth_offset(obj_height, max_offset, safety_margin)
             target_z = xyz_base[2] - effective_offset
             # HARD CLAMP: regardless of offset, TCP never goes below min_grasp_z.
             clamped_z = max(target_z, min_grasp_z)
@@ -743,11 +1282,580 @@ class Orchestrator:
                     "fingertip held %dmm above table)",
                     target_z, clamped_z, int(safety_margin),
                 )
+            # PLASTIC_PICK_Z_GUARD_V1
+            # Restore the previous Plastic-only pick protection.
+            #
+            # This does NOT change RGB-D measurements or reject a detection.
+            # It only raises the final P0 sent to the robot if Plastic would
+            # otherwise be picked too close to the table.
+            cls_name = str(obj.get("class_name", "")).lower()
+
+            if cls_name == "plastic_box":
+                class_heights = self.config.get("class_heights_mm", {}) or {}
+                known_h = float(class_heights.get("plastic_box", 30.0))
+
+                insertion_mm = float(
+                    self.config.get("low_object_grasp_insertion_mm", 0.0)
+                )
+                insertion_mm = max(0.0, min(insertion_mm, known_h))
+
+                # Old low-object guard:
+                #   P0 >= table_top + Plastic height - insertion
+                plastic_floor_z = table_top + known_h - insertion_mm
+
+                if clamped_z < plastic_floor_z:
+                    logger.warning(
+                        "PLASTIC PICK Z GUARD: P0 %.1f -> %.1f mm "
+                        "(height=%.1f, insertion=%.1f)",
+                        clamped_z,
+                        plastic_floor_z,
+                        known_h,
+                        insertion_mm,
+                    )
+                    clamped_z = plastic_floor_z
+
+                # Old Plastic class-specific bias: +10 mm by config.
+                class_z_bias = self.config.get(
+                    "class_pick_z_bias_mm", {}
+                ) or {}
+                z_bias_mm = float(class_z_bias.get("plastic_box", 10.0))
+
+                if z_bias_mm != 0.0:
+                    logger.info(
+                        "PLASTIC CLASS Z BIAS: P0 Z %.1f -> %.1f mm (%+.1f mm)",
+                        clamped_z,
+                        clamped_z + z_bias_mm,
+                        z_bias_mm,
+                    )
+                    clamped_z += z_bias_mm
+
+            # B3_INOX_ACTUAL_P0_MOTION_SAFETY_V3
+            # Authoritative REAL-motion interlock on the ACTUAL P0 that will be
+            # converted to YRC BASE and written to P000.
+            #
+            # IMPORTANT:
+            # - Do NOT repair/replace RGB-D.
+            # - Do NOT clamp Inox upward to a nominal height.
+            # - If measured P0 is too low, record FAIL and dispatch NO MOTION.
+            #
+            # The previous V2 gate checked obj["h_depth_mm"]. Live B3 showed
+            # h_depth_mm can disagree with the centroid/deprojected Z that actually
+            # becomes P0. Therefore safety must inspect `clamped_z` itself.
+            cls_name_p0 = str(obj.get("class_name", "")).strip().lower()
+
+            if (
+                self.config.get("is_real_mode", False)
+                and cls_name_p0 == "inox_box"
+            ):
+                stack_key_p0 = str(
+                    getattr(self, "current_stack_on", "") or ""
+                ).strip().lower()
+
+                support_safety_mm = {
+                    "": 0.0,
+                    "-": 0.0,
+                    "none": 0.0,
+                    "plastic": 30.0,
+                    "plastic_box": 30.0,
+                    "inox": 40.0,
+                    "inox_box": 40.0,
+                    "metal": 85.0,
+                    "metal_box": 85.0,
+                    "carton": 120.0,
+                    "carton_box": 120.0,
+                    "wood": 150.0,
+                    "wood_box": 150.0,
+                }
+
+                support_h_p0 = support_safety_mm.get(stack_key_p0)
+                reject_reason_p0 = None
+
+                try:
+                    actual_p0_world_z = float(clamped_z)
+                    table_top_world_z = float(table_top)
+                    finite_p0 = bool(
+                        np.isfinite(actual_p0_world_z)
+                        and np.isfinite(table_top_world_z)
+                    )
+                except (TypeError, ValueError):
+                    actual_p0_world_z = float("nan")
+                    table_top_world_z = float("nan")
+                    finite_p0 = False
+
+                if support_h_p0 is None:
+                    reject_reason_p0 = (
+                        f"unknown_stack_support={stack_key_p0!r}"
+                    )
+                    min_p0_world_z = float("nan")
+                    clearance_over_support = float("nan")
+                elif not finite_p0:
+                    reject_reason_p0 = "actual_p0_or_table_nonfinite"
+                    min_p0_world_z = float("nan")
+                    clearance_over_support = float("nan")
+                else:
+                    min_inox_clearance_mm = 38.0
+                    min_p0_world_z = (
+                        table_top_world_z
+                        + float(support_h_p0)
+                        + min_inox_clearance_mm
+                    )
+                    clearance_over_support = (
+                        actual_p0_world_z
+                        - table_top_world_z
+                        - float(support_h_p0)
+                    )
+
+                    if actual_p0_world_z < min_p0_world_z:
+                        reject_reason_p0 = (
+                            f"clearance={clearance_over_support:.1f}"
+                            f"<38.0mm"
+                        )
+
+                if reject_reason_p0 is not None:
+                    logger.warning(
+                        "Trial %d: INOX ACTUAL P0 unsafe for motion: "
+                        "P0worldZ=%s tableTop=%.1f stack_on=%s "
+                        "supportSafety=%s clearance=%s minP0worldZ=%s "
+                        "reason=%s -> trial FAIL, NO MOTION",
+                        trial_id,
+                        (
+                            f"{actual_p0_world_z:.1f}"
+                            if np.isfinite(actual_p0_world_z)
+                            else "?"
+                        ),
+                        (
+                            table_top_world_z
+                            if np.isfinite(table_top_world_z)
+                            else float("nan")
+                        ),
+                        stack_key_p0 or "-",
+                        (
+                            f"{float(support_h_p0):.1f}"
+                            if support_h_p0 is not None
+                            else "?"
+                        ),
+                        (
+                            f"{clearance_over_support:.1f}"
+                            if np.isfinite(clearance_over_support)
+                            else "?"
+                        ),
+                        (
+                            f"{min_p0_world_z:.1f}"
+                            if np.isfinite(min_p0_world_z)
+                            else "?"
+                        ),
+                        reject_reason_p0,
+                    )
+                    self.sm.fail("pick_z_safety_reject")
+                    self.stats["failed"] += 1
+                    self._log_trial(
+                        trial_id,
+                        False,
+                        "pick_z_safety_reject",
+                        t_start,
+                        obj,
+                    )
+                    return False
+
             xyz_base[2] = clamped_z
+            # B3_INOX_P0_MOTION_SAFETY_V2
+            # REAL-motion safety only. Do NOT repair or overwrite raw RGB-D.
+            #
+            # For Inox, refuse motion when raw top-face height is too low.
+            # Nominal Inox height is 40 mm. Allow 2 mm sensor tolerance, so
+            # measured target height must be >= 38 mm.
+            #
+            # In stacked scenes h_depth_mm is height above the TABLE, so subtract
+            # a conservative support height first. Carton is treated as 120 mm
+            # because this cell has both 80-mm and 120-mm cartons.
+            if (
+                self.config.get("is_real_mode", False)
+                and str(obj.get("class_name", "")).lower() == "inox_box"
+            ):
+                raw_h_depth = obj.get("h_depth_mm")
+
+                stack_key = str(
+                    getattr(self, "current_stack_on", "") or ""
+                ).strip().lower()
+
+                support_safety_mm = {
+                    "": 0.0,
+                    "none": 0.0,
+                    "-": 0.0,
+                    "plastic": 30.0,
+                    "plastic_box": 30.0,
+                    "inox": 40.0,
+                    "inox_box": 40.0,
+                    "metal": 85.0,
+                    "metal_box": 85.0,
+                    "carton": 120.0,
+                    "carton_box": 120.0,
+                    "wood": 150.0,
+                    "wood_box": 150.0,
+                }
+
+                support_h = support_safety_mm.get(stack_key)
+                reject_reason = None
+                measured_target_h = float("nan")
+
+                if support_h is None:
+                    reject_reason = f"unknown_stack_support={stack_key!r}"
+                else:
+                    try:
+                        raw_h_depth_f = float(raw_h_depth)
+                        if not np.isfinite(raw_h_depth_f):
+                            raise ValueError("nonfinite")
+                        measured_target_h = raw_h_depth_f - float(support_h)
+                    except (TypeError, ValueError):
+                        reject_reason = "h_depth_missing_or_nonfinite"
+
+                inox_min_safe_h = 38.0
+
+                if (
+                    reject_reason is None
+                    and measured_target_h < inox_min_safe_h
+                ):
+                    reject_reason = (
+                        f"measured_target_h={measured_target_h:.1f}"
+                        f"<min_safe={inox_min_safe_h:.1f}"
+                    )
+
+                if reject_reason is not None:
+                    logger.warning(
+                        "Trial %d: INOX P0 unsafe for motion: "
+                        "h_depth=%s stack_on=%s supportSafety=%.1f "
+                        "targetH=%s minSafe=38.0 reason=%s "
+                        "-> trial FAIL, NO MOTION",
+                        trial_id,
+                        raw_h_depth,
+                        stack_key or "-",
+                        float(support_h) if support_h is not None else float("nan"),
+                        (
+                            f"{measured_target_h:.1f}"
+                            if np.isfinite(measured_target_h)
+                            else "?"
+                        ),
+                        reject_reason,
+                    )
+                    self.sm.fail("pick_z_safety_reject")
+                    self.stats["failed"] += 1
+                    self._log_trial(
+                        trial_id,
+                        False,
+                        "pick_z_safety_reject",
+                        t_start,
+                        obj,
+                    )
+                    return False
+
+            # B3_INOX_POSE_YAW_REFERENCE_GUARD_V2
+            # Safety-only comparison against the known B3 placement yaw.
+            # Do NOT replace vision yaw with pose-list yaw.
+            if (
+                self.config.get("is_real_mode", False)
+                and str(obj.get("class_name", "")).lower() == "inox_box"
+                and bool(getattr(self, "current_pose_id", ""))
+            ):
+                expected_pose_yaw = getattr(
+                    self, "current_expected_yaw_deg", None
+                )
+
+                vision_yaw_rad = obj.get("yaw_base")
+                yaw_ref_bad = False
+                yaw_ref_reason = ""
+                yaw_ref_err = float("nan")
+                expected_metric_edge = float("nan")
+                vision_yaw_deg = float("nan")
+
+                if expected_pose_yaw is None:
+                    yaw_ref_bad = True
+                    yaw_ref_reason = "pose_list_yaw_missing"
+                else:
+                    try:
+                        vision_yaw_deg = float(
+                            np.rad2deg(float(vision_yaw_rad))
+                        )
+                        expected_pose_yaw = float(expected_pose_yaw)
+
+                        if not (
+                            np.isfinite(vision_yaw_deg)
+                            and np.isfinite(expected_pose_yaw)
+                        ):
+                            raise ValueError("nonfinite")
+
+                        # Project convention: metric yaw is the LONG edge while
+                        # pose-list yaw is the marked reference edge, 90 deg apart.
+                        expected_metric_edge = expected_pose_yaw - 90.0
+
+                        # Rectangle orientation is 180-deg symmetric.
+                        yaw_ref_err = abs(
+                            (
+                                (
+                                    vision_yaw_deg
+                                    - expected_metric_edge
+                                    + 90.0
+                                )
+                                % 180.0
+                            )
+                            - 90.0
+                        )
+
+                        if yaw_ref_err > 20.0:
+                            yaw_ref_bad = True
+                            yaw_ref_reason = (
+                                f"yaw_error={yaw_ref_err:.1f}>20.0deg"
+                            )
+                    except (TypeError, ValueError):
+                        yaw_ref_bad = True
+                        yaw_ref_reason = "vision_or_pose_yaw_nonfinite"
+
+                if yaw_ref_bad:
+                    logger.warning(
+                        "Trial %d: INOX pose-yaw safety mismatch: "
+                        "poseYaw=%s expectedMetricEdge=%s visionEdge=%s "
+                        "err=%s reason=%s -> trial FAIL, NO MOTION",
+                        trial_id,
+                        expected_pose_yaw,
+                        (
+                            f"{expected_metric_edge:.1f}"
+                            if np.isfinite(expected_metric_edge)
+                            else "?"
+                        ),
+                        (
+                            f"{vision_yaw_deg:.1f}"
+                            if np.isfinite(vision_yaw_deg)
+                            else "?"
+                        ),
+                        (
+                            f"{yaw_ref_err:.1f}"
+                            if np.isfinite(yaw_ref_err)
+                            else "?"
+                        ),
+                        yaw_ref_reason,
+                    )
+                    self.sm.fail("yaw_geometry_reject")
+                    self.stats["failed"] += 1
+                    self._log_trial(
+                        trial_id,
+                        False,
+                        "yaw_geometry_reject",
+                        t_start,
+                        obj,
+                    )
+                    return False
+
+            # B3_INOX_YAW_MOTION_SAFETY_V1
+            # Safety-only gate for REAL Inox motion.
+            #
+            # This does NOT change h_depth_mm and does NOT repair/fallback depth.
+            # It only prevents robot motion when the selected Inox footprint is
+            # too distorted to trust the metric yaw that drives Rz/J6.
+            if (
+                self.config.get("is_real_mode", False)
+                and str(obj.get("class_name", "")).lower() == "inox_box"
+            ):
+                yaw_source = str(obj.get("yaw_source", ""))
+                rect_l_raw = obj.get("yaw_rect_long_mm")
+                rect_w_raw = obj.get("yaw_rect_short_mm")
+                near_square = bool(obj.get("yaw_near_square", False))
+
+                bad_yaw_geometry = False
+                reason_parts = []
+
+                if yaw_source != "metric_base_minAreaRect":
+                    bad_yaw_geometry = True
+                    reason_parts.append(f"yaw_source={yaw_source or 'missing'}")
+
+                try:
+                    rect_l = float(rect_l_raw)
+                    rect_w = float(rect_w_raw)
+                    finite_rect = bool(np.isfinite(rect_l) and np.isfinite(rect_w))
+                except (TypeError, ValueError):
+                    rect_l = float("nan")
+                    rect_w = float("nan")
+                    finite_rect = False
+
+                if not finite_rect:
+                    bad_yaw_geometry = True
+                    reason_parts.append("metric_rect_missing_or_nonfinite")
+                else:
+                    exp_l = 180.0
+                    exp_w = 85.0
+                    err_l = abs(rect_l - exp_l) / exp_l
+                    err_w = abs(rect_w - exp_w) / exp_w
+
+                    if near_square:
+                        bad_yaw_geometry = True
+                        reason_parts.append("near_square")
+                    if err_l > 0.22:
+                        bad_yaw_geometry = True
+                        reason_parts.append(f"long_err={100.0*err_l:.1f}%")
+                    if err_w > 0.35:
+                        bad_yaw_geometry = True
+                        reason_parts.append(f"short_err={100.0*err_w:.1f}%")
+
+                if bad_yaw_geometry:
+                    logger.warning(
+                        "Trial %d: INOX yaw geometry unsafe for motion: "
+                        "rect=%s x %s mm source=%s h_depth=%s reason=%s "
+                        "-> trial FAIL, NO MOTION",
+                        trial_id,
+                        f"{rect_l:.1f}" if np.isfinite(rect_l) else "?",
+                        f"{rect_w:.1f}" if np.isfinite(rect_w) else "?",
+                        yaw_source or "missing",
+                        obj.get("h_depth_mm"),
+                        ",".join(reason_parts),
+                    )
+                    self.sm.fail("yaw_geometry_reject")
+                    self.stats["failed"] += 1
+                    self._log_trial(
+                        trial_id,
+                        False,
+                        "yaw_geometry_reject",
+                        t_start,
+                        obj,
+                    )
+                    return False
+
             # Base-frame yaw (camera→base transformed in _select_objects); fall back
             # to the raw pixel-frame yaw only if a producer bypassed _select_objects.
-            yaw = obj.get("yaw_base", obj["pose_camera"][3])
-            grasp_T = make_grasp_pose(xyz_base, yaw, self.config["yaw_offset_deg"])
+            yaw = float(obj.get("yaw_base", obj["pose_camera"][3]))
+
+            # -------------------------------------------------------------
+            # J6-NEAREST PARALLEL-GRIPPER BRANCH
+            #
+            # Parallel gripper symmetry:
+            #     Rz and Rz + 180 deg are physically equivalent.
+            #
+            # For the current top-down GP7 / FORM=4 posture:
+            #     Rz ~= J1 + J6
+            # therefore:
+            #     J6 ~= Rz - J1
+            #
+            # Read actual current J6 and predict J1 from target BASE XY.
+            # Choose the equivalent Rz branch requiring less J6 rotation.
+            # -------------------------------------------------------------
+            yaw = float(obj.get("yaw_base", obj["pose_camera"][3]))
+
+            raw_yaw_deg = float(np.rad2deg(yaw))
+            yaw_offset_deg = float(self.config["yaw_offset_deg"])
+            base_cmd_deg = raw_yaw_deg + yaw_offset_deg
+
+            motion_backend = getattr(self.robot, "backend", self.robot)
+            backend_cls = type(motion_backend)
+
+            # J6-nearest selector is ONLY for the physical YRC/HSE path.
+            # Do not let SimRobot / MagicMock / generic Cartesian backends
+            # enter this branch merely because an attribute is truthy.
+            is_real_yrc = bool(
+                self.config.get("is_real_mode", False)
+                and self.config.get("use_yrc_ik", False)
+                and backend_cls.__name__ == "MotomanHSEBackend"
+                and backend_cls.__module__.endswith(".motoman_hse")
+            )
+
+            if is_real_yrc:
+
+                try:
+                    current_joints = [
+                        float(v) for v in motion_backend.Joints()
+                    ]
+                except Exception as exc:
+                    raise RuntimeError(
+                        f"Cannot read current joints for yaw branch: {exc}"
+                    ) from exc
+
+                if len(current_joints) < 6:
+                    raise RuntimeError(
+                        "Cannot select J6-nearest yaw branch: "
+                        f"Joints() returned {current_joints}"
+                    )
+
+                current_j1_deg = current_joints[0]
+                current_j6_deg = current_joints[5]
+
+                # xyz_base is PROJECT/WORLD. Convert target point to actual
+                # YRC ROBOT BASE before estimating J1.
+                T_pos = np.eye(4, dtype=float)
+                T_pos[:3, 3] = xyz_base
+                p_robot = self._world_to_robot_base(T_pos)[:3, 3]
+
+                target_x = float(p_robot[0])
+                target_y = float(p_robot[1])
+
+                pred_j1_deg = float(
+                    np.rad2deg(np.arctan2(target_y, target_x))
+                )
+
+                def _wrap180_deg(a: float) -> float:
+                    return (a + 180.0) % 360.0 - 180.0
+
+                candidates = (
+                    base_cmd_deg,
+                    base_cmd_deg + 180.0,
+                )
+
+                scored = []
+
+                for rz_deg in candidates:
+                    pred_j6_raw = rz_deg - pred_j1_deg
+
+                    # Represent predicted J6 nearest to current physical J6.
+                    pred_j6_near = (
+                        current_j6_deg
+                        + _wrap180_deg(
+                            pred_j6_raw - current_j6_deg
+                        )
+                    )
+
+                    delta_j6 = pred_j6_near - current_j6_deg
+
+                    scored.append(
+                        (
+                            abs(delta_j6),
+                            rz_deg,
+                            pred_j6_near,
+                            delta_j6,
+                        )
+                    )
+
+                scored.sort(key=lambda x: x[0])
+
+                _, selected_yaw_deg, pred_j6_deg, pred_delta_j6 = scored[0]
+
+                alt = scored[1]
+
+                logger.info(
+                    "YAW J6-BRANCH raw=%+.2f off=%+.2f "
+                    "Jnow=(%+.2f,%+.2f) predJ1=%+.2f | "
+                    "RzA=%+.2f predJ6=%+.2f dJ6=%+.2f | "
+                    "RzB=%+.2f predJ6=%+.2f dJ6=%+.2f | "
+                    "SELECT Rz=%+.2f",
+                    raw_yaw_deg,
+                    yaw_offset_deg,
+                    current_j1_deg,
+                    current_j6_deg,
+                    pred_j1_deg,
+                    scored[0][1],
+                    scored[0][2],
+                    scored[0][3],
+                    alt[1],
+                    alt[2],
+                    alt[3],
+                    selected_yaw_deg,
+                )
+
+            else:
+                # Simulation/client-IK path: preserve normal requested yaw.
+                selected_yaw_deg = base_cmd_deg
+
+            # selected_yaw_deg already includes yaw_offset.
+            grasp_T = make_grasp_pose(
+                xyz_base,
+                np.deg2rad(selected_yaw_deg),
+                0.0,
+            )
+
             lift_T = grasp_T.copy()
             lift_T[2, 3] += dz
 
@@ -755,11 +1863,66 @@ class Orchestrator:
             # → object placed at the same table height). yaw + yaw_offset same as
             # grasp → gripper maintains orientation, attached object does not rotate
             # during transfer.
-            place_xyz = np.array(self.config["place_position"], dtype=float).copy()
-            place_xyz[2] = xyz_base[2]
-            place_T = make_grasp_pose(place_xyz, yaw, self.config["yaw_offset_deg"])
-            place_lift_T = place_T.copy()
-            place_lift_T[2, 3] += dz
+            # Build the SAME P2/P3 that DTWINRUN will actually receive.
+            # PLAN/safety poses are WORLD-frame; runtime P-vars are YRC BASE.
+            p0_plan_base = self._world_to_robot_base(grasp_T)
+            p1_plan_base = self._world_to_robot_base(lift_T)
+
+            try:
+                p2_plan_base, _ = self._build_dynamic_p2_base(
+                    p0_plan_base, obj
+                )
+            except RuntimeError as exc:
+                msg = str(exc)
+                is_measurement_reject = (
+                    "Detected target height inconsistent with physical geometry"
+                    in msg
+                    or "Unsafe/invalid detected target height" in msg
+                    or "UNSAFE P2 rejected before JOB_START" in msg
+                )
+
+                if not is_measurement_reject:
+                    raise
+
+                logger.warning(
+                    "Trial %d: physical depth/height geometry rejected in PLAN "
+                    "(%s) -> trial FAIL, NO MOTION dispatched",
+                    trial_id,
+                    msg,
+                )
+                self.sm.fail("depth_geometry_reject")
+                self.stats["failed"] += 1
+                self._log_trial(
+                    trial_id,
+                    False,
+                    "depth_geometry_reject",
+                    t_start,
+                    obj,
+                )
+                return False
+
+            # P003 = place approach/retreat.
+            #
+            # Keep X/Y/orientation exactly equal to P002.
+            # Raise only BASE-Z by the same amount used between P0 -> P1.
+            place_approach_dz_base = float(
+                p1_plan_base[2, 3] - p0_plan_base[2, 3]
+            )
+
+            if place_approach_dz_base <= 1e-6:
+                raise RuntimeError(
+                    "Invalid P3 approach: expected P1.Z > P0.Z in "
+                    f"YRC BASE, got dz={place_approach_dz_base:.3f} mm"
+                )
+
+            p3_plan_base = p2_plan_base.copy()
+            p3_plan_base[2, 3] += place_approach_dz_base
+
+            # P002 = actual PLACE.
+            place_T = self._robot_base_to_world(p2_plan_base)
+
+            # P003 = PLACE approach/retreat.
+            place_lift_T = self._robot_base_to_world(p3_plan_base)
 
             # Check reachability for the FULL trajectory (contribution C2).
             # Skipped in sim to save API budget (4 calls/trial × N trials).
@@ -788,7 +1951,7 @@ class Orchestrator:
             self._log_trial(
                 trial_id, ok,
                 "" if ok else self.sm.history[-1].note,
-                t_start, obj,
+                t_start, obj, ask_human=True,
             )
             return ok
 
@@ -839,8 +2002,14 @@ class Orchestrator:
             # Cartesian space so the validated path matches the controller's straight-
             # line execution (joint-linear would validate a DIFFERENT path).
             reason = self._predict_safety_for_trajectory(
-                [(lift_T, "movj"), (grasp_T, "movl"), (lift_T, "movl"),
-                 (place_lift_T, "movj"), (place_T, "movl"), (place_lift_T, "movl")]
+                [
+                    (lift_T, "movj"),        # -> P1
+                    (grasp_T, "movl"),       # P1 -> P0
+                    (lift_T, "movl"),        # P0 -> P1
+                    (place_lift_T, "movj"),  # P1 -> P3
+                    (place_T, "movl"),       # P3 -> P2
+                    (place_lift_T, "movl"),  # P2 -> P3
+                ]
             )
             if reason is not None:
                 logger.warning("Trial %d: predictive safety reject — %s",
@@ -849,42 +2018,101 @@ class Orchestrator:
                 self.sm.fail(reason)
                 return False
 
+            # FIXED DTWINRUN MOTION-ONLY PATH
+            # One pre-installed YRC job:
+            #
+            #   MOVJ P001
+            #   MOVL P000
+            #   TIMER 1.5
+            #   MOVL P001
+            #   MOVJ P003
+            #   MOVL P002
+            #   MOVL P003
+            #   MOVJ P004
+            #
+            # P000-P003 are runtime P-vars written by the PC.
+            # P004 is HOME taught on the YRC and is NEVER overwritten here.
+            # No IO/gripper commands are issued in this path.
+            if self.config.get("use_yrc_ik", False):
+                motion_backend = getattr(self.robot, "backend", self.robot)
+                if hasattr(motion_backend, "run_dtwinrun_motion"):
+                    r0, p0_base = self._solve_ik_routed(grasp_T)
+                    r1, p1_base = self._solve_ik_routed(lift_T)
+                    if not (r0 == r1 == "YRC_POSE"):
+                        raise RuntimeError(
+                            "DTWINRUN requires YRC Cartesian poses for P000/P001"
+                        )
+
+                    # Build P002 with the SAME helper used by PLAN/safety.
+                    p2_base, place_yaw_deg = self._build_dynamic_p2_base(
+                        p0_base, obj, emit_log=True
+                    )
+
+                    logger.info(
+                        "Trial %d: P2 dynamic-Z "
+                        "P0.Z=%.1f -> P2=(%.1f, %.1f, %.1f) "
+                        "place_yaw=%.1f deg",
+                        trial_id,
+                        float(p0_base[2, 3]),
+                        float(p2_base[0, 3]),
+                        float(p2_base[1, 3]),
+                        float(p2_base[2, 3]),
+                        place_yaw_deg,
+                    )
+
+                    logger.info(
+                        "Trial %d: fixed JOB DTWINRUN motion-only dispatch",
+                        trial_id,
+                    )
+                    self.sm.transition_to(PickState.APPROACH)
+                    motion_backend.run_dtwinrun_motion(
+                        pick_T_base=p0_base,
+                        approach_T_base=p1_base,
+                        place_T_base=p2_base,
+                        job_name="DTWINRUN",
+                    )
+
+                    self.sm.transition_to(PickState.GRASP)
+                    self.sm.transition_to(PickState.LIFT)
+                    self.sm.transition_to(PickState.TRANSFER)
+                    self.sm.transition_to(PickState.PLACE)
+                    self.sm.transition_to(PickState.RETREAT)
+                    self.sm.transition_to(PickState.DONE)
+                    self._current_joints = None
+                    self.stats["successful"] += 1
+                    logger.info(
+                        "Trial %d: DTWINRUN motion-only SUCCESS | stats=%s",
+                        trial_id, self.stats,
+                    )
+                    return True
+
             # Batch context: HSE backend collects all motion + IO into 1 INFORM job
             # → 1 FTP upload + 1 JOB_START/trial instead of 5-7 round trips. Other
             # backends (SimRobot) → nullcontext, code runs as-is.
             with self._robot_batch_ctx():
+                # P1 = approach / retreat point
                 self.sm.transition_to(PickState.APPROACH)
                 self._move_j_via_ik(lift_T)
-                # Cache joints after APPROACH for LIFT reuse — same pose lift_T, no
-                # need to re-run SolveIK (-1 API call/trial).
-                approach_joints = self._current_joints
 
+                # P0 = pick point
                 self.sm.transition_to(PickState.GRASP)
                 self._move_l_via_ik(grasp_T)
                 self._gripper(close=True, obj_class=obj.get("class_name"))
 
+                # Retreat linearly to the SAME P1
                 self.sm.transition_to(PickState.LIFT)
-                if approach_joints is not None:
-                    self.robot.MoveL(approach_joints)
-                    self._current_joints = approach_joints
-                else:
-                    self._move_l_via_ik(lift_T)
+                self._move_l_via_ik(lift_T)
 
+                # Transfer directly to fixed PLACE_POINT
                 self.sm.transition_to(PickState.TRANSFER)
-                self._move_j_via_ik(place_lift_T)
-                # Cache joints after TRANSFER for RETREAT reuse (-1 API call/trial).
-                transfer_joints = self._current_joints
+                self._move_j_via_ik(place_T)
 
+                # Release at PLACE_POINT; no second place waypoint
                 self.sm.transition_to(PickState.PLACE)
-                self._move_l_via_ik(place_T)
                 self._gripper(close=False)
 
+                # Preserve state-machine order; RETREAT has no motion in this scheme.
                 self.sm.transition_to(PickState.RETREAT)
-                if transfer_joints is not None:
-                    self.robot.MoveL(transfer_joints)
-                    self._current_joints = transfer_joints
-                else:
-                    self._move_l_via_ik(place_lift_T)
 
             self.sm.transition_to(PickState.DONE)
             self.stats["successful"] += 1
@@ -939,11 +2167,20 @@ class Orchestrator:
         except Exception as e:  # noqa: BLE001
             logger.warning("Could not return home: %s", e)
 
-    def run_n_trials(self, n: int) -> dict[str, Any]:
-        """Run `n` consecutive trials, returning aggregate statistics."""
+    def run_n_trials(self, n: int, pre_trial_hook: Any = None) -> dict[str, Any]:
+        """Run `n` consecutive trials, returning aggregate statistics.
+
+        Args:
+            pre_trial_hook: Optional callable(trial_index_1based) invoked before
+                each cycle — the experiment script uses it to print the pose-list
+                placement instruction and set `current_pose_id` (paired McNemar
+                design, paper §3.7).
+        """
         logger.info("Starting %d trials", n)
         for i in range(n):
             logger.info("─── Trial %d/%d ───", i + 1, n)
+            if pre_trial_hook is not None:
+                pre_trial_hook(i + 1)
             self.run_one_cycle(trial_id=i + 1)
             time.sleep(self.config["inter_trial_delay_s"])
 
@@ -964,10 +2201,69 @@ class Orchestrator:
         failure_reason: str,
         t_start: float,
         obj: dict[str, Any] | None,
+        ask_human: bool = False,
     ) -> None:
-        """Write one trial result row if a TrialLogger is present."""
+        """Write one trial result row if a TrialLogger is present.
+
+        Besides the base fields, logs the C3 failure context: detected pose in
+        base frame, detector confidence, mask area, the RGB frame captured at
+        DETECT, and the pre-drawn pose-list id — everything failure_miner needs
+        to map a physical failure back into renderer parameters.
+
+        `ask_human` is set on the one path where the robot actually ran the
+        pick-and-place: there is something for an operator to score. On a
+        detection miss or an unreachable pose nothing moved, so asking would only
+        collect a keystroke that repeats what the machine already knows.
+        """
         if self.trial_logger is None:
             return
+        extra: dict[str, Any] = {
+            "frame_path": self._last_frame_path,
+            "pose_id": self.current_pose_id,
+            "condition": self.current_condition,
+            "stack_on": self.current_stack_on,
+            "session_id": self.session_id,
+            "block_id": self.block_id,
+            "operator_id": self.operator_id,
+            "support_height_mm": round(
+                float(self._last_support_height_mm), 1
+            ),
+            "place_z_mm": (
+                round(float(self._last_place_z_mm), 1)
+                if self._last_place_z_mm is not None
+                else ""
+            ),
+        }
+        if obj:
+            pose_base = obj.get("pose_base")
+            if pose_base is not None:
+                extra["det_x_mm"] = round(float(pose_base[0]), 1)
+                extra["det_y_mm"] = round(float(pose_base[1]), 1)
+                extra["det_z_mm"] = round(float(pose_base[2]), 1)
+            yaw = obj.get("yaw_base")
+            if yaw is None and obj.get("pose_camera") is not None:
+                yaw = obj["pose_camera"][3]
+            if yaw is not None:
+                extra["det_yaw_deg"] = round(float(np.rad2deg(float(yaw))), 1)
+            if obj.get("confidence") is not None:
+                extra["confidence"] = round(float(obj["confidence"]), 3)
+            if obj.get("mask_area"):
+                extra["mask_area"] = int(obj["mask_area"])
+            # C4 depth-mode context (perception/depth_modes.py).
+            if obj.get("depth_used"):
+                extra["depth_used"] = obj["depth_used"]
+            if obj.get("depth_valid_frac") is not None:
+                extra["depth_valid_frac"] = round(float(obj["depth_valid_frac"]), 3)
+            if obj.get("height_mm") is not None:
+                extra["part_height_mm"] = round(float(obj["height_mm"]), 1)
+            if obj.get("size_iou") is not None:
+                extra["size_iou"] = round(float(obj["size_iou"]), 3)
+            if obj.get("h_depth_mm") is not None:
+                extra["h_depth_mm"] = round(float(obj["h_depth_mm"]), 1)
+        if ask_human and self.human_score_hook is not None:
+            # Ctrl+C propagates: the operator meant to stop, and this row is lost
+            # on purpose rather than being written with a made-up verdict.
+            extra["human_ok"] = self.human_score_hook(trial_id, success)
         self.trial_logger.log_trial(
             trial_id=trial_id,
             success=success,
@@ -975,4 +2271,5 @@ class Orchestrator:
             cycle_time_s=time.time() - t_start,
             failure_reason=failure_reason,
             final_state=self.sm.state.value,
+            extra=extra,
         )

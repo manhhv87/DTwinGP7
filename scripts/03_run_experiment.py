@@ -19,8 +19,10 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import logging
 import os
 import queue
+import shutil
 import sys
 import threading
 from pathlib import Path
@@ -33,7 +35,27 @@ from src.cell import CellConfig  # noqa: E402
 from src.logging import TrialLogger  # noqa: E402
 from src.orchestrator import Orchestrator  # noqa: E402
 from src.perception import PerceptionNode  # noqa: E402
+from src.perception.model_artifact import (  # noqa: E402
+    capture_config_files, load_configured_detector, run_metadata,
+)
 from src.utils import load_yaml, setup_logging, timestamp  # noqa: E402
+
+
+def _load_pose_list(path: Path) -> list[dict[str, str]]:
+    """Load a pre-drawn pose-list CSV (from scripts/22_make_pose_lists.py).
+
+    Required column: pose_id. Optional: card_id, x_mm, y_mm, yaw_deg,
+    class_hint, condition. Row order = trial order.
+    """
+    import csv
+
+    if not path.exists():
+        raise FileNotFoundError(f"Pose list not found: {path}")
+    with path.open("r", newline="", encoding="utf-8") as f:
+        rows = list(csv.DictReader(f))
+    if not rows or "pose_id" not in rows[0]:
+        raise ValueError(f"Pose list {path} must have a 'pose_id' column")
+    return rows
 
 
 def parse_args() -> argparse.Namespace:
@@ -97,6 +119,79 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--lighting", default="", help="Lighting condition label (log)")
     parser.add_argument("--overlap", default="", help="Overlap level label (log)")
     parser.add_argument(
+        "--pose-list", default=None,
+        help="Pre-drawn pose-list CSV (from 22_make_pose_lists.py). Prints the "
+             "card placement instruction before each trial and logs pose_id → "
+             "outcomes pair pose-by-pose across configurations (McNemar, §3.7). "
+             "Reuse the SAME list for every configuration under comparison.")
+    parser.add_argument(
+        "--depth-mode", choices=["rgbd", "plane", "fusion"], default="rgbd",
+        help="C4 depth mode. rgbd: median depth under the mask (default). plane: the "
+             "ray through the mask centroid meets the measured table plane lifted by "
+             "the part height, no depth read. fusion: the plane estimate, replaced by "
+             "the median depth when enough of the mask returns depth and disagrees "
+             "with it. plane and fusion need --mode real and table_plane.json.")
+    parser.add_argument(
+        "--confirm-each-trial", action="store_true",
+        help="Wait for the operator to press ENTER before every cycle, and drop any "
+             "frames the perception node captured while they were still reaching over "
+             "the table. Use this for every real run where a person places the part by "
+             "hand: without it the robot starts the next cycle 1 s after the last one "
+             "and detects whatever was on the table before the part was set down. Leave "
+             "it off for the cycle-time run, where the operator's pace is not part of "
+             "what is being measured. It also asks the operator, after every cycle that "
+             "moved the robot, whether the part ended up in the right place, and writes "
+             "the answer to the human_ok column — the machine's own success column "
+             "cannot see a part dropped in transfer.")
+    parser.add_argument(
+        "--save-frames", action="store_true",
+        help="Save the RGB frame of every detection and log its path per trial "
+             "(failure context for the C3 loop). NOTE: the perception node runs "
+             "free, so this writes one image per PROCESSED FRAME, not one per "
+             "trial — a campaign produces thousands. Point --frames-dir at a disk "
+             "with room; when it fills, imwrite fails, frame_path goes empty and "
+             "the run carries on regardless.")
+    parser.add_argument(
+        "--blind-label", default=None, metavar="CODE",
+        help="Run blinded: the console shows only CODE and the placement prompts, and "
+             "every line naming the depth mode, the model or the outcome goes to the log "
+             "file instead. The person placing the parts is also the person scoring the "
+             "place tolerance by eye, so if they can see which configuration is running "
+             "they are an unblinded assessor of the primary endpoint. Use "
+             "tools/run_blinded_campaign.py, which allocates the codes and seals the key.")
+    parser.add_argument(
+        "--model-path", default=None, metavar="PT",
+        help="Checkpoint for this run, replacing model_path from --config. This is how "
+             "one blinded campaign gives each arm its own model: tools/run_blinded_campaign.py "
+             "--arm anchored \"--model-path models/e3_anchored.pt\" --arm wide \"--model-path "
+             "models/e3_wide.pt\". The file's SHA-256 goes into the run metadata as usual.")
+    parser.add_argument(
+        "--pose-slice", default=None, metavar="A:B",
+        help="Run rows A..B-1 of the pose list (0-based, Python slice) instead of the "
+             "first --trials rows. This is what makes interleaving possible: run block "
+             "0:25 of configuration A, then 0:25 of B, then 25:50 of A, and so on. "
+             "Without it every configuration is one long uninterrupted stretch, and any "
+             "drift across the afternoon lands in the paired test looking exactly like a "
+             "configuration effect.")
+    parser.add_argument(
+        "--session-id", default="",
+        help="Free-text tag for this sitting, e.g. 2026-09-20-morning. Written to every "
+             "row so a configuration effect can be told apart from an across-the-day "
+             "drift effect; without it the two are indistinguishable after the fact.")
+    parser.add_argument(
+        "--block-id", default="",
+        help="Free-text tag for this block within the sitting. Use it when configurations "
+             "are interleaved in short blocks rather than run as one long stretch each.")
+    parser.add_argument(
+        "--operator-id", default="",
+        help="Who placed the parts. Two people place differently, and that difference "
+             "lands in the disagreement cells of the paired test.")
+    parser.add_argument(
+        "--frames-dir", default="results/frames",
+        help="Where --save-frames writes. A timestamped subfolder is created under "
+             "it. Relative paths resolve against the repo. Default results/frames, "
+             "which is on the same disk as the code.")
+    parser.add_argument(
         "--headless", action="store_true",
         help="Run WITHOUT viewport (SimRobot mock) — validate logic and generate CSV. "
              "Intended for CI/CD and large batch runs.",
@@ -120,6 +215,12 @@ def parse_args() -> argparse.Namespace:
         help="(headless) RNG seed for reproducible results.",
     )
     return parser.parse_args()
+
+
+def apply_model_override(config: dict, model_path: str | None) -> None:
+    """--model-path wins over model_path in the YAML, after the real: overrides."""
+    if model_path:
+        config["model_path"] = model_path
 
 
 DEFAULT_OBJECT_HEIGHTS_MM = {"tray": 25, "bottle": 150, "cup": 40, "bolt": 25}
@@ -222,11 +323,14 @@ def build_perception(mode: str, config: dict, args=None, cell_config=None):
     if mode == "real":
         from src.perception import D455Camera, ObjectDetector
 
+        heights = config.get("class_heights_mm") or {}
+        detector = load_configured_detector(config, PROJECT_ROOT, ObjectDetector)
         camera = D455Camera()
-        detector = ObjectDetector(
-            model_path=config.get("model_path", "models/yolov8s-seg_best.pt"),
-            conf=config.get("conf_threshold", 0.5),
-        )
+        missing = [c for c in detector.class_names if c not in heights]
+        if missing:
+            logging.getLogger("experiment").warning(
+                "No height configured for classes %s: their grasp depth falls back to "
+                "grasp_depth_offset_mm and only the table floor protects them.", missing)
         return camera, detector
 
     # mode == "sim" (both RoboDK sim and headless): simulated detection scenario.
@@ -287,12 +391,59 @@ def build_perception(mode: str, config: dict, args=None, cell_config=None):
     return camera, detector
 
 
+def build_extractor(intrinsics, detector, config: dict, depth_mode: str, table_plane,
+                    calib_path):
+    """PoseExtractor for the physical cell, or None (logged) when the depth mode needs a
+    height that some class the detector can report does not have."""
+    from src.orchestrator.coord_conv import load_calibration
+    from src.perception import PoseExtractor
+
+    log = logging.getLogger("experiment")
+    heights = config.get("class_heights_mm") or {}
+    if depth_mode != "rgbd":
+        missing = [c for c in detector.class_names if c not in heights]
+        if missing:
+            log.error("PREFLIGHT: depth mode %s places each part's top face at its height, "
+                      "but classes %s have none in class_heights_mm. Run refused before "
+                      "connecting to the robot.", depth_mode, missing)
+            return None
+    T_BC = load_calibration(calib_path) if table_plane is not None else None
+    return PoseExtractor(intrinsics, depth_mode=depth_mode, T_BC_mm=T_BC,
+                         table_plane=table_plane, class_heights_mm=heights,
+                         class_sizes_mm=config.get("class_sizes_mm"))
+
+
 def main() -> int:
     args = parse_args()
     log = setup_logging("experiment", log_file=PROJECT_ROOT / "logs/experiment.log")
     log.info("=" * 60)
     log.info("Pick-and-place experiment — mode=%s, trials=%d", args.mode, args.trials)
     log.info("=" * 60)
+
+    if args.blind_label:
+        # Console keeps warnings and errors (safety must never be hidden); everything
+        # routine drops to the log file, which nobody reads mid-session.
+        import logging as _logging
+        for h in _logging.getLogger().handlers:
+            if isinstance(h, _logging.StreamHandler) and not isinstance(
+                    h, _logging.FileHandler):
+                h.setLevel(_logging.WARNING)
+        print("=" * 60)
+        print(f"  BLINDED RUN — arm {args.blind_label}")
+        print("  Place the parts as prompted. Which configuration this is, and how it is")
+        print("  doing, are deliberately not shown. Both are in the log file.")
+        print("=" * 60, flush=True)
+
+    if args.confirm_each_trial:
+        if args.headless:
+            log.error("--confirm-each-trial needs an operator; --headless pre-fills the "
+                      "detection queue and would hang. Drop one of the two flags.")
+            return 2
+        if not sys.stdin.isatty():
+            log.error("--confirm-each-trial reads ENTER from the terminal, but stdin is "
+                      "not a terminal here. Run it in a real terminal, otherwise the gate "
+                      "would silently never wait.")
+            return 2
 
     # Auto-pick cell config by --mode (if user did not override). Avoids the
     # situation where --mode real accidentally uses cell_layout.yaml (robot_connection
@@ -305,6 +456,15 @@ def main() -> int:
         log.info("Auto-pick cell-config: %s (theo --mode=%s)", args.cell_config, args.mode)
 
     config = load_yaml(PROJECT_ROOT / args.config)
+    config_inputs = capture_config_files(
+        [PROJECT_ROOT / args.config, PROJECT_ROOT / args.cell_config])
+    # Settings for the physical cell and the paper's five parts live under "real:"
+    # and override the top-level (simulation) keys only in real mode, so the
+    # simulated tray/bottle/cup/bolt scenario keeps its behaviour.
+    real_overrides = config.pop("real", None) or {}
+    if args.mode == "real":
+        config.update(real_overrides)
+    apply_model_override(config, args.model_path)
 
     # Real mode: enable C2 safety layer (reach envelope + predictive safety over full trajectory).
     # Overrides the sim-friendly defaults in orchestrator _DEFAULT_CONFIG.
@@ -338,6 +498,68 @@ def main() -> int:
     # Pass home_joints from cell config to Orchestrator so _return_home uses
     # the correct home defined in the cell (not JointsHome() from the .robot file).
     config["home_joints_deg"] = list(cell_config.robot.home_joints_deg)
+
+    # ─── Preflight (real mode), BEFORE any connection to the robot ───
+    table_plane = None
+    calib_path = PROJECT_ROOT / config["calibration_path"]
+    if args.mode == "real":
+        from src.orchestrator.preflight import check_depth_mode, check_real_mode
+
+        problems, table_z = check_real_mode(
+            config, calib_path,
+            cell_config.robot.pose.xyz_mm, cell_config.robot.pose.rpy_deg,
+            getattr(cell_config.gripper, "tcp_offset_xyz_mm", None))
+        dm_problems, table_plane = check_depth_mode(config, calib_path, args.depth_mode)
+        problems += dm_problems
+        if problems:
+            for p in problems:
+                log.error("PREFLIGHT: %s", p)
+            log.error("Real-mode run refused before connecting to the robot (%d problem%s).",
+                      len(problems), "" if len(problems) == 1 else "s")
+            return 5
+        config["table_top_z_mm"] = table_z
+
+        # Orchestrator needs the complete calibrated plane for safe dynamic
+        # PLACE-Z. table_top_z_mm alone is not enough because the table is tilted.
+        config["table_plane"] = (
+            dict(table_plane) if table_plane is not None else None
+        )
+
+        log.info("PREFLIGHT ok: calibrated T_BC, base pose unchanged, table top %.1f mm, "
+                 "jaw-tip floor %.1f mm, heights %s", table_z,
+                 table_z + float(config.get("table_safety_margin_mm", 100.0)),
+                 config.get("class_heights_mm"))
+        if table_plane is not None:
+            log.info("Depth mode %s; table plane z = %.5f x + %.5f y + %.1f mm (tilt %.2f deg)",
+                     args.depth_mode, table_plane["a"], table_plane["b"], table_plane["c"],
+                     float(table_plane.get("tilt_deg", float("nan"))))
+        else:
+            log.warning("Depth mode rgbd without a usable table plane: carton sizes are not "
+                        "resolved per instance, and the configured carton height is used.")
+    elif args.depth_mode != "rgbd":
+        log.error("--depth-mode %s needs the calibrated cell (--mode real): it intersects "
+                  "viewing rays with the measured table plane.", args.depth_mode)
+        return 2
+
+    # ─── Perception: camera, detector and pose extractor ───
+    # Built BEFORE the robot connection, so a missing model, a camera fault or a part
+    # without a height stops the run without touching the controller.
+    # Pass cell_config so mock detection auto-matches the real object pose.
+    try:
+        camera, detector = build_perception(args.mode, config, args, cell_config)
+    except Exception as exc:
+        if not args.blind_label:
+            raise
+        log.info("Perception setup detail: %s", exc, exc_info=True)
+        log.error("Perception setup failed; ask the campaign administrator to check the run log.")
+        return 5
+    extractor = None
+    if args.mode == "real":
+        extractor = build_extractor(camera.intrinsics, detector, config, args.depth_mode,
+                                    table_plane, calib_path)
+        if extractor is None:
+            camera.stop()
+            return 5
 
     # ─── Resolve backend ───
     # Motion backend:
@@ -413,6 +635,7 @@ def main() -> int:
             ip=hse_ip,
             max_speed_pct=cell_config.robot_connection.max_speed_percent,
             tool_no=args.tool_no,
+            wait_completion_timeout_s=90.0,
         )
         backend.set_home_joints(list(cell_config.robot.home_joints_deg))
         backend.connect()
@@ -422,6 +645,151 @@ def main() -> int:
             return 3
         log.info("HSE backend connected: %s. Joints (sanity): %s",
                  hse_ip, backend.Joints())
+
+        # ─── Physical-cell startup safety ───────────────────────────────
+        # With --confirm-each-trial, the operator must be able to enter the
+        # cell to place/remove the object. Therefore the servo is forced OFF
+        # before the first placement prompt.
+        status = backend.read_controller_status()
+
+        log.info(
+            "YRC status at startup: mode=%s remote=%s servo=%s "
+            "running=%s alarm=%s error=%s hold=%s",
+            status.get("mode"),
+            status.get("remote"),
+            status.get("servo"),
+            status.get("running"),
+            status.get("alarm"),
+            status.get("error"),
+            status.get("hold"),
+        )
+        # Fail closed BEFORE starting telemetry/perception/trials.
+        # Do not let the operator place a part while the controller
+        # already reports a safety/alarm condition.
+        if status.get("alarm", False):
+            try:
+                alarm_code, alarm_sub = backend.read_alarm()
+            except Exception:
+                alarm_code, alarm_sub = -1, -1
+
+            log.error(
+                "STARTUP REFUSED: YRC1000 has active alarm %s sub=%s. "
+                "Clear the physical/controller fault on the teach pendant first.",
+                alarm_code,
+                alarm_sub,
+            )
+
+            try:
+                backend.servo_off()
+            except Exception:
+                pass
+
+            backend.disconnect()
+            camera.stop()
+            return 3
+
+        if status.get("error", False):
+            log.error(
+                "STARTUP REFUSED: YRC1000 reports controller error: %s",
+                status,
+            )
+            try:
+                backend.servo_off()
+            except Exception:
+                pass
+            backend.disconnect()
+            camera.stop()
+            return 3
+
+        if status.get("hold", False):
+            log.error(
+                "STARTUP REFUSED: YRC1000 HOLD is active: %s",
+                status,
+            )
+            try:
+                backend.servo_off()
+            except Exception:
+                pass
+            backend.disconnect()
+            camera.stop()
+            return 3
+
+        if status.get("running", False):
+            log.error(
+                "STARTUP REFUSED: controller already has a running JOB: %s",
+                status,
+            )
+            try:
+                backend.servo_off()
+            except Exception:
+                pass
+            backend.disconnect()
+            camera.stop()
+            return 3
+
+        if not status.get("remote", False):
+            log.error(
+                "STARTUP REFUSED: controller is not in REMOTE mode: %s",
+                status,
+            )
+            try:
+                backend.servo_off()
+            except Exception:
+                pass
+            backend.disconnect()
+            camera.stop()
+            return 3
+
+        if status.get("servo", False):
+            log.info("Startup: SERVO is ON — disabling it before operator access")
+            backend.servo_off()
+
+        status = backend.read_controller_status()
+
+        if status.get("servo", True):
+            log.error(
+                "STARTUP REFUSED: could not verify SERVO OFF: %s",
+                status,
+            )
+            backend.disconnect()
+            camera.stop()
+            return 3
+
+        log.info("Startup safety PASS — REMOTE + no alarm/error/hold + SERVO OFF")
+
+        if args.confirm_each_trial:
+            if status.get("running", False):
+                log.error(
+                    "REAL run refused: controller is already running a JOB. "
+                    "Stop it safely on the TP before starting this experiment."
+                )
+                backend.disconnect()
+                camera.stop()
+                return 3
+
+            if status.get("servo", False):
+                log.info(
+                    "Operator-placement mode: switching SERVO OFF before "
+                    "the first trial."
+                )
+                backend.servo_off()
+
+            status = backend.read_controller_status()
+
+            if status.get("servo", True):
+                log.error(
+                    "REAL run refused: could not verify SERVO OFF before "
+                    "operator placement: %s",
+                    status,
+                )
+                backend.disconnect()
+                camera.stop()
+                return 3
+
+            log.info(
+                "Startup safety PASS — SERVO OFF verified for operator access"
+            )
+
         if args.ultra_fast:
             backend.enable_ultra_fast(True)
             log.info("HSE Ultra-fast P-var mode: ON (template uploaded once)")
@@ -481,76 +849,464 @@ def main() -> int:
             " (live Open3D viewport ON)" if viewport_cb else " (viewport OFF — telemetry-only)",
         )
 
-    # ─── Perception ───
-    # Pass cell_config so mock detection auto-matches the real object pose.
-    camera, detector = build_perception(args.mode, config, args, cell_config)
+    # ─── Perception node (camera, detector and extractor were built above) ───
     # Headless: queue large enough to pre-fill 1 scenario/trial (deterministic).
     qsize = args.trials + 1 if args.headless else 3
     det_queue: queue.Queue = queue.Queue(maxsize=qsize)
-    perception = PerceptionNode(camera, detector, det_queue)
+    ts = timestamp()
+    if args.save_frames:
+        base = Path(args.frames_dir)
+        if not base.is_absolute():
+            base = PROJECT_ROOT / base
+        frames_dir = str(base / ts)
+        free_gb = shutil.disk_usage(base.parent if base.exists() else base.anchor).free / 2**30
+        log.info("Frames → %s (%.1f GB free on that disk)", frames_dir, free_gb)
+        if free_gb < 20.0:
+            log.warning("Under 20 GB free where frames are written. A campaign writes "
+                        "one image per processed frame; when the disk fills, saving "
+                        "fails silently and the failure context for C3 is lost.")
+    else:
+        frames_dir = None
+    perception = PerceptionNode(camera, detector, det_queue,
+                                save_frames_dir=frames_dir, extractor=extractor)
 
     # ─── Logger ───
-    ts = timestamp()
     label = "headless" if args.headless else args.mode
+    orch = None
     trial_logger = TrialLogger(
         PROJECT_ROOT / f"results/experiment_{label}_{ts}.csv",
         extra_context={"lighting": args.lighting, "overlap": args.overlap,
-                       "mode": label},
+                       "mode": label, "depth_mode": args.depth_mode},
+        run_metadata=lambda: run_metadata(
+            orch.config if orch is not None else config,
+            detector, entrypoint="scripts/03_run_experiment.py",
+            config_files=config_inputs,
+            runtime=vars(args)),
     )
 
     # ─── Orchestrator ───
     orch = Orchestrator(det_queue, config=config, robot=sim_robot,
                         logger_obj=trial_logger)
+    trial_logger.write_run_metadata()
+
+    # ─── Pose list (paired McNemar design, paper §3.7) ───
+    pose_rows = None
+    if args.pose_list:
+        pl_path = Path(args.pose_list)
+        if not pl_path.is_absolute():
+            pl_path = PROJECT_ROOT / args.pose_list
+        pose_rows = _load_pose_list(pl_path)
+        if args.pose_slice:
+            try:
+                lo_s, hi_s = args.pose_slice.split(":")
+                lo = int(lo_s) if lo_s else 0
+                hi = int(hi_s) if hi_s else len(pose_rows)
+            except ValueError:
+                log.error("--pose-slice must look like 25:50 (0-based, end exclusive); "
+                          "got %r", args.pose_slice)
+                return 2
+            if not 0 <= lo < hi <= len(pose_rows):
+                log.error("--pose-slice %s is outside the pose list of %d rows",
+                          args.pose_slice, len(pose_rows))
+                return 2
+            pose_rows = pose_rows[lo:hi]
+            args.trials = len(pose_rows)
+            log.info("Pose slice %s → %d trial(s), pose_id %s..%s", args.pose_slice,
+                     len(pose_rows), pose_rows[0].get("pose_id", "?"),
+                     pose_rows[-1].get("pose_id", "?"))
+        if len(pose_rows) < args.trials:
+            log.warning("Pose list has %d entries < --trials %d → running %d trials",
+                        len(pose_rows), args.trials, len(pose_rows))
+            args.trials = len(pose_rows)
+
+    orch.session_id = args.session_id
+    orch.block_id = args.block_id
+    orch.operator_id = args.operator_id
+
+    pre_trial_hook = None
+
+    if pose_rows is not None or args.confirm_each_trial:
+
+        def pre_trial_hook(i: int) -> None:
+            # ─── REAL CELL: operator-access gate ────────────────────────
+            # Before the operator places/repositions an object, the servo
+            # must be OFF and the robot must not be executing a JOB.
+            if args.mode == "real" and args.confirm_each_trial:
+                status = backend.read_controller_status()
+
+                if status.get("running", False):
+                    raise RuntimeError(
+                        "Cannot enter placement phase: robot is still running "
+                        f"a JOB: {status}"
+                    )
+
+                if status.get("servo", False):
+                    log.info(
+                        "Trial %d placement gate: switching SERVO OFF",
+                        i,
+                    )
+                    backend.servo_off()
+
+                status = backend.read_controller_status()
+
+                if status.get("servo", True):
+                    raise RuntimeError(
+                        "Operator placement refused: SERVO OFF could not be "
+                        f"verified: {status}"
+                    )
+
+                log.info(
+                    "Trial %d placement gate PASS — SERVO OFF verified",
+                    i,
+                )
+
+            if pose_rows is not None:
+                row = pose_rows[i - 1]
+                orch.current_pose_id = str(row.get("pose_id", i))
+                orch.current_condition = str(row.get("condition", ""))
+                orch.current_stack_on = str(row.get("stack_on", ""))
+                # B3_EXPECTED_YAW_CONTEXT_V2
+                try:
+                    _pose_yaw = row.get("yaw_deg")
+                    orch.current_expected_yaw_deg = (
+                        float(_pose_yaw)
+                        if _pose_yaw not in (None, "")
+                        else None
+                    )
+                except (TypeError, ValueError):
+                    orch.current_expected_yaw_deg = None
+                orch.current_expected_class = str(
+                    row.get("class_hint", "") or ""
+                ).strip().lower()
+
+                log.info(
+                    "▶ Trial %d — PLACE OBJECT: card=%s  x=%s mm  y=%s mm  yaw=%s deg%s%s",
+                    i,
+                    row.get("card_id", "?"),
+                    row.get("x_mm", "?"),
+                    row.get("y_mm", "?"),
+                    row.get("yaw_deg", "?"),
+                    f"  class={row['class_hint']}" if row.get("class_hint") else "",
+                    f"  condition={row['condition']}" if row.get("condition") else "",
+                )
+
+                if row.get("stack_on"):
+                    log.info(
+                        "    STACKED: put the %s down on the card FIRST, "
+                        "then the %s on top of it.",
+                        row["stack_on"],
+                        row.get("class_hint", "part"),
+                    )
+
+            if args.blind_label:
+                row_ = pose_rows[i - 1] if pose_rows is not None else {}
+
+                print(
+                    f"\n[{args.blind_label}] Trial {i}/{args.trials} — PLACE: "
+                    f"card={row_.get('card_id', '?')}  "
+                    f"yaw={row_.get('yaw_deg', '?')} deg"
+                    f"  class={row_.get('class_hint', '?')}",
+                    flush=True,
+                )
+
+                if row_.get("stack_on"):
+                    print(
+                        f"    STACKED: {row_['stack_on']} down first, then "
+                        f"{row_.get('class_hint', 'the part')} on top.",
+                        flush=True,
+                    )
+
+            if not args.confirm_each_trial:
+                return
+
+            try:
+                input(
+                    "   Placed it? TAKE YOUR HAND OUT of the cell, "
+                    "then press ENTER "
+                )
+            except EOFError:
+                log.error(
+                    "stdin closed during --confirm-each-trial; stopping "
+                    "rather than moving the robot with nobody confirming."
+                )
+                raise KeyboardInterrupt from None
+
+            # ─── REAL CELL: motion-enable gate ──────────────────────────
+            # ENTER is the explicit operator confirmation that everybody
+            # is out of the cell. Only now is servo power allowed ON.
+            if args.mode == "real":
+                status = backend.read_controller_status()
+
+                if not status.get("remote", False):
+                    raise RuntimeError(
+                        "Motion refused: YRC1000 is not in REMOTE mode: "
+                        f"{status}"
+                    )
+
+                if status.get("running", False):
+                    raise RuntimeError(
+                        "Motion refused: controller is already running: "
+                        f"{status}"
+                    )
+
+                if status.get("alarm", False):
+                    raise RuntimeError(
+                        "Motion refused: controller has an active alarm: "
+                        f"{status}"
+                    )
+
+                if status.get("error", False):
+                    raise RuntimeError(
+                        "Motion refused: controller reports an error: "
+                        f"{status}"
+                    )
+
+                if status.get("hold", False):
+                    raise RuntimeError(
+                        "Motion refused: controller HOLD is active: "
+                        f"{status}"
+                    )
+
+                if not status.get("servo", False):
+                    log.info(
+                        "Operator confirmed cell clear — enabling YRC1000 SERVO"
+                    )
+                    backend.servo_on()
+
+                status = backend.read_controller_status()
+
+                if not status.get("servo", False):
+                    raise RuntimeError(
+                        "Motion refused: SERVO ON verification failed: "
+                        f"{status}"
+                    )
+
+                if not status.get("remote", False):
+                    backend.servo_off()
+                    raise RuntimeError(
+                        "Motion refused: controller left REMOTE mode after "
+                        f"SERVO ON: {status}"
+                    )
+
+                if (
+                    status.get("alarm", False)
+                    or status.get("error", False)
+                    or status.get("hold", False)
+                ):
+                    backend.servo_off()
+                    raise RuntimeError(
+                        "Motion refused: controller became unsafe after "
+                        f"SERVO ON: {status}"
+                    )
+
+                log.info(
+                    "REAL motion gate PASS — REMOTE=%s SERVO=%s "
+                    "alarm=%s error=%s hold=%s",
+                    status.get("remote"),
+                    status.get("servo"),
+                    status.get("alarm"),
+                    status.get("error"),
+                    status.get("hold"),
+                )
+
+            # The perception node keeps grabbing frames while the operator
+            # is still over the table. Drop those stale frames AFTER ENTER,
+            # so the next perception result belongs to the cleared cell.
+            dropped = 0
+
+            while True:
+                try:
+                    det_queue.get_nowait()
+                    dropped += 1
+                except queue.Empty:
+                    break
+
+            if dropped:
+                log.debug(
+                    "Dropped %d frame(s) captured before placement finished",
+                    dropped,
+                )
+
+
+    if args.confirm_each_trial:
+
+        def human_score_hook(
+            trial_id: int,
+            machine_success: bool,
+        ) -> int | str:
+            """Score visible placement result after making the cell safe."""
+
+            # The motion cycle has finished. Servo must be OFF before the
+            # operator is asked to inspect/remove/reposition the object.
+            if args.mode == "real":
+                try:
+                    backend.servo_off()
+
+                    status = backend.read_controller_status()
+
+                    if status.get("servo", True):
+                        raise RuntimeError(
+                            f"SERVO OFF verification failed: {status}"
+                        )
+
+                    log.info(
+                        "Trial %d complete — SERVO OFF verified for "
+                        "operator access",
+                        trial_id,
+                    )
+
+                except Exception as e:
+                    log.error(
+                        "CRITICAL: could not verify SERVO OFF after "
+                        "trial %d: %s",
+                        trial_id,
+                        e,
+                    )
+
+                    # Best-effort fallback to existing software emergency stop.
+                    try:
+                        backend.Stop()
+                    except Exception as stop_exc:
+                        log.error(
+                            "Fallback robot.Stop() also failed: %s",
+                            stop_exc,
+                        )
+
+                    raise KeyboardInterrupt from e
+
+            while True:
+                try:
+                    ans = input(
+                        f"   Trial {trial_id} — part in the right place? "
+                        "[y]=yes  [n]=no  "
+                    ).strip().lower()
+
+                except EOFError:
+                    log.error(
+                        "stdin closed while scoring trial %d — logging it "
+                        "unscored. The next trial will stop the run.",
+                        trial_id,
+                    )
+                    return ""
+
+                if ans in {"y", "t", "1"}:
+                    return 1
+
+                if ans in {"n", "h", "0"}:
+                    return 0
+
+                print("   Type y or n.", flush=True)
+
+        orch.human_score_hook = human_score_hook
 
     def _drive_experiment() -> None:
-        """Run N trials → cleanup digital twin → log summary.
+        """Run N trials and always leave the real robot with servo OFF."""
 
-        With --viewport open3d-gui: this function runs in a WORKER thread because
-        the Filament GUI holds the main thread (run_gui is blocking). Other modes:
-        runs synchronously on the main thread.
-        """
         if args.headless:
-            # Deterministic: generate exactly N messages (1 scenario/trial) then
-            # pre-fill queue in order. NO perception thread → trial i ↔ scenario i,
-            # miss/reachability rates match config exactly.
+            # Deterministic: generate exactly N messages (1 scenario/trial)
+            # then pre-fill queue in order.
             for _ in range(args.trials):
                 msg = perception.process_once()
                 if msg is not None:
                     det_queue.put(msg)
-            stats = orch.run_n_trials(args.trials)
+
+            stats = orch.run_n_trials(
+                args.trials,
+                pre_trial_hook=pre_trial_hook,
+            )
+
         else:
             try:
                 perception.start()
-                stats = orch.run_n_trials(args.trials)
+
+                stats = orch.run_n_trials(
+                    args.trials,
+                    pre_trial_hook=pre_trial_hook,
+                )
+
             except KeyboardInterrupt:
-                # Real mode: Ctrl+C must stop the GP7 IMMEDIATELY rather than just killing Python.
-                # Call robot.Stop() before propagating.
+                # Ctrl+C on the physical robot means immediate software stop.
                 log.warning("Ctrl+C — emergency robot stop")
+
                 try:
-                    if args.mode == "real" and hasattr(orch.robot, "Stop"):
+                    if args.mode == "real":
+                        backend.Stop()
+                        log.info("robot.Stop() sent")
+                    elif hasattr(orch.robot, "Stop"):
                         orch.robot.Stop()
                         log.info("robot.Stop() sent")
-                except Exception as e:  # noqa: BLE001
+
+                except Exception as e:
                     log.error("Error stopping robot: %s", e)
-                stats = {"attempted": 0, "successful": 0, "failed": 0,
-                         "success_rate": 0.0, "aborted_by_user": True}
+
+                stats = {
+                    "attempted": 0,
+                    "successful": 0,
+                    "failed": 0,
+                    "success_rate": 0.0,
+                    "aborted_by_user": True,
+                }
+
             finally:
+                # ─── Final physical-cell fail-safe ──────────────────────
+                # Every normal/error/Ctrl+C exit from a real experiment
+                # must leave the controller with servo OFF.
+                if args.mode == "real":
+                    try:
+                        backend.servo_off()
+
+                        status = backend.read_controller_status()
+
+                        if status.get("servo", True):
+                            raise RuntimeError(
+                                f"Controller still reports SERVO ON: {status}"
+                            )
+
+                        log.info(
+                            "Experiment cleanup — SERVO OFF verified"
+                        )
+
+                    except Exception as e:
+                        log.error(
+                            "FINAL SERVO-OFF verification failed: %s. "
+                            "Use the teach pendant / physical E-stop.",
+                            e,
+                        )
+
+                        try:
+                            backend.Stop()
+                        except Exception as stop_exc:
+                            log.error(
+                                "Fallback robot.Stop() also failed: %s",
+                                stop_exc,
+                            )
+
                 perception.stop()
 
-        # Cleanup digital twin — stop mirror thread, close telemetry, close socket.
-        # Active for both sim non-headless and hse mode (DigitalTwinMirror used in both).
+        # Cleanup digital twin — stop mirror thread, close telemetry,
+        # then close HSE socket.
         if twin is not None:
             try:
                 twin.stop_mirror()
+
                 if hasattr(twin.backend, "disconnect"):
                     twin.backend.disconnect()
-            except Exception as e:                  # noqa: BLE001
-                log.warning("Digital twin cleanup error: %s", e)
+
+            except Exception as e:
+                log.warning(
+                    "Digital twin cleanup error: %s",
+                    e,
+                )
 
         summary = trial_logger.summarize()
+
         log.info("─" * 60)
-        log.info("RESULTS: success_rate=%.1f%% (%d/%d)",
-                 stats["success_rate"] * 100, stats["successful"], stats["attempted"])
+        log.info(
+            "RESULTS: success_rate=%.1f%% (%d/%d)",
+            stats["success_rate"] * 100,
+            stats["successful"],
+            stats["attempted"],
+        )
         log.info("Failure modes: %s", summary["failure_modes"])
         log.info("CSV: %s", trial_logger.csv_path)
 
@@ -560,6 +1316,26 @@ def main() -> int:
         # Wait for the worker to detect that the viewer closed (every anim/post where
         # _open=False returns immediately) — typically < 1s. Cap at 3s to avoid hang.
         worker.join(timeout=3.0)
+        # Closing the real viewer is also a stop condition.
+        if args.mode == "real":
+            try:
+                backend.servo_off()
+                log.info(
+                    "GUI shutdown — SERVO OFF verified"
+                )
+            except Exception as e:
+                log.error(
+                    "GUI shutdown could not verify SERVO OFF: %s",
+                    e,
+                )
+
+                try:
+                    backend.Stop()
+                except Exception as stop_exc:
+                    log.error(
+                        "Fallback robot.Stop() also failed: %s",
+                        stop_exc,
+                    )
         # Cleanup twin (real mode) — stop_mirror, close telemetry, close HSE socket.
         if twin is not None:
             try:

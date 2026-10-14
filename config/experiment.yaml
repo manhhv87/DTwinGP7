@@ -1,61 +1,59 @@
-# =============================================================================
-# experiment.yaml — Cấu hình thí nghiệm pick-and-place
-# =============================================================================
-# Dùng bởi scripts/03_run_experiment.py. Các key dưới được nạp trực tiếp vào
-# Orchestrator (xem src/orchestrator/orchestrator.py :: _DEFAULT_CONFIG).
-# =============================================================================
-
-# ───── Robot + calibration ─────
-robot_name: "Yaskawa GP7"
-calibration_path: "config/calibration/T_base_camera.npy"
-
-# ───── Vùng đặt vật (base frame, mm) ─────
-place_position: [700.0, 120.0, 700.0]   # Y=120 (mirror của bottle pick Y=-120), bottle hoàn toàn trong bàn 400mm width
-
-# ───── Tham số chuyển động (tinh chỉnh ở pha tuning — mục 9) ─────
-approach_height_mm: 200.0       # lift_T Z = grasp_Z + 200 → MoveL xuống thẳng đứng từ cao, IK pick elbow-up clean
-return_home_after_success: true # về home sau mỗi success → trial kế APPROACH từ trên cao xuống tự nhiên (video demo đẹp)
-speed_joint_deg_s: 60.0         # tốc độ joint
-speed_linear_mm_s: 80.0         # tốc độ linear
-yaw_offset_deg: 90.0            # 90°: gripper jaws spread vuông góc PCA major axis → kẹp chiều rộng tray (Y, 100mm) thay vì chiều dài (X, 180mm)
-
-# ───── Gripper ─────
-gripper_do_index: 10            # chỉ số Digital Output điều khiển gripper (OT#10 trên YRC1000)
-# gripper_delay_s: fallback blind delay khi KHÔNG có CC-Link sensor feedback
-# (sim/headless, hoặc real chưa wire sensor). Real chain PC → YRC → PLC
-# Mitsubishi → solenoid → pneumatic total ~150-415ms tùy hardware. 0.5s an toàn.
-# Tăng nếu PLC scan time chậm hoặc pneumatic cylinder lớn.
+robot_name: Yaskawa GP7
+calibration_path: config/calibration/T_base_camera.npy
+class_pick_z_bias_mm:
+  plastic_box: 10.0
+place_position:
+- 500.0
+- -350.0
+- 150.0
+approach_height_mm: 100.0
+return_home_after_success: false
+speed_joint_deg_s: 60.0
+speed_linear_mm_s: 80.0
+yaw_offset_deg: 90
+gripper_do_index: 10
 gripper_delay_s: 0.5
-
-# ───── Gripper CC-Link (Path A — double-acting + sensor feedback) ─────
-# Gripper khí nén điều khiển qua PLC Mitsubishi, PC ↔ PLC qua YRC1000 làm
-# CC-Link bridge (set_io/read_io absolute bit). Khi block này active,
-# orchestrator dùng _gripper_cc_link(): toggle solenoid → chờ position sensor
-# → (close) verify detect sensor, thay vì blind delay.
-#
-# --mode real TỰ ĐỘNG bật block dưới với mapping mặc định (xem
-# scripts/03_run_experiment.py). Bỏ comment ở đây để OVERRIDE nếu bit address
-# trên YRC TP khác (Setup → I/O Module → CC-Link). Chi tiết: docs §7.9 +
-# HUONG_DAN_CAI_DAT §2.9 Bước 4.
-#
-# Sim/headless: GIỮ comment (= None) → dùng blind-delay đơn giản ở trên.
-# gripper_cc_link:
-#   clamp_bit:               30010   # OUT → PLC Y502 (Clamp solenoid)
-#   unclamp_bit:             30011   # OUT → PLC Y503 (UnClamp solenoid)
-#   clamp_sensor_bit:        30050   # IN  ← PLC X504 (cylinder tại vị trí Clamp)
-#   unclamp_sensor_bit:      30051   # IN  ← PLC X503 (cylinder tại vị trí UnClamp)
-#   detect_bit:              30052   # IN  ← PLC X505 (Carrier Detect — có vật trong gripper)
-#   wait_sensor_timeout_s:   2.0     # timeout chờ position sensor ON → raise gripper_timeout
-#   wait_sensor_poll_s:      0.05    # chu kỳ poll sensor (giây)
-#   require_detect_on_close: true    # sau close, verify detect ON → raise grasp_failed nếu OFF
-
-# ───── Điều phối ─────
-inter_trial_delay_s: 1.0        # nghỉ giữa các trial
-detection_timeout_s: 2.0        # thời gian chờ detection tối đa
-
-# ───── Perception (mode real) ─────
-model_path: "models/yolov8s-seg_best.pt"
+inter_trial_delay_s: 1.0
+detection_timeout_s: 2.0
+model_path: models/e2_seed1_best.pt
 conf_threshold: 0.5
-
-# ───── Robot thật (mode real) ─────
-robot_ip: "192.168.1.100"       # IP YRC1000
+robot_ip: 192.168.125.100
+real:
+  yaw_offset_deg: 5.0
+  table_top_z_mm: null
+  table_safety_margin_mm: 20.0
+  grasp_depth_offset_mm: 0.0
+  # Reject RGB-D target-height estimates that differ too far from the
+  # measured physical variants in class_sizes_mm.
+  place_height_tolerance_mm: 20.0
+  class_heights_mm:
+    carton: 80.0
+    plastic_box: 30.0
+    wood_box: 150.0
+    metal_box: 85.0
+    inox_box: 40.0
+  class_sizes_mm:
+    carton:
+    - - 180
+      - 120
+      - 120
+    - - 180
+      - 100
+      - 80
+    plastic_box:
+    - - 180
+      - 140
+      - 30
+    wood_box:
+    - - 190
+      - 190
+      - 150
+    metal_box:
+    - - 190
+      - 135
+      - 85
+    inox_box:
+    - - 180
+      - 85
+      - 40
+  place_yaw_deg: 5.3
