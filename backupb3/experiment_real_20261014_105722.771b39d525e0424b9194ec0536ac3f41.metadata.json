@@ -1,0 +1,255 @@
+{
+  "schema_version": 1,
+  "run_id": "771b39d525e0424b9194ec0536ac3f41",
+  "created_at_utc": "2026-10-14T03:57:22.644844+00:00",
+  "csv": "C:\\Users\\admin\\DTwinGP7_NEW\\DTwinGP7_REMOTE_CLEAN\\results\\experiment_real_20261014_105722.csv",
+  "csv_has_run_id": true,
+  "first_data_row": 1,
+  "rows_written": 23,
+  "provenance": {
+    "entrypoint": "scripts/03_run_experiment.py",
+    "config": {
+      "robot_name": "Yaskawa GP7",
+      "calibration_path": "config/calibration/T_base_camera.npy",
+      "place_position": [
+        500.0,
+        -350.0,
+        150.0
+      ],
+      "approach_height_mm": 100.0,
+      "grasp_depth_offset_mm": 0.0,
+      "table_top_z_mm": 593.9006737673905,
+      "table_safety_margin_mm": 20.0,
+      "yaw_offset_deg": 5.0,
+      "return_home_after_success": false,
+      "gripper_do_index": 10,
+      "gripper_delay_s": 0.5,
+      "gripper_cc_link": {
+        "clamp_bit": 30010,
+        "unclamp_bit": 30011,
+        "clamp_sensor_bit": 30050,
+        "unclamp_sensor_bit": 30051,
+        "detect_bit": 30052,
+        "wait_sensor_timeout_s": 2.0,
+        "wait_sensor_poll_s": 0.05,
+        "require_detect_on_close": true
+      },
+      "inter_trial_delay_s": 1.0,
+      "speed_joint_deg_s": 60.0,
+      "speed_linear_mm_s": 80.0,
+      "detection_timeout_s": 2.0,
+      "skip_reachability_check": false,
+      "is_real_mode": true,
+      "predictive_safety_enabled": true,
+      "predict_max_speed_deg_s": 30.0,
+      "use_client_ik": false,
+      "robot_base_xyz_mm": [
+        0.0,
+        0.0,
+        630.0
+      ],
+      "robot_base_rpy_deg": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "robot_tool_offset_mm": 0.0,
+      "use_yrc_ik": true,
+      "class_pick_z_bias_mm": {
+        "plastic_box": 10.0
+      },
+      "model_path": "models/e2_seed1_best.pt",
+      "conf_threshold": 0.5,
+      "robot_ip": "192.168.125.100",
+      "place_height_tolerance_mm": 20.0,
+      "class_heights_mm": {
+        "carton": 80.0,
+        "plastic_box": 30.0,
+        "wood_box": 150.0,
+        "metal_box": 85.0,
+        "inox_box": 40.0
+      },
+      "class_sizes_mm": {
+        "carton": [
+          [
+            180,
+            120,
+            120
+          ],
+          [
+            180,
+            100,
+            80
+          ]
+        ],
+        "plastic_box": [
+          [
+            180,
+            140,
+            30
+          ]
+        ],
+        "wood_box": [
+          [
+            190,
+            190,
+            150
+          ]
+        ],
+        "metal_box": [
+          [
+            190,
+            135,
+            85
+          ]
+        ],
+        "inox_box": [
+          [
+            180,
+            85,
+            40
+          ]
+        ]
+      },
+      "place_yaw_deg": 5.3,
+      "home_joints_deg": [
+        1.97,
+        2.26,
+        -4.99,
+        -181.93,
+        41.7,
+        -90.35
+      ],
+      "table_plane": {
+        "a": 0.0052890752543995525,
+        "b": -0.001807507249857565,
+        "c": 588.7751569482754,
+        "z_mean_mm": 592.0521008491764,
+        "z_top_mm": 593.9006737673905,
+        "rms_mm": 0.6726406770252615,
+        "tilt_deg": 0.32024573168415743,
+        "n_inliers": 14400,
+        "n_points": 14400,
+        "frames": 10,
+        "date": "2026-09-18T10:21:49",
+        "T_BC": [
+          [
+            -0.016228402371343733,
+            0.9998679277705603,
+            0.0008751984233814655,
+            638.5508574391328
+          ],
+          [
+            0.9998476858233634,
+            0.016233683542948976,
+            -0.006408796477647867,
+            38.23434798989744
+          ],
+          [
+            -0.00642215774785182,
+            0.0007710605902988624,
+            -0.9999790804589009,
+            1304.7744042906834
+          ],
+          [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ]
+        ],
+        "deprojection": "RealSense calibrated color rays",
+        "touch_correction_mm": {
+          "dx": 4.0,
+          "dy": -0.82
+        }
+      }
+    },
+    "config_sha256": "604b6ab24a3250ba3ff6f0479269aaf94875aa32f1b85175e00f90a5b00538de",
+    "config_files": [
+      {
+        "path": "C:\\Users\\admin\\DTwinGP7_NEW\\DTwinGP7_REMOTE_CLEAN\\config\\experiment.yaml",
+        "exists": true,
+        "sha256": "f8dcb8890146e1d81c09b01c7436eb15f4b62ad52e1bb758ee7f80c4cae287e8",
+        "size_bytes": 1167
+      },
+      {
+        "path": "C:\\Users\\admin\\DTwinGP7_NEW\\DTwinGP7_REMOTE_CLEAN\\config\\cell_layout_real.yaml",
+        "exists": true,
+        "sha256": "305cf45f7265ca0e0648e4beff91ed3e8765114b0f6904d78afa954867b4429d",
+        "size_bytes": 10162
+      }
+    ],
+    "model": {
+      "kind": "checkpoint",
+      "path": "C:\\Users\\admin\\DTwinGP7_NEW\\DTwinGP7_REMOTE_CLEAN\\models\\e2_seed1_best.pt",
+      "sha256": "52e25b0349d1586b45f7a0077e4b38479d845621435e85722555ea65cf5e702a",
+      "size_bytes": 23936500,
+      "classes": [
+        "carton",
+        "plastic_box",
+        "wood_box",
+        "metal_box",
+        "inox_box"
+      ],
+      "framework": {
+        "ultralytics": "8.4.153",
+        "torch": "2.9.1+cu128"
+      },
+      "inference": {
+        "imgsz": 1280,
+        "device": null,
+        "half": null,
+        "max_det": 300,
+        "agnostic_nms": false,
+        "classes": null,
+        "rect": true,
+        "batch": 1,
+        "task": "segment",
+        "conf": 0.5,
+        "iou": 0.45,
+        "retina_masks": true,
+        "verbose": false,
+        "imgsz_source": "predictor.args",
+        "predictor_initialized": true,
+        "predictor_imgsz": [
+          1280,
+          1280
+        ],
+        "runtime_device": "cuda:0"
+      }
+    },
+    "runtime": {
+      "config": "config/experiment.yaml",
+      "cell_config": "config/cell_layout_real.yaml",
+      "trials": 50,
+      "mode": "real",
+      "backend": "hse",
+      "hse_ip": null,
+      "mirror_hz": 2.0,
+      "telemetry_hz": 10.0,
+      "no_viewport_mirror": true,
+      "ultra_fast": false,
+      "ik_source": "yrc",
+      "tool_no": 1,
+      "lighting": "",
+      "overlap": "",
+      "pose_list": ".\\config\\pose_lists\\std_v2.csv",
+      "depth_mode": "rgbd",
+      "confirm_each_trial": true,
+      "save_frames": false,
+      "blind_label": null,
+      "model_path": null,
+      "pose_slice": null,
+      "session_id": "e1",
+      "block_id": "",
+      "operator_id": "PQM",
+      "frames_dir": "results/frames",
+      "headless": false,
+      "minimal_build": false,
+      "grasp_fail_rate": 0.0,
+      "detection_miss_rate": 0.0,
+      "seed": 42
+    }
+  }
+}

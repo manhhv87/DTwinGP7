@@ -1,0 +1,6 @@
+timestamp,trial_id,success,class_name,cycle_time_s,failure_reason,final_state,lighting,overlap,mode,ik,det_x_mm,det_y_mm,det_z_mm,det_yaw_deg,confidence,mask_area,frame_path,pose_id,condition,stack_on,session_id,block_id,operator_id,depth_mode,depth_used,depth_valid_frac,part_height_mm,size_iou,h_depth_mm,human_ok,run_id
+1791956387.2706726,1,0,inox_box,0.187,pick_z_safety_reject,error,,,real,,611.4,18.5,629.9,0.9,0.914,23349,,P0046,,,e1,,PQM,rgbd,rgbd,0.815,40.0,,41.4,,b81407d6d19e4005b466d6f3e100c439
+1791956402.1177633,2,0,inox_box,0.117,pick_z_safety_reject,error,,,real,,587.2,-43.6,630.2,38.8,0.975,13962,,P0047,,wood_box,e1,,PQM,rgbd,rgbd,0.215,40.0,,39.8,,b81407d6d19e4005b466d6f3e100c439
+1791956433.7524948,3,1,inox_box,16.056,,done,,,real,,539.7,8.1,632.9,73.8,0.963,15363,,P0048,,,e1,,PQM,rgbd,rgbd,0.45,40.0,,41.1,1,b81407d6d19e4005b466d6f3e100c439
+1791956475.525987,4,1,carton,16.926,,done,,,real,,636.7,193.9,717.8,31.7,0.96,29690,,P0049,,,e1,,PQM,rgbd,rgbd,0.969,120.0,0.95,126.4,1,b81407d6d19e4005b466d6f3e100c439
+1791956513.8753362,5,1,plastic_box,18.57,,done,,,real,,638.7,141.5,621.1,8.9,0.938,23923,,P0050,,,e1,,PQM,rgbd,rgbd,1.0,30.0,,29.5,1,b81407d6d19e4005b466d6f3e100c439
