@@ -231,6 +231,104 @@ def z_from_ground_plane(
     return z_mm / 1000.0                  # → metres, matches masked_depth()
 
 
+
+def _metric_edge_yaw_base(
+    mask: np.ndarray,
+    intrinsics: dict[str, float],
+    T_BC_mm: np.ndarray,
+    table_plane: TablePlane,
+    top_height_mm: float,
+) -> dict[str, float | bool] | None:
+    # Project the segmentation outline onto the physical top plane in BASE XY.
+    # Rectangular parts use the long physical edge. Near-square parts are folded
+    # modulo 90 degrees so OpenCV width/height swapping cannot create a 90 deg jump.
+    import cv2
+
+    m = (np.asarray(mask) > 0).astype(np.uint8)
+    contours, _ = cv2.findContours(m, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+    if not contours:
+        return None
+
+    contour = max(contours, key=cv2.contourArea).reshape(-1, 2)
+    if contour.shape[0] < 12:
+        return None
+
+    if contour.shape[0] > 800:
+        ids = np.linspace(0, contour.shape[0] - 1, 800, dtype=np.int64)
+        contour = contour[ids]
+
+    R = np.asarray(T_BC_mm, dtype=float)[:3, :3]
+    t = np.asarray(T_BC_mm, dtype=float)[:3, 3]
+    xy_base = []
+
+    for u_i, v_i in contour:
+        z_m = ray_plane_depth(
+            intrinsics,
+            float(u_i),
+            float(v_i),
+            T_BC_mm,
+            table_plane,
+            float(top_height_mm),
+        )
+        if z_m is None or not np.isfinite(z_m) or z_m <= 0.0:
+            continue
+
+        p_cam = deproject_pixel(
+            intrinsics, float(u_i), float(v_i), float(z_m)
+        )
+        p_base = R @ p_cam + t
+        if np.all(np.isfinite(p_base[:2])):
+            xy_base.append([float(p_base[0]), float(p_base[1])])
+
+    if len(xy_base) < 12:
+        return None
+
+    pts = np.asarray(xy_base, dtype=np.float32)
+
+    med = np.median(pts, axis=0)
+    radius = np.linalg.norm(pts - med, axis=1)
+    if pts.shape[0] >= 50:
+        lim = float(np.percentile(radius, 99.0))
+        keep = radius <= lim
+        if int(np.count_nonzero(keep)) >= 12:
+            pts = pts[keep]
+
+    rect = cv2.minAreaRect(pts)
+    corners = cv2.boxPoints(rect).astype(np.float64)
+    edges = np.roll(corners, -1, axis=0) - corners
+    lengths = np.linalg.norm(edges, axis=1)
+
+    long_mm = float(np.max(lengths))
+    short_mm = float(np.min(lengths))
+    if not np.isfinite(long_mm) or long_mm < 8.0 or short_mm < 8.0:
+        return None
+
+    ratio = long_mm / max(short_mm, 1e-9)
+    near_square = bool(ratio < 1.15)
+
+    if near_square:
+        e = edges[0]
+        yaw = float(np.arctan2(e[1], e[0]))
+        yaw = (yaw + np.pi / 4.0) % (np.pi / 2.0) - np.pi / 4.0
+        if yaw <= -np.pi / 4.0:
+            yaw += np.pi / 2.0
+    else:
+        i = int(np.argmax(lengths))
+        e = edges[i]
+        yaw = float(np.arctan2(e[1], e[0]))
+        if yaw > np.pi / 2.0:
+            yaw -= np.pi
+        elif yaw <= -np.pi / 2.0:
+            yaw += np.pi
+
+    return {
+        "yaw_base": float(yaw),
+        "long_mm": long_mm,
+        "short_mm": short_mm,
+        "near_square": near_square,
+        "top_height_mm": float(top_height_mm),
+    }
+
 class PoseExtractor:
     """Combine the above helpers to extract a 3D pose from a single detection.
 
@@ -367,6 +465,34 @@ class PoseExtractor:
             h_depth = top_face_height(depth_image, mask, self.intrinsics, self.T_BC,
                                       self.plane)
 
+        # METRIC_BASE_YAW_V1
+        # Mask outline -> physical top plane -> BASE XY -> minAreaRect edge.
+        metric_yaw = None
+        if self.has_geometry and height is not None:
+            yaw_height_mm = float(height)
+            if (
+                h_depth is not None
+                and np.isfinite(h_depth)
+                and valid_frac >= self.min_valid_frac
+                and 5.0 <= float(h_depth) <= 350.0
+            ):
+                yaw_height_mm = float(h_depth)
+            try:
+                metric_yaw = _metric_edge_yaw_base(
+                    mask,
+                    self.intrinsics,
+                    self.T_BC,
+                    self.plane,
+                    yaw_height_mm,
+                )
+            except Exception as e:
+                logger.debug(
+                    "Metric BASE yaw fallback for %r: %s",
+                    detection.get("class_name"),
+                    e,
+                )
+                metric_yaw = None
+
         if self.depth_mode == "rgbd":
             z_m, source = z_depth, "rgbd"
         elif height is None:
@@ -391,6 +517,15 @@ class PoseExtractor:
         detection["pose_camera"] = (
             float(xyz_cam[0]), float(xyz_cam[1]), float(xyz_cam[2]), yaw,
         )
+        if metric_yaw is not None:
+            detection["yaw_base"] = float(metric_yaw["yaw_base"])
+            detection["yaw_source"] = "metric_base_minAreaRect"
+            detection["yaw_rect_long_mm"] = float(metric_yaw["long_mm"])
+            detection["yaw_rect_short_mm"] = float(metric_yaw["short_mm"])
+            detection["yaw_near_square"] = bool(metric_yaw["near_square"])
+            detection["yaw_top_height_mm"] = float(metric_yaw["top_height_mm"])
+        else:
+            detection["yaw_source"] = "pixel_pca_fallback"
         detection["pixel_uv"] = (u, v)
         detection["mask_area"] = int(np.sum(mask > 0))
         detection["depth_used"] = source
