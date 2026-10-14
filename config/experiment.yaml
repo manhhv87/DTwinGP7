@@ -6,6 +6,9 @@ place_position:
 - 500.0
 - -350.0
 - 150.0
+# Sau mỗi chuyển động Cartesian, đọc góc khớp rồi dựng lại vị trí đầu công tác và
+# so với đích. Lệch quá ngưỡng này thì dừng lượt. Đặt 0 để tắt phép kiểm.
+move_verify_tol_mm: 5.0
 approach_height_mm: 100.0
 return_home_after_success: false
 speed_joint_deg_s: 60.0

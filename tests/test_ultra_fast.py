@@ -41,6 +41,14 @@ def _build_response(status=0, payload=b"", request_id=0):
 def backend_with_mocks(monkeypatch):
     backend = MotomanHSEBackend(ip="192.168.1.100", timeout_s=0.5)
     backend.start_confirm_timeout_s = 0.0    # skip Running-assert wait in unit tests
+    # Report a healthy controller: the dedicated status tests build their own
+    # responses, so the guards do not belong in these transport-level tests.
+    backend.read_controller_status = lambda: {
+        "data1": 0, "data2": 0, "mode": "REMOTE",
+        "remote": True, "play": True, "teach": False, "auto": True,
+        "running": False, "servo": True, "alarm": False, "error": False,
+        "hold": False,
+    }
     mock_sock = MagicMock()
     backend._sock = mock_sock
 
