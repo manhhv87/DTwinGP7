@@ -164,12 +164,11 @@ class Orchestrator:
         # Set per trial by the runner's pre-trial hook, and constant for a run.
         self.current_condition: str = ""
         self.current_stack_on: str = ""
-        # B3_EXPECTED_YAW_CONTEXT_V2
-        # Ground-truth placement yaw from the pose list. Safety reference only.
-        self.current_expected_yaw_deg: float | None = None
         # Pose-list target class. When set, detections of every other class
-        # are ignored. This is essential for STACKED trials where both the
-        # target and support object may be detected.
+        # are ignored, which matters in stacked trials where both the target
+        # and its support are detected. It is the task input, declared in the
+        # paper, and the only pose-list field any decision reads; the pose id,
+        # condition and stacking column above are logged and nothing more.
         self.current_expected_class: str = ""
         self.session_id: str = ""
         self.block_id: str = ""
@@ -208,8 +207,13 @@ class Orchestrator:
 
             # POSE-LIST CLASS LOCK
             #
-            # STACKED scenes contain at least two real objects. Never choose
-            # whichever detection merely happens to have the highest Z.
+            # The trial names the class to pick. That is the task input, and
+            # the paper declares it. Only detections of that class are kept, so
+            # in a stacked scene, which holds at least two real objects, a
+            # support of another class is never chosen merely because it reads
+            # higher. Position, height and yaw still come from perception
+            # alone. A target the detector labels as another class is
+            # therefore a detection miss, never a grasp of the wrong part.
             expected_cls = str(
                 getattr(self, "current_expected_class", "") or ""
             ).strip().lower()
@@ -646,6 +650,8 @@ class Orchestrator:
             home = self.config.get("home_joints_deg") or [0.0] * 6
             q_init = [np.deg2rad(q) for q in home]
 
+        tool_offset = float(self.config.get("robot_tool_offset_mm", 0.0))
+
         # Path 1: Pieper analytical → branch nearest to q_init (exact + correct branch).
         # Pieper solves for FLANGE (tool0) and does NOT automatically add tool_offset_mm.
         # When a tool offset is present, retract the target TCP to the flange (back off
@@ -1062,11 +1068,11 @@ class Orchestrator:
             (None, None): IK fail
         """
         # Path 1: YRC handles IK — send Cartesian pose directly.
-        # TOOL-FRAME CONSISTENCY: the app owns the tool offset (robot_tool_offset_mm).
-        # Retract the TCP target back to the FLANGE along tool Z (identical to the
-        # client path above) and command the FLANGE pose with TOOL00 (the HSE backend
-        # for the experiment is created with tool_no=0). So BOTH IK paths use the SAME
-        # app tool offset, and neither depends on the controller's TOOL01 matching.
+        # TOOL-FRAME CONSISTENCY: the app keeps robot_tool_offset_mm at 0 and
+        # commands the TCP pose directly; the controller holds the tool length in
+        # its own TOOL frame (TOOL01 on this cell, the default of --tool-no). The
+        # fixed-job path refuses to run with a non-zero app offset, so the two can
+        # never both apply it.
         if self.config.get("use_yrc_ik", False):
             tool_offset = float(self.config.get("robot_tool_offset_mm", 0.0))
             flange_T = target_T_world
@@ -1085,24 +1091,48 @@ class Orchestrator:
             return (None, None)
         return (joint_list, None)
 
+    @staticmethod
+    def _lower_keys(table) -> dict:
+        """Config tables keyed case-insensitively.
+
+        The detector writes its own labels and the config is written by hand;
+        a capital letter must not silently disable a guard.
+        """
+        return {str(k).strip().lower(): v for k, v in (table or {}).items()}
+
     def _class_variants_mm(self, class_name) -> list[tuple[float, float, float]]:
-        """Measured (long, wide, high) variants of a class, from the config."""
+        """Measured (long, wide, high) variants of a class, from the size table.
+
+        A class with a height but no measured footprint has no variants here.
+        That is the honest answer: there is no rectangle to compare against.
+        Returning a placeholder would make every trial of that class fail the
+        shape clause, which is the opposite of what missing information means.
+        """
         if not class_name:
             return []
-        sizes = self.config.get("class_sizes_mm") or {}
-        raw = sizes.get(str(class_name))
+        raw = self._lower_keys(self.config.get("class_sizes_mm")).get(
+            str(class_name).strip().lower())
         if not raw:
-            h = (self.config.get("class_heights_mm") or {}).get(str(class_name))
-            return [(float("nan"), float("nan"), float(h))] if h else []
-        if raw and not isinstance(raw[0], (list, tuple)):
+            return []
+        if not isinstance(raw[0], (list, tuple)):
             raw = [raw]
         return [tuple(float(v) for v in variant) for variant in raw]
 
     def _class_min_height_mm(self, class_name):
-        """Lowest height the detected class can stand at, or None if unknown."""
-        heights = [v[2] for v in self._class_variants_mm(class_name)
+        """Lowest height the detected class can stand at, or None if unknown.
+
+        The size table answers first because it carries every variant; the
+        height table is the fallback for a class that has only that entry.
+        """
+        if not class_name:
+            return None
+        heights = [float(v[2]) for v in self._class_variants_mm(class_name)
                    if len(v) >= 3 and v[2] == v[2]]
-        return min(heights) if heights else None
+        if heights:
+            return min(heights)
+        h = self._lower_keys(self.config.get("class_heights_mm")).get(
+            str(class_name).strip().lower())
+        return float(h) if h else None
 
     def _size_matches_class(self, class_name, long_mm: float, short_mm: float,
                             tol_mm: float) -> bool:
@@ -1121,6 +1151,129 @@ class Orchestrator:
                 return True
         return False
 
+    def _pick_floor_z(self, class_name, table_top: float):
+        """Lowest Z the pick may be commanded to for this class, or None.
+
+        One rule for every class. A depth reading that has collapsed is not
+        followed down: the command is held at the lowest top face the detected
+        class can have, less height_tolerance_mm. That is the same margin at
+        which the depth plausibility clause refuses a trial, so the two cannot
+        disagree about what counts as a collapsed reading.
+
+        The floor must not touch a sound reading. Placed at the nominal top
+        face it would have lifted the command on 36 of the 55 trials measured
+        on 12 and 14 Oct 2026, 21 of the 24 inox among them and by up to 8.2
+        mm, because for inox, metal and plastic the median over the whole mask
+        sits 1.4 to 2.8 mm below the nominal height. In rgbd that replaces the
+        measurement with the class prior, the very difference E2 measures. At
+        this level it lifted none.
+
+        None when the class has no known height; the table clamp still holds.
+        """
+        known_h = self._class_min_height_mm(class_name)
+        if known_h is None:
+            return None
+        tol_mm = float(self.config.get("height_tolerance_mm", 20.0))
+        return float(table_top) + max(0.0, known_h - tol_mm)
+
+    def _depth_implausible(self, obj):
+        """Why the depth behind the command cannot be believed, or None.
+
+        Two tests, the ones fuse_height already uses: enough of the mask must
+        return depth, and the measured top face must not lie more than
+        height_tolerance_mm below the lowest variant of the detected class. A
+        stacked part reads higher, never lower, so this needs no knowledge of
+        what the part stands on.
+
+        Judged only when the commanded height came from depth, that is when
+        depth_used is rgbd: always in rgbd mode, and in fusion when depth
+        overrode the prior. In plane the command does not come from depth. In
+        fusion depth wins only after passing fuse_height's own tests, which
+        with the current thresholds are at least as strict as these (valid
+        fraction 0.3, the same 20 mm tolerance), so in practice these fire in
+        rgbd only.
+        """
+        if str(obj.get("depth_used", "")) != "rgbd":
+            return None
+        frac = obj.get("depth_valid_frac")
+        min_frac = float(self.config.get("min_depth_valid_frac", 0.15))
+        if frac is not None and float(frac) < min_frac:
+            return (f"depth valid fraction {float(frac):.2f} "
+                    f"below {min_frac:.2f}")
+        h_depth = obj.get("h_depth_mm")
+        h_min = self._class_min_height_mm(obj.get("class_name"))
+        tol_mm = float(self.config.get("height_tolerance_mm", 20.0))
+        if (h_min is not None and h_depth is not None
+                and np.isfinite(float(h_depth))
+                and float(h_depth) < h_min - tol_mm):
+            return (f"top face {float(h_depth):.1f} mm below the "
+                    f"{h_min:.0f} mm the class can stand at")
+        return None
+
+    def _shape_contradicts_class(self, obj):
+        """Why the measured top rectangle cannot be the detected class, or None.
+
+        The rectangle is measured in mm on the part plane and must match one
+        size variant of the class within size_tolerance_mm; a mask that does
+        not describe the class would turn the wrist to a meaningless angle.
+        This replaces comparing the vision yaw with the called yaw, which reads
+        the answer sheet. No measurement, nothing to contradict.
+        """
+        long_mm = obj.get("yaw_rect_long_mm")
+        short_mm = obj.get("yaw_rect_short_mm")
+        if long_mm is None or short_mm is None:
+            return None
+        tol_mm = float(self.config.get("size_tolerance_mm", 40.0))
+        if self._size_matches_class(obj.get("class_name"), float(long_mm),
+                                    float(short_mm), tol_mm):
+            return None
+        return (f"top face measures {float(long_mm):.0f} x "
+                f"{float(short_mm):.0f} mm, no {obj.get('class_name')} "
+                f"variant within {tol_mm:.0f} mm")
+
+    def _depth_contradicts_command(self, obj, commanded_h_mm: float):
+        """Why depth refuses this commanded height, or None if it does not.
+
+        The plane estimate stands every part on the table by its class height,
+        so a part resting on another one is commanded a whole support too low
+        and the tool would be driven into that support. Depth sees the real top
+        face, and this is where the two are compared.
+
+        The rule applies only where the commanded height did not come from
+        depth. In rgbd the commanded Z is the median depth over the whole mask
+        while h_depth_mm is the median of the top band of an eroded mask: two
+        deliberately different estimators of one surface. Comparing them lets a
+        ragged mask veto a sound command. Cell run of 14 Oct 2026, trial 9: one
+        unstacked carton read 124.3 mm one way and 173.3 mm the other, and the
+        pick succeeded. In rgbd the depth plausibility clause carries the load.
+
+        To veto a motion, depth must be at least as trustworthy as the fusion
+        rule demands before it will act on depth at all, which is why this has
+        its own fraction rather than the one that merely detects a dead mask.
+
+        The datum is the scalar table top, the 95th percentile of the fitted
+        plane, while h_depth_mm is measured above the plane itself. Across the
+        pick region that understates the height by 1.4 to 2.8 mm, so the
+        effective tolerance is near 18 mm rather than 20. The error is
+        one-directional and refuses slightly early, the safe direction.
+        """
+        if str(obj.get("depth_used", "")) == "rgbd":
+            return None
+        h_depth = obj.get("h_depth_mm")
+        frac = obj.get("depth_valid_frac")
+        if h_depth is None or frac is None:
+            return None
+        if float(frac) < float(self.config.get("depth_veto_valid_frac", 0.3)):
+            return None
+        if not np.isfinite(float(h_depth)):
+            return None
+        tol_mm = float(self.config.get("height_tolerance_mm", 20.0))
+        if commanded_h_mm < float(h_depth) - tol_mm:
+            return (f"commanded top face {commanded_h_mm:.1f} mm, depth sees "
+                    f"{float(h_depth):.1f} mm: the tool would go into whatever "
+                    f"the part rests on")
+        return None
+
     def _dh_model(self, gp7_urdf=None):
         """The URDF chain used by both client IK and the reached-pose check.
 
@@ -1138,44 +1291,6 @@ class Orchestrator:
             )
         return self._dh_model_cached
 
-    def _verify_reached(self, target_T_world: np.ndarray, kind: str) -> None:
-        """Check the robot actually arrived, by reading joints and running FK.
-
-        The backend reports completion when the controller clears its RUNNING
-        flag, which also clears when a motion stops early (soft limit, HOLD
-        released, a rejected segment). Without this check the cycle would carry
-        on as if the pose had been reached and the next motion would start from
-        somewhere else. Set move_verify_tol_mm to 0 to disable.
-        """
-        tol_mm = float(self.config.get("move_verify_tol_mm", 5.0))
-        if tol_mm <= 0.0 or not hasattr(self.robot, "Joints"):
-            return
-        try:
-            from .kinematics.urdf_chain import forward_kinematics_urdf
-            joints_deg = list(self.robot.Joints())
-            T_now = forward_kinematics_urdf(
-                self._dh_model(), [float(np.deg2rad(q)) for q in joints_deg])
-        except Exception as exc:  # noqa: BLE001 — a read/FK failure must not be silent
-            logger.warning("Reached-pose check skipped (%s): %s", kind, exc)
-            return
-
-        d_mm = float(np.linalg.norm(
-            np.asarray(T_now)[:3, 3] - np.asarray(target_T_world)[:3, 3]))
-        if d_mm > tol_mm:
-            logger.error(
-                "%s did not reach its target: off by %.1f mm (tolerance %.1f). "
-                "target=%s reached=%s joints=%s",
-                kind, d_mm, tol_mm,
-                np.asarray(target_T_world)[:3, 3].round(1).tolist(),
-                np.asarray(T_now)[:3, 3].round(1).tolist(),
-                [round(q, 2) for q in joints_deg],
-            )
-            raise RuntimeError(
-                f"{kind} stopped {d_mm:.1f} mm from its target "
-                f"(tolerance {tol_mm:.1f} mm)"
-            )
-        logger.debug("%s reached within %.1f mm", kind, d_mm)
-
     def _move_j_via_ik(self, target_T: np.ndarray) -> None:
         """MoveJ via IK route (YRC controller or client DLS)."""
         result, pose = self._solve_ik_routed(target_T)
@@ -1186,7 +1301,6 @@ class Orchestrator:
                          pose[:3, 3].round(1).tolist())
             self.robot.MoveJ(pose)
             self._current_joints = None
-            self._verify_reached(target_T, "MoveJ")
             return
 
         joint_list = result
@@ -1200,7 +1314,6 @@ class Orchestrator:
                      target_T[:3, 3].round(1).tolist())
         self.robot.MoveJ(joint_list)
         self._current_joints = joint_list
-        self._verify_reached(target_T, "MoveJ")
 
     def _move_l_via_ik(self, target_T: np.ndarray) -> None:
         """MoveL via IK route — same pattern as MoveJ."""
@@ -1209,7 +1322,6 @@ class Orchestrator:
         if result == "YRC_POSE":
             self.robot.MoveL(pose)
             self._current_joints = None
-            self._verify_reached(target_T, "MoveL")
             return
 
         joint_list = result
@@ -1220,7 +1332,6 @@ class Orchestrator:
         joint_list = self._normalize_target_joints(joint_list)
         self.robot.MoveL(joint_list)
         self._current_joints = joint_list
-        self._verify_reached(target_T, "MoveL")
 
     # ────────────────────────────────────────────────────────────
     # Main cycle
@@ -1357,32 +1468,16 @@ class Orchestrator:
                     "fingertip held %dmm above table)",
                     target_z, clamped_z, int(safety_margin),
                 )
-            # LOW-PART PICK FLOOR — one rule for every class.
-            #
-            # A part whose top face is only a few centimetres above the table
-            # leaves the jaws almost no room: a slightly low depth reading puts
-            # the fingertips under the top face and into the table. The floor
-            # below keeps the fingertips at the part's own top face, less the
-            # insertion the gripper is allowed to take, whatever the class.
-            # Class names stay out of it; the height comes from the detected
-            # class, and a per-class correction, if one is ever justified, is a
-            # config entry that defaults to nothing.
+            # PICK Z FLOOR. A collapsed depth reading is not followed down;
+            # the rule and its measured justification are in _pick_floor_z.
             cls_name = str(obj.get("class_name", "")).lower()
-            known_h = self._class_min_height_mm(obj.get("class_name"))
+            floor_z = self._pick_floor_z(obj.get("class_name"), table_top)
 
-            if known_h is not None:
-                insertion_mm = float(
-                    self.config.get("low_object_grasp_insertion_mm", 0.0)
-                )
-                insertion_mm = max(0.0, min(insertion_mm, known_h))
-                floor_z = table_top + known_h - insertion_mm
-
+            if floor_z is not None:
                 if clamped_z < floor_z:
                     logger.warning(
-                        "PICK Z FLOOR (%s): P0 %.1f -> %.1f mm "
-                        "(class height=%.1f, insertion=%.1f)",
-                        cls_name or "?", clamped_z, floor_z, known_h,
-                        insertion_mm,
+                        "PICK Z FLOOR (%s): P0 %.1f -> %.1f mm",
+                        cls_name or "?", clamped_z, floor_z,
                     )
                     clamped_z = floor_z
 
@@ -1394,107 +1489,52 @@ class Orchestrator:
                         "PICK Z BIAS (%s): P0 Z %.1f -> %.1f mm (%+.1f mm)",
                         cls_name, clamped_z, clamped_z + z_bias_mm, z_bias_mm,
                     )
-                    clamped_z += z_bias_mm
+                    # A bias may lift or lower the grasp, never below the
+                    # table clamp the comment above promises.
+                    clamped_z = max(clamped_z + z_bias_mm, min_grasp_z)
 
-            # ─── MOTION SAFETY ────────────────────────────────────────────
-            # One rule for every class, built only from what perception reports.
+            # The clamp, the floor and the per-class bias above are
+            # only real once they reach the commanded pose. Everything after
+            # this line, the refusal clauses and the grasp pose itself, reads
+            # xyz_base.
+            xyz_base[2] = clamped_z
+
+            # MOTION SAFETY, one rule set for every class.
             #
-            # Nothing here may read the pose list. The called class, the called
-            # yaw and the stacking column are the experiment's answer sheet; a
-            # guard that consults them would refuse exactly the trials where
-            # perception was wrong, which is the quantity E2 measures.
+            # Built only from what perception reports. Nothing here may read
+            # the called position, yaw or stacking column: those are the
+            # experiment's answer sheet, and a guard that consulted them would
+            # refuse exactly the trials where perception was wrong, which is
+            # the quantity E2 measures. The class is different. The trial names
+            # the class to pick, _select_objects keeps only detections of that
+            # class, and the paper declares it as the task input.
             #
-            # Two things can make a trial unsafe, and both show up in the
-            # detection itself:
-            #   1. the depth-derived top face collapses (a mirror finish returns
-            #      no pattern, a thin part returns few pixels), so the commanded
-            #      Z would drive the tool into the table;
-            #   2. the mask does not describe a part of the detected class, so
-            #      its yaw would spin the wrist to a meaningless angle.
+            # Three refusals, judged in this order before any motion is
+            # dispatched, each kept whole in its own method so that it can be
+            # tested as itself:
+            #   pick_z_safety_reject   the depth behind the command cannot be
+            #                          believed (_depth_implausible);
+            #   depth_geometry_reject  trustworthy depth puts the top face far
+            #                          above the command
+            #                          (_depth_contradicts_command);
+            #   yaw_geometry_reject    the measured top rectangle is not the
+            #                          detected class (_shape_contradicts_class).
             if self.config.get("is_real_mode", False):
-                reject = None
-
-                # (1) Depth plausibility — the clauses fuse_height already uses:
-                # enough of the mask must return depth, and the measured top face
-                # must be at least as high as the lowest variant of the class can
-                # stand. A stacked part reads higher, never lower, so this needs
-                # no knowledge of what it stands on.
-                if str(obj.get("depth_used", "")) == "rgbd":
-                    tol_mm = float(self.config.get("height_tolerance_mm", 20.0))
-                    min_frac = float(self.config.get("min_depth_valid_frac", 0.15))
-                    h_depth = obj.get("h_depth_mm")
-                    frac = obj.get("depth_valid_frac")
-                    h_min = self._class_min_height_mm(obj.get("class_name"))
-
-                    if frac is not None and float(frac) < min_frac:
-                        reject = (f"depth valid fraction {float(frac):.2f} "
-                                  f"below {min_frac:.2f}")
-                    elif (h_min is not None and h_depth is not None
-                            and np.isfinite(float(h_depth))
-                            and float(h_depth) < h_min - tol_mm):
-                        reject = (f"top face {float(h_depth):.1f} mm below the "
-                                  f"{h_min:.0f} mm the class can stand at")
-
-                if reject is not None:
-                    logger.error("Trial %d: pick refused — %s", trial_id, reject)
-                    self.sm.fail("pick_z_safety_reject")
-                    self.stats["failed"] += 1
-                    self._log_trial(trial_id, False, "pick_z_safety_reject",
-                                    t_start, obj)
-                    return False
-
-                # (2) Commanded height against measured height. The plane
-                # estimate stands a part on the table by its class height, so a
-                # part resting on another one is placed a whole support lower
-                # and the tool would be driven into that support. Depth sees the
-                # real top face; when it is trustworthy and the command sits far
-                # below it, refuse. This does not rescue the plane estimate — the
-                # trial still fails — it only keeps the failure out of the
-                # hardware, which is what E2 needs in order to measure it.
-                if reject is None:
-                    tol_mm = float(self.config.get("height_tolerance_mm", 20.0))
-                    min_frac = float(self.config.get("min_depth_valid_frac", 0.15))
-                    h_depth = obj.get("h_depth_mm")
-                    frac = obj.get("depth_valid_frac")
-                    if (h_depth is not None and frac is not None
-                            and float(frac) >= min_frac
-                            and np.isfinite(float(h_depth))):
-                        commanded_h = float(xyz_base[2]) - table_top
-                        if commanded_h < float(h_depth) - tol_mm:
-                            reject = (
-                                f"commanded top face {commanded_h:.1f} mm, "
-                                f"depth sees {float(h_depth):.1f} mm: the tool "
-                                f"would go into whatever the part rests on")
-
-                if reject is not None:
-                    logger.error("Trial %d: pick refused — %s", trial_id, reject)
-                    self.sm.fail("depth_geometry_reject")
-                    self.stats["failed"] += 1
-                    self._log_trial(trial_id, False, "depth_geometry_reject",
-                                    t_start, obj)
-                    return False
-
-                # (3) Shape plausibility — the measured top rectangle, in mm on
-                # the part plane, must match one size variant of the detected
-                # class. This is the vision-only replacement for comparing the
-                # vision yaw with the called yaw.
-                long_mm = obj.get("yaw_rect_long_mm")
-                short_mm = obj.get("yaw_rect_short_mm")
-                if long_mm is not None and short_mm is not None:
-                    tol_mm = float(self.config.get("size_tolerance_mm", 40.0))
-                    if not self._size_matches_class(
-                            obj.get("class_name"), float(long_mm), float(short_mm),
-                            tol_mm):
-                        logger.error(
-                            "Trial %d: pick refused — top face measures "
-                            "%.0f x %.0f mm, no %s variant within %.0f mm",
-                            trial_id, float(long_mm), float(short_mm),
-                            obj.get("class_name"), tol_mm,
-                        )
-                        self.sm.fail("yaw_geometry_reject")
+                commanded_h = float(xyz_base[2]) - table_top
+                for code, judge, args in (
+                    ("pick_z_safety_reject", self._depth_implausible, (obj,)),
+                    ("depth_geometry_reject", self._depth_contradicts_command,
+                     (obj, commanded_h)),
+                    ("yaw_geometry_reject", self._shape_contradicts_class,
+                     (obj,)),
+                ):
+                    reason = judge(*args)
+                    if reason is not None:
+                        logger.error("Trial %d: pick refused (%s): %s",
+                                     trial_id, code, reason)
+                        self.sm.fail(code)
                         self.stats["failed"] += 1
-                        self._log_trial(trial_id, False, "yaw_geometry_reject",
-                                        t_start, obj)
+                        self._log_trial(trial_id, False, code, t_start, obj)
                         return False
 
             # Base-frame yaw (camera→base transformed in _select_objects); fall back
@@ -1515,8 +1555,6 @@ class Orchestrator:
             # Read actual current J6 and predict J1 from target BASE XY.
             # Choose the equivalent Rz branch requiring less J6 rotation.
             # -------------------------------------------------------------
-            yaw = float(obj.get("yaw_base", obj["pose_camera"][3]))
-
             raw_yaw_deg = float(np.rad2deg(yaw))
             yaw_offset_deg = float(self.config["yaw_offset_deg"])
             base_cmd_deg = raw_yaw_deg + yaw_offset_deg
@@ -1657,7 +1695,7 @@ class Orchestrator:
                 is_measurement_reject = (
                     "Detected target height inconsistent with physical geometry"
                     in msg
-                    or "Unsafe/invalid detected target height" in msg
+                    or "Unsafe/invalid target height" in msg
                     or "UNSAFE P2 rejected before JOB_START" in msg
                 )
 

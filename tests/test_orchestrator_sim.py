@@ -199,3 +199,59 @@ class TestRunNTrials:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+class TestPickZReachesTheCommand:
+    """The table clamp and the floor must change the pose the robot is sent to.
+
+    On the review branch of 14 Oct 2026 both were computed and logged, but the
+    line writing them into the commanded pose had been lost, and no test
+    noticed because each one looked at a helper rather than at the motion.
+    """
+
+    TABLE = 593.9
+    BASE_Z = 630.0
+
+    def _grasp_z(self, calibration_file, mock_robot, class_name, top_z):
+        config = {
+            "calibration_path": str(calibration_file),
+            "inter_trial_delay_s": 0.0,
+            "gripper_delay_s": 0.0,
+            "use_yrc_ik": True,
+            "robot_base_xyz_mm": (0.0, 0.0, self.BASE_Z),
+            "table_top_z_mm": self.TABLE,
+            "table_safety_margin_mm": 20.0,
+            "grasp_depth_offset_mm": 0.0,
+            "height_tolerance_mm": 20.0,
+            "class_sizes_mm": {"inox_box": [[180, 85, 40]],
+                               "wood_box": [[190, 190, 150]]},
+        }
+        orch = Orchestrator(queue.Queue(maxsize=3), config=config,
+                            robot=mock_robot)
+        orch.queue.put(make_detection_msg(
+            [make_object(class_name, xyz=(500, 0, top_z))]))
+        assert orch.run_one_cycle(trial_id=1) is True
+        # A MagicMock answers to every attribute, so the cycle takes the fixed
+        # DTWINRUN path, the one the real experiment uses. Its P000 is the pick
+        # pose, a 4x4 in the robot base frame, BASE_Z above the world origin.
+        call = mock_robot.backend.run_dtwinrun_motion.call_args
+        assert call is not None
+        return float(np.asarray(call.kwargs["pick_T_base"])[2, 3]) + self.BASE_Z
+
+    def test_a_reading_at_the_table_is_held_20_mm_above_it(
+            self, calibration_file, mock_robot):
+        z = self._grasp_z(calibration_file, mock_robot, "inox_box", 600.0)
+        assert z == pytest.approx(self.TABLE + 20.0)
+
+    def test_a_collapsed_reading_of_a_tall_part_is_held_at_the_floor(
+            self, calibration_file, mock_robot):
+        # wood: floor at 150 - 20 = 130 mm above the table, where the table
+        # clamp alone would have let 650 through.
+        z = self._grasp_z(calibration_file, mock_robot, "wood_box", 650.0)
+        assert z == pytest.approx(self.TABLE + 130.0)
+
+    def test_a_sound_reading_is_left_where_it_is(
+            self, calibration_file, mock_robot):
+        # B3 of 14 Oct 2026, trial 24: inox read at 631.2 mm and picked.
+        z = self._grasp_z(calibration_file, mock_robot, "inox_box", 631.2)
+        assert z == pytest.approx(631.2)

@@ -965,16 +965,6 @@ def main() -> int:
                 orch.current_pose_id = str(row.get("pose_id", i))
                 orch.current_condition = str(row.get("condition", ""))
                 orch.current_stack_on = str(row.get("stack_on", ""))
-                # B3_EXPECTED_YAW_CONTEXT_V2
-                try:
-                    _pose_yaw = row.get("yaw_deg")
-                    orch.current_expected_yaw_deg = (
-                        float(_pose_yaw)
-                        if _pose_yaw not in (None, "")
-                        else None
-                    )
-                except (TypeError, ValueError):
-                    orch.current_expected_yaw_deg = None
                 orch.current_expected_class = str(
                     row.get("class_hint", "") or ""
                 ).strip().lower()
