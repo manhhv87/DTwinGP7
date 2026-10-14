@@ -805,11 +805,14 @@ class Orchestrator:
     ) -> tuple[float, float, float, float]:
         """Measure target-part height from RGB-D top Z and the table plane.
 
-        For a normal trial:
-            H_target = Z_top - Z_table
+        The part carried away is the detected one, so its height is the height
+        of its class, not the distance from the table to the top face: that
+        distance also contains whatever the part stands on. Reading the pose
+        list's stacking column here would feed the experiment's answer sheet
+        into the motion, so the support height is derived instead:
 
-        For STACKED:
-            H_target = Z_top - Z_table - H_support
+            H_target  = height of the detected class
+            H_support = (Z_top - Z_table) - H_target
 
         Returns:
             target_height_mm,
@@ -838,39 +841,27 @@ class Orchestrator:
             float(top_base[1]),
         )
 
-        stack_on = str(
-            getattr(self, "current_stack_on", "") or ""
-        ).strip().lower()
-
-        support_h_mm = 0.0
-
-        if stack_on:
-            heights = self.config.get("class_heights_mm") or {}
-
-            if stack_on not in heights:
-                raise RuntimeError(
-                    f"STACKED trial has no configured support height for "
-                    f"{stack_on!r}"
-                )
-
-            support_h_mm = float(heights[stack_on])
-
-            if (
-                not np.isfinite(support_h_mm)
-                or support_h_mm <= 0.0
-            ):
-                raise RuntimeError(
-                    f"Invalid support height for {stack_on!r}: "
-                    f"{support_h_mm}"
-                )
-
         total_height_mm = float(
             top_base[2] - table_pick_z
         )
 
-        target_height_mm = float(
-            total_height_mm - support_h_mm
-        )
+        # Height of the part being carried, from the class the detector
+        # reported. The variant is the one whose height is closest to what the
+        # top face allows, so the two carton sizes stay distinguishable without
+        # anyone being told which one was placed.
+        variants = [v[2] for v in self._class_variants_mm(obj.get("class_name"))
+                    if len(v) >= 3 and v[2] == v[2]]
+        if not variants:
+            raise RuntimeError(
+                f"No configured height for detected class "
+                f"{obj.get('class_name')!r}"
+            )
+        target_height_mm = float(min(
+            variants, key=lambda h: abs(total_height_mm - float(h))))
+
+        # Whatever the part stands on is the remainder, floored at zero: a part
+        # resting on the table leaves nothing, a stacked one leaves its support.
+        support_h_mm = float(max(0.0, total_height_mm - target_height_mm))
 
         if (
             not np.isfinite(target_height_mm)
@@ -878,7 +869,7 @@ class Orchestrator:
             or target_height_mm > 350.0
         ):
             raise RuntimeError(
-                "Unsafe/invalid detected target height: "
+                "Unsafe/invalid target height for the detected class: "
                 f"top={top_base[2]:.1f}, "
                 f"table={table_pick_z:.1f}, "
                 f"support={support_h_mm:.1f} "
@@ -1093,6 +1084,42 @@ class Orchestrator:
                            target_T_world[:3, 3].round(1).tolist())
             return (None, None)
         return (joint_list, None)
+
+    def _class_variants_mm(self, class_name) -> list[tuple[float, float, float]]:
+        """Measured (long, wide, high) variants of a class, from the config."""
+        if not class_name:
+            return []
+        sizes = self.config.get("class_sizes_mm") or {}
+        raw = sizes.get(str(class_name))
+        if not raw:
+            h = (self.config.get("class_heights_mm") or {}).get(str(class_name))
+            return [(float("nan"), float("nan"), float(h))] if h else []
+        if raw and not isinstance(raw[0], (list, tuple)):
+            raw = [raw]
+        return [tuple(float(v) for v in variant) for variant in raw]
+
+    def _class_min_height_mm(self, class_name):
+        """Lowest height the detected class can stand at, or None if unknown."""
+        heights = [v[2] for v in self._class_variants_mm(class_name)
+                   if len(v) >= 3 and v[2] == v[2]]
+        return min(heights) if heights else None
+
+    def _size_matches_class(self, class_name, long_mm: float, short_mm: float,
+                            tol_mm: float) -> bool:
+        """True when the measured top rectangle fits one variant of the class.
+
+        Unknown class or missing sizes: nothing to contradict, so it passes.
+        """
+        variants = self._class_variants_mm(class_name)
+        if not variants:
+            return True
+        for v in variants:
+            if len(v) < 2 or v[0] != v[0] or v[1] != v[1]:
+                continue
+            a, b = sorted((float(v[0]), float(v[1])), reverse=True)
+            if abs(long_mm - a) <= tol_mm and abs(short_mm - b) <= tol_mm:
+                return True
+        return False
 
     def _dh_model(self, gp7_urdf=None):
         """The URDF chain used by both client IK and the reached-pose check.
@@ -1330,440 +1357,114 @@ class Orchestrator:
                     "fingertip held %dmm above table)",
                     target_z, clamped_z, int(safety_margin),
                 )
-            # PLASTIC_PICK_Z_GUARD_V1
-            # Restore the previous Plastic-only pick protection.
+            # LOW-PART PICK FLOOR — one rule for every class.
             #
-            # This does NOT change RGB-D measurements or reject a detection.
-            # It only raises the final P0 sent to the robot if Plastic would
-            # otherwise be picked too close to the table.
+            # A part whose top face is only a few centimetres above the table
+            # leaves the jaws almost no room: a slightly low depth reading puts
+            # the fingertips under the top face and into the table. The floor
+            # below keeps the fingertips at the part's own top face, less the
+            # insertion the gripper is allowed to take, whatever the class.
+            # Class names stay out of it; the height comes from the detected
+            # class, and a per-class correction, if one is ever justified, is a
+            # config entry that defaults to nothing.
             cls_name = str(obj.get("class_name", "")).lower()
+            known_h = self._class_min_height_mm(obj.get("class_name"))
 
-            if cls_name == "plastic_box":
-                class_heights = self.config.get("class_heights_mm", {}) or {}
-                known_h = float(class_heights.get("plastic_box", 30.0))
-
+            if known_h is not None:
                 insertion_mm = float(
                     self.config.get("low_object_grasp_insertion_mm", 0.0)
                 )
                 insertion_mm = max(0.0, min(insertion_mm, known_h))
+                floor_z = table_top + known_h - insertion_mm
 
-                # Old low-object guard:
-                #   P0 >= table_top + Plastic height - insertion
-                plastic_floor_z = table_top + known_h - insertion_mm
-
-                if clamped_z < plastic_floor_z:
+                if clamped_z < floor_z:
                     logger.warning(
-                        "PLASTIC PICK Z GUARD: P0 %.1f -> %.1f mm "
-                        "(height=%.1f, insertion=%.1f)",
-                        clamped_z,
-                        plastic_floor_z,
-                        known_h,
+                        "PICK Z FLOOR (%s): P0 %.1f -> %.1f mm "
+                        "(class height=%.1f, insertion=%.1f)",
+                        cls_name or "?", clamped_z, floor_z, known_h,
                         insertion_mm,
                     )
-                    clamped_z = plastic_floor_z
+                    clamped_z = floor_z
 
-                # Old Plastic class-specific bias: +10 mm by config.
-                class_z_bias = self.config.get(
-                    "class_pick_z_bias_mm", {}
-                ) or {}
-                z_bias_mm = float(class_z_bias.get("plastic_box", 10.0))
-
+                z_bias_mm = float(
+                    (self.config.get("class_pick_z_bias_mm") or {}).get(cls_name, 0.0)
+                )
                 if z_bias_mm != 0.0:
                     logger.info(
-                        "PLASTIC CLASS Z BIAS: P0 Z %.1f -> %.1f mm (%+.1f mm)",
-                        clamped_z,
-                        clamped_z + z_bias_mm,
-                        z_bias_mm,
+                        "PICK Z BIAS (%s): P0 Z %.1f -> %.1f mm (%+.1f mm)",
+                        cls_name, clamped_z, clamped_z + z_bias_mm, z_bias_mm,
                     )
                     clamped_z += z_bias_mm
 
-            # B3_INOX_ACTUAL_P0_MOTION_SAFETY_V3
-            # Authoritative REAL-motion interlock on the ACTUAL P0 that will be
-            # converted to YRC BASE and written to P000.
+            # ─── MOTION SAFETY ────────────────────────────────────────────
+            # One rule for every class, built only from what perception reports.
             #
-            # IMPORTANT:
-            # - Do NOT repair/replace RGB-D.
-            # - Do NOT clamp Inox upward to a nominal height.
-            # - If measured P0 is too low, record FAIL and dispatch NO MOTION.
+            # Nothing here may read the pose list. The called class, the called
+            # yaw and the stacking column are the experiment's answer sheet; a
+            # guard that consults them would refuse exactly the trials where
+            # perception was wrong, which is the quantity E2 measures.
             #
-            # The previous V2 gate checked obj["h_depth_mm"]. Live B3 showed
-            # h_depth_mm can disagree with the centroid/deprojected Z that actually
-            # becomes P0. Therefore safety must inspect `clamped_z` itself.
-            cls_name_p0 = str(obj.get("class_name", "")).strip().lower()
+            # Two things can make a trial unsafe, and both show up in the
+            # detection itself:
+            #   1. the depth-derived top face collapses (a mirror finish returns
+            #      no pattern, a thin part returns few pixels), so the commanded
+            #      Z would drive the tool into the table;
+            #   2. the mask does not describe a part of the detected class, so
+            #      its yaw would spin the wrist to a meaningless angle.
+            if self.config.get("is_real_mode", False):
+                reject = None
 
-            if (
-                self.config.get("is_real_mode", False)
-                and cls_name_p0 == "inox_box"
-            ):
-                stack_key_p0 = str(
-                    getattr(self, "current_stack_on", "") or ""
-                ).strip().lower()
+                # (1) Depth plausibility — the clauses fuse_height already uses:
+                # enough of the mask must return depth, and the measured top face
+                # must be at least as high as the lowest variant of the class can
+                # stand. A stacked part reads higher, never lower, so this needs
+                # no knowledge of what it stands on.
+                if str(obj.get("depth_used", "")) == "rgbd":
+                    tol_mm = float(self.config.get("height_tolerance_mm", 20.0))
+                    min_frac = float(self.config.get("min_depth_valid_frac", 0.3))
+                    h_depth = obj.get("h_depth_mm")
+                    frac = obj.get("depth_valid_frac")
+                    h_min = self._class_min_height_mm(obj.get("class_name"))
 
-                support_safety_mm = {
-                    "": 0.0,
-                    "-": 0.0,
-                    "none": 0.0,
-                    "plastic": 30.0,
-                    "plastic_box": 30.0,
-                    "inox": 40.0,
-                    "inox_box": 40.0,
-                    "metal": 85.0,
-                    "metal_box": 85.0,
-                    "carton": 120.0,
-                    "carton_box": 120.0,
-                    "wood": 150.0,
-                    "wood_box": 150.0,
-                }
+                    if frac is not None and float(frac) < min_frac:
+                        reject = (f"depth valid fraction {float(frac):.2f} "
+                                  f"below {min_frac:.2f}")
+                    elif (h_min is not None and h_depth is not None
+                            and np.isfinite(float(h_depth))
+                            and float(h_depth) < h_min - tol_mm):
+                        reject = (f"top face {float(h_depth):.1f} mm below the "
+                                  f"{h_min:.0f} mm the class can stand at")
 
-                support_h_p0 = support_safety_mm.get(stack_key_p0)
-                reject_reason_p0 = None
-
-                try:
-                    actual_p0_world_z = float(clamped_z)
-                    table_top_world_z = float(table_top)
-                    finite_p0 = bool(
-                        np.isfinite(actual_p0_world_z)
-                        and np.isfinite(table_top_world_z)
-                    )
-                except (TypeError, ValueError):
-                    actual_p0_world_z = float("nan")
-                    table_top_world_z = float("nan")
-                    finite_p0 = False
-
-                if support_h_p0 is None:
-                    reject_reason_p0 = (
-                        f"unknown_stack_support={stack_key_p0!r}"
-                    )
-                    min_p0_world_z = float("nan")
-                    clearance_over_support = float("nan")
-                elif not finite_p0:
-                    reject_reason_p0 = "actual_p0_or_table_nonfinite"
-                    min_p0_world_z = float("nan")
-                    clearance_over_support = float("nan")
-                else:
-                    min_inox_clearance_mm = 38.0
-                    min_p0_world_z = (
-                        table_top_world_z
-                        + float(support_h_p0)
-                        + min_inox_clearance_mm
-                    )
-                    clearance_over_support = (
-                        actual_p0_world_z
-                        - table_top_world_z
-                        - float(support_h_p0)
-                    )
-
-                    if actual_p0_world_z < min_p0_world_z:
-                        reject_reason_p0 = (
-                            f"clearance={clearance_over_support:.1f}"
-                            f"<38.0mm"
-                        )
-
-                if reject_reason_p0 is not None:
-                    logger.warning(
-                        "Trial %d: INOX ACTUAL P0 unsafe for motion: "
-                        "P0worldZ=%s tableTop=%.1f stack_on=%s "
-                        "supportSafety=%s clearance=%s minP0worldZ=%s "
-                        "reason=%s -> trial FAIL, NO MOTION",
-                        trial_id,
-                        (
-                            f"{actual_p0_world_z:.1f}"
-                            if np.isfinite(actual_p0_world_z)
-                            else "?"
-                        ),
-                        (
-                            table_top_world_z
-                            if np.isfinite(table_top_world_z)
-                            else float("nan")
-                        ),
-                        stack_key_p0 or "-",
-                        (
-                            f"{float(support_h_p0):.1f}"
-                            if support_h_p0 is not None
-                            else "?"
-                        ),
-                        (
-                            f"{clearance_over_support:.1f}"
-                            if np.isfinite(clearance_over_support)
-                            else "?"
-                        ),
-                        (
-                            f"{min_p0_world_z:.1f}"
-                            if np.isfinite(min_p0_world_z)
-                            else "?"
-                        ),
-                        reject_reason_p0,
-                    )
+                if reject is not None:
+                    logger.error("Trial %d: pick refused — %s", trial_id, reject)
                     self.sm.fail("pick_z_safety_reject")
                     self.stats["failed"] += 1
-                    self._log_trial(
-                        trial_id,
-                        False,
-                        "pick_z_safety_reject",
-                        t_start,
-                        obj,
-                    )
+                    self._log_trial(trial_id, False, "pick_z_safety_reject",
+                                    t_start, obj)
                     return False
 
-            xyz_base[2] = clamped_z
-            # B3_INOX_P0_MOTION_SAFETY_V2
-            # REAL-motion safety only. Do NOT repair or overwrite raw RGB-D.
-            #
-            # For Inox, refuse motion when raw top-face height is too low.
-            # Nominal Inox height is 40 mm. Allow 2 mm sensor tolerance, so
-            # measured target height must be >= 38 mm.
-            #
-            # In stacked scenes h_depth_mm is height above the TABLE, so subtract
-            # a conservative support height first. Carton is treated as 120 mm
-            # because this cell has both 80-mm and 120-mm cartons.
-            if (
-                self.config.get("is_real_mode", False)
-                and str(obj.get("class_name", "")).lower() == "inox_box"
-            ):
-                raw_h_depth = obj.get("h_depth_mm")
-
-                stack_key = str(
-                    getattr(self, "current_stack_on", "") or ""
-                ).strip().lower()
-
-                support_safety_mm = {
-                    "": 0.0,
-                    "none": 0.0,
-                    "-": 0.0,
-                    "plastic": 30.0,
-                    "plastic_box": 30.0,
-                    "inox": 40.0,
-                    "inox_box": 40.0,
-                    "metal": 85.0,
-                    "metal_box": 85.0,
-                    "carton": 120.0,
-                    "carton_box": 120.0,
-                    "wood": 150.0,
-                    "wood_box": 150.0,
-                }
-
-                support_h = support_safety_mm.get(stack_key)
-                reject_reason = None
-                measured_target_h = float("nan")
-
-                if support_h is None:
-                    reject_reason = f"unknown_stack_support={stack_key!r}"
-                else:
-                    try:
-                        raw_h_depth_f = float(raw_h_depth)
-                        if not np.isfinite(raw_h_depth_f):
-                            raise ValueError("nonfinite")
-                        measured_target_h = raw_h_depth_f - float(support_h)
-                    except (TypeError, ValueError):
-                        reject_reason = "h_depth_missing_or_nonfinite"
-
-                inox_min_safe_h = 38.0
-
-                if (
-                    reject_reason is None
-                    and measured_target_h < inox_min_safe_h
-                ):
-                    reject_reason = (
-                        f"measured_target_h={measured_target_h:.1f}"
-                        f"<min_safe={inox_min_safe_h:.1f}"
-                    )
-
-                if reject_reason is not None:
-                    logger.warning(
-                        "Trial %d: INOX P0 unsafe for motion: "
-                        "h_depth=%s stack_on=%s supportSafety=%.1f "
-                        "targetH=%s minSafe=38.0 reason=%s "
-                        "-> trial FAIL, NO MOTION",
-                        trial_id,
-                        raw_h_depth,
-                        stack_key or "-",
-                        float(support_h) if support_h is not None else float("nan"),
-                        (
-                            f"{measured_target_h:.1f}"
-                            if np.isfinite(measured_target_h)
-                            else "?"
-                        ),
-                        reject_reason,
-                    )
-                    self.sm.fail("pick_z_safety_reject")
-                    self.stats["failed"] += 1
-                    self._log_trial(
-                        trial_id,
-                        False,
-                        "pick_z_safety_reject",
-                        t_start,
-                        obj,
-                    )
-                    return False
-
-            # B3_INOX_POSE_YAW_REFERENCE_GUARD_V2
-            # Safety-only comparison against the known B3 placement yaw.
-            # Do NOT replace vision yaw with pose-list yaw.
-            if (
-                self.config.get("is_real_mode", False)
-                and str(obj.get("class_name", "")).lower() == "inox_box"
-                and bool(getattr(self, "current_pose_id", ""))
-            ):
-                expected_pose_yaw = getattr(
-                    self, "current_expected_yaw_deg", None
-                )
-
-                vision_yaw_rad = obj.get("yaw_base")
-                yaw_ref_bad = False
-                yaw_ref_reason = ""
-                yaw_ref_err = float("nan")
-                expected_metric_edge = float("nan")
-                vision_yaw_deg = float("nan")
-
-                if expected_pose_yaw is None:
-                    yaw_ref_bad = True
-                    yaw_ref_reason = "pose_list_yaw_missing"
-                else:
-                    try:
-                        vision_yaw_deg = float(
-                            np.rad2deg(float(vision_yaw_rad))
+                # (2) Shape plausibility — the measured top rectangle, in mm on
+                # the part plane, must match one size variant of the detected
+                # class. This is the vision-only replacement for comparing the
+                # vision yaw with the called yaw.
+                long_mm = obj.get("yaw_rect_long_mm")
+                short_mm = obj.get("yaw_rect_short_mm")
+                if long_mm is not None and short_mm is not None:
+                    tol_mm = float(self.config.get("size_tolerance_mm", 40.0))
+                    if not self._size_matches_class(
+                            obj.get("class_name"), float(long_mm), float(short_mm),
+                            tol_mm):
+                        logger.error(
+                            "Trial %d: pick refused — top face measures "
+                            "%.0f x %.0f mm, no %s variant within %.0f mm",
+                            trial_id, float(long_mm), float(short_mm),
+                            obj.get("class_name"), tol_mm,
                         )
-                        expected_pose_yaw = float(expected_pose_yaw)
-
-                        if not (
-                            np.isfinite(vision_yaw_deg)
-                            and np.isfinite(expected_pose_yaw)
-                        ):
-                            raise ValueError("nonfinite")
-
-                        # Project convention: metric yaw is the LONG edge while
-                        # pose-list yaw is the marked reference edge, 90 deg apart.
-                        expected_metric_edge = expected_pose_yaw - 90.0
-
-                        # Rectangle orientation is 180-deg symmetric.
-                        yaw_ref_err = abs(
-                            (
-                                (
-                                    vision_yaw_deg
-                                    - expected_metric_edge
-                                    + 90.0
-                                )
-                                % 180.0
-                            )
-                            - 90.0
-                        )
-
-                        if yaw_ref_err > 20.0:
-                            yaw_ref_bad = True
-                            yaw_ref_reason = (
-                                f"yaw_error={yaw_ref_err:.1f}>20.0deg"
-                            )
-                    except (TypeError, ValueError):
-                        yaw_ref_bad = True
-                        yaw_ref_reason = "vision_or_pose_yaw_nonfinite"
-
-                if yaw_ref_bad:
-                    logger.warning(
-                        "Trial %d: INOX pose-yaw safety mismatch: "
-                        "poseYaw=%s expectedMetricEdge=%s visionEdge=%s "
-                        "err=%s reason=%s -> trial FAIL, NO MOTION",
-                        trial_id,
-                        expected_pose_yaw,
-                        (
-                            f"{expected_metric_edge:.1f}"
-                            if np.isfinite(expected_metric_edge)
-                            else "?"
-                        ),
-                        (
-                            f"{vision_yaw_deg:.1f}"
-                            if np.isfinite(vision_yaw_deg)
-                            else "?"
-                        ),
-                        (
-                            f"{yaw_ref_err:.1f}"
-                            if np.isfinite(yaw_ref_err)
-                            else "?"
-                        ),
-                        yaw_ref_reason,
-                    )
-                    self.sm.fail("yaw_geometry_reject")
-                    self.stats["failed"] += 1
-                    self._log_trial(
-                        trial_id,
-                        False,
-                        "yaw_geometry_reject",
-                        t_start,
-                        obj,
-                    )
-                    return False
-
-            # B3_INOX_YAW_MOTION_SAFETY_V1
-            # Safety-only gate for REAL Inox motion.
-            #
-            # This does NOT change h_depth_mm and does NOT repair/fallback depth.
-            # It only prevents robot motion when the selected Inox footprint is
-            # too distorted to trust the metric yaw that drives Rz/J6.
-            if (
-                self.config.get("is_real_mode", False)
-                and str(obj.get("class_name", "")).lower() == "inox_box"
-            ):
-                yaw_source = str(obj.get("yaw_source", ""))
-                rect_l_raw = obj.get("yaw_rect_long_mm")
-                rect_w_raw = obj.get("yaw_rect_short_mm")
-                near_square = bool(obj.get("yaw_near_square", False))
-
-                bad_yaw_geometry = False
-                reason_parts = []
-
-                if yaw_source != "metric_base_minAreaRect":
-                    bad_yaw_geometry = True
-                    reason_parts.append(f"yaw_source={yaw_source or 'missing'}")
-
-                try:
-                    rect_l = float(rect_l_raw)
-                    rect_w = float(rect_w_raw)
-                    finite_rect = bool(np.isfinite(rect_l) and np.isfinite(rect_w))
-                except (TypeError, ValueError):
-                    rect_l = float("nan")
-                    rect_w = float("nan")
-                    finite_rect = False
-
-                if not finite_rect:
-                    bad_yaw_geometry = True
-                    reason_parts.append("metric_rect_missing_or_nonfinite")
-                else:
-                    exp_l = 180.0
-                    exp_w = 85.0
-                    err_l = abs(rect_l - exp_l) / exp_l
-                    err_w = abs(rect_w - exp_w) / exp_w
-
-                    if near_square:
-                        bad_yaw_geometry = True
-                        reason_parts.append("near_square")
-                    if err_l > 0.22:
-                        bad_yaw_geometry = True
-                        reason_parts.append(f"long_err={100.0*err_l:.1f}%")
-                    if err_w > 0.35:
-                        bad_yaw_geometry = True
-                        reason_parts.append(f"short_err={100.0*err_w:.1f}%")
-
-                if bad_yaw_geometry:
-                    logger.warning(
-                        "Trial %d: INOX yaw geometry unsafe for motion: "
-                        "rect=%s x %s mm source=%s h_depth=%s reason=%s "
-                        "-> trial FAIL, NO MOTION",
-                        trial_id,
-                        f"{rect_l:.1f}" if np.isfinite(rect_l) else "?",
-                        f"{rect_w:.1f}" if np.isfinite(rect_w) else "?",
-                        yaw_source or "missing",
-                        obj.get("h_depth_mm"),
-                        ",".join(reason_parts),
-                    )
-                    self.sm.fail("yaw_geometry_reject")
-                    self.stats["failed"] += 1
-                    self._log_trial(
-                        trial_id,
-                        False,
-                        "yaw_geometry_reject",
-                        t_start,
-                        obj,
-                    )
-                    return False
+                        self.sm.fail("yaw_geometry_reject")
+                        self.stats["failed"] += 1
+                        self._log_trial(trial_id, False, "yaw_geometry_reject",
+                                        t_start, obj)
+                        return False
 
             # Base-frame yaw (camera→base transformed in _select_objects); fall back
             # to the raw pixel-frame yaw only if a producer bypassed _select_objects.
