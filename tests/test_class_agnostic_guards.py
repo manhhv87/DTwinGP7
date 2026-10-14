@@ -184,6 +184,38 @@ class TestShape:
         assert _orch()._shape_contradicts_class(_obj()) is None
 
 
+class TestCommandedPickZ:
+    """Every height rule for the pick, judged on the commanded point."""
+
+    @staticmethod
+    def _z(class_name, top_z, **cfg):
+        o = _orch(table_safety_margin_mm=35.0, grasp_depth_offset_mm=0.0,
+                  height_tolerance_mm=20.0, **cfg)
+        return o._commanded_pick_z(
+            {"pose_base": (500.0, 0.0, top_z), "class_name": class_name}, 0.0)
+
+    def test_a_sound_reading_of_a_thick_part_is_left_alone(self):
+        assert self._z("inox_box", 38.0) == pytest.approx(38.0)
+
+    def test_a_reading_like_trial_45_is_held_at_the_clearance(self):
+        """Trial 45 of 14 Oct 2026 was commanded about 25 mm up and collided."""
+        assert self._z("inox_box", 25.0) == pytest.approx(35.0)
+
+    def test_a_thin_part_on_the_table_is_lifted_to_the_clearance(self):
+        assert self._z("plastic_box", 27.0) == pytest.approx(35.0)
+
+    def test_a_thin_part_on_a_support_keeps_the_clearance_above_it(self):
+        # plastic on a 150 mm support: top at 180, support top at 150.
+        assert self._z("plastic_box", 180.0) == pytest.approx(185.0)
+
+    def test_a_thick_part_on_a_support_is_left_alone(self):
+        assert self._z("carton", 230.0) == pytest.approx(230.0)
+
+    def test_a_bias_cannot_go_below_the_clearance(self):
+        z = self._z("inox_box", 38.0, class_pick_z_bias_mm={"inox_box": -10.0})
+        assert z == pytest.approx(35.0)
+
+
 # ── Measured runs ────────────────────────────────────────────────────────────
 # table_top_z_mm recorded in the metadata of every run below.
 TABLE_TOP_MM = 593.9006737673905
@@ -300,3 +332,29 @@ class TestMeasuredRuns:
         assert sum(cls == "inox_box" for cls, _ in lifted) == 21
         assert sum(cls == "inox_box" for cls, _ in lifts) == 24
         assert max(d for _, d in lifted) == pytest.approx(8.2, abs=0.05)
+
+
+    def test_commanded_heights_keep_the_clearance(self):
+        """The configured clearance on every measured reading.
+
+        Every commanded point stays the margin above the table and above
+        the support. Only thin parts and low readings move: all eight plastic
+        readings and three inox readings, the largest inox lift 3.2 mm, so the
+        other 21 inox readings reach the robot exactly as measured.
+        """
+        o = _orch_from_config_file()
+        margin = float(o.config["table_safety_margin_mm"])
+        lifted = []
+        for run, trial, cls, *_r, det_z, _ok in MEASURED:
+            z = o._commanded_pick_z(
+                {"pose_base": (0.0, 0.0, det_z), "class_name": cls}, TABLE_TOP_MM)
+            support = max(TABLE_TOP_MM, det_z - o._class_min_height_mm(cls))
+            assert z - support >= margin - 1e-9, (run, trial)
+            if z > det_z + 1e-9:
+                lifted.append((cls, z - det_z))
+        assert margin == 35.0
+        assert len(lifted) == 11
+        assert sum(cls == "plastic_box" for cls, _ in lifted) == 8
+        inox = [d for cls, d in lifted if cls == "inox_box"]
+        assert len(inox) == 3
+        assert max(inox) == pytest.approx(3.2, abs=0.05)

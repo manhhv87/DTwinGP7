@@ -1,7 +1,9 @@
 robot_name: Yaskawa GP7
 calibration_path: config/calibration/T_base_camera.npy
 # Hiệu chỉnh cao độ gắp riêng cho một lớp, chỉ dùng khi đã đo được lý do. Để
-# trống nghĩa là không lớp nào được đối xử riêng.
+# trống nghĩa là không lớp nào được đối xử riêng. Hộp nhựa từng được cộng 10 mm;
+# nay khoảng cách table_safety_margin_mm tới mặt bàn hoặc vật đỡ giữ nó trong vùng
+# độ cao đã chạy không va chạm.
 class_pick_z_bias_mm: {}
 place_position:
 - 500.0
@@ -45,7 +47,12 @@ real:
   # 0. Phép đo: đặt một vật ở 0 độ, cho gắp, xem hai má có song song cạnh dài không.
   yaw_offset_deg: 5.0
   table_top_z_mm: null
-  table_safety_margin_mm: 20.0
+  # 35: khoảng cách nhỏ nhất từ điểm lệnh (TCP của bộ điều khiển) tới mặt bàn hoặc
+  # mặt vật đỡ, áp chung mọi lớp và áp cả cho điểm thả P2. Đầu ngón kẹp nằm thấp hơn
+  # điểm lệnh: động học thuận của góc khớp ghi ngày 14/10/2026 thấp hơn lệnh P0 từ
+  # 23,6 tới 23,9 mm trên 38 lượt gắp. Các lượt lệnh từ 34,9 mm trở lên không va
+  # chạm; lượt 45, lệnh khoảng 25 mm, báo động va chạm 4315 khi đóng kẹp.
+  table_safety_margin_mm: 35.0
   grasp_depth_offset_mm: 0.0
   # Reject RGB-D target-height estimates that differ too far from the
   # measured physical variants in class_sizes_mm.

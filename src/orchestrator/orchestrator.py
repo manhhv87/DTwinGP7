@@ -1009,7 +1009,9 @@ class Orchestrator:
             table_place_z_base + safety_margin_mm
         )
 
-        if p2_z < min_safe_p2_z:
+        # A part lifted to exactly the clearance lands exactly on it at the
+        # place; rounding in the frame transforms must not refuse it.
+        if p2_z < min_safe_p2_z - 1e-6:
             raise RuntimeError(
                 "UNSAFE P2 rejected before JOB_START: "
                 f"P2.Z={p2_z:.1f} < "
@@ -1150,6 +1152,65 @@ class Orchestrator:
             if abs(long_mm - a) <= tol_mm and abs(short_mm - b) <= tol_mm:
                 return True
         return False
+
+    def _commanded_pick_z(self, obj, table_top: float) -> float:
+        """World Z the pick is commanded to, after every height rule.
+
+        The commanded point is the controller's TCP, and the jaw tips sit
+        below it. Over 38 picks of 14 Oct 2026 the forward kinematics of the
+        logged joints, with the 178 mm tool of the cell layout, put the tool
+        23.6 to 23.9 mm under the commanded P0, so a clearance is counted from
+        the commanded point and not from the tips. Picks commanded 34.9 mm or
+        more above the table ran without a collision; trial 45, commanded
+        about 25 mm above it, raised collision alarm 4315 while the jaws
+        closed. table_safety_margin_mm is set from that evidence.
+
+        Rules, in order:
+          1. the measured top face, less the configured grasp depth;
+          2. the commanded point stays table_safety_margin_mm above the table
+             and as far above what the part rests on, whose top is taken as
+             the measured top less the lowest height of the detected class.
+             A part thinner than the margin is lifted by the difference, and
+             the same margin then holds at the place, where P2 sits at the
+             part's height plus that lift above the table; thicker parts are
+             not touched;
+          3. the floor of _pick_floor_z, against a collapsed reading;
+          4. a per-class bias from the config, never below rule 2.
+        All of it reads the detection and the class table, never the pose
+        list, and applies alike in every depth mode.
+        """
+        top_z = float(obj["pose_base"][2])
+        cls_name = str(obj.get("class_name", "")).lower()
+        margin = float(self.config["table_safety_margin_mm"])
+        z = top_z - grasp_depth_offset(
+            obj.get("height_mm"), float(self.config["grasp_depth_offset_mm"]),
+            margin)
+
+        clear_z = float(table_top) + margin
+        h_min = self._class_min_height_mm(obj.get("class_name"))
+        if h_min is not None:
+            clear_z = max(clear_z, top_z - h_min + margin)
+        if z < clear_z:
+            logger.info(
+                "PICK Z CLEARANCE (%s): P0 %.1f -> %.1f mm "
+                "(TCP %.0f mm above the table or the support)",
+                cls_name or "?", z, clear_z, margin,
+            )
+            z = clear_z
+
+        floor_z = self._pick_floor_z(obj.get("class_name"), table_top)
+        if floor_z is not None and z < floor_z:
+            logger.warning("PICK Z FLOOR (%s): P0 %.1f -> %.1f mm",
+                           cls_name or "?", z, floor_z)
+            z = floor_z
+
+        bias = float(self._lower_keys(
+            self.config.get("class_pick_z_bias_mm")).get(cls_name, 0.0))
+        if bias != 0.0:
+            logger.info("PICK Z BIAS (%s): P0 Z %.1f -> %.1f mm (%+.1f mm)",
+                        cls_name, z, z + bias, bias)
+            z = max(z + bias, clear_z)
+        return z
 
     def _pick_floor_z(self, class_name, table_top: float):
         """Lowest Z the pick may be commanded to for this class, or None.
@@ -1446,58 +1507,16 @@ class Orchestrator:
         self.sm.transition_to(PickState.PLAN)
         dz = self.config["approach_height_mm"]
 
-        # Hard clamp for fingertip TCP: never go below table_top + safety.
-        # Guarantees no table penetration regardless of adaptive offset errors.
+        # Every height rule for the pick, and the cell evidence behind the
+        # clearance, is in _commanded_pick_z.
         table_top = float(self.config["table_top_z_mm"])
-        safety_margin = float(self.config["table_safety_margin_mm"])
-        min_grasp_z = table_top + safety_margin
-        max_offset = float(self.config["grasp_depth_offset_mm"])
 
         for obj in objects:
             xyz_base = np.array(obj["pose_base"], dtype=float).copy()
-            # pose_base[2] is Z of the object TOP (camera looks down → depth is top).
-            # Adaptive offset: clipped to object height so fingertip enters the body.
-            obj_height = obj.get("height_mm")
-            effective_offset = grasp_depth_offset(obj_height, max_offset, safety_margin)
-            target_z = xyz_base[2] - effective_offset
-            # HARD CLAMP: regardless of offset, TCP never goes below min_grasp_z.
-            clamped_z = max(target_z, min_grasp_z)
-            if clamped_z > target_z:
-                logger.info(
-                    "Grasp Z clamped: target=%.0f → %.0f (table_safety, "
-                    "fingertip held %dmm above table)",
-                    target_z, clamped_z, int(safety_margin),
-                )
-            # PICK Z FLOOR. A collapsed depth reading is not followed down;
-            # the rule and its measured justification are in _pick_floor_z.
-            cls_name = str(obj.get("class_name", "")).lower()
-            floor_z = self._pick_floor_z(obj.get("class_name"), table_top)
-
-            if floor_z is not None:
-                if clamped_z < floor_z:
-                    logger.warning(
-                        "PICK Z FLOOR (%s): P0 %.1f -> %.1f mm",
-                        cls_name or "?", clamped_z, floor_z,
-                    )
-                    clamped_z = floor_z
-
-                z_bias_mm = float(
-                    (self.config.get("class_pick_z_bias_mm") or {}).get(cls_name, 0.0)
-                )
-                if z_bias_mm != 0.0:
-                    logger.info(
-                        "PICK Z BIAS (%s): P0 Z %.1f -> %.1f mm (%+.1f mm)",
-                        cls_name, clamped_z, clamped_z + z_bias_mm, z_bias_mm,
-                    )
-                    # A bias may lift or lower the grasp, never below the
-                    # table clamp the comment above promises.
-                    clamped_z = max(clamped_z + z_bias_mm, min_grasp_z)
-
-            # The clamp, the floor and the per-class bias above are
-            # only real once they reach the commanded pose. Everything after
-            # this line, the refusal clauses and the grasp pose itself, reads
-            # xyz_base.
-            xyz_base[2] = clamped_z
+            # The commanded height is only real once it reaches xyz_base.
+            # Everything after this line, the refusal clauses and the grasp
+            # pose itself, reads it from there.
+            xyz_base[2] = self._commanded_pick_z(obj, table_top)
 
             # MOTION SAFETY, one rule set for every class.
             #
