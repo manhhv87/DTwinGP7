@@ -1328,6 +1328,8 @@ class MotomanHSEBackend:
         # Fixed YRC INFORM job using runtime P000-P003 plus taught P004 HOME.
         # P000=P0, P001=P1, P002=P2, P003=P3; P004 HOME is YRC-taught.
         # Runtime performs zero FTP uploads.
+        # Gripper close/open and the wait for the carrier-detect sensor are in
+        # the taught job, supervised by the PLC; this method sends no I/O.
         if self._halted:
             raise MotionHaltedError(
                 "DTWINRUN refused - motion halted (call servo_on to resume)"

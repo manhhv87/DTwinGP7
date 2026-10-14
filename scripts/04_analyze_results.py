@@ -79,8 +79,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--score-col", default="success",
                         help="Which column counts as the outcome: 'success' (the "
                              "machine's; on the fixed DTWINRUN job the real cell runs, "
-                             "it means the job ran to its end without an alarm, and the "
-                             "PC reads no gripper sensor there) or 'human_ok' (what the "
+                             "it means the job ran to its end without an alarm; the job "
+                             "itself waits for the part-detect sensor, the PC reads none, "
+                             "and nothing checks the placement) or 'human_ok' (what the "
                              "operator saw, written by 03 --confirm-each-trial after "
                              "every cycle handed to the robot). A trial refused or "
                              "skipped before motion has no verdict and is scored as a "

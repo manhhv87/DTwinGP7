@@ -1851,6 +1851,12 @@ class Orchestrator:
             # P000-P003 are runtime P-vars written by the PC.
             # P004 is HOME taught on the YRC and is NEVER overwritten here.
             # No IO/gripper commands are issued in this path.
+            #
+            # The listing shows the motion only. The taught job also closes and
+            # opens the gripper and waits for the carrier-detect sensor, with the
+            # PLC supervising actuation and sensing (confirmed on the cell, 14 Oct
+            # 2026). The PC learns only whether the job finished without an
+            # alarm, which is why the operator's verdict is the task outcome.
             if self.config.get("use_yrc_ik", False):
                 motion_backend = getattr(self.robot, "backend", self.robot)
                 if hasattr(motion_backend, "run_dtwinrun_motion"):
