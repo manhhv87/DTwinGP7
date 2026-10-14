@@ -15,7 +15,10 @@ move_verify_tol_mm: 5.0
 # tỷ lệ điểm ảnh có độ sâu hợp lệ trong mặt nạ phải đạt min_depth_valid_frac; và
 # hình chữ nhật mặt trên đo được phải khớp một cỡ của lớp trong size_tolerance_mm.
 height_tolerance_mm: 20.0
-min_depth_valid_frac: 0.3
+# 0,15: ở buổi B3 ngày 14/10, 19 lượt inox phẳng đạt có tỷ lệ từ 0,299 tới 0,991,
+# nên mọi ngưỡng từ 0,3 trở lên đều loại nhầm lượt gắp được. Ngưỡng này chỉ để bắt
+# mặt nạ gần như không có độ sâu; việc phát hiện đo sai chiều cao thuộc hai luật kia.
+min_depth_valid_frac: 0.15
 size_tolerance_mm: 40.0
 approach_height_mm: 100.0
 return_home_after_success: false

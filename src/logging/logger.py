@@ -68,6 +68,12 @@ CONTEXT_FIELDNAMES = [
     "depth_valid_frac",
     "part_height_mm",
     "size_iou",
+    # Top face measured in mm on the part plane, from the mask outline. The
+    # motion guard refuses a trial whose rectangle matches no size variant of
+    # the detected class, so the numbers it judged on belong in the record.
+    "yaw_rect_long_mm",
+    "yaw_rect_short_mm",
+    "yaw_near_square",
     "h_depth_mm",
     # Operator verdict, scored by eye right after the trial (03 --confirm-each-trial).
     # `success` is the machine's: the detect sensor proves a part was in the gripper

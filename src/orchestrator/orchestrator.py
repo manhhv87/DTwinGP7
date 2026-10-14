@@ -1421,7 +1421,7 @@ class Orchestrator:
                 # no knowledge of what it stands on.
                 if str(obj.get("depth_used", "")) == "rgbd":
                     tol_mm = float(self.config.get("height_tolerance_mm", 20.0))
-                    min_frac = float(self.config.get("min_depth_valid_frac", 0.3))
+                    min_frac = float(self.config.get("min_depth_valid_frac", 0.15))
                     h_depth = obj.get("h_depth_mm")
                     frac = obj.get("depth_valid_frac")
                     h_min = self._class_min_height_mm(obj.get("class_name"))
@@ -2007,6 +2007,11 @@ class Orchestrator:
                 extra["part_height_mm"] = round(float(obj["height_mm"]), 1)
             if obj.get("size_iou") is not None:
                 extra["size_iou"] = round(float(obj["size_iou"]), 3)
+            for key, digits in (("yaw_rect_long_mm", 1), ("yaw_rect_short_mm", 1)):
+                if obj.get(key) is not None:
+                    extra[key] = round(float(obj[key]), digits)
+            if obj.get("yaw_near_square") is not None:
+                extra["yaw_near_square"] = int(bool(obj["yaw_near_square"]))
             if obj.get("h_depth_mm") is not None:
                 extra["h_depth_mm"] = round(float(obj["h_depth_mm"]), 1)
         if ask_human and self.human_score_hook is not None:
