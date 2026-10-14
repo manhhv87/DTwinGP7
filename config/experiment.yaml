@@ -1,7 +1,8 @@
 robot_name: Yaskawa GP7
 calibration_path: config/calibration/T_base_camera.npy
-class_pick_z_bias_mm:
-  plastic_box: 10.0
+# Hiệu chỉnh cao độ gắp riêng cho một lớp, chỉ dùng khi đã đo được lý do. Để
+# trống nghĩa là không lớp nào được đối xử riêng.
+class_pick_z_bias_mm: {}
 place_position:
 - 500.0
 - -350.0
@@ -9,6 +10,13 @@ place_position:
 # Sau mỗi chuyển động Cartesian, đọc góc khớp rồi dựng lại vị trí đầu công tác và
 # so với đích. Lệch quá ngưỡng này thì dừng lượt. Đặt 0 để tắt phép kiểm.
 move_verify_tol_mm: 5.0
+# Ngưỡng của ba phép chặn chuyển động, áp chung cho mọi lớp. Chiều cao mặt trên
+# đo được phải không thấp hơn chiều cao thấp nhất của lớp quá height_tolerance_mm;
+# tỷ lệ điểm ảnh có độ sâu hợp lệ trong mặt nạ phải đạt min_depth_valid_frac; và
+# hình chữ nhật mặt trên đo được phải khớp một cỡ của lớp trong size_tolerance_mm.
+height_tolerance_mm: 20.0
+min_depth_valid_frac: 0.3
+size_tolerance_mm: 40.0
 approach_height_mm: 100.0
 return_home_after_success: false
 speed_joint_deg_s: 60.0
