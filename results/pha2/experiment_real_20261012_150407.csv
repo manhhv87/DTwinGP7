@@ -1,0 +1,7 @@
+timestamp,trial_id,success,class_name,cycle_time_s,failure_reason,final_state,lighting,overlap,mode,ik,det_x_mm,det_y_mm,det_z_mm,det_yaw_deg,confidence,mask_area,frame_path,pose_id,condition,stack_on,session_id,block_id,operator_id,depth_mode,depth_used,depth_valid_frac,part_height_mm,size_iou,h_depth_mm,human_ok,run_id
+1791792298.0650482,1,1,carton,32.235,,done,,,real,,564.8,20.3,717.8,-89.1,0.947,27109,,,,,,,,rgbd,rgbd,0.984,120.0,0.976,126.0,1,3635543b90de4f49a7f479786a7ba9d2
+1791792442.696539,2,1,plastic_box,77.421,,done,,,real,,565.0,-159.8,621.0,-42.1,0.936,23506,,,,,,,,rgbd,rgbd,0.995,30.0,,29.2,1,3635543b90de4f49a7f479786a7ba9d2
+1791792564.8507488,3,1,metal_box,103.795,,done,,,real,,625.9,-100.8,676.6,1.0,0.954,26740,,,,,,,,rgbd,rgbd,1.0,85.0,,84.5,1,3635543b90de4f49a7f479786a7ba9d2
+1791792606.256736,4,1,wood_box,38.868,,done,,,real,,526.0,16.0,741.8,40.8,0.961,48606,,,,,,,,rgbd,rgbd,1.0,150.0,,149.8,1,3635543b90de4f49a7f479786a7ba9d2
+1791792633.103509,5,0,,0.119,detection_miss,idle,,,real,,,,,,,,,,,,,,,rgbd,,,,,,,3635543b90de4f49a7f479786a7ba9d2
+1791792720.3452194,6,1,carton,44.554,,done,,,real,,575.1,180.3,717.8,-44.1,0.963,28661,,,,,,,,rgbd,rgbd,0.981,120.0,0.954,126.1,1,3635543b90de4f49a7f479786a7ba9d2
