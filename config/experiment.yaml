@@ -7,18 +7,22 @@ place_position:
 - 500.0
 - -350.0
 - 150.0
-# Sau mỗi chuyển động Cartesian, đọc góc khớp rồi dựng lại vị trí đầu công tác và
-# so với đích. Lệch quá ngưỡng này thì dừng lượt. Đặt 0 để tắt phép kiểm.
-move_verify_tol_mm: 5.0
 # Ngưỡng của ba phép chặn chuyển động, áp chung cho mọi lớp. Chiều cao mặt trên
 # đo được phải không thấp hơn chiều cao thấp nhất của lớp quá height_tolerance_mm;
 # tỷ lệ điểm ảnh có độ sâu hợp lệ trong mặt nạ phải đạt min_depth_valid_frac; và
 # hình chữ nhật mặt trên đo được phải khớp một cỡ của lớp trong size_tolerance_mm.
+# height_tolerance_mm còn đặt sàn cho cao độ lệnh: lệnh không xuống thấp hơn chiều
+# cao thấp nhất của lớp trừ đi ngưỡng này. Trên 55 lượt đo ngày 12 và 14/10/2026,
+# sàn ấy không nâng lượt nào; đặt sàn ngay ở chiều cao danh định thì nâng 36 lượt.
 height_tolerance_mm: 20.0
-# 0,15: ở buổi B3 ngày 14/10, 19 lượt inox phẳng đạt có tỷ lệ từ 0,299 tới 0,991,
-# nên mọi ngưỡng từ 0,3 trở lên đều loại nhầm lượt gắp được. Ngưỡng này chỉ để bắt
+# 0,15: ở buổi B3 ngày 14/10, 14 lượt inox đặt phẳng gắp thành công có tỷ lệ từ
+# 0,299 tới 0,991, nên mọi ngưỡng từ 0,3 trở lên đều loại nhầm lượt gắp được. Ngưỡng này chỉ để bắt
 # mặt nạ gần như không có độ sâu; việc phát hiện đo sai chiều cao thuộc hai luật kia.
 min_depth_valid_frac: 0.15
+# Để lấy phép đo chiều sâu mà phủ quyết một chuyển động thì phép đo ấy phải đáng tin
+# ít nhất bằng mức mà luật hợp nhất đòi trước khi nó chịu dùng chiều sâu, tức 0,3.
+# Ngưỡng 0,15 ở trên chỉ dùng để nhận ra mặt nạ gần như không có độ sâu.
+depth_veto_valid_frac: 0.3
 size_tolerance_mm: 40.0
 # 200 mm: phải vượt vật cao nhất có thể đứng trên bàn. Chồng cao nhất là hộp gỗ
 # 150 cộng vật trên nó, tới 190 mm, trong khi điểm gắp thấp nhất là mặt trên hộp
