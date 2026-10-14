@@ -1,0 +1,2 @@
+timestamp,trial_id,success,class_name,cycle_time_s,failure_reason,final_state,lighting,overlap,mode,ik,det_x_mm,det_y_mm,det_z_mm,det_yaw_deg,confidence,mask_area,frame_path,pose_id,condition,stack_on,session_id,block_id,operator_id,depth_mode,depth_used,depth_valid_frac,part_height_mm,size_iou,h_depth_mm,human_ok,run_id
+1791793057.761441,1,1,inox_box,49.433,,done,,,real,,625.7,-159.2,630.0,-41.5,0.962,16491,,,,,,,,rgbd,rgbd,0.704,40.0,,39.5,1,548edf01d1d041af86d415760c4c8cdc
