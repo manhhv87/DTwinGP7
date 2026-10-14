@@ -526,7 +526,7 @@ def main() -> int:
         )
 
         log.info("PREFLIGHT ok: calibrated T_BC, base pose unchanged, table top %.1f mm, "
-                 "jaw-tip floor %.1f mm, heights %s", table_z,
+                 "pick TCP floor %.1f mm, heights %s", table_z,
                  table_z + float(config.get("table_safety_margin_mm", 100.0)),
                  config.get("class_heights_mm"))
         if table_plane is not None:
