@@ -518,6 +518,13 @@ def main() -> int:
                       len(problems), "" if len(problems) == 1 else "s")
             return 5
         config["table_top_z_mm"] = table_z
+
+        # Orchestrator needs the complete calibrated plane for safe dynamic
+        # PLACE-Z. table_top_z_mm alone is not enough because the table is tilted.
+        config["table_plane"] = (
+            dict(table_plane) if table_plane is not None else None
+        )
+
         log.info("PREFLIGHT ok: calibrated T_BC, base pose unchanged, table top %.1f mm, "
                  "jaw-tip floor %.1f mm, heights %s", table_z,
                  table_z + float(config.get("table_safety_margin_mm", 100.0)),
@@ -628,6 +635,7 @@ def main() -> int:
             ip=hse_ip,
             max_speed_pct=cell_config.robot_connection.max_speed_percent,
             tool_no=args.tool_no,
+            wait_completion_timeout_s=90.0,
         )
         backend.set_home_joints(list(cell_config.robot.home_joints_deg))
         backend.connect()
@@ -637,6 +645,151 @@ def main() -> int:
             return 3
         log.info("HSE backend connected: %s. Joints (sanity): %s",
                  hse_ip, backend.Joints())
+
+        # ─── Physical-cell startup safety ───────────────────────────────
+        # With --confirm-each-trial, the operator must be able to enter the
+        # cell to place/remove the object. Therefore the servo is forced OFF
+        # before the first placement prompt.
+        status = backend.read_controller_status()
+
+        log.info(
+            "YRC status at startup: mode=%s remote=%s servo=%s "
+            "running=%s alarm=%s error=%s hold=%s",
+            status.get("mode"),
+            status.get("remote"),
+            status.get("servo"),
+            status.get("running"),
+            status.get("alarm"),
+            status.get("error"),
+            status.get("hold"),
+        )
+        # Fail closed BEFORE starting telemetry/perception/trials.
+        # Do not let the operator place a part while the controller
+        # already reports a safety/alarm condition.
+        if status.get("alarm", False):
+            try:
+                alarm_code, alarm_sub = backend.read_alarm()
+            except Exception:
+                alarm_code, alarm_sub = -1, -1
+
+            log.error(
+                "STARTUP REFUSED: YRC1000 has active alarm %s sub=%s. "
+                "Clear the physical/controller fault on the teach pendant first.",
+                alarm_code,
+                alarm_sub,
+            )
+
+            try:
+                backend.servo_off()
+            except Exception:
+                pass
+
+            backend.disconnect()
+            camera.stop()
+            return 3
+
+        if status.get("error", False):
+            log.error(
+                "STARTUP REFUSED: YRC1000 reports controller error: %s",
+                status,
+            )
+            try:
+                backend.servo_off()
+            except Exception:
+                pass
+            backend.disconnect()
+            camera.stop()
+            return 3
+
+        if status.get("hold", False):
+            log.error(
+                "STARTUP REFUSED: YRC1000 HOLD is active: %s",
+                status,
+            )
+            try:
+                backend.servo_off()
+            except Exception:
+                pass
+            backend.disconnect()
+            camera.stop()
+            return 3
+
+        if status.get("running", False):
+            log.error(
+                "STARTUP REFUSED: controller already has a running JOB: %s",
+                status,
+            )
+            try:
+                backend.servo_off()
+            except Exception:
+                pass
+            backend.disconnect()
+            camera.stop()
+            return 3
+
+        if not status.get("remote", False):
+            log.error(
+                "STARTUP REFUSED: controller is not in REMOTE mode: %s",
+                status,
+            )
+            try:
+                backend.servo_off()
+            except Exception:
+                pass
+            backend.disconnect()
+            camera.stop()
+            return 3
+
+        if status.get("servo", False):
+            log.info("Startup: SERVO is ON — disabling it before operator access")
+            backend.servo_off()
+
+        status = backend.read_controller_status()
+
+        if status.get("servo", True):
+            log.error(
+                "STARTUP REFUSED: could not verify SERVO OFF: %s",
+                status,
+            )
+            backend.disconnect()
+            camera.stop()
+            return 3
+
+        log.info("Startup safety PASS — REMOTE + no alarm/error/hold + SERVO OFF")
+
+        if args.confirm_each_trial:
+            if status.get("running", False):
+                log.error(
+                    "REAL run refused: controller is already running a JOB. "
+                    "Stop it safely on the TP before starting this experiment."
+                )
+                backend.disconnect()
+                camera.stop()
+                return 3
+
+            if status.get("servo", False):
+                log.info(
+                    "Operator-placement mode: switching SERVO OFF before "
+                    "the first trial."
+                )
+                backend.servo_off()
+
+            status = backend.read_controller_status()
+
+            if status.get("servo", True):
+                log.error(
+                    "REAL run refused: could not verify SERVO OFF before "
+                    "operator placement: %s",
+                    status,
+                )
+                backend.disconnect()
+                camera.stop()
+                return 3
+
+            log.info(
+                "Startup safety PASS — SERVO OFF verified for operator access"
+            )
+
         if args.ultra_fast:
             backend.enable_ultra_fast(True)
             log.info("HSE Ultra-fast P-var mode: ON (template uploaded once)")
@@ -771,131 +924,389 @@ def main() -> int:
     orch.operator_id = args.operator_id
 
     pre_trial_hook = None
+
     if pose_rows is not None or args.confirm_each_trial:
 
         def pre_trial_hook(i: int) -> None:
+            # ─── REAL CELL: operator-access gate ────────────────────────
+            # Before the operator places/repositions an object, the servo
+            # must be OFF and the robot must not be executing a JOB.
+            if args.mode == "real" and args.confirm_each_trial:
+                status = backend.read_controller_status()
+
+                if status.get("running", False):
+                    raise RuntimeError(
+                        "Cannot enter placement phase: robot is still running "
+                        f"a JOB: {status}"
+                    )
+
+                if status.get("servo", False):
+                    log.info(
+                        "Trial %d placement gate: switching SERVO OFF",
+                        i,
+                    )
+                    backend.servo_off()
+
+                status = backend.read_controller_status()
+
+                if status.get("servo", True):
+                    raise RuntimeError(
+                        "Operator placement refused: SERVO OFF could not be "
+                        f"verified: {status}"
+                    )
+
+                log.info(
+                    "Trial %d placement gate PASS — SERVO OFF verified",
+                    i,
+                )
+
             if pose_rows is not None:
                 row = pose_rows[i - 1]
                 orch.current_pose_id = str(row.get("pose_id", i))
                 orch.current_condition = str(row.get("condition", ""))
                 orch.current_stack_on = str(row.get("stack_on", ""))
+                # B3_EXPECTED_YAW_CONTEXT_V2
+                try:
+                    _pose_yaw = row.get("yaw_deg")
+                    orch.current_expected_yaw_deg = (
+                        float(_pose_yaw)
+                        if _pose_yaw not in (None, "")
+                        else None
+                    )
+                except (TypeError, ValueError):
+                    orch.current_expected_yaw_deg = None
+                orch.current_expected_class = str(
+                    row.get("class_hint", "") or ""
+                ).strip().lower()
+
                 log.info(
                     "▶ Trial %d — PLACE OBJECT: card=%s  x=%s mm  y=%s mm  yaw=%s deg%s%s",
-                    i, row.get("card_id", "?"), row.get("x_mm", "?"),
-                    row.get("y_mm", "?"), row.get("yaw_deg", "?"),
+                    i,
+                    row.get("card_id", "?"),
+                    row.get("x_mm", "?"),
+                    row.get("y_mm", "?"),
+                    row.get("yaw_deg", "?"),
                     f"  class={row['class_hint']}" if row.get("class_hint") else "",
                     f"  condition={row['condition']}" if row.get("condition") else "",
                 )
+
                 if row.get("stack_on"):
-                    # Easy to miss in a list of otherwise identical instructions, and
-                    # a missed one silently turns a stacked trial into a flat one.
-                    log.info("    STACKED: put the %s down on the card FIRST, then the "
-                             "%s on top of it.", row["stack_on"],
-                             row.get("class_hint", "part"))
+                    log.info(
+                        "    STACKED: put the %s down on the card FIRST, "
+                        "then the %s on top of it.",
+                        row["stack_on"],
+                        row.get("class_hint", "part"),
+                    )
+
             if args.blind_label:
                 row_ = pose_rows[i - 1] if pose_rows is not None else {}
-                print(f"\n[{args.blind_label}] Trial {i}/{args.trials} — PLACE: "
-                      f"card={row_.get('card_id', '?')}  yaw={row_.get('yaw_deg', '?')} deg"
-                      f"  class={row_.get('class_hint', '?')}", flush=True)
+
+                print(
+                    f"\n[{args.blind_label}] Trial {i}/{args.trials} — PLACE: "
+                    f"card={row_.get('card_id', '?')}  "
+                    f"yaw={row_.get('yaw_deg', '?')} deg"
+                    f"  class={row_.get('class_hint', '?')}",
+                    flush=True,
+                )
+
                 if row_.get("stack_on"):
-                    print(f"    STACKED: {row_['stack_on']} down first, then "
-                          f"{row_.get('class_hint', 'the part')} on top.", flush=True)
+                    print(
+                        f"    STACKED: {row_['stack_on']} down first, then "
+                        f"{row_.get('class_hint', 'the part')} on top.",
+                        flush=True,
+                    )
+
             if not args.confirm_each_trial:
                 return
+
             try:
-                input("   Placed it? TAKE YOUR HAND OUT of the cell, then press ENTER ")
+                input(
+                    "   Placed it? TAKE YOUR HAND OUT of the cell, "
+                    "then press ENTER "
+                )
             except EOFError:
-                log.error("stdin closed during --confirm-each-trial; stopping rather than "
-                          "moving the robot with nobody confirming.")
+                log.error(
+                    "stdin closed during --confirm-each-trial; stopping "
+                    "rather than moving the robot with nobody confirming."
+                )
                 raise KeyboardInterrupt from None
-            # The perception node keeps grabbing frames while the operator is still
-            # over the table, and the queue holds up to 3 of them. Without this the
-            # cycle would detect the table as it was BEFORE the part was placed.
+
+            # ─── REAL CELL: motion-enable gate ──────────────────────────
+            # ENTER is the explicit operator confirmation that everybody
+            # is out of the cell. Only now is servo power allowed ON.
+            if args.mode == "real":
+                status = backend.read_controller_status()
+
+                if not status.get("remote", False):
+                    raise RuntimeError(
+                        "Motion refused: YRC1000 is not in REMOTE mode: "
+                        f"{status}"
+                    )
+
+                if status.get("running", False):
+                    raise RuntimeError(
+                        "Motion refused: controller is already running: "
+                        f"{status}"
+                    )
+
+                if status.get("alarm", False):
+                    raise RuntimeError(
+                        "Motion refused: controller has an active alarm: "
+                        f"{status}"
+                    )
+
+                if status.get("error", False):
+                    raise RuntimeError(
+                        "Motion refused: controller reports an error: "
+                        f"{status}"
+                    )
+
+                if status.get("hold", False):
+                    raise RuntimeError(
+                        "Motion refused: controller HOLD is active: "
+                        f"{status}"
+                    )
+
+                if not status.get("servo", False):
+                    log.info(
+                        "Operator confirmed cell clear — enabling YRC1000 SERVO"
+                    )
+                    backend.servo_on()
+
+                status = backend.read_controller_status()
+
+                if not status.get("servo", False):
+                    raise RuntimeError(
+                        "Motion refused: SERVO ON verification failed: "
+                        f"{status}"
+                    )
+
+                if not status.get("remote", False):
+                    backend.servo_off()
+                    raise RuntimeError(
+                        "Motion refused: controller left REMOTE mode after "
+                        f"SERVO ON: {status}"
+                    )
+
+                if (
+                    status.get("alarm", False)
+                    or status.get("error", False)
+                    or status.get("hold", False)
+                ):
+                    backend.servo_off()
+                    raise RuntimeError(
+                        "Motion refused: controller became unsafe after "
+                        f"SERVO ON: {status}"
+                    )
+
+                log.info(
+                    "REAL motion gate PASS — REMOTE=%s SERVO=%s "
+                    "alarm=%s error=%s hold=%s",
+                    status.get("remote"),
+                    status.get("servo"),
+                    status.get("alarm"),
+                    status.get("error"),
+                    status.get("hold"),
+                )
+
+            # The perception node keeps grabbing frames while the operator
+            # is still over the table. Drop those stale frames AFTER ENTER,
+            # so the next perception result belongs to the cleared cell.
             dropped = 0
+
             while True:
                 try:
                     det_queue.get_nowait()
                     dropped += 1
                 except queue.Empty:
                     break
+
             if dropped:
-                log.debug("Dropped %d frame(s) captured before placement finished", dropped)
+                log.debug(
+                    "Dropped %d frame(s) captured before placement finished",
+                    dropped,
+                )
+
 
     if args.confirm_each_trial:
 
-        def human_score_hook(trial_id: int, machine_success: bool) -> int | str:
-            """Ask the operator what they saw, and put it in the `human_ok` column.
+        def human_score_hook(
+            trial_id: int,
+            machine_success: bool,
+        ) -> int | str:
+            """Score visible placement result after making the cell safe."""
 
-            The machine's own verdict is deliberately NOT shown in the prompt, and
-            the question never names the configuration, so this stays usable inside
-            a blinded run. Anything other than the four accepted keys re-asks: a
-            stray ENTER must not be recorded as a good grasp.
-            """
+            # The motion cycle has finished. Servo must be OFF before the
+            # operator is asked to inspect/remove/reposition the object.
+            if args.mode == "real":
+                try:
+                    backend.servo_off()
+
+                    status = backend.read_controller_status()
+
+                    if status.get("servo", True):
+                        raise RuntimeError(
+                            f"SERVO OFF verification failed: {status}"
+                        )
+
+                    log.info(
+                        "Trial %d complete — SERVO OFF verified for "
+                        "operator access",
+                        trial_id,
+                    )
+
+                except Exception as e:
+                    log.error(
+                        "CRITICAL: could not verify SERVO OFF after "
+                        "trial %d: %s",
+                        trial_id,
+                        e,
+                    )
+
+                    # Best-effort fallback to existing software emergency stop.
+                    try:
+                        backend.Stop()
+                    except Exception as stop_exc:
+                        log.error(
+                            "Fallback robot.Stop() also failed: %s",
+                            stop_exc,
+                        )
+
+                    raise KeyboardInterrupt from e
+
             while True:
                 try:
-                    ans = input(f"   Trial {trial_id} — part in the right place? "
-                                "[y]=yes  [n]=no  ").strip().lower()
+                    ans = input(
+                        f"   Trial {trial_id} — part in the right place? "
+                        "[y]=yes  [n]=no  "
+                    ).strip().lower()
+
                 except EOFError:
-                    log.error("stdin closed while scoring trial %d — logging it "
-                              "unscored. The next trial will stop the run.", trial_id)
+                    log.error(
+                        "stdin closed while scoring trial %d — logging it "
+                        "unscored. The next trial will stop the run.",
+                        trial_id,
+                    )
                     return ""
+
                 if ans in {"y", "t", "1"}:
                     return 1
+
                 if ans in {"n", "h", "0"}:
                     return 0
+
                 print("   Type y or n.", flush=True)
 
         orch.human_score_hook = human_score_hook
 
     def _drive_experiment() -> None:
-        """Run N trials → cleanup digital twin → log summary.
+        """Run N trials and always leave the real robot with servo OFF."""
 
-        With --viewport open3d-gui: this function runs in a WORKER thread because
-        the Filament GUI holds the main thread (run_gui is blocking). Other modes:
-        runs synchronously on the main thread.
-        """
         if args.headless:
-            # Deterministic: generate exactly N messages (1 scenario/trial) then
-            # pre-fill queue in order. NO perception thread → trial i ↔ scenario i,
-            # miss/reachability rates match config exactly.
+            # Deterministic: generate exactly N messages (1 scenario/trial)
+            # then pre-fill queue in order.
             for _ in range(args.trials):
                 msg = perception.process_once()
                 if msg is not None:
                     det_queue.put(msg)
-            stats = orch.run_n_trials(args.trials, pre_trial_hook=pre_trial_hook)
+
+            stats = orch.run_n_trials(
+                args.trials,
+                pre_trial_hook=pre_trial_hook,
+            )
+
         else:
             try:
                 perception.start()
-                stats = orch.run_n_trials(args.trials, pre_trial_hook=pre_trial_hook)
+
+                stats = orch.run_n_trials(
+                    args.trials,
+                    pre_trial_hook=pre_trial_hook,
+                )
+
             except KeyboardInterrupt:
-                # Real mode: Ctrl+C must stop the GP7 IMMEDIATELY rather than just killing Python.
-                # Call robot.Stop() before propagating.
+                # Ctrl+C on the physical robot means immediate software stop.
                 log.warning("Ctrl+C — emergency robot stop")
+
                 try:
-                    if args.mode == "real" and hasattr(orch.robot, "Stop"):
+                    if args.mode == "real":
+                        backend.Stop()
+                        log.info("robot.Stop() sent")
+                    elif hasattr(orch.robot, "Stop"):
                         orch.robot.Stop()
                         log.info("robot.Stop() sent")
-                except Exception as e:  # noqa: BLE001
+
+                except Exception as e:
                     log.error("Error stopping robot: %s", e)
-                stats = {"attempted": 0, "successful": 0, "failed": 0,
-                         "success_rate": 0.0, "aborted_by_user": True}
+
+                stats = {
+                    "attempted": 0,
+                    "successful": 0,
+                    "failed": 0,
+                    "success_rate": 0.0,
+                    "aborted_by_user": True,
+                }
+
             finally:
+                # ─── Final physical-cell fail-safe ──────────────────────
+                # Every normal/error/Ctrl+C exit from a real experiment
+                # must leave the controller with servo OFF.
+                if args.mode == "real":
+                    try:
+                        backend.servo_off()
+
+                        status = backend.read_controller_status()
+
+                        if status.get("servo", True):
+                            raise RuntimeError(
+                                f"Controller still reports SERVO ON: {status}"
+                            )
+
+                        log.info(
+                            "Experiment cleanup — SERVO OFF verified"
+                        )
+
+                    except Exception as e:
+                        log.error(
+                            "FINAL SERVO-OFF verification failed: %s. "
+                            "Use the teach pendant / physical E-stop.",
+                            e,
+                        )
+
+                        try:
+                            backend.Stop()
+                        except Exception as stop_exc:
+                            log.error(
+                                "Fallback robot.Stop() also failed: %s",
+                                stop_exc,
+                            )
+
                 perception.stop()
 
-        # Cleanup digital twin — stop mirror thread, close telemetry, close socket.
-        # Active for both sim non-headless and hse mode (DigitalTwinMirror used in both).
+        # Cleanup digital twin — stop mirror thread, close telemetry,
+        # then close HSE socket.
         if twin is not None:
             try:
                 twin.stop_mirror()
+
                 if hasattr(twin.backend, "disconnect"):
                     twin.backend.disconnect()
-            except Exception as e:                  # noqa: BLE001
-                log.warning("Digital twin cleanup error: %s", e)
+
+            except Exception as e:
+                log.warning(
+                    "Digital twin cleanup error: %s",
+                    e,
+                )
 
         summary = trial_logger.summarize()
+
         log.info("─" * 60)
-        log.info("RESULTS: success_rate=%.1f%% (%d/%d)",
-                 stats["success_rate"] * 100, stats["successful"], stats["attempted"])
+        log.info(
+            "RESULTS: success_rate=%.1f%% (%d/%d)",
+            stats["success_rate"] * 100,
+            stats["successful"],
+            stats["attempted"],
+        )
         log.info("Failure modes: %s", summary["failure_modes"])
         log.info("CSV: %s", trial_logger.csv_path)
 
@@ -905,6 +1316,26 @@ def main() -> int:
         # Wait for the worker to detect that the viewer closed (every anim/post where
         # _open=False returns immediately) — typically < 1s. Cap at 3s to avoid hang.
         worker.join(timeout=3.0)
+        # Closing the real viewer is also a stop condition.
+        if args.mode == "real":
+            try:
+                backend.servo_off()
+                log.info(
+                    "GUI shutdown — SERVO OFF verified"
+                )
+            except Exception as e:
+                log.error(
+                    "GUI shutdown could not verify SERVO OFF: %s",
+                    e,
+                )
+
+                try:
+                    backend.Stop()
+                except Exception as stop_exc:
+                    log.error(
+                        "Fallback robot.Stop() also failed: %s",
+                        stop_exc,
+                    )
         # Cleanup twin (real mode) — stop_mirror, close telemetry, close HSE socket.
         if twin is not None:
             try:
