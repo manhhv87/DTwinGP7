@@ -78,11 +78,13 @@ def parse_args() -> argparse.Namespace:
                              "comparison. Default: the first value alphabetically.")
     parser.add_argument("--score-col", default="success",
                         help="Which column counts as the outcome: 'success' (the "
-                             "machine's, from motion + the gripper detect sensor) or "
-                             "'human_ok' (what the operator saw, written by 03 "
-                             "--confirm-each-trial). They disagree when a part was "
-                             "gripped but dropped in transfer or landed off the drop "
-                             "point, so the paper must say which one it reports.")
+                             "machine's; on the fixed DTWINRUN job the real cell runs, "
+                             "it means the job ran to its end without an alarm, and the "
+                             "PC reads no gripper sensor there) or 'human_ok' (what the "
+                             "operator saw, written by 03 --confirm-each-trial after "
+                             "every cycle handed to the robot). A trial refused or "
+                             "skipped before motion has no verdict and is scored as a "
+                             "failure. The paper must say which column it reports.")
     parser.add_argument("--label-a", default="run_a", help="Name of the --csv run")
     parser.add_argument("--labels-b", nargs="+", default=None,
                         help="Names for the --paired-with runs, in the same order.")
@@ -163,16 +165,45 @@ def _pair(log, a, b, key):
     return merged
 
 
-_SCORE_MAP = {"1": 1, "0": 0, "true": 1, "false": 0, "yes": 1, "no": 0}
+# A column with any blank is read as float, so 1 and 0 arrive as 1.0 and 0.0.
+_SCORE_MAP = {"1": 1, "0": 0, "1.0": 1, "0.0": 0,
+              "true": 1, "false": 0, "yes": 1, "no": 0}
+
+# Failure reasons logged before any motion was dispatched: the three motion
+# guards (the place-height check also logs depth_geometry_reject), no usable
+# detection, no reachable pose, and the predictive joint-trajectory check, whose
+# reasons start with "predicted_". Such a trial is a failure, never a missing
+# value, and it costs only the detection window, so it is counted on its own and
+# kept out of the cycle-time statistics.
+NO_MOTION_REASONS = frozenset({
+    "pick_z_safety_reject", "depth_geometry_reject", "yaw_geometry_reject",
+    "detection_miss", "detection_timeout", "unreachable",
+    "no_start_joints_for_prediction",
+})
+
+
+def _no_motion(df):
+    """True for every row whose trial was refused or skipped before motion."""
+    import pandas as pd
+
+    if "failure_reason" not in df.columns:
+        return pd.Series(False, index=df.index)
+    reason = df["failure_reason"].fillna("").astype(str).str.strip()
+    return reason.isin(NO_MOTION_REASONS) | reason.str.startswith("predicted_")
 
 
 def _apply_score_col(log, df, col: str, source: str):
     """Make `success` carry the chosen outcome column, or refuse and return None.
 
     Everything downstream (rates, failure matrix, McNemar, figure) reads
-    `success`, so the switch happens once, here. A partly filled column is
-    refused rather than silently scored on the rows that happen to be filled:
-    that would drop trials from one arm only and bias the comparison.
+    `success`, so the switch happens once, here. A machine success without a
+    verdict is refused rather than silently scored on the rows that happen to be
+    filled: that would drop trials from one arm only and bias the comparison.
+
+    A row the machine already failed needs no verdict. 03 asks the operator
+    after every cycle handed to the robot, so the only blanks by design are
+    trials refused or skipped before motion; none of them completed a
+    pick-and-place, and scoring them 0 keeps every arm whole.
     """
     if col == "success":
         return df
@@ -183,10 +214,17 @@ def _apply_score_col(log, df, col: str, source: str):
         return None
     raw = df[col].astype(str).str.strip().str.lower()
     blank = df[col].isna() | raw.isin({"", "nan", "none"})
-    if blank.any():
-        log.error("%d of %d row(s) in %s have no '%s' value. Refusing to score on a "
-                  "partly filled column.", int(blank.sum()), len(df), source, col)
+    machine = df["success"].astype(str).str.strip().str.lower().map(_SCORE_MAP)
+    unscored = blank & (machine == 1)
+    if unscored.any():
+        log.error("%d machine success(es) of %d row(s) in %s have no '%s' value; the "
+                  "operator's verdict decides those. Refusing to score on a partly "
+                  "filled column.", int(unscored.sum()), len(df), source, col)
         return None
+    if blank.any():
+        log.info("%d row(s) in %s carry no '%s' value because the machine had already "
+                 "failed them; scored as failures.", int(blank.sum()), source, col)
+    raw = raw.mask(blank, "0")
     mapped = raw.map(_SCORE_MAP)
     if mapped.isna().any():
         bad = sorted(set(raw[mapped.isna()]))[:5]
@@ -272,6 +310,24 @@ def main() -> int:
         # thought it went fine. Those rows must show up, not be dropped as NaN.
         fm = fails["failure_reason"].fillna("(no machine failure)").value_counts()
         log.info("Failure modes:\n%s", fm)
+
+    # ─── Trials that never moved ───
+    # Reported beside every success rate, per arm when the arm is a column: the
+    # arms refuse at structurally different rates (the depth plausibility clause
+    # can only fire on a command built from depth), so a rate alone would hide
+    # part of the comparison.
+    no_motion = _no_motion(df)
+    log.info("Refused or skipped before motion: %d of %d trial(s)",
+             int(no_motion.sum()), len(df))
+    if no_motion.any():
+        keys = ([args.split_col] if args.split_col and args.split_col in df.columns
+                else []) + ["failure_reason"]
+        log.info("By reason:\n%s", df[no_motion].groupby(keys).size())
+
+    moved = df[~no_motion]
+    if len(moved) and "cycle_time_s" in moved.columns:
+        log.info("Cycle time over the %d trial(s) with motion: median %.2f s",
+                 len(moved), float(moved["cycle_time_s"].median()))
 
     # ─── Paired exact McNemar: RGB-only vs RGB-D ───
     # Binary paired outcomes → McNemar on the discordant pairs (paper §3.7).
@@ -390,8 +446,9 @@ def main() -> int:
         fig, axes = plt.subplots(1, 2, figsize=(12, 4))
         df.groupby("class_name")["success"].mean().plot.bar(
             ax=axes[0], title="Success rate by class", ylim=(0, 1))
-        df.boxplot(column="cycle_time_s", by="class_name", ax=axes[1])
-        axes[1].set_title("Cycle time by class")
+        df[~_no_motion(df)].boxplot(column="cycle_time_s", by="class_name",
+                                    ax=axes[1])
+        axes[1].set_title("Cycle time by class (trials with motion)")
         plt.suptitle("")
         out_path = ensure_dir(PROJECT_ROOT / Path(args.out).parent) / Path(args.out).name
         plt.tight_layout()

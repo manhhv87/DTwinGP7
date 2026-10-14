@@ -136,6 +136,22 @@ class TestScoreCol:
         df = pd.DataFrame({"success": [1, 1], "human_ok": ["yes", "maybe"]})
         assert mod._apply_score_col(log, df, "human_ok", "x") is None
 
+    def test_blank_on_a_machine_failure_scores_zero(self):
+        """A trial refused before motion has no verdict and completed nothing."""
+        import pandas as pd
+        mod = _analyze_mod()
+        df = pd.DataFrame({"success": [1, 0], "human_ok": [1, None]})
+        out = mod._apply_score_col(log, df, "human_ok", "x")
+        assert list(out["success"]) == [1, 0]
+
+    def test_float_encoded_verdicts(self):
+        """A column with a blank is read as float: 1 arrives as 1.0."""
+        import pandas as pd
+        mod = _analyze_mod()
+        df = pd.DataFrame({"success": [1, 0, 1], "human_ok": [1.0, None, 0.0]})
+        out = mod._apply_score_col(log, df, "human_ok", "x")
+        assert list(out["success"]) == [1, 0, 0]
+
 
 class TestSplitCol:
     """A blinded campaign writes one CSV per block, so the arm is a column."""
