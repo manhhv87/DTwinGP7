@@ -72,3 +72,35 @@ class TestCarriedHeight:
     def test_detected_class_without_a_height_is_refused(self):
         with pytest.raises(RuntimeError, match="No configured height"):
             self._ready(100.0, "teapot", "")
+
+
+class TestThresholdsAgainstMeasuredRuns:
+    """Values seen in the B3 run of 14 Oct 2026 must not be refused.
+
+    Nineteen flat inox picks succeeded there with a valid-depth fraction from
+    0.299 to 0.991 and a top face from 39.3 to 42.4 mm. A guard that refuses
+    any of them would throw away trials the cell can complete.
+    """
+
+    FLAT_INOX_OK = [(0.299, 41.8), (0.416, 39.3), (0.450, 41.1), (0.607, 42.4),
+                    (0.683, 42.3), (0.811, 40.9), (0.833, 41.8), (0.991, 41.3)]
+
+    def test_successful_inox_picks_are_not_refused(self):
+        o = _orch()
+        for frac, h_depth in self.FLAT_INOX_OK:
+            assert frac >= 0.15, f"valid fraction {frac} would be refused"
+            assert h_depth >= o._class_min_height_mm("inox_box") - 20.0
+
+    def test_a_mask_with_almost_no_depth_is_refused(self):
+        assert 0.05 < 0.15        # the clause that still fires
+
+    def test_a_collapsed_top_face_is_refused(self):
+        o = _orch()
+        assert 5.0 < o._class_min_height_mm("inox_box") - 20.0
+
+    def test_a_part_read_at_the_wrong_plane_fails_the_shape_check(self):
+        """A 190 mm stack read as 40 mm inflates the rectangle by about 1.3x."""
+        o = _orch()
+        scale = (713.0 - 40.0) / (713.0 - 190.0)
+        long_mm, short_mm = 180.0 * scale, 85.0 * scale
+        assert not o._size_matches_class("inox_box", long_mm, short_mm, 40.0)
