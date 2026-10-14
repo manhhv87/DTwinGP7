@@ -30,6 +30,7 @@ import ftplib
 import io
 import logging
 import socket
+import os
 import struct
 import threading
 import time
@@ -133,13 +134,35 @@ class MotomanHSEBackend:
         # Cache for JointsHome — set via config from orchestrator
         self._home_joints: list[float] = [0.0] * 6
         # FTP credentials for job upload (YRC1000 defaults to "" / "")
-        self.ftp_user = ftp_user
-        self.ftp_pass = ftp_pass
+        self.ftp_user = ftp_user or os.getenv("YRC_FTP_USER", "")
+        self.ftp_pass = ftp_pass or os.getenv("YRC_FTP_PASS", "")
         self.ftp_job_dir = ftp_job_dir
         # Safety + naming
         self.max_speed_pct = max_speed_pct
-        self.job_name_prefix = job_name_prefix
+
+        # Give every Python session its own YRC1000 JOB namespace.
+        # This avoids collisions with DTWIN jobs that may still be
+        # selected/current on the controller from an earlier run.
+        #
+        # Example:
+        #   DTWIN2609281530280001
+        #   DTWIN2609281530280002
+        #
+        # yy mm dd HH MM SS + 4-digit counter
+        _session_tag = time.strftime("%y%m%d%H%M%S")
+        _base_prefix = str(job_name_prefix).upper().strip() or "DTWIN"
+
+        # Keep generated INFORM names comfortably below YRC1000 name limits.
+        _base_prefix = _base_prefix[:8]
+
+        self.job_name_prefix = f"{_base_prefix}{_session_tag}"
         self._job_counter = 0
+
+        logger.info(
+            "Legacy JOB prefix (unused by direct YRC Cartesian path): %s",
+            self.job_name_prefix,
+        )
+
         self.wait_completion_timeout_s = wait_completion_timeout_s
         # Bounded window for _wait_idle to confirm a started job asserted its
         # Running bit before polling for completion (job_start() returns on the
@@ -415,36 +438,124 @@ class MotomanHSEBackend:
         logger.debug("JOB_SELECT '%s'", job_name)
 
     def job_start(self) -> None:
-        """START (0x86): execute current job. Robot must have servo on + REMOTE mode.
+        """START selected JOB only when the real controller is motion-ready."""
 
-        Refuses to START while halted (Stop() latched _halted) — the central gate
-        for every job-based motion path (MoveJ/MoveL/_move_pose/batch/ultra-fast).
-        Cleared by servo_on()."""
         if self._halted:
-            raise MotionHaltedError("START refused — motion halted (call servo_on to resume)")
+            raise MotionHaltedError(
+                "START refused — motion is halted; servo_on() must be called "
+                "after the operator clears the cell."
+            )
+
+        status = self.read_controller_status()
+
+        if status.get("running", False):
+            raise RuntimeError(
+                f"START refused — controller is already running a JOB: {status}"
+            )
+
+        if not status.get("remote", False):
+            raise RuntimeError(
+                f"START refused — YRC1000 is not in REMOTE mode: {status}"
+            )
+
+        if status.get("alarm", False):
+            raise RuntimeError(
+                f"START refused — YRC1000 has an active alarm: {status}"
+            )
+
+        if status.get("error", False):
+            raise RuntimeError(
+                f"START refused — YRC1000 reports controller error: {status}"
+            )
+
+        if status.get("hold", False):
+            raise RuntimeError(
+                f"START refused — YRC1000 HOLD is active: {status}"
+            )
+
+        if not status.get("servo", False):
+            raise RuntimeError(
+                f"START refused — YRC1000 servo is OFF: {status}"
+            )
+
         self._send_request(
-            Command.START, instance=1, attribute=1,
+            Command.START,
+            instance=1,
+            attribute=1,
             service=Service.SET_ATTRIBUTE_SINGLE,
-            payload=struct.pack("<I", 1),       # 1 = start
+            payload=struct.pack("<I", 1),
         )
-        logger.debug("JOB_START")
+
+        logger.info("JOB_START accepted — REMOTE + SERVO ON verified")
 
     def servo_on(self) -> None:
-        """Turn servo power ON via HOLD_SERVO (0x83), instance 2 (servo-ON control),
-        data 1 = ON (mirror of Stop()'s 2 = OFF). Required before START in REMOTE
-        mode (the mode key switch on the TP must be set to REMOTE separately).
-
-        SAFETY/VERIFY: value/instance per Yaskawa HSE spec, not yet confirmed on
-        hardware — if START still fails after this, capture the controller error.
-        """
+        """Enable servo and VERIFY controller status before allowing motion."""
         self._send_request(
-            Command.HOLD_SERVO, instance=2, attribute=1,
+            Command.HOLD_SERVO,
+            instance=2,
+            attribute=1,
             service=Service.SET_ATTRIBUTE_SINGLE,
-            payload=struct.pack("<I", 1),       # 1 = servo ON
+            payload=struct.pack("<I", 1),   # 1 = servo ON
         )
-        self._halted = False                    # resuming → clear the halt latch
-        logger.info("HSE servo ON sent to YRC1000")
 
+        deadline = time.monotonic() + 1.5
+        last_status = None
+
+        while time.monotonic() < deadline:
+            last_status = self.read_controller_status()
+
+            if last_status.get("servo", False):
+                with self._halt_lock:
+                    self._halted = False
+
+                logger.info(
+                    "HSE servo ON verified — mode=%s alarm=%s error=%s hold=%s",
+                    last_status.get("mode"),
+                    last_status.get("alarm"),
+                    last_status.get("error"),
+                    last_status.get("hold"),
+                )
+                return
+
+            time.sleep(0.05)
+
+        raise RuntimeError(
+            f"SERVO ON command was sent but controller still reports servo OFF: "
+            f"{last_status}"
+        )
+    def servo_off(self) -> None:
+        """Disable servo and VERIFY controller status.
+
+        Used between physical trials so the operator can safely enter the cell.
+        """
+        # Block every pending START before sending servo OFF.
+        with self._halt_lock:
+            self._halted = True
+
+        self._send_request(
+            Command.HOLD_SERVO,
+            instance=2,
+            attribute=1,
+            service=Service.SET_ATTRIBUTE_SINGLE,
+            payload=struct.pack("<I", 2),   # 2 = servo OFF
+        )
+
+        deadline = time.monotonic() + 1.5
+        last_status = None
+
+        while time.monotonic() < deadline:
+            last_status = self.read_controller_status()
+
+            if not last_status.get("servo", True):
+                logger.info("HSE servo OFF verified")
+                return
+
+            time.sleep(0.05)
+
+        raise RuntimeError(
+            f"SERVO OFF command was sent but controller still reports servo ON: "
+            f"{last_status}"
+        )
     # ─── Direct real-time motion (RoboDK-style, NO job upload) ───
     # move_type instances (per Yaskawa HSE / fs100): 1 = joint absolute,
     # 2 = linear absolute, 3 = linear incremental. speed_class 0 = percent.
@@ -974,18 +1085,11 @@ class MotomanHSEBackend:
             return
 
         joints = self._to_joint_list(target)
-        job_name = self._next_job_name()
-        job_text = (
-            InformJobBuilder(name=job_name, max_speed_pct=self.max_speed_pct)
-            .add_position("target", joints)
-            .comment(f"Auto-gen MoveJ #{self._job_counter}")
-            .movj("target")
-            .render()
+        self.move_joints(
+            joints,
+            speed_pct=float(self.max_speed_pct),
         )
-        self.upload_job(job_text, job_name)
-        self.job_select(job_name)
-        self.job_start()
-        self._wait_idle()
+        self._wait_direct_move_complete()
 
     def MoveL(self, target: Any) -> None:
         """Linear move — polymorphic like MoveJ (joints or 4x4 Cartesian)."""
@@ -1005,7 +1109,7 @@ class MotomanHSEBackend:
             InformJobBuilder(name=job_name, max_speed_pct=self.max_speed_pct)
             .add_position("target", joints)
             .comment(f"Auto-gen MoveL #{self._job_counter}")
-            .movl("target", speed_mm_s=80.0)
+            .movl("target", speed_mm_s=20.0)
             .render()
         )
         self.upload_job(job_text, job_name)
@@ -1013,64 +1117,342 @@ class MotomanHSEBackend:
         self.job_start()
         self._wait_idle()
 
-    def _move_pose(self, T_base: Any, kind: str) -> None:
-        """Single-shot Cartesian move via P-variable BASE + small INFORM job.
 
-        Workflow:
-          1. WRITE_POS_VAR P000 ← Cartesian pose (data_type=BASE)
-          2. Upload tiny INFORM job referencing P000 with MOVJ/MOVL
-          3. JOB_SELECT + START + wait_idle
+    def _wait_direct_move_complete(self, timeout_s: float | None = None) -> None:
+        # Wait for an HSE direct MOVE (0x8A/0x8B) to actually run and finish.
+        total = float(timeout_s or self.wait_completion_timeout_s)
+        deadline = time.monotonic() + total
+        confirm = min(float(self.start_confirm_timeout_s), total)
 
-        Same pattern as non-batch joint MoveJ but uses P-var instead of C-var.
-        In batch mode only joint targets are currently supported — Cartesian batch
-        is future work (requires INFORM template with BASE-typed P-vars).
-        """
-        if self._batch_builder is not None or self._pvar_batch_buffer is not None:
-            raise NotImplementedError(
-                "Cartesian MoveJ/MoveL inside a batch context is not yet supported. "
-                "Call outside batch or use joint path."
+        running_seen = False
+        confirm_deadline = time.monotonic() + confirm
+
+        while time.monotonic() < confirm_deadline:
+            st = self.read_controller_status()
+
+            if st["alarm"]:
+                self._raise_if_alarm()
+                raise RuntimeError("Direct HSE MOVE aborted: controller alarm")
+            if st["error"]:
+                raise RuntimeError("Direct HSE MOVE aborted: controller ERROR is ON")
+            if st["hold"]:
+                raise RuntimeError("Direct HSE MOVE aborted: HOLD is ON")
+            if not st["servo"]:
+                raise RuntimeError("Direct HSE MOVE aborted: SERVO turned OFF")
+
+            if st["running"]:
+                running_seen = True
+                break
+            time.sleep(0.02)
+
+        if not running_seen:
+            self._raise_if_alarm()
+            raise TimeoutError(
+                "Direct HSE MOVE did not assert RUNNING within "
+                f"{confirm:.1f}s; refusing to send the next motion."
+            )
+
+        while time.monotonic() < deadline:
+            st = self.read_controller_status()
+
+            if st["alarm"]:
+                self._raise_if_alarm()
+                raise RuntimeError("Direct HSE MOVE aborted: controller alarm")
+            if st["error"]:
+                raise RuntimeError("Direct HSE MOVE aborted: controller ERROR is ON")
+            if st["hold"]:
+                raise RuntimeError("Direct HSE MOVE aborted: HOLD is ON")
+            if not st["servo"]:
+                raise RuntimeError("Direct HSE MOVE aborted: SERVO turned OFF")
+
+            if not st["running"]:
+                self._raise_if_alarm()
+                return
+
+            time.sleep(0.05)
+
+        self._raise_if_alarm()
+        raise TimeoutError(
+            f"Direct HSE MOVE did not complete within {total:.1f}s"
+        )
+
+    def move_cartesian(
+        self,
+        T_base: Any,
+        *,
+        move_type: int,
+        joint_speed_pct: float | None = None,
+        linear_speed_mm_s: float | None = None,
+        tool_no: int | None = None,
+        form: int = 4,
+    ) -> None:
+        # Direct Cartesian MOVE via Yaskawa HSE command 0x8A.
+        # move_type 1 = link/joint absolute (MOVJ-like)
+        # move_type 2 = straight absolute (MOVL-like)
+        # No P-variable write, FTP upload, JOB_SELECT or JOB_START is used.
+        if self._halted:
+            raise MotionHaltedError(
+                "MOVE refused - motion halted (call servo_on to resume)"
+            )
+
+        if move_type not in (1, 2):
+            raise ValueError(f"move_cartesian move_type must be 1 or 2, got {move_type}")
+
+        if tool_no is None:
+            tool_no = self.tool_no
+        tool_no = int(tool_no)
+        if not (0 <= tool_no <= 63):
+            raise ValueError(f"tool_no must be 0..63, got {tool_no}")
+
+        st = self.read_controller_status()
+        problems = []
+        if not st["remote"]:
+            problems.append("REMOTE is OFF")
+        if not st["servo"]:
+            problems.append("SERVO is OFF")
+        if st["running"]:
+            problems.append("controller is already RUNNING")
+        if st["hold"]:
+            problems.append("HOLD is ON")
+        if st["alarm"]:
+            problems.append("ALARM is ON")
+        if st["error"]:
+            problems.append("ERROR is ON")
+        if problems:
+            raise RuntimeError(
+                "Direct HSE MOVE precheck blocked: " + "; ".join(problems)
             )
 
         from src.orchestrator.frame_convert import matrix_to_xyzrpy_yaskawa
-        tool_no = getattr(self, "tool_no", 1)               # TOOL01 default
-        user_frame = 0
-        form = 0                                            # default IK branch
-
-        # 1. Write P000 with Cartesian pose
-        self.write_pose_var(p_index=0, T_base=T_base,
-                            tool_no=tool_no, user_frame=user_frame,
-                            form=form, data_type=DataType.BASE)
-
-        # 2. Upload INFORM job that references P000 with MOVJ/MOVL
         x, y, z, rx, ry, rz = matrix_to_xyzrpy_yaskawa(T_base)
-        job_name = self._next_job_name()
-        # Inline INFORM with P-variable + BASE position
-        instr = ("MOVJ P000" if kind == "movj" else "MOVL P000")
-        if kind == "movj":
-            instr += f" VJ={self.max_speed_pct:.2f}"
+
+        # HSES 0x8A units: XYZ=0.001 mm, angles=0.0001 degree.
+        pos = [
+            int(round(float(x) * 1000.0)),
+            int(round(float(y) * 1000.0)),
+            int(round(float(z) * 1000.0)),
+            int(round(float(rx) * 10000.0)),
+            int(round(float(ry) * 10000.0)),
+            int(round(float(rz) * 10000.0)),
+            0,
+        ]
+
+        if move_type == 1:
+            pct = float(
+                self.max_speed_pct if joint_speed_pct is None else joint_speed_pct
+            )
+            pct = min(pct, float(self.max_speed_pct))
+            if pct <= 0.0:
+                raise ValueError(f"joint speed must be > 0, got {pct}")
+            speed_class = 0
+            speed = int(round(pct * 100))
+            speed_desc = f"{pct:.2f}%"
         else:
-            instr += " V=80.0"
-        job_text = (
-            "/JOB\r\n"
-            f"//NAME {job_name}\r\n"
-            "//POS\r\n"
-            "///NPOS 0,0,0,0,0,0\r\n"
-            f"///TOOL {tool_no}\r\n"
-            "///POSTYPE BASE\r\n"
-            "///BASE\r\n"
-            "//INST\r\n"
-            "///DATE 2026/01/01 00:00\r\n"
-            "///ATTR SC,RW\r\n"
-            "///GROUP1 RB1\r\n"
-            "NOP\r\n"
-            f"'Cartesian {kind} target=({x:.1f},{y:.1f},{z:.1f})mm\r\n"
-            f"{instr}\r\n"
-            "END\r\n"
+            v = 20.0 if linear_speed_mm_s is None else float(linear_speed_mm_s)
+            if v <= 0.0:
+                raise ValueError(f"linear speed must be > 0, got {v}")
+            speed_class = 1
+            speed = int(round(v * 10))
+            speed_desc = f"{v:.1f} mm/s"
+
+        # BASE coordinate = 16.
+        payload = struct.pack(
+            "<IIIII7iIIIII",
+            1,
+            0,
+            speed_class,
+            speed,
+            16,
+            *pos,
+            0,
+            int(form),
+            0,
+            tool_no,
+            0,
+        ) + bytes(36)
+
+        self._send_request(
+            0x8A,
+            instance=int(move_type),
+            attribute=1,
+            service=Service.SET_ATTRIBUTE_ALL,
+            payload=payload,
         )
-        self.upload_job(job_text, job_name)
+
+        logger.info(
+            "HSE DIRECT CARTESIAN 0x8A: %s xyz=(%.1f, %.1f, %.1f) "
+            "rpy=(%.1f, %.1f, %.1f) speed=%s TOOL%02d",
+            "MOVJ" if move_type == 1 else "MOVL",
+            x, y, z, rx, ry, rz, speed_desc, tool_no,
+        )
+
+    def _move_pose(self, T_base: Any, kind: str) -> None:
+        # Cartesian real motion using direct HSE 0x8A; no FTP/JOB files.
+        if self._batch_builder is not None or self._pvar_batch_buffer is not None:
+            raise NotImplementedError(
+                "Direct Cartesian HSE path must run outside batch mode."
+            )
+
+        if kind == "movj":
+            self.move_cartesian(
+                T_base,
+                move_type=1,
+                joint_speed_pct=float(self.max_speed_pct),
+                tool_no=self.tool_no,
+            )
+        elif kind == "movl":
+            self.move_cartesian(
+                T_base,
+                move_type=2,
+                linear_speed_mm_s=20.0,
+                tool_no=self.tool_no,
+            )
+        else:
+            raise ValueError(f"Unknown Cartesian move kind: {kind!r}")
+
+        self._wait_direct_move_complete()
+
+
+    def run_dtwinrun_motion(
+        self,
+        pick_T_base: Any,
+        approach_T_base: Any,
+        place_T_base: Any,
+        job_name: str = "DTWINRUN",
+    ) -> None:
+        # Fixed YRC INFORM job using runtime P000-P003 plus taught P004 HOME.
+        # P000=P0, P001=P1, P002=P2, P003=P3; P004 HOME is YRC-taught.
+        # Runtime performs zero FTP uploads.
+        if self._halted:
+            raise MotionHaltedError(
+                "DTWINRUN refused - motion halted (call servo_on to resume)"
+            )
+
+        st = self.read_controller_status()
+        problems = []
+        if not st["remote"]:
+            problems.append("REMOTE is OFF")
+        if not st["servo"]:
+            problems.append("SERVO is OFF")
+        if st["running"]:
+            problems.append("controller already RUNNING")
+        if st["hold"]:
+            problems.append("HOLD is ON")
+        if st["alarm"]:
+            problems.append("ALARM is ON")
+        if st["error"]:
+            problems.append("ERROR is ON")
+        if problems:
+            raise RuntimeError("DTWINRUN precheck blocked: " + "; ".join(problems))
+
+        # --------------------------------------------------------
+        # Build P003 = PLACE approach/retreat.
+        #
+        # P3.X/Y/orientation = P2
+        # P3.Z = P2.Z + (P1.Z - P0.Z)
+        #
+        # This preserves the same approach height used at PICK.
+        # --------------------------------------------------------
+        import numpy as _np
+
+        _p0_arr = _np.asarray(pick_T_base, dtype=float)
+        _p1_arr = _np.asarray(approach_T_base, dtype=float)
+        _p2_arr = _np.asarray(place_T_base, dtype=float)
+
+        for _name, _pose in (
+            ("P0", _p0_arr),
+            ("P1", _p1_arr),
+            ("P2", _p2_arr),
+        ):
+            if _pose.shape != (4, 4):
+                raise ValueError(
+                    f"{_name} must be a 4x4 pose, got {_pose.shape}"
+                )
+
+        _place_dz = float(
+            _p1_arr[2, 3] - _p0_arr[2, 3]
+        )
+
+        if _place_dz <= 1e-6:
+            raise RuntimeError(
+                "DTWINRUN P3 refused: expected P1.Z > P0.Z in "
+                f"YRC BASE, got dz={_place_dz:.3f} mm"
+            )
+
+        p3_base = _p2_arr.copy()
+
+        # Same X, Y and orientation as P2. Raise only BASE Z.
+        p3_base[2, 3] = float(_p2_arr[2, 3]) + _place_dz
+
+        self.write_pose_var(
+            p_index=0,
+            T_base=pick_T_base,
+            tool_no=self.tool_no,
+            user_frame=0,
+            form=4,
+            data_type=DataType.BASE,
+        )
+        self.write_pose_var(
+            p_index=1,
+            T_base=approach_T_base,
+            tool_no=self.tool_no,
+            user_frame=0,
+            form=4,
+            data_type=DataType.BASE,
+        )
+        self.write_pose_var(
+            p_index=2,
+            T_base=place_T_base,
+            tool_no=self.tool_no,
+            user_frame=0,
+            form=4,
+            data_type=DataType.BASE,
+        )
+
+        self.write_pose_var(
+            p_index=3,
+            T_base=p3_base,
+            tool_no=self.tool_no,
+            user_frame=0,
+            form=4,
+            data_type=DataType.BASE,
+        )
+
+        from src.orchestrator.frame_convert import matrix_to_xyzrpy_yaskawa
+        p0 = matrix_to_xyzrpy_yaskawa(pick_T_base)
+        p1 = matrix_to_xyzrpy_yaskawa(approach_T_base)
+        p2 = matrix_to_xyzrpy_yaskawa(place_T_base)
+        p3 = matrix_to_xyzrpy_yaskawa(p3_base)
+
+        logger.info(
+            "DTWINRUN P-VARS: P000(P0)=(%.1f,%.1f,%.1f) "
+            "P001(P1)=(%.1f,%.1f,%.1f) "
+            "P002(P2 PLACE)=(%.1f,%.1f,%.1f) "
+            "P003(P3 SAFE)=(%.1f,%.1f,%.1f) "
+            "P004(HOME)=TAUGHT_ON_YRC "
+            "TOOL%02d FORM=4",
+            p0[0], p0[1], p0[2],
+            p1[0], p1[1], p1[2],
+            p2[0], p2[1], p2[2],
+            p3[0], p3[1], p3[2],
+            int(self.tool_no),
+        )
+
         self.job_select(job_name)
-        self.job_start()
+        with self._halt_lock:
+            if self._halted:
+                raise MotionHaltedError(
+                    "DTWINRUN START refused - Stop() latched before START"
+                )
+            self.job_start()
+
+        logger.info(
+            "DTWINRUN STARTED: MOVJ P001 -> MOVL P000 -> TIMER 1.5 "
+            "-> MOVL P001 -> MOVJ P003 -> MOVL P002 -> MOVL P003 "
+            "-> MOVJ P004(HOME)"
+        )
         self._wait_idle()
+        logger.info("DTWINRUN COMPLETE")
 
     def timer(self, seconds: float) -> None:
         """Pause for `seconds`.
