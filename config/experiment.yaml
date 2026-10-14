@@ -20,7 +20,10 @@ height_tolerance_mm: 20.0
 # mặt nạ gần như không có độ sâu; việc phát hiện đo sai chiều cao thuộc hai luật kia.
 min_depth_valid_frac: 0.15
 size_tolerance_mm: 40.0
-approach_height_mm: 100.0
+# 200 mm: phải vượt vật cao nhất có thể đứng trên bàn. Chồng cao nhất là hộp gỗ
+# 150 cộng vật trên nó, tới 190 mm, trong khi điểm gắp thấp nhất là mặt trên hộp
+# inox ở 40 mm. Vậy cần ít nhất 190 trừ 40 cộng lề, làm tròn lên 200.
+approach_height_mm: 200.0
 return_home_after_success: false
 speed_joint_deg_s: 60.0
 speed_linear_mm_s: 80.0
@@ -33,6 +36,9 @@ model_path: models/e2_seed1_best.pt
 conf_threshold: 0.5
 robot_ip: 192.168.125.100
 real:
+  # [MEASURE] 5,0 độ là số đang chạy trên cell, chưa ai đo nguồn gốc. Nếu là lệch
+  # cơ khí của bộ kẹp thì giữ và ghi lại ngày đo; nếu không đo ra lệch nào thì đặt
+  # 0. Phép đo: đặt một vật ở 0 độ, cho gắp, xem hai má có song song cạnh dài không.
   yaw_offset_deg: 5.0
   table_top_z_mm: null
   table_safety_margin_mm: 20.0

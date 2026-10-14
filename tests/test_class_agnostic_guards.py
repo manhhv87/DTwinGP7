@@ -104,3 +104,25 @@ class TestThresholdsAgainstMeasuredRuns:
         scale = (713.0 - 40.0) / (713.0 - 190.0)
         long_mm, short_mm = 180.0 * scale, 85.0 * scale
         assert not o._size_matches_class("inox_box", long_mm, short_mm, 40.0)
+
+
+class TestCommandedAgainstMeasuredHeight:
+    """The plane estimate must not drive the tool into what a part rests on."""
+
+    TOL = 20.0
+
+    def _fires(self, commanded_h, h_depth, frac=0.9):
+        return (frac >= 0.15 and commanded_h < h_depth - self.TOL)
+
+    def test_plane_estimate_on_a_stacked_part_is_refused(self):
+        # inox on a wood box: plane commands 40 mm, depth sees 190 mm.
+        assert self._fires(40.0, 190.0)
+
+    def test_a_part_on_the_table_is_left_alone(self):
+        assert not self._fires(40.0, 41.8)
+
+    def test_depth_that_cannot_be_trusted_does_not_refuse(self):
+        assert not self._fires(40.0, 190.0, frac=0.05)
+
+    def test_disagreement_inside_the_tolerance_is_left_alone(self):
+        assert not self._fires(120.0, 135.0)
