@@ -632,18 +632,7 @@ class Orchestrator:
         except ImportError:
             return None
 
-        tool_offset = float(self.config.get("robot_tool_offset_mm", 0.0))
-        if not hasattr(self, "_dh_model_cached"):
-            # URDF chain — verified match RoboDK SolveFK (0.00mm diff). Pass
-            # BOTH base_xyz + base_rpy to match _world_to_robot_base (YRC path) —
-            # if robot base is rotated and rpy is missing, IK will solve the wrong frame.
-            base_rpy_deg = self.config.get("robot_base_rpy_deg", (0.0, 0.0, 0.0))
-            self._dh_model_cached = gp7_urdf(
-                base_xyz_mm=tuple(self.config.get("robot_base_xyz_mm", (0.0, 0.0, 0.0))),
-                base_rpy_rad=tuple(float(np.deg2rad(d)) for d in base_rpy_deg),
-                tool_offset_mm=tool_offset,
-            )
-        model = self._dh_model_cached
+        model = self._dh_model(gp7_urdf)
 
         # Seed nearest-branch: explicit seed_deg (e.g. the RUNNING prev-joint state
         # threaded by predictive safety so prediction branch-chains exactly like
@@ -1105,6 +1094,61 @@ class Orchestrator:
             return (None, None)
         return (joint_list, None)
 
+    def _dh_model(self, gp7_urdf=None):
+        """The URDF chain used by both client IK and the reached-pose check.
+
+        Built once. base_xyz + base_rpy are included so the chain solves in the
+        WORLD frame, exactly as _world_to_robot_base does for the YRC path.
+        """
+        if not hasattr(self, "_dh_model_cached"):
+            if gp7_urdf is None:
+                from .kinematics.urdf_chain import gp7_urdf
+            base_rpy_deg = self.config.get("robot_base_rpy_deg", (0.0, 0.0, 0.0))
+            self._dh_model_cached = gp7_urdf(
+                base_xyz_mm=tuple(self.config.get("robot_base_xyz_mm", (0.0, 0.0, 0.0))),
+                base_rpy_rad=tuple(float(np.deg2rad(d)) for d in base_rpy_deg),
+                tool_offset_mm=float(self.config.get("robot_tool_offset_mm", 0.0)),
+            )
+        return self._dh_model_cached
+
+    def _verify_reached(self, target_T_world: np.ndarray, kind: str) -> None:
+        """Check the robot actually arrived, by reading joints and running FK.
+
+        The backend reports completion when the controller clears its RUNNING
+        flag, which also clears when a motion stops early (soft limit, HOLD
+        released, a rejected segment). Without this check the cycle would carry
+        on as if the pose had been reached and the next motion would start from
+        somewhere else. Set move_verify_tol_mm to 0 to disable.
+        """
+        tol_mm = float(self.config.get("move_verify_tol_mm", 5.0))
+        if tol_mm <= 0.0 or not hasattr(self.robot, "Joints"):
+            return
+        try:
+            from .kinematics.urdf_chain import forward_kinematics_urdf
+            joints_deg = list(self.robot.Joints())
+            T_now = forward_kinematics_urdf(
+                self._dh_model(), [float(np.deg2rad(q)) for q in joints_deg])
+        except Exception as exc:  # noqa: BLE001 — a read/FK failure must not be silent
+            logger.warning("Reached-pose check skipped (%s): %s", kind, exc)
+            return
+
+        d_mm = float(np.linalg.norm(
+            np.asarray(T_now)[:3, 3] - np.asarray(target_T_world)[:3, 3]))
+        if d_mm > tol_mm:
+            logger.error(
+                "%s did not reach its target: off by %.1f mm (tolerance %.1f). "
+                "target=%s reached=%s joints=%s",
+                kind, d_mm, tol_mm,
+                np.asarray(target_T_world)[:3, 3].round(1).tolist(),
+                np.asarray(T_now)[:3, 3].round(1).tolist(),
+                [round(q, 2) for q in joints_deg],
+            )
+            raise RuntimeError(
+                f"{kind} stopped {d_mm:.1f} mm from its target "
+                f"(tolerance {tol_mm:.1f} mm)"
+            )
+        logger.debug("%s reached within %.1f mm", kind, d_mm)
+
     def _move_j_via_ik(self, target_T: np.ndarray) -> None:
         """MoveJ via IK route (YRC controller or client DLS)."""
         result, pose = self._solve_ik_routed(target_T)
@@ -1115,6 +1159,7 @@ class Orchestrator:
                          pose[:3, 3].round(1).tolist())
             self.robot.MoveJ(pose)
             self._current_joints = None
+            self._verify_reached(target_T, "MoveJ")
             return
 
         joint_list = result
@@ -1128,6 +1173,7 @@ class Orchestrator:
                      target_T[:3, 3].round(1).tolist())
         self.robot.MoveJ(joint_list)
         self._current_joints = joint_list
+        self._verify_reached(target_T, "MoveJ")
 
     def _move_l_via_ik(self, target_T: np.ndarray) -> None:
         """MoveL via IK route — same pattern as MoveJ."""
@@ -1136,6 +1182,7 @@ class Orchestrator:
         if result == "YRC_POSE":
             self.robot.MoveL(pose)
             self._current_joints = None
+            self._verify_reached(target_T, "MoveL")
             return
 
         joint_list = result
@@ -1146,6 +1193,7 @@ class Orchestrator:
         joint_list = self._normalize_target_joints(joint_list)
         self.robot.MoveL(joint_list)
         self._current_joints = joint_list
+        self._verify_reached(target_T, "MoveL")
 
     # ────────────────────────────────────────────────────────────
     # Main cycle

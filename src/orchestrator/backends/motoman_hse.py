@@ -1069,7 +1069,9 @@ class MotomanHSEBackend:
           - 4x4 matrix → Cartesian pose in BASE frame → P-variable BASE,
             YRC1000 computes IK internally
 
-        Non-batch: 1 INFORM upload + JOB_START + wait (200-300ms overhead).
+        Non-batch: one direct HSE MOVE packet, then wait for the controller to
+        assert and clear RUNNING. No job file is written, which removes the
+        200-300 ms of the former upload + JOB_START path.
         Batch (M3): appends instruction to batch builder (immediate return).
         Ultra-fast batch (M3++): appends to pvar buffer.
         """
@@ -1124,10 +1126,13 @@ class MotomanHSEBackend:
         deadline = time.monotonic() + total
         confirm = min(float(self.start_confirm_timeout_s), total)
 
-        running_seen = False
+        # A non-positive confirm window disables the start check, matching
+        # _wait_idle. Unit tests set it to 0 because their mock never asserts
+        # RUNNING; real hardware keeps the 3 s default.
+        running_seen = confirm <= 0.0
         confirm_deadline = time.monotonic() + confirm
 
-        while time.monotonic() < confirm_deadline:
+        while not running_seen and time.monotonic() < confirm_deadline:
             st = self.read_controller_status()
 
             if st["alarm"]:

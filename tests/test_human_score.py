@@ -54,6 +54,8 @@ def _bare_orch(trial_logger, hook):
     o.session_id = o.block_id = o.operator_id = ""
     o.sm = SimpleNamespace(state=SimpleNamespace(value="done"))
     o.human_score_hook = hook
+    o._last_support_height_mm = 0.0
+    o._last_place_z_mm = None
     return o
 
 

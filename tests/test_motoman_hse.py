@@ -69,6 +69,16 @@ def backend_with_mock_socket(monkeypatch):
     # READ_ALARM, so move-test response sequences include a final alarm poll.
     backend.start_confirm_timeout_s = 0.0
 
+    # The mock socket never answers READ_STATUS, so report a healthy controller:
+    # REMOTE + PLAY + servo on, no alarm. The guards that read this status are
+    # exercised by the dedicated status tests, which build their own responses.
+    backend.read_controller_status = lambda: {
+        "data1": 0, "data2": 0, "mode": "REMOTE",
+        "remote": True, "play": True, "teach": False, "auto": True,
+        "running": False, "servo": True, "alarm": False, "error": False,
+        "hold": False,
+    }
+
     # Inject mock socket vào backend
     mock_sock = MagicMock(spec=socket.socket)
     backend._sock = mock_sock                   # bypass connect()
@@ -261,71 +271,47 @@ class TestStubsAndPoseRejection:
 
 
 class TestMoveJEndToEnd:
-    def test_movej_uploads_job_selects_starts_waits(
-        self, backend_with_mock_socket, monkeypatch
-    ):
+    def test_movej_sends_a_direct_move_and_waits(self, backend_with_mock_socket,
+                                                 monkeypatch):
+        """Non-batch MoveJ commands the controller directly: no job upload."""
         backend, mock_sock = backend_with_mock_socket
 
-        # FTP mock — capture upload contents
         from unittest.mock import MagicMock
-        uploaded = {}
         mock_ftp_cls = MagicMock()
-        mock_ftp_inst = MagicMock()
-        mock_ftp_cls.return_value = mock_ftp_inst
-
-        def capture_stor(cmd, stream):
-            uploaded["cmd"] = cmd
-            uploaded["data"] = stream.read()
-        mock_ftp_inst.storbinary.side_effect = capture_stor
-
         import ftplib
         monkeypatch.setattr(ftplib, "FTP", mock_ftp_cls)
 
-        # Socket: trả ACK cho mọi command + status payload với bit Running tắt
-        # cho READ_STATUS poll.
-        responses = [
-            _build_response(),                       # JOB_SELECT
-            _build_response(),                       # START
-            _build_response(payload=b"\x00"),        # READ_STATUS — idle (bit 1 = 0)
-            _build_response(payload=b"\x00"),        # READ_ALARM — none (len<8 → (0,0))
-        ]
         mock_sock.recvfrom.side_effect = [
-            (r, ("192.168.1.100", 10040)) for r in responses
+            (_build_response(), ("192.168.1.100", 10040)) for _ in range(4)
         ]
 
         backend.MoveJ([10.0, -5.0, 20.0, 0.0, 15.0, -10.0])
 
-        # FTP đã được gọi đúng
-        mock_ftp_cls.assert_called_once()
-        mock_ftp_inst.login.assert_called_once()
-        mock_ftp_inst.cwd.assert_called_once_with("/JOB")
-        assert "STOR " in uploaded["cmd"]
-        assert b"/JOB" in uploaded["data"]              # INFORM header
-        assert b"MOVJ" in uploaded["data"]              # motion instruction
-        # HSE sent 4 packets: JOB_SELECT, START, READ_STATUS, READ_ALARM
-        assert mock_sock.sendto.call_count == 4
+        # No INFORM job is written for a single motion any more.
+        mock_ftp_cls.assert_not_called()
+        # Two packets leave the host: the MOVE itself and the alarm read that
+        # closes the wait. Completion is read through the status stub, which
+        # costs no datagram.
+        assert mock_sock.sendto.call_count == 2
 
-    def test_movej_wait_idle_times_out(self, backend_with_mock_socket, monkeypatch):
+    def test_movej_times_out_when_the_move_never_finishes(self,
+                                                          backend_with_mock_socket):
+        """RUNNING that never clears must raise, not return as if finished."""
         backend, mock_sock = backend_with_mock_socket
-        backend.wait_completion_timeout_s = 0.3       # short timeout cho test
+        backend.wait_completion_timeout_s = 0.3
+        backend.read_controller_status = lambda: {
+            "data1": 0, "data2": 0, "mode": "REMOTE",
+            "remote": True, "play": True, "teach": False, "auto": True,
+            "running": True, "servo": True, "alarm": False, "error": False,
+            "hold": False,
+        }
 
-        from unittest.mock import MagicMock
-        mock_ftp_cls = MagicMock()
-        mock_ftp_inst = MagicMock()
-        mock_ftp_cls.return_value = mock_ftp_inst
-        import ftplib
-        monkeypatch.setattr(ftplib, "FTP", mock_ftp_cls)
-
-        # READ_STATUS luôn trả bit Running=ON → wait_idle timeout.
-        # Data1 bit3 (0x08) = "Running/operating" per Yaskawa HSE spec
-        # (bit1/0x02 = "1-Cycle" mode, không phải trạng thái chạy).
         def respond(*_a, **_k):
-            return _build_response(payload=b"\x08"), ("192.168.1.100", 10040)
+            return _build_response(), ("192.168.1.100", 10040)
         mock_sock.recvfrom.side_effect = respond
 
         with pytest.raises(TimeoutError, match="did not complete"):
             backend.MoveJ([0] * 6)
-
 
 # ─────────────────────────────────────────────────────────────────────────
 # JOB_SELECT payload format
@@ -387,8 +373,10 @@ class TestBatchMode:
         assert b"DOUT OT#(1) ON" in data
         assert b"TIMER T=0.300" in data
 
-    def test_batch_outside_falls_back_to_single_shot(self, backend_with_mock_socket, monkeypatch):
-        """Ngoài batch: mỗi MoveJ tự upload độc lập như trước (preserved behavior)."""
+    def test_outside_batch_each_move_is_sent_on_its_own(self,
+                                                        backend_with_mock_socket,
+                                                        monkeypatch):
+        """Outside a batch, a motion goes straight out; no job file is written."""
         backend, mock_sock = backend_with_mock_socket
         from unittest.mock import MagicMock
         mock_ftp_cls = MagicMock()
@@ -397,14 +385,12 @@ class TestBatchMode:
         monkeypatch.setattr(ftplib, "FTP", mock_ftp_cls)
 
         mock_sock.recvfrom.side_effect = [
-            (_build_response(), ("x", 10040)),               # JOB_SELECT
-            (_build_response(), ("x", 10040)),               # START
-            (_build_response(payload=b"\x00"), ("x", 10040)),  # READ_STATUS idle
-            (_build_response(payload=b"\x00"), ("x", 10040)),  # READ_ALARM none
+            (_build_response(), ("x", 10040)) for _ in range(4)
         ]
         backend.MoveJ([10, 0, 0, 0, 0, 0])
-        # Non-batch path: FTP called 1 lần cho MoveJ này
-        mock_ftp_cls.return_value.storbinary.assert_called_once()
+
+        mock_ftp_cls.return_value.storbinary.assert_not_called()
+        assert mock_sock.sendto.call_count == 2
 
     def test_batch_nested_raises(self, backend_with_ftp_mock):
         backend, *_ = backend_with_ftp_mock

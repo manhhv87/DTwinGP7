@@ -187,5 +187,5 @@ robot_connection:
   ip: "192.168.125.100"                     # ĐỔI theo IP YRC1000 thực tế (= default cho --hse-ip)
   port: 80                                # cosmetic — HSE thực dùng UDP 10040
   driver: "Motoman"                       # cosmetic — ghi brand, không gọi driver
-  max_speed_percent: 5                   # safety: cap tốc độ INFORM VJ xuống 30%
+  max_speed_percent: 5                   # safety: giới hạn tốc độ xuống 5% khi chạy thật
   acceleration_percent: 50                # safety: gia tốc 50%
