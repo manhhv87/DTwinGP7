@@ -1443,7 +1443,38 @@ class Orchestrator:
                                     t_start, obj)
                     return False
 
-                # (2) Shape plausibility — the measured top rectangle, in mm on
+                # (2) Commanded height against measured height. The plane
+                # estimate stands a part on the table by its class height, so a
+                # part resting on another one is placed a whole support lower
+                # and the tool would be driven into that support. Depth sees the
+                # real top face; when it is trustworthy and the command sits far
+                # below it, refuse. This does not rescue the plane estimate — the
+                # trial still fails — it only keeps the failure out of the
+                # hardware, which is what E2 needs in order to measure it.
+                if reject is None:
+                    tol_mm = float(self.config.get("height_tolerance_mm", 20.0))
+                    min_frac = float(self.config.get("min_depth_valid_frac", 0.15))
+                    h_depth = obj.get("h_depth_mm")
+                    frac = obj.get("depth_valid_frac")
+                    if (h_depth is not None and frac is not None
+                            and float(frac) >= min_frac
+                            and np.isfinite(float(h_depth))):
+                        commanded_h = float(xyz_base[2]) - table_top
+                        if commanded_h < float(h_depth) - tol_mm:
+                            reject = (
+                                f"commanded top face {commanded_h:.1f} mm, "
+                                f"depth sees {float(h_depth):.1f} mm: the tool "
+                                f"would go into whatever the part rests on")
+
+                if reject is not None:
+                    logger.error("Trial %d: pick refused — %s", trial_id, reject)
+                    self.sm.fail("depth_geometry_reject")
+                    self.stats["failed"] += 1
+                    self._log_trial(trial_id, False, "depth_geometry_reject",
+                                    t_start, obj)
+                    return False
+
+                # (3) Shape plausibility — the measured top rectangle, in mm on
                 # the part plane, must match one size variant of the detected
                 # class. This is the vision-only replacement for comparing the
                 # vision yaw with the called yaw.
