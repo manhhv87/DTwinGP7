@@ -26,6 +26,10 @@ size_tolerance_mm: 40.0
 # Mỗi chu trình job cố định phải bắt đầu và kết thúc ở HOME dạy trên tay dạy
 # (taught_home_joints_deg trong khối real), sai lệch tối đa ngưỡng này.
 home_tolerance_deg: 0.5
+# Vật xếp chồng được nhả cao thêm chừng này: chiều cao thật của vật cao hơn số danh
+# định (inox 41,5 so với 40; carton 120 đo được 125,4), nên nhả đúng độ cao tính
+# ra sẽ ép vật xuống bàn 1,8 đến 6,6 mm. Vật đặt phẳng không cần lề này.
+stack_release_margin_mm: 8.0
 # 200 mm: phải vượt vật cao nhất có thể đứng trên bàn. Chồng cao nhất là hộp gỗ
 # 150 cộng vật trên nó, tới 190 mm, trong khi điểm gắp thấp nhất là mặt trên hộp
 # inox ở 40 mm. Vậy cần ít nhất 190 trừ 40 cộng lề, làm tròn lên 200.
