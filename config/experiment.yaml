@@ -22,13 +22,9 @@ height_tolerance_mm: 20.0
 # 0,299 tới 0,991, nên mọi ngưỡng từ 0,3 trở lên đều loại nhầm lượt gắp được. Ngưỡng này chỉ để bắt
 # mặt nạ gần như không có độ sâu; việc phát hiện đo sai chiều cao thuộc hai luật kia.
 min_depth_valid_frac: 0.15
-# Để lấy phép đo chiều sâu mà phủ quyết một chuyển động thì phép đo ấy phải đáng tin
-# ít nhất bằng mức mà luật hợp nhất đòi trước khi nó chịu dùng chiều sâu, tức 0,3.
-# Ngưỡng 0,15 ở trên chỉ dùng để nhận ra mặt nạ gần như không có độ sâu.
-depth_veto_valid_frac: 0.3
 size_tolerance_mm: 40.0
-# Mỗi chu trình job cố định phải bắt đầu và kết thúc ở HOME dạy trên tay dạy;
-# HOME lấy theo tư thế robot đứng trước chu trình đầu tiên của buổi.
+# Mỗi chu trình job cố định phải bắt đầu và kết thúc ở HOME dạy trên tay dạy
+# (taught_home_joints_deg trong khối real), sai lệch tối đa ngưỡng này.
 home_tolerance_deg: 0.5
 # 200 mm: phải vượt vật cao nhất có thể đứng trên bàn. Chồng cao nhất là hộp gỗ
 # 150 cộng vật trên nó, tới 190 mm, trong khi điểm gắp thấp nhất là mặt trên hộp
@@ -57,6 +53,10 @@ real:
   # 23,6 tới 23,9 mm trên 38 lượt gắp. Các lượt lệnh từ 34,9 mm trở lên không va
   # chạm; lượt 45, lệnh khoảng 25 mm, báo động va chạm 4315 khi đóng kẹp.
   table_safety_margin_mm: 35.0
+  # HOME dạy trên tay dạy (P004), đọc từ telemetry ngày 14 và 15/10/2026: robot nghỉ
+  # đúng tư thế này, lệch không quá 0,006 độ, ở 5 trong 6 lần chạy. Dạy lại P004 thì
+  # phải sửa dòng này, nếu không mọi chu trình sẽ bị từ chối vì không ở HOME.
+  taught_home_joints_deg: [-86.481, -17.385, -21.274, 0.0, -86.115, 91.775]
   grasp_depth_offset_mm: 0.0
   # Reject RGB-D target-height estimates that differ too far from the
   # measured physical variants in class_sizes_mm.
