@@ -853,6 +853,18 @@ class Orchestrator:
         total_height_mm = float(
             top_base[2] - table_pick_z
         )
+        # As for the pick clearance, a command built from depth takes the
+        # higher of the median and the top band, measured above the same
+        # fitted plane: a median dragged onto the support would otherwise
+        # hide the support and drop the part at the place.
+        h_depth = obj.get("h_depth_mm")
+        frac = obj.get("depth_valid_frac")
+        if (str(obj.get("depth_used", "")) == "rgbd"
+                and h_depth is not None and frac is not None
+                and np.isfinite(float(h_depth))
+                and float(frac) >= float(
+                    self.config.get("min_depth_valid_frac", 0.15))):
+            total_height_mm = max(total_height_mm, float(h_depth))
 
         # Height of the part being carried, from the class the detector
         # reported. A class with two sizes, the carton at 120 and 80 mm high,
@@ -882,9 +894,20 @@ class Orchestrator:
             target_height_mm = float(min(
                 variants, key=lambda v: abs(total_height_mm - float(v[2])))[2])
 
-        # Whatever the part stands on is the remainder, floored at zero: a part
-        # resting on the table leaves nothing, a stacked one leaves its support.
-        support_h_mm = float(max(0.0, total_height_mm - target_height_mm))
+        # Whatever the part stands on is the remainder. Less than half the
+        # thinnest part in the class table cannot be a part, only the bias of
+        # the measured top (a 120 mm carton read 125 mm on 15 Oct 2026), and is
+        # taken as the table: subtracting it would press the part into the
+        # table at the place.
+        heights = [float(v[2]) for c in (self.config.get("class_sizes_mm") or {})
+                   for v in self._class_variants_mm(c)
+                   if len(v) >= 3 and v[2] == v[2]]
+        heights += [float(h) for h in
+                    (self.config.get("class_heights_mm") or {}).values() if h]
+        min_support_mm = 0.5 * min(heights) if heights else 0.0
+        support_h_mm = float(total_height_mm - target_height_mm)
+        if support_h_mm < min_support_mm:
+            support_h_mm = 0.0
 
         if (
             not np.isfinite(target_height_mm)
@@ -995,8 +1018,14 @@ class Orchestrator:
         #
         # Normal objects usually give ~0 mm.
         # Plastic currently includes the configured +10 mm class bias.
-        tcp_top_offset_mm = float(
-            p0_base[2, 3] - detected_top_z_base
+        # The part leaves the gripper held exactly as it was picked: the TCP
+        # stays as far above the place table as it was above whatever the part
+        # stood on. A flat part therefore lands on the table whatever the
+        # camera made of its top face; the earlier rule added the pick's lift
+        # above the measured top, so a top read 23.6 mm low (15 Oct 2026,
+        # trial 24) released the part about 20 mm up, and only in rgbd.
+        hold_above_support_mm = float(
+            p0_base[2, 3] - (table_pick_z_base + support_h_mm)
         )
 
         table_place_z_base = self._table_z_base_at_xy(
@@ -1004,11 +1033,7 @@ class Orchestrator:
             float(place_xyz[1]),
         )
 
-        p2_z = float(
-            table_place_z_base
-            + target_h_mm
-            + tcp_top_offset_mm
-        )
+        p2_z = float(table_place_z_base + hold_above_support_mm)
 
         if not np.isfinite(p2_z):
             raise RuntimeError(
@@ -1056,7 +1081,7 @@ class Orchestrator:
             logger.info(
                 "PLACE-Z DETECTED: class=%s stack_on=%s | "
                 "topZ=%.1f tablePickZ=%.1f supportH=%.1f "
-                "-> targetH=%.1f | tcpTopOff=%+.1f | "
+                "-> targetH=%.1f | holdAboveSupport=%+.1f | "
                 "tablePlaceZ=%.1f -> P2.Z=%.1f",
                 obj.get("class_name", "?"),
                 str(getattr(self, "current_stack_on", "") or "-"),
@@ -1064,7 +1089,7 @@ class Orchestrator:
                 table_pick_z_base,
                 support_h_mm,
                 target_h_mm,
-                tcp_top_offset_mm,
+                hold_above_support_mm,
                 table_place_z_base,
                 p2_z,
             )
