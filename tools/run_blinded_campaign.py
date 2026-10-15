@@ -77,6 +77,11 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> int:
+    # A console or a pipe that cannot print a character must not stop a run:
+    # piped through Tee-Object, Windows hands Python a cp1252 stream.
+    for _stream in (sys.stdout, sys.stderr):
+        if hasattr(_stream, "reconfigure"):
+            _stream.reconfigure(errors="replace")
     args = parse_args()
     arms = args.arm
     if len(arms) > len(CODES):
@@ -142,7 +147,7 @@ def main() -> int:
         print(f"  block {i + 1:3d}  arm {code_of[n]}  poses {lo}:{hi}")
 
     if args.dry_run:
-        print("\nDry run — nothing started, no key written.")
+        print("\nDry run: nothing started, no key written.")
         return 0
 
     key_path = Path(args.key_out)
@@ -155,7 +160,7 @@ def main() -> int:
               f"runs it describes cannot be decoded.", file=sys.stderr)
         return 2
     key_file.write_text(json.dumps(key, indent=2), encoding="utf-8")
-    print(f"\nSealed key → {key_file}")
+    print(f"\nSealed key: {key_file}")
     print("Do not open it until every block is run and scored.\n")
 
     common = shlex.split(args.common)
@@ -170,7 +175,7 @@ def main() -> int:
                "--operator-id", args.operator,
                "--blind-label", code_of[name],
                *common, *shlex.split(args_of[name])]
-        print(f"\n{'=' * 60}\n  Block {i + 1}/{len(schedule)} — arm {code_of[name]}"
+        print(f"\n{'=' * 60}\n  Block {i + 1}/{len(schedule)}, arm {code_of[name]}"
               f"\n{'=' * 60}", flush=True)
         # stdin/stdout are inherited: the operator answers the per-trial prompt.
         rc = subprocess.call(cmd, cwd=str(PROJECT_ROOT))

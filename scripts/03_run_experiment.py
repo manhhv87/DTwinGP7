@@ -414,6 +414,11 @@ def build_extractor(intrinsics, detector, config: dict, depth_mode: str, table_p
 
 
 def main() -> int:
+    # A console or a pipe that cannot print a character must not stop a run:
+    # piped through Tee-Object, Windows hands Python a cp1252 stream.
+    for _stream in (sys.stdout, sys.stderr):
+        if hasattr(_stream, "reconfigure"):
+            _stream.reconfigure(errors="replace")
     args = parse_args()
     log = setup_logging("experiment", log_file=PROJECT_ROOT / "logs/experiment.log")
     log.info("=" * 60)
@@ -429,7 +434,7 @@ def main() -> int:
                     h, _logging.FileHandler):
                 h.setLevel(_logging.WARNING)
         print("=" * 60)
-        print(f"  BLINDED RUN — arm {args.blind_label}")
+        print(f"  BLINDED RUN, arm {args.blind_label}")
         print("  Place the parts as prompted. Which configuration this is, and how it is")
         print("  doing, are deliberately not shown. Both are in the log file.")
         print("=" * 60, flush=True)
@@ -992,7 +997,7 @@ def main() -> int:
                 row_ = pose_rows[i - 1] if pose_rows is not None else {}
 
                 print(
-                    f"\n[{args.blind_label}] Trial {i}/{args.trials} — PLACE: "
+                    f"\n[{args.blind_label}] Trial {i}/{args.trials}, PLACE: "
                     f"card={row_.get('card_id', '?')}  "
                     f"yaw={row_.get('yaw_deg', '?')} deg"
                     f"  class={row_.get('class_hint', '?')}",
