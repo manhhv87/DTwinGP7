@@ -140,6 +140,10 @@ class TestDepthPlausibility:
     def test_a_stacked_part_reads_higher_and_passes(self):
         assert _orch()._depth_implausible(_obj(h_depth=190.0)) is None
 
+    def test_depth_that_forms_no_top_face_is_refused(self):
+        reason = _orch()._depth_implausible(_obj(h_depth=None))
+        assert reason is not None and "top face" in reason
+
     def test_only_a_command_built_from_depth_is_judged(self):
         o = _orch()
         assert o._depth_implausible(
@@ -165,11 +169,16 @@ class TestCommandedAgainstMeasuredHeight:
         assert o._depth_contradicts_command(
             _obj(depth_used="plane", frac=0.05, h_depth=190.0), 40.0) is None
 
-    def test_a_fraction_below_the_veto_bar_does_not_refuse(self):
-        """Depth must be as trustworthy as fusion demands before it may veto."""
+    def test_a_stack_seen_with_little_depth_is_still_refused(self):
+        """15 Oct 2026, trial 47: inox on the wood box read at a fraction of 0.267."""
         o = _orch()
         assert o._depth_contradicts_command(
-            _obj(depth_used="plane", frac=0.2, h_depth=190.0), 40.0) is None
+            _obj(depth_used="plane", frac=0.267, h_depth=194.8), 40.0) is not None
+
+    def test_a_dead_mask_does_not_veto(self):
+        o = _orch()
+        assert o._depth_contradicts_command(
+            _obj(depth_used="plane", frac=0.10, h_depth=190.0), 40.0) is None
 
     def test_disagreement_inside_the_tolerance_is_left_alone(self):
         o = _orch()
@@ -247,6 +256,28 @@ class TestCommandedPickZ:
 
     def test_a_thick_part_on_a_support_is_left_alone(self):
         assert self._z("carton", 230.0) == pytest.approx(230.0)
+
+    def test_a_collapsed_median_on_a_stack_follows_the_top_band(self):
+        """rgbd: a median dragged onto the support must not send the tool there.
+
+        Inox on the wood box: top band at 190 mm, median collapsed to 17 mm
+        (15 Oct 2026, trial 24 read 17.3 against 40.9 on a flat inox).
+        """
+        o = _orch(table_safety_margin_mm=35.0, grasp_depth_offset_mm=0.0,
+                  height_tolerance_mm=20.0)
+        z = o._commanded_pick_z({"pose_base": (500.0, 0.0, 17.0),
+                                 "class_name": "inox_box", "depth_used": "rgbd",
+                                 "depth_valid_frac": 0.8, "h_depth_mm": 190.0}, 0.0)
+        assert z == pytest.approx(185.0)
+
+    def test_a_plane_command_is_never_lifted_by_depth(self):
+        """Plane mode stays the plane estimate; the refusal clause judges it."""
+        o = _orch(table_safety_margin_mm=35.0, grasp_depth_offset_mm=0.0,
+                  height_tolerance_mm=20.0)
+        z = o._commanded_pick_z({"pose_base": (500.0, 0.0, 40.0),
+                                 "class_name": "inox_box", "depth_used": "plane",
+                                 "depth_valid_frac": 0.8, "h_depth_mm": 190.0}, 0.0)
+        assert z == pytest.approx(40.0)
 
     def test_a_bias_cannot_go_below_the_clearance(self):
         z = self._z("inox_box", 38.0, class_pick_z_bias_mm={"inox_box": -10.0})
@@ -376,25 +407,30 @@ class TestMeasuredRuns:
 
         Every commanded point stays the margin above the table and above
         the support. Only thin parts and low readings move: all eight plastic
-        readings and three inox readings, the largest inox lift 3.2 mm, so the
-        other 21 inox readings reach the robot exactly as measured.
+        readings, four inox readings by at most 3.2 mm, and one carton by
+        4.0 mm (14 Oct, trial 9, whose top band read 49 mm above its median),
+        so the other 20 inox readings reach the robot exactly as measured.
         """
         o = _orch_from_config_file()
         margin = float(o.config["table_safety_margin_mm"])
         lifted = []
-        for run, trial, cls, *_r, det_z, _ok in MEASURED:
+        for run, trial, cls, used, frac, h_depth, det_z, _ok in MEASURED:
             z = o._commanded_pick_z(
-                {"pose_base": (0.0, 0.0, det_z), "class_name": cls}, TABLE_TOP_MM)
+                {"pose_base": (0.0, 0.0, det_z), "class_name": cls,
+                 "depth_used": used, "depth_valid_frac": frac,
+                 "h_depth_mm": h_depth}, TABLE_TOP_MM)
             support = max(TABLE_TOP_MM, det_z - o._class_min_height_mm(cls))
             assert z - support >= margin - 1e-9, (run, trial)
             if z > det_z + 1e-9:
                 lifted.append((cls, z - det_z))
         assert margin == 35.0
-        assert len(lifted) == 11
+        assert len(lifted) == 13
         assert sum(cls == "plastic_box" for cls, _ in lifted) == 8
         inox = [d for cls, d in lifted if cls == "inox_box"]
-        assert len(inox) == 3
+        assert len(inox) == 4
         assert max(inox) == pytest.approx(3.2, abs=0.05)
+        carton = [d for cls, d in lifted if cls == "carton"]
+        assert carton == [pytest.approx(4.0, abs=0.05)]
 
 
 class _Joints:
@@ -420,6 +456,17 @@ class TestAtHome:
         o = _orch(is_real_mode=real, home_tolerance_deg=0.5)
         o.robot = _Joints(*readings)
         return o
+
+    def test_the_configured_home_is_used_from_the_first_cycle(self):
+        """A block that starts away from HOME is stopped before it moves.
+
+        The third run of 14 Oct 2026 started 43.6 deg off at J6.
+        """
+        away = [-72.954, -14.759, -24.536, -0.009, -80.225, 135.388]
+        o = self._o(away)
+        o.config["taught_home_joints_deg"] = self.HOME
+        reason = o._check_at_home("before")
+        assert reason is not None and "before" in reason
 
     def test_the_first_cycle_learns_home(self):
         o = self._o(self.HOME, self.HOME)

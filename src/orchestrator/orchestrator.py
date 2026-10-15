@@ -1204,7 +1204,21 @@ class Orchestrator:
         clear_z = float(table_top) + margin
         h_min = self._class_min_height_mm(obj.get("class_name"))
         if h_min is not None:
-            clear_z = max(clear_z, top_z - h_min + margin)
+            # When the command came from depth, the top is the higher of the
+            # median and the top band: the median can collapse onto what lies
+            # around the part (15 Oct 2026, trial 23: 3.0 mm against 42.6 mm),
+            # and on a stacked part that would send the tool into the support.
+            # Never in plane mode, whose command must stay the plane estimate.
+            top_est = top_z
+            h_depth = obj.get("h_depth_mm")
+            frac = obj.get("depth_valid_frac")
+            if (str(obj.get("depth_used", "")) == "rgbd"
+                    and h_depth is not None and frac is not None
+                    and np.isfinite(float(h_depth))
+                    and float(frac) >= float(
+                        self.config.get("min_depth_valid_frac", 0.15))):
+                top_est = max(top_est, float(table_top) + float(h_depth))
+            clear_z = max(clear_z, top_est - h_min + margin)
         if z < clear_z:
             logger.info(
                 "PICK Z CLEARANCE (%s): P0 %.1f -> %.1f mm "
@@ -1277,6 +1291,10 @@ class Orchestrator:
             return (f"depth valid fraction {float(frac):.2f} "
                     f"below {min_frac:.2f}")
         h_depth = obj.get("h_depth_mm")
+        if h_depth is None or not np.isfinite(float(h_depth)):
+            # The returns scatter instead of forming a top face, as on a mirror
+            # finish; the median behind the command is then no better.
+            return "depth does not form a top face"
         h_min = self._class_min_height_mm(obj.get("class_name"))
         tol_mm = float(self.config.get("height_tolerance_mm", 20.0))
         if (h_min is not None and h_depth is not None
@@ -1326,9 +1344,11 @@ class Orchestrator:
         unstacked carton read 124.3 mm one way and 173.3 mm the other, and the
         pick succeeded. In rgbd the depth plausibility clause carries the load.
 
-        To veto a motion, depth must be at least as trustworthy as the fusion
-        rule demands before it will act on depth at all, which is why this has
-        its own fraction rather than the one that merely detects a dead mask.
+        Depth is believed down to the fraction that marks a dead mask. Below
+        the fusion bar of 0.3 the top band still reads the part: flat inox at
+        fractions of 0.215 to 0.394 came within 1.8 mm of its 40 mm, and a
+        stacked inox read at 0.267 (15 Oct 2026, trial 47). A plane command
+        on a stack with such depth would otherwise go through.
 
         The datum is the scalar table top, the 95th percentile of the fitted
         plane, while h_depth_mm is measured above the plane itself. Across the
@@ -1342,7 +1362,7 @@ class Orchestrator:
         frac = obj.get("depth_valid_frac")
         if h_depth is None or frac is None:
             return None
-        if float(frac) < float(self.config.get("depth_veto_valid_frac", 0.3)):
+        if float(frac) < float(self.config.get("min_depth_valid_frac", 0.15)):
             return None
         if not np.isfinite(float(h_depth)):
             return None
@@ -2016,15 +2036,19 @@ class Orchestrator:
     def _check_at_home(self, when: str) -> str | None:
         """Why the robot is not at HOME, or None. Real cell only.
 
-        Every fixed-job cycle starts and ends at the taught HOME (P004). HOME
-        is not in the config, whose home_joints_deg is a simulation value, so
-        the pose the robot rests at before the first cycle of the session is
-        taken as HOME, as the procedure requires. A cycle that does not end
-        there did not run to its last instruction, whatever the controller's
-        RUNNING and alarm flags said: on 15 Oct 2026 a cycle stopped by alarm
-        4746 half way down was otherwise logged as a success. A cycle must not
-        start anywhere else either, since its first move goes straight to the
-        approach point.
+        Every fixed-job cycle starts and ends at the taught HOME (P004). A
+        cycle that does not end there did not run to its last instruction,
+        whatever the controller's RUNNING and alarm flags said: on 15 Oct 2026
+        a cycle stopped by alarm 4746 half way down was otherwise logged as a
+        success. A cycle must not start anywhere else either, since its first
+        move goes straight to the approach point.
+
+        HOME is taught_home_joints_deg from the config, read off the telemetry
+        of 14 and 15 Oct 2026, where the robot rested within 0.006 deg of it
+        in five of six runs (home_joints_deg is a simulation value). Without
+        it, the pose before the first cycle is taken. That fallback is weak:
+        each campaign block is its own process, and the third run of 14 Oct
+        started away from HOME, 43.6 deg off at J6.
         """
         if not self.config.get("is_real_mode", False):
             return None
@@ -2034,7 +2058,8 @@ class Orchestrator:
             return f"joints unreadable {when} the cycle: {exc}"
         if len(q) < 6:
             return f"joints unreadable {when} the cycle: {q}"
-        home = getattr(self, "_session_home_deg", None)
+        home = (self.config.get("taught_home_joints_deg")
+                or getattr(self, "_session_home_deg", None))
         if home is None:
             if when == "before":
                 self._session_home_deg = q
