@@ -1167,8 +1167,8 @@ def main() -> int:
             while True:
                 try:
                     ans = input(
-                        f"   Trial {trial_id} — part in the right place? "
-                        "[y]=yes  [n]=no  "
+                        f"   Trial {trial_id}: did the robot alone leave the part "
+                        "inside the 30x30 mm frame? [y]=yes  [n]=no  "
                     ).strip().lower()
 
                 except EOFError:

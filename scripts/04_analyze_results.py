@@ -179,7 +179,7 @@ _SCORE_MAP = {"1": 1, "0": 0, "1.0": 1, "0.0": 0,
 NO_MOTION_REASONS = frozenset({
     "pick_z_safety_reject", "depth_geometry_reject", "yaw_geometry_reject",
     "detection_miss", "detection_timeout", "unreachable",
-    "no_start_joints_for_prediction",
+    "no_start_joints_for_prediction", "not_at_home",
 })
 
 
