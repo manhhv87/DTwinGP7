@@ -145,7 +145,7 @@ class TestRgbd:
                                                     rect=(196.8, 105.1), yaw_deg=75.9)))
         assert ok is True
         p2 = _world_z(robot.sent[0]["place"])
-        assert p2 - _place_plane(cfg) == pytest.approx(80.0, abs=1.0)
+        assert p2 - _place_plane(cfg) == pytest.approx(80.0 + 8.0, abs=1.0)
 
     def test_inox_on_the_wood_box_keeps_clear_of_the_wood_and_lands_on_the_table(self):
         """15 Oct 2026, trial 31: the median read 11 mm below the top band."""
@@ -157,7 +157,7 @@ class TestRgbd:
         p2 = _world_z(robot.sent[0]["place"])
         wood_top = _plane_z(cfg, 514.1, 30.1) + 194.9 - 40.0
         assert p0 - wood_top >= 35.0 - 0.01
-        assert 35.0 <= p2 - _place_plane(cfg) <= 40.0
+        assert 43.0 <= p2 - _place_plane(cfg) <= 48.0
 
     def test_a_collapsed_median_on_flat_inox_still_lands_on_the_table(self):
         """15 Oct 2026, trial 24: median 17.3 mm against a top band of 40.9."""
@@ -229,3 +229,39 @@ class TestHome:
         assert ok is False and len(robot.sent) == 1
         assert "cycle incomplete" in orch.sm.history[-1].note
         assert robot.moves == []
+
+
+# Heights measured with each part placed flat on 14 and 15 Oct 2026 (median of
+# the top band), not the nominal ones: what each support really is.
+FLAT_MM = {"plastic_box": 29.5, "wood_box": 153.1, "metal_box": 84.7,
+           "inox_box": 41.5, "carton_80": 82.2, "carton_120": 125.4}
+
+# One trial of each of the eight stacks in the pose lists, B3 of 15 Oct 2026:
+# (target, support, det x, det y, det z, valid fraction, top band, rect, yaw).
+STACKS = [
+    ("carton", "plastic_box", 577.0, -149.5, 704.9, 0.957, 112.9, (196.8, 105.1), 75.9),
+    ("inox_box", "plastic_box", 518.3, 145.0, 664.0, 0.874, 72.9, (197.4, 177.7), 11.0),
+    ("wood_box", "metal_box", 510.8, 35.8, 829.7, 0.983, 238.0, (204.1, 193.1), 9.3),
+    ("inox_box", "metal_box", 577.5, -38.8, 717.2, 0.492, 128.8, (193.0, 130.2), -3.2),
+    ("inox_box", "carton_120", 583.3, 197.5, 758.7, 0.437, 167.1, (189.6, 99.6), -13.7),
+    ("plastic_box", "wood_box", 633.1, -146.6, 774.9, 0.994, 182.6, (183.8, 167.4), -36.9),
+    ("inox_box", "wood_box", 514.1, 30.1, 777.7, 0.451, 194.9, (189.3, 155.9), 56.5),
+    ("metal_box", "inox_box", 527.1, -172.0, 720.0, 0.98, 128.3, (193.9, 143.1), -31.0),
+]
+
+
+@pytest.mark.parametrize("target,support,x,y,z,frac,h_depth,rect,yaw", STACKS)
+def test_every_stack_is_set_down_neither_dropped_nor_pressed(
+        target, support, x, y, z, frac, h_depth, rect, yaw):
+    """The fault reported from the cell: a stacked part picked correctly was
+    released at its stacked height and fell. At release its bottom must sit
+    between the table and a small drop, never pressed into the table."""
+    ok, orch, robot, cfg = _cycle("rgbd", ((x, y, z, target),
+                                           dict(frac=frac, h_depth=h_depth,
+                                                rect=rect, yaw_deg=yaw)))
+    assert ok is True and len(robot.sent) == 1
+    p0 = _world_z(robot.sent[0]["pick"])
+    p2 = _world_z(robot.sent[0]["place"])
+    bottom_at_pick = _plane_z(cfg, x, y) + FLAT_MM[support]
+    gap = (p2 - _place_plane(cfg)) - (p0 - bottom_at_pick)
+    assert 0.0 <= gap <= 12.0, gap

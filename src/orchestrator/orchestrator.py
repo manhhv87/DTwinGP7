@@ -1034,6 +1034,16 @@ class Orchestrator:
         )
 
         p2_z = float(table_place_z_base + hold_above_support_mm)
+        # A stacked part's support is its measured top less the part's nominal
+        # height, so the part's own height error lands in the support: placed
+        # flat on 14 and 15 Oct 2026 the inox read 41.5 mm against 40 and the
+        # 120 mm carton 125.4. Released at the computed height, the stacks of
+        # 15 Oct would have been pressed 1.8 to 4.1 mm into the table, and a
+        # 120 mm carton on the plastic box about 6.6 mm. A stacked part is
+        # therefore released stack_release_margin_mm higher: a drop of a few
+        # millimetres instead of a press. A flat part needs none.
+        if support_h_mm > 0.0:
+            p2_z += float(self.config.get("stack_release_margin_mm", 8.0))
 
         if not np.isfinite(p2_z):
             raise RuntimeError(
