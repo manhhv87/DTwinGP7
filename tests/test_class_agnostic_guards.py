@@ -48,38 +48,57 @@ class TestClassGeometry:
 
     def test_measured_rectangle_matches_a_variant(self):
         o = _orch()
-        assert o._size_matches_class("carton", 182.0, 118.0, 40.0)
-        assert o._size_matches_class("carton", 178.0, 98.0, 40.0)   # small variant
+        assert o._long_side_matches_class("carton", 182.0, 40.0)
+        assert o._long_side_matches_class("carton", 178.0, 40.0)
 
     def test_rectangle_far_from_every_variant_is_rejected(self):
-        assert not _orch()._size_matches_class("inox_box", 400.0, 400.0, 40.0)
+        assert not _orch()._long_side_matches_class("inox_box", 400.0, 40.0)
 
     def test_unknown_class_cannot_be_contradicted(self):
-        assert _orch()._size_matches_class("teapot", 1.0, 1.0, 5.0)
+        assert _orch()._long_side_matches_class("teapot", 1.0, 5.0)
 
     def test_lookup_ignores_case(self):
         """A capital letter in a label must not switch a guard off."""
         o = _orch()
         assert o._class_min_height_mm("Inox_Box") == 40.0
-        assert not o._size_matches_class("INOX_BOX", 400.0, 400.0, 40.0)
+        assert not o._long_side_matches_class("INOX_BOX", 400.0, 40.0)
 
     def test_a_class_with_a_height_but_no_size(self):
         """Missing footprint means nothing to compare, not a refusal."""
         o = _orch(class_heights_mm={"metal_box": 85.0})
         assert o._class_min_height_mm("metal_box") == 85.0
-        assert o._size_matches_class("metal_box", 1.0, 1.0, 5.0)
+        assert o._long_side_matches_class("metal_box", 1.0, 5.0)
 
 
 class TestCarriedHeight:
     """The height carried away comes from the detected class, not the pose list."""
 
-    def _ready(self, total_mm, class_name, stack_on):
+    def _ready(self, total_mm, class_name, stack_on, rect=None):
         o = _orch()
         o.current_stack_on = stack_on
         o._world_to_robot_base = lambda T: T
         o._table_z_base_at_xy = lambda x, y: 0.0
-        return o._detected_target_height_mm(
-            {"pose_base": (500.0, 0.0, total_mm), "class_name": class_name})
+        obj = {"pose_base": (500.0, 0.0, total_mm), "class_name": class_name}
+        if rect is not None:
+            obj["yaw_rect_long_mm"], obj["yaw_rect_short_mm"] = rect
+        return o._detected_target_height_mm(obj)
+
+    def test_a_carton_on_a_support_is_sized_by_its_top_face(self):
+        """B3 of 15 Oct 2026, trial 1: an 80 mm carton on the plastic box.
+
+        By height alone it read as a 120 mm carton standing on nothing and
+        would have been released about 40 mm above the table.
+        """
+        h, support, _, _ = self._ready(112.8, "carton", "", rect=(196.8, 105.1))
+        assert h == 80.0 and support == pytest.approx(32.8)
+
+    def test_a_flat_carton_is_sized_by_its_top_face(self):
+        assert self._ready(80.9, "carton", "", rect=(182.6, 102.7))[0] == 80.0
+        assert self._ready(124.2, "carton", "", rect=(187.1, 122.6))[0] == 120.0
+
+    def test_a_one_size_class_ignores_the_rectangle(self):
+        h, support, _, _ = self._ready(182.5, "plastic_box", "", rect=(183.8, 167.4))
+        assert h == 30.0 and support == pytest.approx(152.5)
 
     def test_part_on_the_table(self):
         h, support, top, table = self._ready(120.0, "carton", "")
@@ -182,6 +201,24 @@ class TestShape:
 
     def test_no_measurement_nothing_to_contradict(self):
         assert _orch()._shape_contradicts_class(_obj()) is None
+
+    def test_an_over_wide_mask_is_not_refused(self):
+        """The short side does not move where a finger comes down."""
+        assert _orch()._shape_contradicts_class(_obj(rect=(190.3, 125.6))) is None
+
+    def test_the_inox_refusals_of_15_october(self):
+        """Seven inox picks were refused on the full rectangle that day.
+
+        Judged on the long side only, the three over-long masks stay refused
+        and the four that were only too wide go through.
+        """
+        cases = {6: (197.4, 177.7), 16: (193.0, 130.2), 23: (227.2, 130.1),
+                 30: (190.3, 125.6), 31: (189.3, 155.9), 47: (250.0, 115.8),
+                 48: (241.3, 104.1)}
+        o = _orch()
+        refused = {t for t, rect in cases.items()
+                   if o._shape_contradicts_class(_obj(rect=rect)) is not None}
+        assert refused == {23, 47, 48}
 
 
 class TestCommandedPickZ:
@@ -358,3 +395,55 @@ class TestMeasuredRuns:
         inox = [d for cls, d in lifted if cls == "inox_box"]
         assert len(inox) == 3
         assert max(inox) == pytest.approx(3.2, abs=0.05)
+
+
+class _Joints:
+    """A robot whose joint readings are scripted, and which records moves."""
+
+    def __init__(self, *readings):
+        self.readings = list(readings)
+        self.moves = []
+
+    def Joints(self):
+        return self.readings.pop(0)
+
+    def MoveJ(self, target):
+        self.moves.append(target)
+
+
+class TestAtHome:
+    """A fixed-job cycle starts and ends at the HOME seen before the first."""
+
+    HOME = [-86.5, -17.4, -21.3, 0.0, -86.1, 91.8]
+
+    def _o(self, *readings, real=True):
+        o = _orch(is_real_mode=real, home_tolerance_deg=0.5)
+        o.robot = _Joints(*readings)
+        return o
+
+    def test_the_first_cycle_learns_home(self):
+        o = self._o(self.HOME, self.HOME)
+        assert o._check_at_home("before") is None
+        assert o._check_at_home("after") is None
+
+    def test_a_cycle_stopped_half_way_is_caught(self):
+        """15 Oct 2026, trial 25: stopped by alarm 4746 above the carton."""
+        stopped = [1.89, 7.54, 1.27, 0.0, -83.72, 80.54]
+        o = self._o(self.HOME, stopped)
+        o._check_at_home("before")
+        reason = o._check_at_home("after")
+        assert reason is not None and "from HOME after" in reason
+
+    def test_a_cycle_does_not_start_away_from_home(self):
+        o = self._o(self.HOME, [x + 2.0 for x in self.HOME])
+        o._check_at_home("before")
+        assert "before" in o._check_at_home("before")
+
+    def test_simulation_is_not_judged(self):
+        o = self._o(real=False)
+        assert o._check_at_home("before") is None
+
+    def test_the_real_cell_does_not_move_home_on_its_own(self):
+        o = self._o()
+        o._return_home()
+        assert o.robot.moves == []

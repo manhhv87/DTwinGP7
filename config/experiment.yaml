@@ -12,7 +12,8 @@ place_position:
 # Ngưỡng của ba phép chặn chuyển động, áp chung cho mọi lớp. Chiều cao mặt trên
 # đo được phải không thấp hơn chiều cao thấp nhất của lớp quá height_tolerance_mm;
 # tỷ lệ điểm ảnh có độ sâu hợp lệ trong mặt nạ phải đạt min_depth_valid_frac; và
-# hình chữ nhật mặt trên đo được phải khớp một cỡ của lớp trong size_tolerance_mm.
+# cạnh dài của hình chữ nhật mặt trên đo được phải khớp một cỡ của lớp trong
+# size_tolerance_mm; cạnh ngắn không xét vì nó không đổi chỗ ngón kẹp hạ xuống.
 # height_tolerance_mm còn đặt sàn cho cao độ lệnh: lệnh không xuống thấp hơn chiều
 # cao thấp nhất của lớp trừ đi ngưỡng này. Trên 55 lượt đo ngày 12 và 14/10/2026,
 # sàn ấy không nâng lượt nào; đặt sàn ngay ở chiều cao danh định thì nâng 36 lượt.
@@ -26,6 +27,9 @@ min_depth_valid_frac: 0.15
 # Ngưỡng 0,15 ở trên chỉ dùng để nhận ra mặt nạ gần như không có độ sâu.
 depth_veto_valid_frac: 0.3
 size_tolerance_mm: 40.0
+# Mỗi chu trình job cố định phải bắt đầu và kết thúc ở HOME dạy trên tay dạy;
+# HOME lấy theo tư thế robot đứng trước chu trình đầu tiên của buổi.
+home_tolerance_deg: 0.5
 # 200 mm: phải vượt vật cao nhất có thể đứng trên bàn. Chồng cao nhất là hộp gỗ
 # 150 cộng vật trên nó, tới 190 mm, trong khi điểm gắp thấp nhất là mặt trên hộp
 # inox ở 40 mm. Vậy cần ít nhất 190 trừ 40 cộng lề, làm tròn lên 200.

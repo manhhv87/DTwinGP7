@@ -170,6 +170,9 @@ class Orchestrator:
         # paper, and the only pose-list field any decision reads; the pose id,
         # condition and stacking column above are logged and nothing more.
         self.current_expected_class: str = ""
+        # Joint pose of the taught HOME (P004), read before the first
+        # fixed-job cycle of the session; see _check_at_home.
+        self._session_home_deg: list[float] | None = None
         self.session_id: str = ""
         self.block_id: str = ""
         self.operator_id: str = ""
@@ -852,18 +855,32 @@ class Orchestrator:
         )
 
         # Height of the part being carried, from the class the detector
-        # reported. The variant is the one whose height is closest to what the
-        # top face allows, so the two carton sizes stay distinguishable without
-        # anyone being told which one was placed.
-        variants = [v[2] for v in self._class_variants_mm(obj.get("class_name"))
+        # reported. A class with two sizes, the carton at 120 and 80 mm high,
+        # is told apart by the measured top face, 180 x 120 against 180 x 100
+        # mm. The top face height cannot do it once the part stands on another:
+        # an 80 mm carton on the 30 mm plastic box reads about 113 mm, nearer
+        # 120, and was released about 40 mm above the table. On 15 Oct 2026
+        # the measured short side was 102.7 and 105.1 mm for the 80 mm carton
+        # and 122.4 to 134.2 mm for the 120 mm one. Height decides only when no
+        # rectangle was measured.
+        cls = obj.get("class_name")
+        variants = [v for v in self._class_variants_mm(cls)
                     if len(v) >= 3 and v[2] == v[2]]
+        long_mm = obj.get("yaw_rect_long_mm")
+        short_mm = obj.get("yaw_rect_short_mm")
         if not variants:
-            raise RuntimeError(
-                f"No configured height for detected class "
-                f"{obj.get('class_name')!r}"
-            )
-        target_height_mm = float(min(
-            variants, key=lambda h: abs(total_height_mm - float(h))))
+            known_h = self._class_min_height_mm(cls)
+            if known_h is None:
+                raise RuntimeError(
+                    f"No configured height for detected class {cls!r}")
+            target_height_mm = float(known_h)
+        elif len(variants) > 1 and long_mm is not None and short_mm is not None:
+            target_height_mm = float(min(variants, key=lambda v: (
+                abs(float(long_mm) - max(v[0], v[1]))
+                + abs(float(short_mm) - min(v[0], v[1]))))[2])
+        else:
+            target_height_mm = float(min(
+                variants, key=lambda v: abs(total_height_mm - float(v[2])))[2])
 
         # Whatever the part stands on is the remainder, floored at zero: a part
         # resting on the table leaves nothing, a stacked one leaves its support.
@@ -1136,22 +1153,20 @@ class Orchestrator:
             str(class_name).strip().lower())
         return float(h) if h else None
 
-    def _size_matches_class(self, class_name, long_mm: float, short_mm: float,
-                            tol_mm: float) -> bool:
-        """True when the measured top rectangle fits one variant of the class.
+    def _long_side_matches_class(self, class_name, long_mm: float,
+                                 tol_mm: float) -> bool:
+        """True when the measured long side fits one variant of the class.
 
-        Unknown class or missing sizes: nothing to contradict, so it passes.
+        Unknown class or no measured footprint: nothing to contradict, so it
+        passes. A guard must not refuse a part merely because the config is
+        silent about it.
         """
         variants = self._class_variants_mm(class_name)
-        if not variants:
+        longs = [max(float(v[0]), float(v[1])) for v in variants
+                 if len(v) >= 2 and v[0] == v[0] and v[1] == v[1]]
+        if not longs:
             return True
-        for v in variants:
-            if len(v) < 2 or v[0] != v[0] or v[1] != v[1]:
-                continue
-            a, b = sorted((float(v[0]), float(v[1])), reverse=True)
-            if abs(long_mm - a) <= tol_mm and abs(short_mm - b) <= tol_mm:
-                return True
-        return False
+        return min(abs(long_mm - side) for side in longs) <= tol_mm
 
     def _commanded_pick_z(self, obj, table_top: float) -> float:
         """World Z the pick is commanded to, after every height rule.
@@ -1272,25 +1287,28 @@ class Orchestrator:
         return None
 
     def _shape_contradicts_class(self, obj):
-        """Why the measured top rectangle cannot be the detected class, or None.
+        """Why the measured top face cannot be grasped as the detected class.
 
-        The rectangle is measured in mm on the part plane and must match one
-        size variant of the class within size_tolerance_mm; a mask that does
-        not describe the class would turn the wrist to a meaningless angle.
-        This replaces comparing the vision yaw with the called yaw, which reads
-        the answer sheet. No measurement, nothing to contradict.
+        The jaws close along the long axis of the measured rectangle. A mask
+        longer than the class can shift the grasp centre along that axis, by
+        up to half the excess, towards where a finger comes down; that is
+        refused when the long side is more than size_tolerance_mm off every
+        variant. The short side is not judged: it does not move where a finger
+        lands. Judging it on 15 Oct 2026 refused four inox picks whose masks
+        were only too wide, with vision yaw 5.7 to 16.8 deg from the called
+        yaw, while for inox, whose 199 mm diagonal is shorter than the 216 mm
+        jaw opening, no yaw can put a finger on the part. No measurement,
+        nothing to contradict.
         """
         long_mm = obj.get("yaw_rect_long_mm")
-        short_mm = obj.get("yaw_rect_short_mm")
-        if long_mm is None or short_mm is None:
+        if long_mm is None:
             return None
         tol_mm = float(self.config.get("size_tolerance_mm", 40.0))
-        if self._size_matches_class(obj.get("class_name"), float(long_mm),
-                                    float(short_mm), tol_mm):
+        if self._long_side_matches_class(obj.get("class_name"), float(long_mm),
+                                         tol_mm):
             return None
-        return (f"top face measures {float(long_mm):.0f} x "
-                f"{float(short_mm):.0f} mm, no {obj.get('class_name')} "
-                f"variant within {tol_mm:.0f} mm")
+        return (f"top face long side {float(long_mm):.0f} mm, no "
+                f"{obj.get('class_name')} variant within {tol_mm:.0f} mm")
 
     def _depth_contradicts_command(self, obj, commanded_h_mm: float):
         """Why depth refuses this commanded height, or None if it does not.
@@ -1879,6 +1897,14 @@ class Orchestrator:
             if self.config.get("use_yrc_ik", False):
                 motion_backend = getattr(self.robot, "backend", self.robot)
                 if hasattr(motion_backend, "run_dtwinrun_motion"):
+                    reason = self._check_at_home("before")
+                    if reason is not None:
+                        logger.error("Trial %d: cycle refused, %s; return the "
+                                     "robot to HOME and continue",
+                                     trial_id, reason)
+                        self.stats["failed"] += 1
+                        self.sm.fail("not_at_home")
+                        return False
                     r0, p0_base = self._solve_ik_routed(grasp_T)
                     r1, p1_base = self._solve_ik_routed(lift_T)
                     if not (r0 == r1 == "YRC_POSE"):
@@ -1914,6 +1940,9 @@ class Orchestrator:
                         place_T_base=p2_base,
                         job_name="DTWINRUN",
                     )
+                    reason = self._check_at_home("after")
+                    if reason is not None:
+                        raise RuntimeError(f"cycle incomplete: {reason}")
 
                     self.sm.transition_to(PickState.GRASP)
                     self.sm.transition_to(PickState.LIFT)
@@ -1984,6 +2013,40 @@ class Orchestrator:
         except Exception as e:  # noqa: BLE001
             logger.debug("setSpeed skipped: %s", e)
 
+    def _check_at_home(self, when: str) -> str | None:
+        """Why the robot is not at HOME, or None. Real cell only.
+
+        Every fixed-job cycle starts and ends at the taught HOME (P004). HOME
+        is not in the config, whose home_joints_deg is a simulation value, so
+        the pose the robot rests at before the first cycle of the session is
+        taken as HOME, as the procedure requires. A cycle that does not end
+        there did not run to its last instruction, whatever the controller's
+        RUNNING and alarm flags said: on 15 Oct 2026 a cycle stopped by alarm
+        4746 half way down was otherwise logged as a success. A cycle must not
+        start anywhere else either, since its first move goes straight to the
+        approach point.
+        """
+        if not self.config.get("is_real_mode", False):
+            return None
+        try:
+            q = [float(v) for v in self._joints_to_list(self.robot.Joints())[:6]]
+        except Exception as exc:  # noqa: BLE001
+            return f"joints unreadable {when} the cycle: {exc}"
+        if len(q) < 6:
+            return f"joints unreadable {when} the cycle: {q}"
+        home = getattr(self, "_session_home_deg", None)
+        if home is None:
+            if when == "before":
+                self._session_home_deg = q
+                logger.info("Session HOME taken as %s", [round(v, 2) for v in q])
+            return None
+        tol = float(self.config.get("home_tolerance_deg", 0.5))
+        dev = max(abs(a - b) for a, b in zip(q, home))
+        if dev > tol:
+            return (f"robot {dev:.2f} deg from HOME {when} the cycle "
+                    f"(tolerance {tol:.2f})")
+        return None
+
     def _return_home(self) -> None:
         """Move robot to home — normalize joints to avoid spin artifacts.
 
@@ -1992,7 +2055,16 @@ class Orchestrator:
         file (Yaskawa GP7 default = [0,0,0,0,0,0]), NOT the home pose the user set
         in cell_layout.yaml. Using the wrong source → MoveJ to 0 while current is
         at -180 → 180° rotation on J4/J6 = spin artifact.
+
+        Not on the real cell: the fixed job ends at the taught HOME by itself,
+        and after a fault the robot is left where it stopped. home_joints_deg
+        there is a simulation pose far from the taught HOME, and moving on its
+        own after an unexplained stop is the wrong reflex.
         """
+        if self.config.get("is_real_mode", False):
+            logger.warning("Real cell: robot left where it stopped; the "
+                           "operator returns it to HOME")
+            return
         try:
             home_list = None
             cfg_home = self.config.get("home_joints_deg")
