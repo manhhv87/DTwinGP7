@@ -461,9 +461,16 @@ class PoseExtractor:
             detection["height_mm"] = height
 
         h_depth = None
+        h_median = None
         if self.has_geometry and z_depth is not None:
             h_depth = top_face_height(depth_image, mask, self.intrinsics, self.T_BC,
                                       self.plane)
+            # Height above the table of the median-depth point, the point rgbd
+            # itself commands. Recorded in every mode: next to the top band it
+            # tells a mask lying on the part from one spilling beside it.
+            T = np.asarray(self.T_BC, float)
+            p_base = T[:3, :3] @ deproject_pixel(self.intrinsics, u, v, z_depth) + T[:3, 3]
+            h_median = float(self.plane.height_above(p_base))
 
         # METRIC_BASE_YAW_V1
         # Mask outline -> physical top plane -> BASE XY -> minAreaRect edge.
@@ -531,4 +538,5 @@ class PoseExtractor:
         detection["depth_used"] = source
         detection["depth_valid_frac"] = valid_frac
         detection["h_depth_mm"] = h_depth
+        detection["h_median_mm"] = h_median
         return detection

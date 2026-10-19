@@ -228,6 +228,11 @@ class Orchestrator:
             if expected_cls and detected_cls != expected_cls:
                 continue
 
+            reason = self._mask_spills_off_part(o)
+            if reason is not None:
+                logger.warning("Detection %s ignored: %s", detected_cls or "?", reason)
+                continue
+
             xyz_cam = np.array(pc[:3], dtype=float)
 
             # Transform the in-plane grasp YAW from the camera image frame into the
@@ -256,16 +261,20 @@ class Orchestrator:
             )
             objects.append({**o, "pose_base": camera_to_base(xyz_cam, self.T_BC),
                             "yaw_base": yaw_base})
-        # The most confident detection is grasped first; height only breaks a
-        # tie. With current_expected_class set, every entry here is the class
-        # the trial names, so a second one can only be a false detection, and
-        # height cannot tell them apart in plane mode, where each stands at the
-        # class height on the tilted table. On 19 Oct 2026 the inox picked in
-        # plane mode lay about 100 mm from its card, under the camera, with
-        # confidence 0.895 and 0.747 on a table point 0.5 mm higher, while rgbd
-        # found it at the card with 0.948.
-        objects.sort(key=lambda o: (float(o.get("confidence") or 0.0),
-                                    float(o["pose_base"][2])), reverse=True)
+        # The detection whose median depth stands highest above the table is
+        # grasped first, confidence breaking a tie. The median is measured in
+        # every mode, so the three modes choose alike; the grasp height of a
+        # plane or fusion detection is the class height by construction and
+        # cannot rank anything. Without depth the commanded height stands in.
+        table_top = float(self.config.get("table_top_z_mm") or 0.0)
+
+        def _rank(o):
+            h = o.get("h_median_mm")
+            if h is None or not np.isfinite(float(h)):
+                h = float(o["pose_base"][2]) - table_top
+            return (float(h), float(o.get("confidence") or 0.0))
+
+        objects.sort(key=_rank, reverse=True)
 
         expected_cls = str(
             getattr(self, "current_expected_class", "") or ""
@@ -1282,6 +1291,40 @@ class Orchestrator:
             z = max(z + bias, clear_z)
         return z
 
+    def _mask_spills_off_part(self, obj):
+        """Why a detection's mask lies mostly beside the part, or None.
+
+        The top band of the mask reaches a part's top face while the median of
+        the mask stands on the table: most of the mask is beside the part, so
+        its centre and outline are not the part's. On 19 Oct 2026 masks over
+        the camera-side end of the inox and the table next to it were picked
+        three times in plane and fusion mode, 76 to 119 mm from the part's
+        centre and about 45 deg off its axis; rgbd escaped only because it
+        ranked detections by that median (the medians of those frames are
+        reconstructed from the logged geometry, not measured).
+
+        Judged only with depth on at least 0.3 of the mask, the fusion bar: at
+        0.222 the inox of 15 Oct, trial 24, had its median at 19.3 mm and was
+        picked. When the top band is low too, depth has dropped out rather
+        than spilled, and the detection is left to the plane estimate, as
+        fusion intends.
+        """
+        h_med = obj.get("h_median_mm")
+        h_top = obj.get("h_depth_mm")
+        frac = obj.get("depth_valid_frac")
+        h_min = self._class_min_height_mm(obj.get("class_name"))
+        if h_med is None or h_top is None or frac is None or h_min is None:
+            return None
+        if not (np.isfinite(float(h_med)) and np.isfinite(float(h_top))):
+            return None
+        if float(frac) < 0.3:
+            return None
+        floor = h_min - float(self.config.get("height_tolerance_mm", 20.0))
+        if float(h_top) >= floor and float(h_med) < floor:
+            return (f"mask spills off the part: median {float(h_med):.1f} mm above "
+                    f"the table, top band {float(h_top):.1f} mm")
+        return None
+
     def _pick_floor_z(self, class_name, table_top: float):
         """Lowest Z the pick may be commanded to for this class, or None.
 
@@ -2246,6 +2289,8 @@ class Orchestrator:
                 extra["yaw_near_square"] = int(bool(obj["yaw_near_square"]))
             if obj.get("h_depth_mm") is not None:
                 extra["h_depth_mm"] = round(float(obj["h_depth_mm"]), 1)
+            if obj.get("h_median_mm") is not None:
+                extra["h_median_mm"] = round(float(obj["h_median_mm"]), 1)
         if ask_human and self.human_score_hook is not None:
             # Ctrl+C propagates: the operator meant to stop, and this row is lost
             # on purpose rather than being written with a made-up verdict.

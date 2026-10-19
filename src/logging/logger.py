@@ -75,6 +75,9 @@ CONTEXT_FIELDNAMES = [
     "yaw_rect_short_mm",
     "yaw_near_square",
     "h_depth_mm",
+    # Height of the median-depth point above the table. With h_depth_mm (the
+    # top band) it shows whether the mask lay on the part or spilled beside it.
+    "h_median_mm",
     # Operator verdict, scored by eye right after the trial (03 --confirm-each-trial).
     # `success` is the machine's: the detect sensor proves a part was in the gripper
     # when it closed, but nothing checks that the part was still held at PLACE or
