@@ -265,3 +265,27 @@ def test_every_stack_is_set_down_neither_dropped_nor_pressed(
     bottom_at_pick = _plane_z(cfg, x, y) + FLAT_MM[support]
     gap = (p2 - _place_plane(cfg)) - (p0 - bottom_at_pick)
     assert 0.0 <= gap <= 12.0, gap
+
+
+def test_plane_picks_the_confident_detection_not_the_higher_table_point():
+    """19 Oct 2026, P0005 in plane mode, twice: the real inox on card 16 and a
+    false one under the camera. Every inox stands at the class height in plane
+    mode, and the false one sat on a table point 0.5 mm higher."""
+    config = _real_config("plane")
+    real = _detection(config, 525.0, 140.0, _plane_z(config, 525.0, 140.0) + 40.0,
+                      "inox_box", depth_used="plane", frac=0.96, h_depth=40.8,
+                      rect=(186.9, 88.3), yaw_deg=-40.2)
+    real["confidence"] = 0.948
+    false = _detection(config, 579.0, 22.2, _plane_z(config, 579.0, 22.2) + 40.0,
+                       "inox_box", depth_used="plane", frac=0.96, h_depth=40.8,
+                       rect=(186.9, 88.3), yaw_deg=0.9)
+    false["confidence"] = 0.747
+    robot = MotomanHSEBackend()
+    q = queue.Queue(maxsize=3)
+    orch = Orchestrator(q, config=config, robot=robot)
+    orch.current_expected_class = "inox_box"
+    q.put({"timestamp": 0.0, "objects": [false, real], "fps": 20.0})
+    assert orch.run_one_cycle(trial_id=1) is True
+    pick = robot.sent[0]["pick"]
+    assert float(pick[0, 3]) == pytest.approx(525.0, abs=1.0)
+    assert float(pick[1, 3]) == pytest.approx(140.0, abs=1.0)

@@ -256,10 +256,16 @@ class Orchestrator:
             )
             objects.append({**o, "pose_base": camera_to_base(xyz_cam, self.T_BC),
                             "yaw_base": yaw_base})
-        # Object with highest Z (closest to camera / on top) is grasped first.
-        # With current_expected_class set, all entries here are already the
-        # requested pose-list class.
-        objects.sort(key=lambda o: o["pose_base"][2], reverse=True)
+        # The most confident detection is grasped first; height only breaks a
+        # tie. With current_expected_class set, every entry here is the class
+        # the trial names, so a second one can only be a false detection, and
+        # height cannot tell them apart in plane mode, where each stands at the
+        # class height on the tilted table. On 19 Oct 2026 the inox picked in
+        # plane mode lay about 100 mm from its card, under the camera, with
+        # confidence 0.895 and 0.747 on a table point 0.5 mm higher, while rgbd
+        # found it at the card with 0.948.
+        objects.sort(key=lambda o: (float(o.get("confidence") or 0.0),
+                                    float(o["pose_base"][2])), reverse=True)
 
         expected_cls = str(
             getattr(self, "current_expected_class", "") or ""
