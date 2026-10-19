@@ -494,3 +494,30 @@ class TestAtHome:
         o = self._o()
         o._return_home()
         assert o.robot.moves == []
+
+
+class TestMaskSpill:
+    """A mask whose median lies on the table while its top band sees a part."""
+
+    @staticmethod
+    def _spill(h_median, h_depth=40.8, frac=0.96):
+        return {"class_name": "inox_box", "h_median_mm": h_median,
+                "h_depth_mm": h_depth, "depth_valid_frac": frac}
+
+    def test_the_19_october_spill_is_caught(self):
+        assert _orch()._mask_spills_off_part(self._spill(0.4)) is not None
+
+    def test_a_mask_on_the_part_passes(self):
+        assert _orch()._mask_spills_off_part(self._spill(39.0)) is None
+
+    def test_little_depth_is_not_judged(self):
+        """15 Oct 2026, trial 24: fraction 0.222, median 19.3 mm, picked."""
+        assert _orch()._mask_spills_off_part(self._spill(19.3, 40.9, 0.222)) is None
+
+    def test_dropout_is_left_to_the_plane_estimate(self):
+        """Top band low too: depth dropped out, it did not spill."""
+        assert _orch()._mask_spills_off_part(self._spill(2.0, h_depth=5.0)) is None
+
+    def test_no_median_nothing_to_judge(self):
+        assert _orch()._mask_spills_off_part(self._spill(None)) is None
+

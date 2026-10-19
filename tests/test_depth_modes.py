@@ -314,6 +314,23 @@ class TestPoseExtractorModes:
         assert det["height_mm"] == height
         assert det["size_iou"] > 0.9
 
+    @pytest.mark.parametrize("mode", ["rgbd", "plane", "fusion"])
+    def test_the_median_height_is_recorded_in_every_mode(self, mode):
+        mask, depth = render_box(AXIS_XY, 0.1, SMALL)
+        det = _extractor(mode).extract({"mask": mask, "class_name": "carton"}, depth)
+        assert det["h_median_mm"] == pytest.approx(80.0, abs=3.0)
+
+    def test_a_mask_spilling_onto_the_table_has_its_median_there(self):
+        """The top band still sees the box; the median of the mask does not."""
+        mask, depth = render_box(AXIS_XY, 0.0, SMALL)
+        vv, uu = np.nonzero(mask)
+        width = uu.max() - uu.min() + 1
+        spill = mask.copy()
+        spill[vv.min():vv.max() + 1, uu.max() + 1:uu.max() + 1 + 2 * width] = 1
+        det = _extractor("plane").extract({"mask": spill, "class_name": "carton"}, depth)
+        assert det["h_median_mm"] == pytest.approx(0.0, abs=3.0)
+        assert det["h_depth_mm"] == pytest.approx(80.0, abs=3.0)
+
     def test_fusion_keeps_the_prior_on_a_matte_single_layer(self):
         mask, depth = render_box(AXIS_XY, 0.1, SMALL)
         det = _extractor("fusion").extract({"mask": mask, "class_name": "carton"}, depth)
