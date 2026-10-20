@@ -228,7 +228,7 @@ class Orchestrator:
             if expected_cls and detected_cls != expected_cls:
                 continue
 
-            reason = self._mask_spills_off_part(o)
+            reason = self._mask_off_part(o)
             if reason is not None:
                 logger.warning("Detection %s ignored: %s", detected_cls or "?", reason)
                 continue
@@ -1291,23 +1291,52 @@ class Orchestrator:
             z = max(z + bias, clear_z)
         return z
 
-    def _mask_spills_off_part(self, obj):
-        """Why a detection's mask lies mostly beside the part, or None.
+    def _mask_off_part(self, obj):
+        """Why depth shows the mask is not on a part of its class, or None.
 
-        The top band of the mask reaches a part's top face while the median of
-        the mask stands on the table: most of the mask is beside the part, so
-        its centre and outline are not the part's. On 19 Oct 2026 masks over
-        the camera-side end of the inox and the table next to it were picked
-        three times in plane and fusion mode, 76 to 119 mm from the part's
-        centre and about 45 deg off its axis; rgbd escaped only because it
-        ranked detections by that median (the medians of those frames are
-        reconstructed from the logged geometry, not measured).
+        With reliable depth a real part reaches its class height both in the
+        top band of its mask and at the median-depth point. The floor is the
+        lowest height of the class less height_tolerance_mm, the margin of the
+        depth plausibility clause. Two failures are discarded here, before
+        ranking, alike in every depth mode:
 
-        Judged only with depth on at least 0.3 of the mask, the fusion bar: at
-        0.222 the inox of 15 Oct, trial 24, had its median at 19.3 mm and was
-        picked. When the top band is low too, depth has dropped out rather
-        than spilled, and the detection is left to the plane estimate, as
-        fusion intends.
+          flat: the top band lies below the floor, so nothing in the mask is
+            as tall as the class. On 20 Oct 2026 the deployed detector
+            labelled groups of the paper position cards inox_box in nearly
+            every frame, in axis-aligned boxes three cards tall, with
+            confidence up to 0.939 against 0.957 for the real inox, also in
+            trials with no inox on the table. The class lock drops them in trials of
+            other classes. In an inox trial whose part is missed they are the
+            only inox left; rgbd refuses them later on the low top band
+            (_depth_implausible), but plane and fusion would pick at the
+            cards and close on air.
+          spill: the top band reaches the floor while the median lies below
+            it, so most of the mask is beside the part and its centre and
+            outline are not the part's. On 19 Oct 2026 masks over the
+            camera-side end of the inox and the table next to it were picked
+            three times in plane and fusion mode, 76 to 119 mm from the part's
+            centre and about 45 deg off its axis; rgbd escaped only because it
+            ranked detections by that median (the medians of those frames are
+            reconstructed from the logged geometry, not measured).
+
+        Judged only when depth covers at least 0.3 of the mask, the fusion
+        bar, and both heights are measured. Sparse depth, as on a mirror top
+        with holes, and returns that form no top face are not judged, so the
+        plane estimate stays usable there: at 0.222 the inox of 15 Oct, trial
+        24, had its median at 19.3 mm and was picked.
+
+        Checked against every real detection logged with these fields: 55
+        trials of 12 and 14 Oct, 50 of 15 Oct (the eight stacks among them),
+        17 of 19 Oct and 8 of 20 Oct, 130 in all. The median is the logged
+        h_median_mm or, in rgbd, det_z_mm less the fitted table plane at
+        det_x_mm, det_y_mm. Of the 114 judged, one is discarded: 15 Oct,
+        trial 23, a spill with its median at 5.4 mm under a top band of 42.6
+        mm, which was refused before motion on its 227 mm long side. No
+        successful pick is discarded. The closest median is 30.9 mm, 10.9 mm
+        above the inox floor (15 Oct, trial 45, fraction 0.394); the closest
+        top band is 27.9 mm, 17.9 mm above the plastic floor (19 Oct, rgbd,
+        trial 2). Not judged: four inox below the 0.3 fraction, and the
+        twelve plane and fusion trials of 19 Oct, which logged no median.
         """
         h_med = obj.get("h_median_mm")
         h_top = obj.get("h_depth_mm")
@@ -1320,9 +1349,14 @@ class Orchestrator:
         if float(frac) < 0.3:
             return None
         floor = h_min - float(self.config.get("height_tolerance_mm", 20.0))
-        if float(h_top) >= floor and float(h_med) < floor:
-            return (f"mask spills off the part: median {float(h_med):.1f} mm above "
-                    f"the table, top band {float(h_top):.1f} mm")
+        if float(h_top) < floor:
+            return (f"flat: nothing as tall as the class, top band "
+                    f"{float(h_top):.1f} mm and median {float(h_med):.1f} mm "
+                    f"above the table, floor {floor:.1f} mm")
+        if float(h_med) < floor:
+            return (f"spill: median on the table, {float(h_med):.1f} mm above "
+                    f"it with the top band at {float(h_top):.1f} mm, floor "
+                    f"{floor:.1f} mm")
         return None
 
     def _pick_floor_z(self, class_name, table_top: float):

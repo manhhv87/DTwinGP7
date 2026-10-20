@@ -384,6 +384,19 @@ class TestMeasuredRuns:
                 refused.append((run, trial, reason))
         assert refused == []
 
+    def test_no_measured_part_is_discarded_as_flat_or_spilled(self):
+        """The median is det_z above the scalar table top, 1.5 to 2.7 mm lower
+        on these trials than above the fitted plane: the side that discards
+        sooner."""
+        o = _orch_from_config_file()
+        discarded = [
+            (run, trial)
+            for run, trial, cls, _used, frac, h_depth, det_z, _ok in MEASURED
+            if o._mask_off_part({"class_name": cls, "depth_valid_frac": frac,
+                                 "h_depth_mm": h_depth,
+                                 "h_median_mm": det_z - TABLE_TOP_MM})]
+        assert discarded == []
+
     def test_the_floor_lifts_no_measured_reading(self):
         o = _orch_from_config_file()
         lifted = [(run, trial) for run, trial, cls, *_, det_z, _ok in MEASURED
@@ -497,7 +510,7 @@ class TestAtHome:
 
 
 class TestMaskSpill:
-    """A mask whose median lies on the table while its top band sees a part."""
+    """With reliable depth, top band and median must both reach the class."""
 
     @staticmethod
     def _spill(h_median, h_depth=40.8, frac=0.96):
@@ -505,19 +518,29 @@ class TestMaskSpill:
                 "h_depth_mm": h_depth, "depth_valid_frac": frac}
 
     def test_the_19_october_spill_is_caught(self):
-        assert _orch()._mask_spills_off_part(self._spill(0.4)) is not None
+        reason = _orch()._mask_off_part(self._spill(0.4))
+        assert reason is not None and reason.startswith("spill")
+
+    def test_a_flat_detection_is_caught(self):
+        """20 Oct 2026: a group of paper position cards labelled inox_box."""
+        reason = _orch()._mask_off_part(self._spill(0.3, h_depth=0.5))
+        assert reason is not None and reason.startswith("flat")
 
     def test_a_mask_on_the_part_passes(self):
-        assert _orch()._mask_spills_off_part(self._spill(39.0)) is None
+        assert _orch()._mask_off_part(self._spill(39.0)) is None
+
+    def test_a_stacked_part_passes(self):
+        assert _orch()._mask_off_part(self._spill(186.3, h_depth=194.9)) is None
 
     def test_little_depth_is_not_judged(self):
         """15 Oct 2026, trial 24: fraction 0.222, median 19.3 mm, picked."""
-        assert _orch()._mask_spills_off_part(self._spill(19.3, 40.9, 0.222)) is None
+        assert _orch()._mask_off_part(self._spill(19.3, 40.9, 0.222)) is None
 
     def test_dropout_is_left_to_the_plane_estimate(self):
-        """Top band low too: depth dropped out, it did not spill."""
-        assert _orch()._mask_spills_off_part(self._spill(2.0, h_depth=5.0)) is None
+        """Sparse depth, as on a mirror top with holes, is not judged."""
+        assert _orch()._mask_off_part(
+            self._spill(2.0, h_depth=5.0, frac=0.25)) is None
 
     def test_no_median_nothing_to_judge(self):
-        assert _orch()._mask_spills_off_part(self._spill(None)) is None
+        assert _orch()._mask_off_part(self._spill(None)) is None
 
