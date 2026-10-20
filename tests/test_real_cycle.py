@@ -267,16 +267,34 @@ def test_every_stack_is_set_down_neither_dropped_nor_pressed(
     assert 0.0 <= gap <= 12.0, gap
 
 
+def _real_inox(config, mode, confidence):
+    """19 Oct 2026, P0005: the real inox on card 16, measured on its top."""
+    used = "rgbd" if mode == "rgbd" else "plane"
+    real = _detection(config, 525.0, 140.0, _plane_z(config, 525.0, 140.0) + 40.0,
+                      "inox_box", depth_used=used, frac=0.96, h_depth=40.8,
+                      rect=(186.9, 88.3), yaw_deg=-40.2)
+    real.update(confidence=confidence, h_median_mm=40.0)
+    return real
+
+
+def _inox_frame(config, objects):
+    """One inox trial on a frame holding these detections."""
+    robot = MotomanHSEBackend()
+    q = queue.Queue(maxsize=3)
+    orch = Orchestrator(q, config=config, robot=robot)
+    orch.current_expected_class = "inox_box"
+    q.put({"timestamp": 0.0, "objects": objects, "fps": 20.0})
+    ok = orch.run_one_cycle(trial_id=1)
+    return ok, orch, robot
+
+
 def _two_inox(mode, spill_conf=0.95, real_conf=0.94, with_real=True):
     """19 Oct 2026, P0005: the real inox on card 16 and a mask over its
     camera-side end and the table beside it, at the false centroid logged in
     plane mode. The spill is given the higher confidence on purpose."""
     config = _real_config(mode)
     used = "rgbd" if mode == "rgbd" else "plane"
-    real = _detection(config, 525.0, 140.0, _plane_z(config, 525.0, 140.0) + 40.0,
-                      "inox_box", depth_used=used, frac=0.96, h_depth=40.8,
-                      rect=(186.9, 88.3), yaw_deg=-40.2)
-    real.update(confidence=real_conf, h_median_mm=40.0)
+    real = _real_inox(config, mode, real_conf)
     # In rgbd the spill's height is its median, on the table; in plane and
     # fusion it is stood at the class height like every inox.
     spill_h = 0.4 if mode == "rgbd" else 40.0
@@ -284,14 +302,24 @@ def _two_inox(mode, spill_conf=0.95, real_conf=0.94, with_real=True):
                        "inox_box", depth_used=used, frac=0.96, h_depth=40.8,
                        rect=(159.4, 139.8), yaw_deg=0.9)
     spill.update(confidence=spill_conf, h_median_mm=0.4)
-    robot = MotomanHSEBackend()
-    q = queue.Queue(maxsize=3)
-    orch = Orchestrator(q, config=config, robot=robot)
-    orch.current_expected_class = "inox_box"
-    q.put({"timestamp": 0.0, "objects": [spill, real] if with_real else [spill],
-           "fps": 20.0})
-    ok = orch.run_one_cycle(trial_id=1)
-    return ok, orch, robot
+    return _inox_frame(config, [spill, real] if with_real else [spill])
+
+
+def _cards(config, mode, confidence=0.93):
+    """20 Oct 2026: a group of the paper position cards labelled inox_box.
+
+    The deployed detector gave such boxes up to 0.939 in nearly every frame,
+    axis-aligned and three cards tall (image rows 241 to 378).
+    Depth sees paper flat on the table. In rgbd the height is the median; in
+    plane and fusion it is stood at the class height.
+    """
+    used = "rgbd" if mode == "rgbd" else "plane"
+    h = 0.3 if mode == "rgbd" else 40.0
+    cards = _detection(config, 583.0, -60.0, _plane_z(config, 583.0, -60.0) + h,
+                       "inox_box", depth_used=used, frac=0.99, h_depth=0.5,
+                       rect=(197.0, 140.0), yaw_deg=90.0)
+    cards.update(confidence=confidence, h_median_mm=0.3)
+    return cards
 
 
 @pytest.mark.parametrize("mode", ["rgbd", "plane", "fusion"])
@@ -307,4 +335,24 @@ def test_a_mask_spilling_off_the_inox_is_ignored_in_every_mode(mode):
 def test_a_spill_alone_is_a_detection_miss_not_a_motion(mode):
     ok, orch, robot = _two_inox(mode, with_real=False)
     assert ok is False and robot.sent == []
+
+
+@pytest.mark.parametrize("mode", ["plane", "fusion"])
+def test_cards_alone_are_a_detection_miss_not_a_motion(mode):
+    """The inox is missed and only the cards remain. Nothing else in plane
+    or fusion refuses them: the robot would close on air over the cards."""
+    config = _real_config(mode)
+    ok, orch, robot = _inox_frame(config, [_cards(config, mode)])
+    assert ok is False and robot.sent == []
+
+
+@pytest.mark.parametrize("mode", ["rgbd", "plane", "fusion"])
+def test_the_inox_is_picked_over_more_confident_cards(mode):
+    config = _real_config(mode)
+    ok, orch, robot = _inox_frame(config, [_cards(config, mode),
+                                           _real_inox(config, mode, 0.90)])
+    assert ok is True and len(robot.sent) == 1
+    pick = robot.sent[0]["pick"]
+    assert float(pick[0, 3]) == pytest.approx(525.0, abs=1.0)
+    assert float(pick[1, 3]) == pytest.approx(140.0, abs=1.0)
 
