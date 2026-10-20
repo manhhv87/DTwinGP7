@@ -367,6 +367,54 @@ def top_face_height(depth_m: np.ndarray, mask: np.ndarray, intrinsics: Mapping[s
     return float(np.median(face))
 
 
+def top_face_mask(depth_m: np.ndarray, mask: np.ndarray, intrinsics: Mapping[str, float],
+                  T_BC_mm: np.ndarray, plane: TablePlane, top_mm: float,
+                  band_mm: float = TOP_FACE_BAND_MM) -> np.ndarray:
+    """The mask less the pixels whose depth puts them below the top face, as 0/1 uint8.
+
+    A pixel is dropped when it returns depth and that depth places it less than
+    top_mm - band_mm above the table; pixels without depth stay. The default
+    band_mm is the band top_face_height takes as the top face. The deprojection is
+    that of top_face_height, without its erosion: here the outline itself is
+    wanted.
+
+    It serves the yaw of a part standing on a support. On 20 Oct 2026 (B4, trial
+    14, pose P0214) the mask of an inox box resting on the plastic box also covered
+    part of the plastic. The rectangle fitted to the whole mask measured 194.0 x
+    134.6 mm, against 188.0 to 193.4 x 90.6 to 109.7 mm for six of the seven single
+    inox boxes of that run, and its long side lay about 12 deg off the yaw the pose
+    list called for the inox; the jaws came down misaligned and the cycle failed.
+
+    PoseExtractor cuts half a part height below the top face (band_mm = height / 2).
+    On a flat stack the support's top lies at about top_mm - height, half a part
+    height below the cut, so it is removed. A part leaning with one end on a
+    support has a tilted top that falls from its high end by the support's height,
+    so most of it stays above the cut, all of it while the support is lower than
+    about half the part, and the outline stays the part's. The default 15 mm band
+    keeps only the high end of such a top, and the rectangle turns: on the C4
+    labelled dataset (1512 real images, the deployed detector), 37 of 151 leaning
+    stacked instances came out more than 10 deg off with that band, against 1 with
+    the whole mask. With the half-height cut 2 of the 151 did, and 9 of all 648
+    matched stacked instances against 12 with the whole mask. A support taller than
+    half the part tilts the top past the cut and its low end is lost: in a ray-cast
+    metal box with one end on an 85 mm box the rectangle turned 90 deg in 2 of 3
+    poses, where the whole mask stayed within 3 deg.
+    """
+    m = np.asarray(mask) > 0
+    out = m.astype(np.uint8)
+    vv, uu = np.nonzero(m & (depth_m > 0))
+    if uu.size == 0:
+        return out
+    z = depth_m[vv, uu] * 1000.0
+    x = (uu - intrinsics["ppx"]) * z / intrinsics["fx"]
+    y = (vv - intrinsics["ppy"]) * z / intrinsics["fy"]
+    T = np.asarray(T_BC_mm, float)
+    h = plane.height_above(np.column_stack([x, y, z]) @ T[:3, :3].T + T[:3, 3])
+    low = h < float(top_mm) - band_mm
+    out[vv[low], uu[low]] = 0
+    return out
+
+
 def fuse_height(h_depth_mm: float | None, h_prior_mm: float, h_min_mm: float,
                 valid_frac: float, min_valid_frac: float = MIN_VALID_FRAC,
                 tol_mm: float = DISAGREE_TOL_MM) -> tuple[float, str]:
