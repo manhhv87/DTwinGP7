@@ -40,8 +40,8 @@ _DEFAULT_CONFIG: dict[str, Any] = {
     "calibration_path": "config/calibration/T_base_camera.npy",
     "place_position": [700.0, 120.0, 700.0],
     # Lift height above grasp/place so the robot approaches vertically (MoveL down),
-    # arm does not sweep across workspace.
-    "approach_height_mm": 200.0,
+    # arm does not sweep across workspace. See config/experiment.yaml for why 100.
+    "approach_height_mm": 100.0,
     # Offset subtracted from grasp pose Z so the fingertip enters the object body
     # rather than the top (postprocess.deproject returns TOP coordinate). Adaptive
     # to object height.
@@ -1896,8 +1896,10 @@ class Orchestrator:
 
             # P003 = place approach/retreat.
             #
-            # Keep X/Y/orientation exactly equal to P002.
-            # Raise only BASE-Z by the same amount used between P0 -> P1.
+            # Keep X/Y/orientation exactly equal to P002. Raise only BASE-Z, by
+            # the amount used between P0 -> P1 but never below P1, so the
+            # transfer is level over a support. The backend builds the same
+            # P003 with the same helper.
             place_approach_dz_base = float(
                 p1_plan_base[2, 3] - p0_plan_base[2, 3]
             )
@@ -1908,8 +1910,9 @@ class Orchestrator:
                     f"YRC BASE, got dz={place_approach_dz_base:.3f} mm"
                 )
 
-            p3_plan_base = p2_plan_base.copy()
-            p3_plan_base[2, 3] += place_approach_dz_base
+            from .frame_convert import place_approach_base
+            p3_plan_base = place_approach_base(
+                p0_plan_base, p1_plan_base, p2_plan_base)
 
             # P002 = actual PLACE.
             place_T = self._robot_base_to_world(p2_plan_base)

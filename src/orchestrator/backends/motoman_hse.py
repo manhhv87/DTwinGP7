@@ -1356,9 +1356,10 @@ class MotomanHSEBackend:
         # Build P003 = PLACE approach/retreat.
         #
         # P3.X/Y/orientation = P2
-        # P3.Z = P2.Z + (P1.Z - P0.Z)
+        # P3.Z = max(P2.Z + (P1.Z - P0.Z), P1.Z)
         #
-        # This preserves the same approach height used at PICK.
+        # The approach height of the pick, but never below P1, so the
+        # transfer does not descend over a support (place_approach_base).
         # --------------------------------------------------------
         import numpy as _np
 
@@ -1386,10 +1387,9 @@ class MotomanHSEBackend:
                 f"YRC BASE, got dz={_place_dz:.3f} mm"
             )
 
-        p3_base = _p2_arr.copy()
-
         # Same X, Y and orientation as P2. Raise only BASE Z.
-        p3_base[2, 3] = float(_p2_arr[2, 3]) + _place_dz
+        from src.orchestrator.frame_convert import place_approach_base
+        p3_base = place_approach_base(_p0_arr, _p1_arr, _p2_arr)
 
         self.write_pose_var(
             p_index=0,
