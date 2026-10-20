@@ -30,10 +30,15 @@ home_tolerance_deg: 0.5
 # định (inox 41,5 so với 40; carton 120 đo được 125,4), nên nhả đúng độ cao tính
 # ra sẽ ép vật xuống bàn 1,8 đến 6,6 mm. Vật đặt phẳng không cần lề này.
 stack_release_margin_mm: 8.0
-# 200 mm: phải vượt vật cao nhất có thể đứng trên bàn. Chồng cao nhất là hộp gỗ
-# 150 cộng vật trên nó, tới 190 mm, trong khi điểm gắp thấp nhất là mặt trên hộp
-# inox ở 40 mm. Vậy cần ít nhất 190 trừ 40 cộng lề, làm tròn lên 200.
-approach_height_mm: 200.0
+# 100 mm, chọn ngày 20/10/2026 từ hình học, telemetry và tầm với của cell.
+# Cận dưới: ở P001 đầu ngón kẹp, thấp hơn điểm lệnh 23,9 mm, còn cao hơn mặt trên
+# đo được 76 mm; trên 131 chu trình telemetry, đoạn từ HOME tới P001 không xuống
+# dưới P001. Cận trên: chồng cao nhất là hộp gỗ trên hộp kim loại, đo 237,8 mm. Ở
+# 200 mm đỉnh cổ tay lên tới độ cao tâm quang camera ở P0219 (thẻ 12, ngay dưới
+# camera) và tay chỉ còn 10 mm tới tầm với tối đa ở dãy x 625; ở 100 mm còn 102,8
+# mm và 79,6 mm. Vật nhấc khỏi vật đỡ đi ngang ở độ cao P001 rồi mới hạ thẳng tại
+# chỗ thả (P003 không thấp hơn P001), nên không cần vượt chồng cao nhất.
+approach_height_mm: 100.0
 return_home_after_success: false
 speed_joint_deg_s: 60.0
 speed_linear_mm_s: 80.0

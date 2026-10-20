@@ -9,13 +9,16 @@ would have been sent.
 """
 import pathlib
 import queue
+import threading
 
 import numpy as np
 import pytest
 import yaml
 
 from src.cell.cell_models import CellConfig
+from src.orchestrator.backends.motoman_hse import MotomanHSEBackend as RealHSEBackend
 from src.orchestrator.coord_conv import load_calibration
+from src.orchestrator.frame_convert import place_approach_base
 from src.orchestrator.orchestrator import Orchestrator
 from src.orchestrator.preflight import check_depth_mode, check_real_mode
 
@@ -355,4 +358,78 @@ def test_the_inox_is_picked_over_more_confident_cards(mode):
     pick = robot.sent[0]["pick"]
     assert float(pick[0, 3]) == pytest.approx(525.0, abs=1.0)
     assert float(pick[1, 3]) == pytest.approx(140.0, abs=1.0)
+
+
+# ── approach height and the level transfer ─────────────────────────────────
+
+def test_the_approach_height_is_100_mm():
+    """Chosen on 20 Oct 2026: at 200 mm the wrist reached the camera's height
+    over the tallest stack, under the camera (P0219), with 10 mm of reach left."""
+    assert float(_real_config("rgbd")["approach_height_mm"]) == 100.0
+
+
+@pytest.mark.parametrize("target,support,x,y,z,frac,h_depth,rect,yaw", STACKS)
+def test_a_part_lifted_off_a_support_is_carried_level(
+        target, support, x, y, z, frac, h_depth, rect, yaw):
+    """14 Oct 2026, B3: with P003 at P002 plus the approach height, the joint
+    move to it carried a plastic box 9.1 mm under the top of the wood box it had
+    just left. P003 now stays at P001's height, above the place, and the part
+    descends only on the straight move to P002."""
+    ok, orch, robot, cfg = _cycle("rgbd", ((x, y, z, target),
+                                           dict(frac=frac, h_depth=h_depth,
+                                                rect=rect, yaw_deg=yaw)))
+    assert ok is True and len(robot.sent) == 1
+    sent = robot.sent[0]
+    p3 = place_approach_base(sent["pick"], sent["approach"], sent["place"])
+    assert float(p3[2, 3]) == pytest.approx(float(sent["approach"][2, 3]), abs=1e-9)
+    assert float(p3[2, 3]) > float(sent["place"][2, 3]) + float(cfg["approach_height_mm"])
+    np.testing.assert_allclose(p3[:3, :3], sent["place"][:3, :3])
+    np.testing.assert_allclose(p3[:2, 3], sent["place"][:2, 3])
+
+
+@pytest.mark.parametrize("x,y", [(525.0, 200.0), (575.0, 20.0), (625.0, -160.0)])
+def test_a_part_from_the_table_keeps_its_place_approach(x, y):
+    """Only the table's tilt between card and place separates P002 from P000's
+    height, so P003 stays within 1 mm of P002 plus the approach height."""
+    cfg = _real_config("rgbd")
+    z = _plane_z(cfg, x, y) + FLAT_MM["inox_box"]
+    ok, orch, robot, cfg = _cycle("rgbd", ((x, y, z, "inox_box"),
+                                           dict(frac=0.9, h_depth=41.5)))
+    assert ok is True and len(robot.sent) == 1
+    sent = robot.sent[0]
+    p3 = place_approach_base(sent["pick"], sent["approach"], sent["place"])
+    expected = float(sent["place"][2, 3]) + float(cfg["approach_height_mm"])
+    assert float(p3[2, 3]) == pytest.approx(expected, abs=1.0)
+
+
+def _flat_pose(x, y, z):
+    T = np.diag([1.0, -1.0, -1.0, 1.0])     # tool pointing down
+    T[:3, 3] = (x, y, z)
+    return T
+
+
+@pytest.mark.parametrize("p2_z,p3_z", [(-20.0, 200.0), (100.5, 200.5)])
+def test_the_hse_backend_writes_the_level_p003(p2_z, p3_z):
+    """What DTWINRUN receives as P003 is built by the backend itself, so it must
+    apply the same rule as the plan: a set-down 120 mm lower (a part lifted off
+    a support) keeps P001's height; a set-down 0.5 mm higher keeps the approach
+    height above it."""
+    hse = RealHSEBackend.__new__(RealHSEBackend)
+    hse._halted = False
+    hse._halt_lock = threading.Lock()
+    hse.tool_no = 1
+    hse.read_controller_status = lambda: dict(remote=True, servo=True, running=False,
+                                              hold=False, alarm=False, error=False)
+    written = {}
+    hse.write_pose_var = (lambda p_index, T_base, **kw:
+                          written.__setitem__(p_index, np.asarray(T_base, float)))
+    hse.job_select = lambda name: None
+    hse.job_start = lambda: None
+    hse._wait_idle = lambda: None
+    hse.run_dtwinrun_motion(_flat_pose(500.0, 0.0, 100.0), _flat_pose(500.0, 0.0, 200.0),
+                            _flat_pose(500.0, -350.0, p2_z))
+    assert sorted(written) == [0, 1, 2, 3]
+    assert float(written[3][2, 3]) == pytest.approx(p3_z, abs=1e-9)
+    np.testing.assert_allclose(written[3][:2, 3], (500.0, -350.0))
+    np.testing.assert_allclose(written[3][:3, :3], written[2][:3, :3])
 
