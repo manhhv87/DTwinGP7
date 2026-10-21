@@ -987,7 +987,7 @@ class Orchestrator:
                 )
 
             place_yaw_deg = float(
-                self.config.get("place_yaw_deg", 5.3)
+                self.config.get("place_yaw_deg", 0.0)
             )
             place_world = make_grasp_pose(
                 place_xyz_world,
@@ -1093,7 +1093,7 @@ class Orchestrator:
         self._last_place_z_mm = p2_z
 
         place_yaw_deg = float(
-            self.config.get("place_yaw_deg", 5.3)
+            self.config.get("place_yaw_deg", 0.0)
         )
 
         p2_base = make_grasp_pose(

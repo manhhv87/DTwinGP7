@@ -202,7 +202,9 @@ class TestExperimentConfig:
     def test_real_block_covers_the_paper_parts(self):
         cfg = yaml.safe_load((ROOT / "config" / "experiment.yaml").read_text(encoding="utf-8"))
         real = cfg["real"]
-        assert real["yaw_offset_deg"] == 5.0
+        # Measured 21 Oct 2026: the jaw axis matches the commanded yaw within 0.5 deg.
+        assert real["yaw_offset_deg"] == 0.0
+        assert real["place_yaw_deg"] == 0.0
         assert real["table_top_z_mm"] is None
         assert sorted(real["class_heights_mm"]) == sorted(PAPER_CLASSES)
         assert real["class_heights_mm"]["plastic_box"] == 30.0
