@@ -832,9 +832,22 @@ class MotomanHSEBackend:
                     f"Job did not start (Running not asserted within {confirm:.1f}s) "
                     f"— check REMOTE mode / servo ON / teach-pendant alarm.")
         # Phase 2 — wait for completion, then verify no alarm aborted the job.
+        # HOLD pauses a job without ending it: Running clears while the robot
+        # waits mid-job. On 20 Oct 2026 (B4, trial 14) the PC took the cycle as
+        # over with the robot held at the pick, and the robot finished the job
+        # afterwards. While a hold is on, keep waiting for the job to resume and
+        # end, or for the timeout.
+        held_logged = False
         while time.monotonic() < deadline:
             try:
                 if not self.read_status_running():
+                    if self.read_controller_status().get("hold"):
+                        if not held_logged:
+                            logger.warning("Job on HOLD: waiting for it to resume "
+                                           "and finish")
+                            held_logged = True
+                        time.sleep(0.1)
+                        continue
                     self._raise_if_alarm()
                     return
             except RobotAlarmError:
