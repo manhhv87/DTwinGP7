@@ -268,6 +268,29 @@ def test_interpolate_cartesian_180deg_axis_recovery():
         np.testing.assert_allclose(T[:3, :3] @ T[:3, :3].T, np.eye(3), atol=1e-6)
 
 
+def test_interpolate_cartesian_same_orientation_never_gives_nan():
+    """A MOVL keeps one orientation. arccos of a trace 1e-16 short of 3 gave an
+    angle above the 1e-9 bar with a zero axis, and NaN poses: predictive safety
+    then refused a reachable pick (21 Oct 2026, plastic box on the wood box, grasp
+    yaw 143.1 deg once the 5 deg yaw offset was removed). Every yaw in 0.1 deg
+    steps, tool pointing down, must give finite poses equal to the start."""
+    import numpy as np
+    from src.orchestrator.kinematics import interpolate_cartesian
+    flip = np.diag([1.0, -1.0, -1.0])
+    for deg in np.arange(-180.0, 180.0, 0.1):
+        a = np.deg2rad(deg)
+        Rz = np.array([[np.cos(a), -np.sin(a), 0.0], [np.sin(a), np.cos(a), 0.0],
+                       [0.0, 0.0, 1.0]])
+        T0 = np.eye(4)
+        T0[:3, :3] = Rz @ flip
+        T0[:3, 3] = [633.1, -146.6, 881.5]
+        T1 = T0.copy()
+        T1[2, 3] = 781.5
+        for T in interpolate_cartesian(T0, T1, n_steps=8):
+            assert np.all(np.isfinite(T)), deg
+            np.testing.assert_allclose(T[:3, :3], T0[:3, :3], atol=1e-9)
+
+
 def test_check_joint_limits_tolerates_tiny_overshoot():
     """A solution 1e-10 rad over a limit (IK boundary rounding) must NOT be flagged
     (bug #R4-8 — zero-tolerance vs IK's 1e-9 acceptance)."""

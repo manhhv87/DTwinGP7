@@ -93,16 +93,20 @@ def interpolate_cartesian(
     p0, p1 = T0[:3, 3], T1[:3, 3]
     R0, R1 = T0[:3, :3], T1[:3, :3]
     R_rel = R0.T @ R1
-    # axis-angle of R_rel
-    cos_a = np.clip((np.trace(R_rel) - 1.0) / 2.0, -1.0, 1.0)
-    angle = float(np.arccos(cos_a))
+    # axis-angle of R_rel. The angle comes from atan2 of the antisymmetric part
+    # and the trace, not arccos of the trace alone: arccos turns rounding noise
+    # of an identity R_rel (trace 3 - 1e-16) into an angle near 1.5e-8 while the
+    # antisymmetric part is exactly zero, and normalising it gave NaN poses. Over
+    # a MOVL, whose two ends share one orientation, that made predictive safety
+    # refuse a reachable pick (plastic box on the wood box, grasp yaw 143.1 deg).
+    v = np.array([R_rel[2, 1] - R_rel[1, 2],
+                  R_rel[0, 2] - R_rel[2, 0],
+                  R_rel[1, 0] - R_rel[0, 1]])
+    angle = float(np.arctan2(0.5 * np.linalg.norm(v), 0.5 * (np.trace(R_rel) - 1.0)))
     if angle < 1e-9:
         axis = np.array([0.0, 0.0, 1.0])               # no rotation
     elif angle < np.pi - 1e-6:
-        axis = np.array([R_rel[2, 1] - R_rel[1, 2],
-                         R_rel[0, 2] - R_rel[2, 0],
-                         R_rel[1, 0] - R_rel[0, 1]])
-        axis = axis / np.linalg.norm(axis)
+        axis = v / np.linalg.norm(v)
     else:
         # angle ≈ 180°: the antisymmetric part is ~0 → recover the axis from the
         # symmetric part. (R_rel + I) = 2·(axis⊗axis); its largest-norm column is
