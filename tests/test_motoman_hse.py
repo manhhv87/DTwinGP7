@@ -776,6 +776,33 @@ class TestMotionSafety:
         with pytest.raises(TimeoutError, match="did not start"):
             backend._wait_idle()
 
+    def test_wait_idle_waits_through_a_hold(self, backend_with_mock_socket):
+        """20 Oct 2026, B4 trial 14: a held job reads not-running with the robot
+        mid-job. The wait must last until the hold clears and the job ends."""
+        backend, _ = backend_with_mock_socket
+        holds = iter([True, True, True, False])
+        status_calls = []
+
+        def status():
+            status_calls.append(1)
+            return {"hold": next(holds), "running": False, "alarm": False}
+
+        backend.read_status_running = lambda: False
+        backend.read_controller_status = status
+        backend._raise_if_alarm = lambda: None
+        backend._wait_idle()
+        assert len(status_calls) == 4
+
+    def test_wait_idle_times_out_on_a_long_hold(self, backend_with_mock_socket):
+        backend, _ = backend_with_mock_socket
+        backend.wait_completion_timeout_s = 0.3
+        backend.read_status_running = lambda: False
+        backend.read_controller_status = lambda: {"hold": True, "running": False,
+                                                  "alarm": False}
+        backend._raise_if_alarm = lambda: None
+        with pytest.raises(TimeoutError, match="did not complete"):
+            backend._wait_idle()
+
     def test_wait_idle_confirms_running_then_completes(self, backend_with_mock_socket):
         """With start-confirm ON: Running asserts, then clears → success (no false
         early return inside start latency)."""
