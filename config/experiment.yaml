@@ -56,14 +56,16 @@ model_path: models/e2_seed1_best.pt
 conf_threshold: 0.5
 robot_ip: 192.168.125.100
 real:
-  # 0: trục đóng của má kẹp trùng góc lệnh. Đo ngày 21/10/2026 từ ảnh inox vừa thả
-  # (lần chạy kiểm tra kiemtra-2010): biến đổi phối cảnh dựng từ khung vẽ ở chỗ thả,
-  # kiểm trên thẻ 1, 2, 3, 6 sai 0 tới 4 mm, cho trục dài của vật +5,4 ± 0,5 độ
-  # trong khung base, tức góc thả 5,3 cộng độ lệch má kẹp +0,1 ± 0,5 độ. Vật tự
-  # thẳng theo má khi kẹp, nên góc trên bàn thả chỉ còn phụ thuộc góc thả và độ lệch
-  # má. Số 5,0 chạy từ 06/10 không có ghi chép nào và làm má lệch trục vật 5 độ ở
-  # mọi lần gắp; thiết kế ngày 14/09 là 0.
-  yaw_offset_deg: 0.0
+  # 3,2: trục đóng của má kẹp lệch góc lệnh -3,2 ± 0,3 độ, đo trực tiếp ngày
+  # 21/10/2026 trên 19 lượt của khối đối chứng 15:09 (cạnh hai thanh má trong khung
+  # ảnh camera lúc kẹp, so với góc dụng cụ tính từ telemetry; độ phân tán 0,20 độ).
+  # Hai tấm tay đỡ thanh má ở -2,9 và -3,5 độ, nên phần lệch chính nằm ở tay kẹp.
+  # Hai thanh má không song song (-3,8 và -2,6 độ), xoay thêm 2 tới 4 độ khi kẹp, và
+  # góc nghỉ đổi khoảng 1,2 độ giữa hai lần chạy cùng ngày: phải vuông và bắt chặt
+  # chúng vào tay kẹp, rồi kiểm lại bằng thước trong chế độ TEACH. Số 5,0 dùng từ
+  # 06/10 thừa 1,8 độ; số 0 đặt sáng 21/10 suy từ ảnh vật đã thả với giả định vật tự
+  # thẳng theo má, giả định này sai (vật chỉ xoay một phần).
+  yaw_offset_deg: 3.2
   table_top_z_mm: null
   # 35: khoảng cách nhỏ nhất từ điểm lệnh (TCP của bộ điều khiển) tới mặt bàn hoặc
   # mặt vật đỡ, áp chung mọi lớp và áp cả cho điểm thả P2. Đầu ngón kẹp nằm thấp hơn
@@ -109,6 +111,6 @@ real:
     - - 180
       - 85
       - 40
-  # 0: vật thả thẳng theo trục x của khung vẽ ở chỗ thả. Với 5,3 (dùng từ 12/10,
-  # trước đó 6,0, không có ghi chép) vật đáp nghiêng 5,4 độ (xem yaw_offset_deg).
-  place_yaw_deg: 0.0
+  # 3,2: bằng yaw_offset_deg, để má kẹp thẳng trục x khi thả, nên vật thả thẳng
+  # dù nó có tự xoay theo má hay không (xem yaw_offset_deg).
+  place_yaw_deg: 3.2
