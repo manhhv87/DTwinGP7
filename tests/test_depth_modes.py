@@ -554,7 +554,7 @@ class TestExperimentConfigSizes:
 class TestTrialLogColumns:
     def test_depth_columns_travel_to_the_csv(self, tmp_path):
         for col in ("depth_mode", "depth_used", "depth_valid_frac", "part_height_mm",
-                    "size_iou", "h_depth_mm", "h_median_mm", "table_share"):
+                    "size_iou", "h_depth_mm", "h_median_mm", "table_share", "fit_iou"):
             assert col in CONTEXT_FIELDNAMES
         p = tmp_path / "trials.csv"
         TrialLogger(p, extra_context={"mode": "real", "depth_mode": "fusion"}).log_trial(

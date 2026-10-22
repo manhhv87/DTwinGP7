@@ -240,8 +240,9 @@ class Orchestrator:
             # is a pixel-frame angle (x-right, y-down); carrying it straight into
             # rotz() about base Z leaves it off by the camera mounting rotation +
             # image handedness, mis-aligning the gripper with the object long axis.
-            # Prefer metric BASE yaw produced by PoseExtractor:
-            # mask outline -> top plane -> BASE XY -> minAreaRect edge.
+            # Prefer metric BASE yaw produced by PoseExtractor: the class's known
+            # top-face rectangle fitted to the mask outline on the top plane
+            # (yaw_source known_size_fit), else the outline's minAreaRect edge.
             metric_yaw_base = o.get("yaw_base")
             if metric_yaw_base is not None and np.isfinite(float(metric_yaw_base)):
                 yaw_base = float(metric_yaw_base)
@@ -2302,6 +2303,8 @@ class Orchestrator:
                 extra["h_median_mm"] = round(float(obj["h_median_mm"]), 1)
             if obj.get("table_share") is not None:
                 extra["table_share"] = round(float(obj["table_share"]), 3)
+            if obj.get("fit_iou") is not None:
+                extra["fit_iou"] = round(float(obj["fit_iou"]), 3)
         if ask_human and self.human_score_hook is not None:
             # Ctrl+C propagates: the operator meant to stop, and this row is lost
             # on purpose rather than being written with a made-up verdict.

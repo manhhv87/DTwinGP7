@@ -10,7 +10,12 @@ long side lay about 12 deg off the yaw the pose list called for the inox, and th
 jaws came down misaligned. On a support the rectangle is now fitted to the top face
 alone (depth_modes.top_face_mask). A support is inferred only from the part's own
 height, so a part whose top face is not raised above it, and a carton without a
-trusted size fit, keep the whole mask, with output identical to before.
+trusted size fit, keep the whole mask, with the rectangle identical to before.
+
+Since 22 Oct 2026 the grasp yaw and pixel come from the class's known top-face
+rectangle fitted to that same outline (depth_modes.fit_footprint, tested in
+test_known_size_fit.py); the minimum-area rectangle is still recorded. The tests
+below check that the fit read the outline the rectangle read.
 
 Scenes are ray-cast through the cell calibration in config/calibration (T_BC, the
 colour intrinsics at 1280 x 720 and the fitted table plane): every box stands on the
@@ -38,6 +43,7 @@ from src.perception.depth_modes import (
     MIN_SIZE_IOU,
     TOP_FACE_BAND_MM,
     TablePlane,
+    fit_footprint,
     parse_class_sizes,
     top_face_mask,
 )
@@ -180,6 +186,16 @@ def axis_err_deg(yaw_rad, axis_deg):
     return abs((math.degrees(yaw_rad) - axis_deg + 90.0) % 180.0 - 90.0)
 
 
+def top_face_fit(mask, depth, size, h_depth):
+    """The known-size fit extract makes on a part standing on a support: on the
+    outline cut half the part's height below the top face, seeded with that
+    outline's rectangle, read down to the support's top."""
+    outline = top_face_mask(depth, mask, INTR, T, PLANE, h_depth, 0.5 * size[2])
+    rect = _metric_edge_yaw_base(outline, INTR, T, PLANE, h_depth)
+    return fit_footprint(outline, INTR, T, PLANE, h_depth, size[:2], rect["yaw_base"],
+                         bottom_height_mm=h_depth - size[2])
+
+
 def test_support_bar_is_half_the_thinnest_part():
     # The plastic box, 30 mm, is the thinnest part in the tables.
     assert extractor().min_support_mm == 15.0
@@ -198,8 +214,17 @@ class TestInoxOnPlastic:
         mask = labels > 0                                      # both silhouettes
         det = extract(mask, depth, "inox_box", mode)
         assert det["h_depth_mm"] == pytest.approx(PLASTIC[2] + INOX[2], abs=2.0)
-        assert det["yaw_source"] == "metric_base_top_face"
-        assert axis_err_deg(det["yaw_base"], inox_yaw) < 3.0
+        # Was "metric_base_top_face", the rectangle of the cut outline: the yaw is
+        # now the known-size fit on that same outline.
+        assert det["yaw_source"] == "known_size_fit"
+        fit = top_face_fit(mask, depth, INOX, det["h_depth_mm"])
+        assert det["yaw_base"] == fit.yaw_base
+        assert det["pixel_uv"] == fit.pixel_uv
+        assert axis_err_deg(det["yaw_base"], inox_yaw) < 2.0
+        # The rectangle the long-side check reads is still the cut outline's.
+        outline = top_face_mask(depth, mask, INTR, T, PLANE, det["h_depth_mm"], 0.5 * INOX[2])
+        rect = _metric_edge_yaw_base(outline, INTR, T, PLANE, det["h_depth_mm"])
+        assert det["yaw_rect_long_mm"] == rect["long_mm"]
         # The defect: the rectangle of the whole mask.
         whole = _metric_edge_yaw_base(mask, INTR, T, PLANE, det["h_depth_mm"])
         assert axis_err_deg(whole["yaw_base"], inox_yaw) > 5.0
@@ -215,7 +240,9 @@ class TestInoxOnPlastic:
         depth[holes] = 0.0
         det = extract(labels > 0, depth, "inox_box")
         assert det["depth_valid_frac"] >= 0.3
-        assert det["yaw_source"] == "metric_base_top_face"
+        # Was "metric_base_top_face": the fit now reads the same cut outline.
+        assert det["yaw_source"] == "known_size_fit"
+        assert det["yaw_base"] == top_face_fit(labels > 0, depth, INOX, det["h_depth_mm"]).yaw_base
         assert axis_err_deg(det["yaw_base"], inox_yaw) < 5.0
 
 
@@ -226,7 +253,9 @@ def test_leaning_part_keeps_its_outline():
     labels, depth = leaning(METAL, PLASTIC, -65.0)
     mask = labels > 0
     det = extract(mask, depth, "metal_box")
-    assert det["yaw_source"] == "metric_base_top_face"
+    # Was "metric_base_top_face": the fit now reads the same cut outline.
+    assert det["yaw_source"] == "known_size_fit"
+    assert det["yaw_base"] == top_face_fit(mask, depth, METAL, det["h_depth_mm"]).yaw_base
     assert axis_err_deg(det["yaw_base"], -65.0) < 3.0
     # Why the cut is not the 15 mm band of top_face_height: that keeps only the
     # high end of the top, the rectangle comes out nearly square, and its yaw
@@ -246,17 +275,25 @@ SINGLES = [  # class, size, card centre, yaw_deg
 ]
 
 
-class TestSingleLayerUnchanged:
-    """Single parts: the whole mask, at the trusted top face, exactly as before."""
+class TestSingleLayerWholeMask:
+    """Single parts: the whole mask, at the trusted top face. Its rectangle is
+    recorded exactly as before; the grasp yaw and pixel, which were that rectangle's
+    yaw and the mask centroid, are now the known-size fit on the same mask, read
+    down to the table (no support)."""
 
     def _check(self, mask, depth, cls):
         det = extract(mask, depth, cls)
-        assert det["yaw_source"] == "metric_base_minAreaRect"
         assert det["yaw_top_height_mm"] == det["h_depth_mm"]
         before = _metric_edge_yaw_base(mask, INTR, T, PLANE, det["h_depth_mm"])
-        assert det["yaw_base"] == before["yaw_base"]
         assert det["yaw_rect_long_mm"] == before["long_mm"]
         assert det["yaw_rect_short_mm"] == before["short_mm"]
+        size = det.get("size_mm") or SIZES[cls][0]
+        fit = fit_footprint(mask, INTR, T, PLANE, det["h_depth_mm"], size[:2],
+                            before["yaw_base"], bottom_height_mm=0.0)
+        assert det["yaw_source"] == "known_size_fit"
+        assert det["fit_iou"] == fit.iou
+        assert det["yaw_base"] == fit.yaw_base
+        assert det["pixel_uv"] == fit.pixel_uv
         return det
 
     @pytest.mark.parametrize("cls,size,center,yaw", SINGLES,
@@ -293,9 +330,11 @@ def test_carton_on_plastic_with_its_mask_on_the_carton():
     det = extract(mask, depth, "carton")
     assert det["size_iou"] >= MIN_SIZE_IOU
     assert det["height_mm"] == LARGE_CARTON[2]
-    assert det["yaw_source"] == "metric_base_top_face"
-    before = _metric_edge_yaw_base(mask, INTR, T, PLANE, det["h_depth_mm"])
-    assert axis_err_deg(det["yaw_base"], math.degrees(before["yaw_base"])) < 1.0
+    # Was "metric_base_top_face" with the yaw of the whole mask's rectangle within
+    # 1 deg: the fit with the resolved size now reads the same cut outline.
+    assert det["yaw_source"] == "known_size_fit"
+    assert det["yaw_base"] == top_face_fit(mask, depth, LARGE_CARTON, det["h_depth_mm"]).yaw_base
+    assert axis_err_deg(det["yaw_base"], 65.0) < 1.0
 
 
 def test_carton_without_a_size_fit_keeps_the_whole_mask(monkeypatch):
@@ -307,6 +346,8 @@ def test_carton_without_a_size_fit_keeps_the_whole_mask(monkeypatch):
     det = extract(mask, depth, "carton")
     assert "size_iou" not in det
     assert det["h_depth_mm"] - det["height_mm"] >= extractor().min_support_mm
+    # Without a size there is no known footprint either: no fit.
+    assert "fit_iou" not in det
     assert det["yaw_source"] == "metric_base_minAreaRect"
     whole = _metric_edge_yaw_base(mask, INTR, T, PLANE, det["h_depth_mm"])
     assert det["yaw_base"] == whole["yaw_base"]

@@ -64,6 +64,13 @@ TABLE_SHARE_TOL_MM = 5.0
 # its lowest candidate height, because assuming a part is taller than it is puts the
 # jaws above it, which never grips.
 MIN_SIZE_IOU = 0.80
+# A rectangle whose long side is shorter than this many times its short side is
+# treated as square: its yaw is folded modulo 90 deg. PoseExtractor's minimum-area
+# rectangle (_metric_edge_yaw_base) and fit_footprint share it.
+NEAR_SQUARE_RATIO = 1.15
+# fit_footprint: the known-size fit replaces the mask centroid and the rectangle yaw
+# only from this IoU up (see PoseExtractor.extract for the measurements behind it).
+MIN_FOOTPRINT_IOU = 0.5
 
 Size = tuple[float, float, float]
 
@@ -341,6 +348,383 @@ def resolve_size(mask: np.ndarray, intrinsics: Mapping[str, float], T_BC_mm: np.
         if cand is not None and (best is None or cand.iou > best.iou):
             best = cand
     return None if best is None else (best, ious)
+
+
+# fit_footprint search. Coarse: the yaw every 2 deg within 20 deg of the seed, over the
+# whole 90 deg for a square footprint (180 deg for a near-square one), centres every
+# 4 mm anywhere over the mask. Fine: the yaw every 0.25 deg within 1.5 deg of the
+# coarse optimum, and further while the IoU stays near its best, centres every 2 mm
+# within 4 mm of the best centre at the neighbouring yaw. Last: the centre on 1 mm
+# cells within 25 mm. Each grid samples the mask averaged over blocks about one cell
+# wide.
+_FIT_COARSE_HALF_DEG = 20.0
+_FIT_COARSE_STEP_DEG = 2.0
+_FIT_COARSE_CELL_MM = 4.0
+_FIT_FINE_HALF_DEG = 1.5
+_FIT_FINE_STEP_DEG = 0.25
+_FIT_FINE_CELL_MM = 2.0
+_FIT_FINE_WINDOW_MM = 4.0
+_FIT_LAST_WINDOW_MM = 25.0
+# Centres whose IoU comes within this of the best one form the near-optimal set. On a
+# real inox mask (21 Oct 2026, P0207) the IoU along such a set varied by 3e-4, while it
+# fell by 9e-3 per mm past the set's sharp edge.
+_FIT_PLATEAU_TOL = 0.001
+
+
+@dataclass(frozen=True)
+class FootprintFit:
+    """A class's L x W top face fitted to a mask on the plane of the part's top."""
+
+    center_xy: tuple[float, float]    # centre on the top plane, base frame, mm
+    yaw_base: float                   # long side, base frame, rad, in (-pi/2, pi/2];
+                                      # (-pi/4, pi/4] for a near-square footprint
+    iou: float                        # rectangle against the mask on the top plane
+    pixel_uv: tuple[float, float]     # the centre projected into the image
+
+
+def plane_homography(intrinsics: Mapping[str, float], T_BC_mm: np.ndarray,
+                     plane: TablePlane, height_mm: float) -> np.ndarray:
+    """3x3 homography from base (x, y) on the plane lifted by height_mm to pixels.
+
+    The lifted plane is the one ray_plane_depth intersects.
+    """
+    K = np.array([[intrinsics["fx"], 0.0, intrinsics["ppx"]],
+                  [0.0, intrinsics["fy"], intrinsics["ppy"]], [0.0, 0.0, 1.0]])
+    T_CB = np.linalg.inv(np.asarray(T_BC_mm, float))
+    c_top = plane.c + float(height_mm) / plane.normal[2]
+    M = np.array([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [plane.a, plane.b, c_top]])
+    return K @ (T_CB[:3, :3] @ M + np.outer(T_CB[:3, 3], [0.0, 0.0, 1.0]))
+
+
+def _vertex(f0: float, f1: float, f2: float) -> tuple[float, float]:
+    """Offset (in steps, within +-0.5) and height of the parabola through three
+    equally spaced samples whose middle one is the largest."""
+    den = f0 - 2.0 * f1 + f2
+    if den >= 0.0:
+        return 0.0, f1
+    d = min(0.5, max(-0.5, 0.5 * (f0 - f2) / den))
+    return d, f1 - 0.25 * (f0 - f2) * d
+
+
+class _TopPlaneMask:
+    """Readings of one mask, cropped from the image, on the top plane.
+
+    The readings are filled 0/1 crops of one shape. Stacked as channels, one warp serves
+    all of them. _level(k, i) is reading i (all of them stacked for None) averaged over
+    k x k blocks, with the homography from the top plane to that averaged crop.
+    """
+
+    def __init__(self, readings: Sequence[np.ndarray], x0: int, y0: int,
+                 H: np.ndarray) -> None:
+        import cv2
+
+        Hi = np.linalg.inv(H)
+        self.areas = []
+        q = 1.0
+        for r in readings:
+            mo = cv2.moments(r, True)
+            if mo["m00"] < 25:
+                self.areas.append(0.0)
+                continue
+            # A pixel (u, v) covers |det Hi| / q^3 mm^2 of the top plane, q = Hi[2].(u, v, 1).
+            # q is affine in the pixel, so its mean over a reading is its value at the centroid.
+            q = (Hi[2, 0] * (mo["m10"] / mo["m00"] + x0)
+                 + Hi[2, 1] * (mo["m01"] / mo["m00"] + y0) + Hi[2, 2])
+            self.areas.append(float(mo["m00"] * abs(np.linalg.det(Hi)) / abs(q) ** 3))
+        union = np.bitwise_or.reduce(np.stack(readings), axis=0)
+        outline = cv2.findContours(union, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)[0]
+        pts = np.vstack([c.reshape(-1, 2) for c in outline]).astype(float)
+        p = Hi @ np.vstack([pts[:, 0] + x0, pts[:, 1] + y0, np.ones(len(pts))])
+        self.ok = max(self.areas) > 0.0 and bool(np.all(p[2] * q > 0.0))  # not past the horizon
+        self.outline_xy = (p[:2] / p[2]).T          # extent of the readings in any frame
+        self._H = np.array([[1.0, 0.0, -x0], [0.0, 1.0, -y0], [0.0, 0.0, 1.0]]) @ H
+        self._readings = [r.astype(np.float32) for r in readings]
+        self._cache: dict[tuple[int, int | None], tuple[np.ndarray, np.ndarray]] = {}
+
+    def _level(self, k: int, i: int | None) -> tuple[np.ndarray, np.ndarray]:
+        import cv2
+
+        if (k, i) not in self._cache:
+            src = (np.dstack(self._readings) if i is None and len(self._readings) > 1
+                   else self._readings[0 if i is None else i])
+            Hs = self._H
+            if k > 1:                                # exact block means: sides divide by k
+                h, w = src.shape[:2]
+                src = cv2.resize(src, (w // k, h // k), interpolation=cv2.INTER_AREA)
+                o = (k - 1) / (2.0 * k)              # block j is centred on pixel k*j + o*k
+                Hs = np.array([[1.0 / k, 0.0, -o], [0.0, 1.0 / k, -o], [0.0, 0.0, 1.0]]) @ Hs
+            self._cache[(k, i)] = (src, Hs)
+        return self._cache[(k, i)]
+
+    def ious(self, theta: float, block: int, cell: float, a_rng: tuple[float, float],
+             b_rng: tuple[float, float], whole: bool, L: float, W: float,
+             reading: int | None = None):
+        """IoU of the L x W rectangle at yaw theta for every centre of a grid.
+
+        Centres lie every step_a along the long side (a) and step_b across it (b) from
+        (a_rng[0], b_rng[0]) to past (a_rng[1], b_rng[1]); entry (r, c, i) of the map is
+        the centre a_rng[0] + c * step_a, b_rng[0] + r * step_b on reading i, or on the
+        one reading asked for (i = 0). The mask is resampled on a grid aligned with the
+        rectangle, whose cells divide L and W exactly, and the overlap of every placement
+        is a box sum over it. whole: the grid spans the window only and boxes reaching
+        past it read zeros, right when the window holds the whole mask; otherwise the
+        grid spans every box of the window.
+
+        Returns (IoU map, step_a, step_b).
+        """
+        import cv2
+
+        src, Hs = self._level(block, reading)
+        areas = np.array(self.areas if reading is None else self.areas[reading:reading + 1])
+        nL = max(1, int(round(L / cell)))
+        nW = max(1, int(round(W / cell)))
+        sL, sW = L / nL, W / nW
+        ct, st = math.cos(theta), math.sin(theta)
+        na = int(math.ceil((a_rng[1] - a_rng[0]) / sL - 1e-9)) + 1
+        nb = int(math.ceil((b_rng[1] - b_rng[0]) / sW - 1e-9)) + 1
+        if whole:
+            # boxFilter centres a box of even size half a cell before its anchor cell
+            a0 = a_rng[0] + 0.5 * sL * (1 - nL % 2)
+            b0 = b_rng[0] + 0.5 * sW * (1 - nW % 2)
+            ncols, nrows = na, nb
+        else:
+            a0 = a_rng[0] - 0.5 * (nL - 1) * sL
+            b0 = b_rng[0] - 0.5 * (nW - 1) * sW
+            ncols, nrows = na + nL - 1, nb + nW - 1
+        G = np.array([[sL * ct, -sW * st, a0 * ct - b0 * st],
+                      [sL * st, sW * ct, a0 * st + b0 * ct],
+                      [0.0, 0.0, 1.0]])                       # grid (col, row) -> base (x, y)
+        grid = cv2.warpPerspective(src, Hs @ G, (ncols, nrows),
+                                   flags=cv2.INTER_LINEAR | cv2.WARP_INVERSE_MAP,
+                                   borderMode=cv2.BORDER_CONSTANT, borderValue=0)
+        if whole:
+            O = cv2.boxFilter(grid, -1, (nL, nW), normalize=False,
+                              borderType=cv2.BORDER_CONSTANT)
+        else:
+            S = cv2.integral(grid)
+            O = S[nW:, nL:] - S[:-nW, nL:] - S[nW:, :-nL] + S[:-nW, :-nL]
+        O = O.reshape(O.shape[0], O.shape[1], -1) * (sL * sW)
+        return O / (areas + L * W - O), sL, sW
+
+    def best(self, theta: float, block: int, cell: float, a_rng: tuple[float, float],
+             b_rng: tuple[float, float], whole: bool, L: float, W: float,
+             reading: int | None = None) -> list[tuple[float, np.ndarray]]:
+        """Per reading (or for the one asked for), the largest IoU over the grid of ious,
+        refined by a parabola in each axis, and its centre (base x, y)."""
+        iou, sL, sW = self.ious(theta, block, cell, a_rng, b_rng, whole, L, W, reading)
+        ct, st = math.cos(theta), math.sin(theta)
+        out = []
+        for i in range(iou.shape[2]):
+            m = iou[:, :, i]
+            r, c = divmod(int(np.argmax(m)), m.shape[1])
+            v = float(m[r, c])
+            dr = dc = gain = 0.0
+            if 0 < r < m.shape[0] - 1:
+                dr, vr = _vertex(float(m[r - 1, c]), v, float(m[r + 1, c]))
+                gain += vr - v
+            if 0 < c < m.shape[1] - 1:
+                dc, vc = _vertex(float(m[r, c - 1]), v, float(m[r, c + 1]))
+                gain += vc - v
+            a, b = a_rng[0] + (c + dc) * sL, b_rng[0] + (r + dr) * sW
+            out.append((v + gain, np.array([a * ct - b * st, a * st + b * ct])))
+        return out
+
+
+def _best_yaw(thetas: np.ndarray, vals: Sequence[float], step: float,
+              cyclic: bool) -> tuple[float, int]:
+    """Yaw of the largest of vals, refined by a parabola, and its index."""
+    j = int(np.argmax(vals))
+    th = float(thetas[j])
+    if cyclic:                                  # the yaws close on themselves
+        th += _vertex(vals[j - 1], vals[j], vals[(j + 1) % len(vals)])[0] * step
+    elif 0 < j < len(vals) - 1:
+        th += _vertex(vals[j - 1], vals[j], vals[j + 1])[0] * step
+    return th, j
+
+
+def fit_footprint(mask: np.ndarray, intrinsics: Mapping[str, float], T_BC_mm: np.ndarray,
+                  plane: TablePlane, top_height_mm: float, footprint_mm: Sequence[float],
+                  seed_yaw_rad: float,
+                  bottom_height_mm: float | None = None) -> FootprintFit | None:
+    """The L x W rectangle that overlaps the mask best (IoU), on the plane of the top.
+
+    The mask's largest outer outline, filled, is read on the table plane lifted by
+    top_height_mm, through the same pinhole and T_BC as ray_plane_depth. The rectangle
+    of the class's known top size (footprint_mm, its first two values) is placed at
+    every centre of a grid and at a series of yaws, and the placement with the largest
+    IoU is kept. The yaw is searched within 20 deg of seed_yaw_rad (the rectangle yaw of
+    the outline, _metric_edge_yaw_base), over the whole 90 deg for a square footprint
+    and 180 deg for a near-square one (L/W under NEAR_SQUARE_RATIO). It returns the long
+    side's yaw in (-pi/2, pi/2], folded into (-pi/4, pi/4] for a near-square footprint,
+    the convention of _metric_edge_yaw_base.
+
+    Why: a mask that spills off the part pulls its centroid and turns its minimum-area
+    rectangle. On 21 Oct 2026 (kiemtra-2110, trial 3, pose P0216) the detector's mask of
+    the mirror-finish inox box (180 x 85 x 40 mm) also covered the paper position cards
+    beside it; the rectangle measured 212.5 x 130.5 mm, its yaw was 6.3 deg off and the
+    centroid 10.5 mm along and 15.3 mm across the long side off an edge-fitted reference,
+    and one jaw came down on the box corner. A rectangle of the known size cannot follow
+    the spill: on that frame this fit is 1.6 deg and 1.1 mm along off the reference.
+
+    The visible side faces. Seen from above and off the camera's nadir, a box shows the
+    side faces that face the nadir; the detector's masks cover them (0.8 to 1.0 of their
+    area on 22 of the 24 real detections where they show, 20 and 21 Oct 2026), and on
+    the top plane they form a band beyond the top face on the nadir side, about as wide
+    as the distance from the nadir times the part height over the camera height. Inside
+    a mask that long the rectangle slides along the band with almost no change of IoU.
+    With bottom_height_mm, the height of the part's bottom above the table plane, the
+    mask is also read on that plane, where the band falls beyond the far side of the
+    bottom face instead, and the two readings are intersected: for a box this keeps
+    exactly its footprint. A mask that leaves the side faces out (a metal box on 21 Oct,
+    0.09 of its band covered) loses a strip of its top face that way, so the
+    intersection and the plain reading are both searched, and the one whose best
+    rectangle overlaps it more is kept. On ray-cast boxes of every class up to 262 mm
+    from the nadir the fit stayed within 0.2 deg and 0.9 mm; the plain reading alone was
+    up to 1.8 deg and 6.0 mm off.
+
+    Where the IoU still stays flat, within 0.001 of its best, over a set of centres or
+    a range of yaws (a mask larger than the part, as with a spill, lets the rectangle
+    slide and turn inside it: over 4.75 to 5.75 deg of yaw on the spilled inox masks
+    of P0213 and P0216, 21 Oct), the centroid of the set and the middle of the range
+    are returned rather than an arbitrary member of them.
+
+    Returns None when the mask is empty or the plane cannot be projected.
+    """
+    import cv2
+
+    L, W = sorted((float(x) for x in footprint_mm[:2]), reverse=True)
+    if not W > 0.0:
+        return None
+    near_square = L / W < NEAR_SQUARE_RATIO
+    m = np.asarray(mask)
+    m8 = (m.view(np.uint8) if m.dtype == np.bool_
+          else m if m.dtype == np.uint8 else (m > 0).astype(np.uint8))
+    bx, by, bw, bh = cv2.boundingRect(m8)
+    if bw == 0 or bh == 0:
+        return None
+    sub = (m8[by:by + bh, bx:bx + bw] > 0).astype(np.uint8)
+    contours, _ = cv2.findContours(sub, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+    if not contours:
+        return None
+    contour = max(contours, key=cv2.contourArea)
+    H = plane_homography(intrinsics, T_BC_mm, plane, top_height_mm)
+    Hi = np.linalg.inv(H)
+    cx, cy, w, h = cv2.boundingRect(contour)
+    # Blocks about one cell wide, from the size of a pixel on the top plane.
+    q = float(Hi[2] @ np.array([bx + cx + 0.5 * w, by + cy + 0.5 * h, 1.0]))
+    if q == 0.0:
+        return None
+    px_mm = math.sqrt(abs(np.linalg.det(Hi)) / abs(q) ** 3)
+    kc = max(1, int(round(_FIT_COARSE_CELL_MM / px_mm)))
+    kf = max(1, int(round(_FIT_FINE_CELL_MM / px_mm)))
+    k_all = kc * kf // math.gcd(kc, kf)
+    x0, y0 = bx + cx - 2, by + cy - 2
+    w = int(math.ceil((w + 4) / k_all)) * k_all
+    h = int(math.ceil((h + 4) / k_all)) * k_all
+    crop = np.zeros((h, w), np.uint8)
+    cv2.drawContours(crop, [contour - [cx - 2, cy - 2]], -1, 1, thickness=cv2.FILLED)
+    readings = [crop]
+    if bottom_height_mm is not None:
+        Tc = np.array([[1.0, 0.0, -x0], [0.0, 1.0, -y0], [0.0, 0.0, 1.0]])
+        Hb = plane_homography(intrinsics, T_BC_mm, plane, bottom_height_mm)
+        below = cv2.warpPerspective(crop, Tc @ Hb @ Hi @ np.linalg.inv(Tc), (w, h),
+                                    flags=cv2.INTER_NEAREST | cv2.WARP_INVERSE_MAP,
+                                    borderMode=cv2.BORDER_CONSTANT, borderValue=0)
+        readings.append(crop & below)
+    top = _TopPlaneMask(readings, x0, y0, H)
+    if not top.ok:
+        return None
+    use = [i for i, a in enumerate(top.areas) if a > 0.0]
+
+    # Coarse: the yaw over its window, centres over the whole mask, every reading.
+    step = math.radians(_FIT_COARSE_STEP_DEG)
+    if near_square:
+        span = math.pi / 2.0 if L - W < 1e-9 else math.pi
+        thetas = -0.5 * span + step * np.arange(int(round(span / step)))
+    else:
+        n = int(round(_FIT_COARSE_HALF_DEG / _FIT_COARSE_STEP_DEG))
+        thetas = float(seed_yaw_rad) + step * np.arange(-n, n + 1)
+    P = top.outline_xy
+    coarse = []
+    for th in thetas:
+        ct, st = math.cos(th), math.sin(th)
+        a = P[:, 0] * ct + P[:, 1] * st
+        b = P[:, 1] * ct - P[:, 0] * st
+        coarse.append(top.best(th, kc, _FIT_COARSE_CELL_MM, (a.min(), a.max()),
+                               (b.min(), b.max()), True, L, W))
+
+    # Fine, per reading: the yaw every 0.25 deg near its coarse optimum, centres near
+    # the best centre of the neighbouring yaw. A spill lets the rectangle turn inside
+    # the mask as well: on 21 Oct 2026 the IoU stayed within 0.001 of its best over 4.75
+    # to 5.75 deg of yaw on the spilled inox masks of P0213 and P0216. While the run of
+    # yaws within _FIT_PLATEAU_TOL of the best reaches an end of the samples, they are
+    # extended (up to 20 deg), and the middle of the run is taken; a single best sample
+    # is refined by a parabola.
+    n = int(round(_FIT_FINE_HALF_DEG / _FIT_FINE_STEP_DEG))
+    n_max = int(round(_FIT_COARSE_HALF_DEG / _FIT_FINE_STEP_DEG))
+    fstep = math.radians(_FIT_FINE_STEP_DEG)
+    R = _FIT_FINE_WINDOW_MM
+
+    def fine_at(i: int, th: float, cxy: np.ndarray) -> tuple[float, np.ndarray]:
+        ct, st = math.cos(th), math.sin(th)
+        a, b = cxy[0] * ct + cxy[1] * st, cxy[1] * ct - cxy[0] * st
+        return top.best(th, kf, _FIT_FINE_CELL_MM, (a - R, a + R), (b - R, b + R),
+                        False, L, W, i)[0]
+
+    best = None
+    for i in use:
+        th_c, j = _best_yaw(thetas, [c[i][0] for c in coarse], step, near_square)
+        fine = {k: fine_at(i, th_c + k * fstep, coarse[j][i][1]) for k in range(-n, n + 1)}
+        lo, hi = -n, n
+        while True:
+            v = max(f[0] for f in fine.values())
+            if fine[lo][0] >= v - _FIT_PLATEAU_TOL and lo > -n_max:
+                lo -= 1
+                fine[lo] = fine_at(i, th_c + lo * fstep, fine[lo + 1][1])
+            elif fine[hi][0] >= v - _FIT_PLATEAU_TOL and hi < n_max:
+                hi += 1
+                fine[hi] = fine_at(i, th_c + hi * fstep, fine[hi - 1][1])
+            else:
+                break
+        kb = max(fine, key=lambda k: fine[k][0])
+        v = fine[kb][0]
+        k0 = k1 = kb
+        while k0 > lo and fine[k0 - 1][0] >= v - _FIT_PLATEAU_TOL:
+            k0 -= 1
+        while k1 < hi and fine[k1 + 1][0] >= v - _FIT_PLATEAU_TOL:
+            k1 += 1
+        if k0 == k1 and lo < kb < hi:
+            mid = kb + _vertex(fine[kb - 1][0], v, fine[kb + 1][0])[0]
+        else:
+            mid = 0.5 * (k0 + k1)
+        if best is None or v > best[0]:
+            best = (v, i, th_c + mid * fstep, fine[int(round(mid))][1])
+    _, i, th, cxy = best
+
+    # Last: the centre at that yaw, the centroid of the near-optimal set around the best.
+    ct, st = math.cos(th), math.sin(th)
+    a, b = cxy[0] * ct + cxy[1] * st, cxy[1] * ct - cxy[0] * st
+    R = _FIT_LAST_WINDOW_MM
+    iou, sL, sW = top.ious(th, 1, 1.0, (a - R, a + R), (b - R, b + R), False, L, W, i)
+    iou = iou[:, :, 0]
+    r0, c0 = divmod(int(np.argmax(iou)), iou.shape[1])
+    v = float(iou[r0, c0])
+    _, lab = cv2.connectedComponents((iou >= v - _FIT_PLATEAU_TOL).astype(np.uint8),
+                                     connectivity=8)
+    rr, kk = np.nonzero(lab == lab[r0, c0])
+    a, b = a - R + float(kk.mean()) * sL, b - R + float(rr.mean()) * sW
+    x, y = a * ct - b * st, a * st + b * ct
+
+    yaw = (th + math.pi / 2.0) % math.pi - math.pi / 2.0
+    if yaw <= -math.pi / 2.0:
+        yaw += math.pi
+    if near_square:
+        yaw = (yaw + math.pi / 4.0) % (math.pi / 2.0) - math.pi / 4.0
+        if yaw <= -math.pi / 4.0:
+            yaw += math.pi / 2.0
+    p = H @ np.array([x, y, 1.0])
+    return FootprintFit((float(x), float(y)), float(yaw), v,
+                        (float(p[0] / p[2]), float(p[1] / p[2])))
 
 
 def top_face_height(depth_m: np.ndarray, mask: np.ndarray, intrinsics: Mapping[str, float],
