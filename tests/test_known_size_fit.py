@@ -98,6 +98,48 @@ def corner_spill(mask, center, yaw_deg, size, semi=(60.0, 30.0), reach=15.0, ang
     return out > 0
 
 
+def end_spill(mask, center, yaw_deg, size, beyond=50.0, extra_width=30.0):
+    """The mask and a band of table past the part's +L end, wider than the part, the
+    way the inox mask of 22 Oct 2026 (kiemtra-2210 first run, trial 3) ran about 50 mm
+    past the box's end over the paper cards."""
+    th = math.radians(yaw_deg)
+    e = np.array([math.cos(th), math.sin(th)])
+    n = np.array([-e[1], e[0]])
+    c = np.asarray(center) + e * (size[0] / 2.0 + beyond / 2.0 - 5.0)
+    half_l, half_w = beyond / 2.0 + 5.0, (size[1] + extra_width) / 2.0
+    xy = np.array([c + sl * half_l * e + sw * half_w * n
+                   for sl, sw in ((1, 1), (1, -1), (-1, -1), (-1, 1))])
+    px = project_points(INTR, T, np.column_stack([xy, PLANE.z_at(xy[:, 0], xy[:, 1])]))
+    out = mask.astype(np.uint8).copy()
+    cv2.fillPoly(out, [np.round(px * 16).astype(np.int32)], 1, shift=4)
+    return out > 0
+
+
+class TestPlateau:
+    """How far the fitted rectangle slides along its long side at the same IoU."""
+
+    def test_a_clean_mask_pins_the_rectangle(self):
+        center, yaw = (575.0, 20.0), -85.0
+        labels, _ = render(((center, yaw, INOX, 0.0),))
+        fit = fit_footprint(labels > 0, INTR, T, PLANE, INOX[2], INOX[:2],
+                            math.radians(yaw), bottom_height_mm=0.0)
+        assert fit.plateau_mm < 3.0
+
+    def test_a_wide_spill_past_the_end_lets_it_slide(self):
+        center, yaw = (575.0, 20.0), -85.0
+        labels, _ = render(((center, yaw, INOX, 0.0),))
+        mask = end_spill(labels > 0, center, yaw, INOX)
+        fit = fit_footprint(mask, INTR, T, PLANE, INOX[2], INOX[:2],
+                            math.radians(yaw), bottom_height_mm=0.0)
+        assert fit.plateau_mm > 10.0
+
+    def test_the_slide_is_recorded_with_the_fit(self):
+        center, yaw = (575.0, 20.0), -85.0
+        labels, depth = render(((center, yaw, INOX, 0.0),))
+        det = extract(labels > 0, depth, "inox_box")
+        assert det["fit_plateau_mm"] < 3.0
+
+
 SPILL_POSES = [pytest.param((575.0, 20.0), -82.7, id="P0216_yaw"),
                pytest.param((625.0, -40.0), 65.0, id="card_65")]
 

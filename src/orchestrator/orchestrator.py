@@ -1408,16 +1408,36 @@ class Orchestrator:
         yaw, while for inox, whose 199 mm diagonal is shorter than the 216 mm
         jaw opening, no yaw can put a finger on the part. No measurement,
         nothing to contradict.
+
+        When the grasp pose comes from the known-size rectangle (yaw_source
+        known_size_fit), the trial is also refused when that rectangle can slide
+        more than fit_plateau_max_mm (10) along its long side at the same IoU
+        (fit_plateau_mm): the mask then leaves the grasp centre undetermined
+        along the axis the jaws close on. On 22 Oct 2026 (kiemtra-2210, first
+        run, trial 3, P0216) an inox mask spilling 50 mm past the box's end
+        over the cards let the rectangle slide 49 to 50 mm, its centre 31.8 mm
+        off the part; the long side (231.5 mm) refused it as well. On the 76
+        genuine detections of 20 to 22 Oct with the arm out of view the slide
+        was at most 7 mm; on 842 cases built from real masks (spills, cuts,
+        merges, wrong classes) adding this test to the long side halves the
+        poses that pass with a jaw on the part, 67 to 32, and refuses no
+        genuine detection.
         """
         long_mm = obj.get("yaw_rect_long_mm")
-        if long_mm is None:
-            return None
-        tol_mm = float(self.config.get("size_tolerance_mm", 40.0))
-        if self._long_side_matches_class(obj.get("class_name"), float(long_mm),
-                                         tol_mm):
-            return None
-        return (f"top face long side {float(long_mm):.0f} mm, no "
-                f"{obj.get('class_name')} variant within {tol_mm:.0f} mm")
+        if long_mm is not None:
+            tol_mm = float(self.config.get("size_tolerance_mm", 40.0))
+            if not self._long_side_matches_class(obj.get("class_name"),
+                                                 float(long_mm), tol_mm):
+                return (f"top face long side {float(long_mm):.0f} mm, no "
+                        f"{obj.get('class_name')} variant within {tol_mm:.0f} mm")
+        slide = obj.get("fit_plateau_mm")
+        limit = float(self.config.get("fit_plateau_max_mm", 10.0))
+        if (obj.get("yaw_source") == "known_size_fit" and slide is not None
+                and np.isfinite(float(slide)) and float(slide) > limit):
+            return (f"fitted {obj.get('class_name')} rectangle slides "
+                    f"{float(slide):.0f} mm along its long side at the same overlap "
+                    f"(limit {limit:.0f} mm)")
+        return None
 
     def _depth_contradicts_command(self, obj, commanded_h_mm: float):
         """Why depth refuses this commanded height, or None if it does not.
@@ -2305,6 +2325,8 @@ class Orchestrator:
                 extra["table_share"] = round(float(obj["table_share"]), 3)
             if obj.get("fit_iou") is not None:
                 extra["fit_iou"] = round(float(obj["fit_iou"]), 3)
+            if obj.get("fit_plateau_mm") is not None:
+                extra["fit_plateau_mm"] = round(float(obj["fit_plateau_mm"]), 1)
         if ask_human and self.human_score_hook is not None:
             # Ctrl+C propagates: the operator meant to stop, and this row is lost
             # on purpose rather than being written with a made-up verdict.

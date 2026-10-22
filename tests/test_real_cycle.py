@@ -340,6 +340,19 @@ def test_a_mirror_inox_with_its_median_on_the_table_is_picked(mode):
 
 
 @pytest.mark.parametrize("mode", ["rgbd", "plane", "fusion"])
+def test_a_fit_that_slides_along_the_part_is_refused_before_motion(mode):
+    """22 Oct 2026, kiemtra-2210 first run, trial 3 (P0216): the known-size
+    rectangle could slide 29 mm along the box at the same overlap (genuine
+    detections that day: 0 to 6 mm), its centre 31.8 mm off the part."""
+    config = _real_config(mode)
+    real = _real_inox(config, mode, 0.95)
+    real.update(yaw_source="known_size_fit", fit_iou=0.64, fit_plateau_mm=29.0)
+    ok, orch, robot = _inox_frame(config, [real])
+    assert ok is False and robot.sent == []
+    assert orch.sm.history[-1].note == "yaw_geometry_reject"
+
+
+@pytest.mark.parametrize("mode", ["rgbd", "plane", "fusion"])
 def test_a_mask_spilling_off_the_inox_is_ignored_in_every_mode(mode):
     ok, orch, robot = _two_inox(mode)
     assert ok is True
