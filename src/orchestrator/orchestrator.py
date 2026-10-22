@@ -1292,71 +1292,43 @@ class Orchestrator:
         return z
 
     def _mask_off_part(self, obj):
-        """Why depth shows the mask is not on a part of its class, or None.
+        """Why depth shows the mask lies on the table rather than a part, or None.
 
-        With reliable depth a real part reaches its class height both in the
-        top band of its mask and at the median-depth point. The floor is the
-        lowest height of the class less height_tolerance_mm, the margin of the
-        depth plausibility clause. Two failures are discarded here, before
-        ranking, alike in every depth mode:
+        A detection is dropped, before ranking and alike in every depth mode,
+        when at least table_share_max (0.3) of its mask's pixels return depth
+        within 5 mm of the table plane (table_share, measured in perception).
+        That catches the two failures seen on the cell:
 
-          flat: the top band lies below the floor, so nothing in the mask is
-            as tall as the class. On 20 Oct 2026 the deployed detector
-            labelled groups of the paper position cards inox_box in nearly
-            every frame, in axis-aligned boxes three cards tall, with
-            confidence up to 0.939 against 0.957 for the real inox, also in
-            trials with no inox on the table. The class lock drops them in trials of
-            other classes. In an inox trial whose part is missed they are the
-            only inox left; rgbd refuses them later on the low top band
-            (_depth_implausible), but plane and fusion would pick at the
-            cards and close on air.
-          spill: the top band reaches the floor while the median lies below
-            it, so most of the mask is beside the part and its centre and
-            outline are not the part's. On 19 Oct 2026 masks over the
+          a mask spilling beside a part: on 19 Oct 2026 masks over the
             camera-side end of the inox and the table next to it were picked
             three times in plane and fusion mode, 76 to 119 mm from the part's
-            centre and about 45 deg off its axis; rgbd escaped only because it
-            ranked detections by that median (the medians of those frames are
-            reconstructed from the logged geometry, not measured).
+            centre (their share reconstructed at about 0.6 to 0.8);
+          a false detection on the paper position cards: on 20 Oct 2026 the
+            deployed detector labelled groups of cards inox_box in nearly every
+            frame, with confidence up to 0.939, flat on the table (share near
+            the whole mask).
 
-        Judged only when depth covers at least 0.3 of the mask, the fusion
-        bar, and both heights are measured. Sparse depth, as on a mirror top
-        with holes, and returns that form no top face are not judged, so the
-        plane estimate stays usable there: at 0.222 the inox of 15 Oct, trial
-        24, had its median at 19.3 mm and was picked.
-
-        Checked against every real detection logged with these fields: 55
-        trials of 12 and 14 Oct, 50 of 15 Oct (the eight stacks among them),
-        17 of 19 Oct and 8 of 20 Oct, 130 in all. The median is the logged
-        h_median_mm or, in rgbd, det_z_mm less the fitted table plane at
-        det_x_mm, det_y_mm. Of the 114 judged, one is discarded: 15 Oct,
-        trial 23, a spill with its median at 5.4 mm under a top band of 42.6
-        mm, which was refused before motion on its 227 mm long side. No
-        successful pick is discarded. The closest median is 30.9 mm, 10.9 mm
-        above the inox floor (15 Oct, trial 45, fraction 0.394); the closest
-        top band is 27.9 mm, 17.9 mm above the plastic floor (19 Oct, rgbd,
-        trial 2). Not judged: four inox below the 0.3 fraction, and the
-        twelve plane and fusion trials of 19 Oct, which logged no median.
+        It replaces a test on heights (top band or median-depth point below the
+        class floor), which threw away genuine mirror-finish parts: a mirror
+        top mostly returns no depth, and what returns is its outline band at
+        table height and reflections far below the table, so the median falls
+        onto the table. On the C4 labelled dataset (real D455 depth) the height
+        test discarded 103 of 842 single inox with human masks and 34 of 181
+        with the deployed detector's masks; this share discards 1 and 2 (an
+        inox against a tall part at 0.331, two masks 40 percent off their
+        part), and 0 of the other classes and of 679 stacked parts. On masks
+        shifted or grown onto clear table it misses at most 0.4 percent, against
+        14 to 72 percent for the height test, and 0.1 percent of flat masks.
+        Genuine isolated inox reached 0.223 at most. The share is logged
+        (table_share) to keep checking it on the cell.
         """
-        h_med = obj.get("h_median_mm")
-        h_top = obj.get("h_depth_mm")
-        frac = obj.get("depth_valid_frac")
-        h_min = self._class_min_height_mm(obj.get("class_name"))
-        if h_med is None or h_top is None or frac is None or h_min is None:
+        share = obj.get("table_share")
+        if share is None or not np.isfinite(float(share)):
             return None
-        if not (np.isfinite(float(h_med)) and np.isfinite(float(h_top))):
-            return None
-        if float(frac) < 0.3:
-            return None
-        floor = h_min - float(self.config.get("height_tolerance_mm", 20.0))
-        if float(h_top) < floor:
-            return (f"flat: nothing as tall as the class, top band "
-                    f"{float(h_top):.1f} mm and median {float(h_med):.1f} mm "
-                    f"above the table, floor {floor:.1f} mm")
-        if float(h_med) < floor:
-            return (f"spill: median on the table, {float(h_med):.1f} mm above "
-                    f"it with the top band at {float(h_top):.1f} mm, floor "
-                    f"{floor:.1f} mm")
+        limit = float(self.config.get("table_share_max", 0.3))
+        if float(share) >= limit:
+            return (f"on the table: {float(share):.2f} of the mask returns depth "
+                    f"at table height (limit {limit:.2f})")
         return None
 
     def _pick_floor_z(self, class_name, table_top: float):
@@ -2328,6 +2300,8 @@ class Orchestrator:
                 extra["h_depth_mm"] = round(float(obj["h_depth_mm"]), 1)
             if obj.get("h_median_mm") is not None:
                 extra["h_median_mm"] = round(float(obj["h_median_mm"]), 1)
+            if obj.get("table_share") is not None:
+                extra["table_share"] = round(float(obj["table_share"]), 3)
         if ask_human and self.human_score_hook is not None:
             # Ctrl+C propagates: the operator meant to stop, and this row is lost
             # on purpose rather than being written with a made-up verdict.

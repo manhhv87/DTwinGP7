@@ -55,6 +55,9 @@ DISAGREE_TOL_MM = 20.0
 TOP_FACE_ERODE_PX = 7
 TOP_FACE_BAND_MM = 15.0
 MIN_TOP_FACE_FRAC = 0.15
+# A depth return within this many millimetres of the table plane counts as table
+# in table_share.
+TABLE_SHARE_TOL_MM = 5.0
 # Below this silhouette IoU the size decision is not trusted: on the labelled set a
 # correct decision scores 0.96 at the median and a wrong one 0.66, and every wrong
 # one had another part hiding a piece of this one. An occluded part is then stood at
@@ -413,6 +416,33 @@ def top_face_mask(depth_m: np.ndarray, mask: np.ndarray, intrinsics: Mapping[str
     low = h < float(top_mm) - band_mm
     out[vv[low], uu[low]] = 0
     return out
+
+
+def table_share(depth_m: np.ndarray, mask: np.ndarray, intrinsics: Mapping[str, float],
+                T_BC_mm: np.ndarray, plane: TablePlane,
+                tol_mm: float = TABLE_SHARE_TOL_MM) -> float | None:
+    """Share of the mask's pixels whose depth puts them on the table plane.
+
+    The count of pixels returning a depth within tol_mm of the table, over all
+    pixels of the mask, with or without depth. A mask spilling beside a part, or a
+    false detection on the paper cards, holds a piece of matte table that returns
+    depth at table height. A part does not: its top stands above the table, and a
+    mirror top's wrong returns are holes or lie far below the table, so on a real
+    part only the outline band reads table height. None for an empty mask.
+    """
+    m = np.asarray(mask) > 0
+    n = int(np.count_nonzero(m))
+    if n == 0:
+        return None
+    vv, uu = np.nonzero(m & (depth_m > 0))
+    if uu.size == 0:
+        return 0.0
+    z = depth_m[vv, uu] * 1000.0
+    x = (uu - intrinsics["ppx"]) * z / intrinsics["fx"]
+    y = (vv - intrinsics["ppy"]) * z / intrinsics["fy"]
+    T = np.asarray(T_BC_mm, float)
+    h = plane.height_above(np.column_stack([x, y, z]) @ T[:3, :3].T + T[:3, 3])
+    return float(np.count_nonzero(np.abs(h) < tol_mm)) / n
 
 
 def fuse_height(h_depth_mm: float | None, h_prior_mm: float, h_min_mm: float,

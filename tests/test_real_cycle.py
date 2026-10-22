@@ -276,7 +276,7 @@ def _real_inox(config, mode, confidence):
     real = _detection(config, 525.0, 140.0, _plane_z(config, 525.0, 140.0) + 40.0,
                       "inox_box", depth_used=used, frac=0.96, h_depth=40.8,
                       rect=(186.9, 88.3), yaw_deg=-40.2)
-    real.update(confidence=confidence, h_median_mm=40.0)
+    real.update(confidence=confidence, h_median_mm=40.0, table_share=0.05)
     return real
 
 
@@ -304,7 +304,9 @@ def _two_inox(mode, spill_conf=0.95, real_conf=0.94, with_real=True):
     spill = _detection(config, 579.0, 22.2, _plane_z(config, 579.0, 22.2) + spill_h,
                        "inox_box", depth_used=used, frac=0.96, h_depth=40.8,
                        rect=(159.4, 139.8), yaw_deg=0.9)
-    spill.update(confidence=spill_conf, h_median_mm=0.4)
+    # Most of the mask is table: its share at table height reconstructed at
+    # about 0.6 to 0.8.
+    spill.update(confidence=spill_conf, h_median_mm=0.4, table_share=0.6)
     return _inox_frame(config, [spill, real] if with_real else [spill])
 
 
@@ -321,8 +323,20 @@ def _cards(config, mode, confidence=0.93):
     cards = _detection(config, 583.0, -60.0, _plane_z(config, 583.0, -60.0) + h,
                        "inox_box", depth_used=used, frac=0.99, h_depth=0.5,
                        rect=(197.0, 140.0), yaw_deg=90.0)
-    cards.update(confidence=confidence, h_median_mm=0.3)
+    cards.update(confidence=confidence, h_median_mm=0.3, table_share=0.97)
     return cards
+
+
+@pytest.mark.parametrize("mode", ["rgbd", "plane", "fusion"])
+def test_a_mirror_inox_with_its_median_on_the_table_is_picked(mode):
+    """The height test of 9bf42f5 and ece9e9c dropped such parts: a mirror
+    top's depth falls onto or below the table, so the median read 4 mm while
+    little of the mask was at table height. It is a part, and is picked."""
+    config = _real_config(mode)
+    real = _real_inox(config, mode, 0.95)
+    real.update(depth_valid_frac=0.55, h_median_mm=4.0, table_share=0.12)
+    ok, orch, robot = _inox_frame(config, [real])
+    assert ok is True and len(robot.sent) == 1
 
 
 @pytest.mark.parametrize("mode", ["rgbd", "plane", "fusion"])
