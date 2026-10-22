@@ -30,6 +30,7 @@ from .depth_modes import (
     parse_class_sizes,
     ray_plane_depth,
     resolve_size,
+    table_share,
     top_face_height,
     top_face_mask,
     valid_depth_fraction,
@@ -508,6 +509,9 @@ class PoseExtractor:
             T = np.asarray(self.T_BC, float)
             p_base = T[:3, :3] @ deproject_pixel(self.intrinsics, u, v, z_depth) + T[:3, 3]
             h_median = float(self.plane.height_above(p_base))
+        # Share of the mask that is table, for Orchestrator._mask_off_part.
+        on_table = (table_share(depth_image, mask, self.intrinsics, self.T_BC, self.plane)
+                    if self.has_geometry else None)
 
         # METRIC_BASE_YAW_V1
         # Mask outline -> physical top plane -> BASE XY -> minAreaRect edge.
@@ -608,4 +612,5 @@ class PoseExtractor:
         detection["depth_valid_frac"] = valid_frac
         detection["h_depth_mm"] = h_depth
         detection["h_median_mm"] = h_median
+        detection["table_share"] = on_table
         return detection

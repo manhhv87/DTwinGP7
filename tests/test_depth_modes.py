@@ -32,6 +32,7 @@ from src.perception.depth_modes import (
     project_points,
     ray_plane_depth,
     resolve_size,
+    table_share,
     top_face_height,
     valid_depth_fraction,
 )
@@ -262,6 +263,46 @@ class TestTopFaceHeight:
         depth = depth.copy()
         depth[mask > 0] = rng.uniform(0.35, 0.71, int(np.count_nonzero(mask))).astype(np.float32)
         assert top_face_height(depth, mask, INTR, T_BC, LEVEL) is None
+
+
+class TestTableShare:
+    """Share of a mask's pixels returning depth at table height."""
+
+    @pytest.mark.parametrize("size", [LARGE, SMALL, (180.0, 85.0, 40.0), (180.0, 140.0, 30.0)])
+    def test_a_mask_on_a_part_is_little_table(self, size):
+        mask, depth = render_box((AXIS_XY[0] + 120, AXIS_XY[1] - 90), 0.3, size)
+        assert table_share(depth, mask, INTR, T_BC, LEVEL) < 0.1
+
+    def test_a_mask_spilling_onto_the_table_is_mostly_table(self):
+        mask, depth = render_box(AXIS_XY, 0.0, SMALL)
+        vv, uu = np.nonzero(mask)
+        width = uu.max() - uu.min() + 1
+        spill = mask.copy()
+        spill[vv.min():vv.max() + 1, uu.max() + 1:uu.max() + 1 + 2 * width] = 1
+        assert table_share(depth, spill, INTR, T_BC, LEVEL) > 0.6
+
+    def test_a_mirror_top_returning_holes_and_deep_returns_is_not_table(self):
+        """A mirror top: no depth over most of it, the rest far below the table."""
+        mask, depth = render_box(AXIS_XY, 0.0, (180.0, 85.0, 40.0))
+        depth = depth.copy()
+        vv, uu = np.nonzero(mask)
+        depth[vv, uu] = 0.0
+        deep = (vv % 3 == 0)
+        depth[vv[deep], uu[deep]] = 1.2          # a reflection, 0.5 m below the table
+        assert table_share(depth, mask, INTR, T_BC, LEVEL) == 0.0
+
+    def test_no_depth_and_empty_mask(self):
+        mask, _ = render_box(AXIS_XY, 0.0, LARGE)
+        assert table_share(np.zeros(SHAPE, np.float32), mask, INTR, T_BC, LEVEL) == 0.0
+        assert table_share(np.zeros(SHAPE, np.float32), np.zeros(SHAPE, np.uint8),
+                           INTR, T_BC, LEVEL) is None
+
+    @pytest.mark.parametrize("mode", ["rgbd", "plane", "fusion"])
+    def test_the_share_is_recorded_in_every_mode(self, mode):
+        mask, depth = render_box(AXIS_XY, 0.1, SMALL)
+        det = _extractor(mode).extract({"mask": mask, "class_name": "carton"}, depth)
+        assert det["table_share"] == pytest.approx(
+            table_share(depth, mask, INTR, T_BC, LEVEL))
 
 
 def _extractor(mode="plane", **kw):
@@ -513,7 +554,7 @@ class TestExperimentConfigSizes:
 class TestTrialLogColumns:
     def test_depth_columns_travel_to_the_csv(self, tmp_path):
         for col in ("depth_mode", "depth_used", "depth_valid_frac", "part_height_mm",
-                    "size_iou", "h_depth_mm"):
+                    "size_iou", "h_depth_mm", "h_median_mm", "table_share"):
             assert col in CONTEXT_FIELDNAMES
         p = tmp_path / "trials.csv"
         TrialLogger(p, extra_context={"mode": "real", "depth_mode": "fusion"}).log_trial(
