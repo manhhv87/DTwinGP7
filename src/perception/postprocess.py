@@ -23,9 +23,13 @@ import numpy as np
 from .depth_modes import (
     DEPTH_MODES,
     DISAGREE_TOL_MM,
+    MIN_FOOTPRINT_IOU,
     MIN_SIZE_IOU,
     MIN_VALID_FRAC,
+    NEAR_SQUARE_RATIO,
+    Size,
     TablePlane,
+    fit_footprint,
     fuse_height,
     parse_class_sizes,
     ray_plane_depth,
@@ -306,7 +310,7 @@ def _metric_edge_yaw_base(
         return None
 
     ratio = long_mm / max(short_mm, 1e-9)
-    near_square = bool(ratio < 1.15)
+    near_square = bool(ratio < NEAR_SQUARE_RATIO)
 
     if near_square:
         e = edges[0]
@@ -398,11 +402,14 @@ class PoseExtractor:
 
     def _heights(
         self, detection: dict[str, Any], mask: np.ndarray, yaw: float,
-    ) -> tuple[float | None, float | None, bool]:
+    ) -> tuple[float | None, float | None, bool, Size | None]:
         """(height used, lowest height the part can stand at) for this instance, mm,
-        and whether the height used is the part's own: True for a class of one size
+        whether the height used is the part's own: True for a class of one size
         and for a size fit trusted at MIN_SIZE_IOU, False where the lowest candidate
-        stands in for a size that was not resolved."""
+        stands in for a size that was not resolved; and the size (L, W, H) whose top
+        face the grasp pose is fitted with (see extract): the class's one size, for
+        the carton the size its silhouette resolved or the lowest one when that fit
+        is not trusted, None when the class has no size or the carton no fit."""
         name = detection.get("class_name")
         cands = self.class_sizes.get(name, [])
         if self.has_geometry and len(cands) > 1:
@@ -413,17 +420,18 @@ class PoseExtractor:
                 h_low = min(c[2] for c in cands)
                 if fit.iou < MIN_SIZE_IOU:      # occluded: the match means little
                     detection["size_mm"] = min(cands, key=lambda c: c[2])
-                    return h_low, h_low, False
+                    return h_low, h_low, False, detection["size_mm"]
                 detection["size_mm"] = fit.size
-                return fit.size[2], h_low, True
+                return fit.size[2], h_low, True, fit.size
         h = detection.get("height_mm")
         if h is None:
             h = self.class_heights.get(name)
         if h is None and cands:
             h = min(c[2] for c in cands)
         if h is None:
-            return None, None, False
-        return float(h), min([float(h)] + [c[2] for c in cands]), len(cands) <= 1
+            return None, None, False, None
+        return (float(h), min([float(h)] + [c[2] for c in cands]), len(cands) <= 1,
+                cands[0] if len(cands) == 1 else None)
 
     def _measured_height(self, detection: dict[str, Any], h_use: float) -> None:
         """Record a height the depth corrected.
@@ -457,18 +465,19 @@ class PoseExtractor:
         when the table plane is known) and, for a class resolved by size, size_mm,
         size_iou and height_mm.
 
-        The grasp yaw (yaw_base) is the direction of the long side of the
-        minimum-area rectangle fitted to the mask outline projected onto the top
-        plane, folded modulo 90 deg for a near-square rectangle. When the top
-        plane is placed from depth and lies at least min_support_mm above the
-        part's own height, the part stands on a support, and the outline is
-        taken from top_face_mask instead, cut half the part's height below the
-        top face. The top of a flat support, a whole part height down, falls
-        below the cut, so a mask that also covers it cannot turn the rectangle
-        (B4, 20 Oct 2026, trial 14), while the tilted top of a part leaning on
-        a support stays above it. yaw_source is "metric_base_top_face" in that
-        case. If that outline gives no rectangle, the whole mask is used, as
-        for every other detection.
+        The outline's rectangle. The mask outline is projected onto the top plane and
+        the minimum-area rectangle fitted to it gives yaw_rect_long_mm and
+        yaw_rect_short_mm (the orchestrator's long-side check and the carton's
+        footprint sizing read them) and a yaw, the direction of its long side, folded
+        modulo 90 deg for a near-square rectangle. When the top plane is placed from
+        depth and lies at least min_support_mm above the part's own height, the part
+        stands on a support, and the outline is taken from top_face_mask instead, cut
+        half the part's height below the top face. The top of a flat support, a whole
+        part height down, falls below the cut, so a mask that also covers it cannot
+        turn the rectangle (B4, 20 Oct 2026, trial 14), while the tilted top of a part
+        leaning on a support stays above it. yaw_source is "metric_base_top_face" in
+        that case. If that outline gives no rectangle, the whole mask is used, as for
+        every other detection.
 
         A support is inferred only when the part's own height is known: a class
         of one size, or a carton whose size fit is trusted (resolve_size found a
@@ -478,6 +487,35 @@ class PoseExtractor:
         from 12 to 20 Oct 2026 this excludes the one the height test alone took
         for a stack: B3, 14 Oct, trial 9, a carton with size IoU 0.67 whose top
         band read 173.3 mm over a median of 124.3 mm.
+
+        The grasp pose. When the class has a known top size (its one size, or the
+        carton's resolved size, the lowest one when that fit is not trusted),
+        depth_modes.fit_footprint fits the L x W rectangle to the same outline on the
+        same plane by IoU, seeded with the rectangle's yaw, and reads the mask also on
+        the plane of the part's bottom (the table, or the support's top) so that the
+        side faces the camera sees drop out. fit_iou records its IoU. From
+        MIN_FOOTPRINT_IOU up, its yaw becomes yaw_base and its centre, projected into
+        the image, replaces the mask centroid as the grasp pixel: h_median_mm, the ray
+        of plane and fusion, the rgbd deprojection at the median depth and pixel_uv
+        all use it, and yaw_source is "known_size_fit". Otherwise the centroid and the
+        rectangle's yaw stand. The fit reads nothing that differs between the depth
+        modes, so the three modes get the same grasp pixel and yaw.
+
+        Why: on 21 Oct 2026 (kiemtra-2110, trial 3, pose P0216) the detector's mask of
+        the mirror-finish inox box spilled onto the paper position cards; the
+        rectangle turned 6.3 deg and the centroid moved 10.5 mm along and 15.3 mm
+        across the long side off an edge-fitted reference, and a jaw came down on the
+        box corner. On the 54 saved frames of the 34 pick scenes of 20 and 21 Oct the
+        fit left at least 15.1 mm between each jaw (216 mm opening) and a single inox
+        box, against 1.75 mm for the logged poses, and 9.6 mm for the wood box, the
+        tightest class (4.7 mm logged); on P0216 it came 1.6 deg and 1.1 mm along off.
+
+        The minimum IoU, 0.5. On those frames genuine detections reached 0.718 at
+        least (P0216 itself, spill included), and 0.655 for a stacked inox read through
+        the whole mask; ray-cast masks of every class reach 0.988. A mask that holds
+        only part of the footprint scores lower: 0.35 to 0.37 with 60 percent of the
+        part hidden, 0.57 to 0.61 with 45 percent, 0.42 for a wood box read as inox.
+        The bar keeps every genuine detection, with 0.15 to spare.
 
         Returns:
             Detection dict with pose added, or None if the pose cannot be extracted.
@@ -494,21 +532,14 @@ class PoseExtractor:
         z_depth = masked_depth(depth_image, mask)
         valid_frac = valid_depth_fraction(depth_image, mask)
 
-        height, h_min, own_height = self._heights(detection, mask, yaw)
+        height, h_min, own_height, size = self._heights(detection, mask, yaw)
         if height is not None:
             detection["height_mm"] = height
 
         h_depth = None
-        h_median = None
         if self.has_geometry and z_depth is not None:
             h_depth = top_face_height(depth_image, mask, self.intrinsics, self.T_BC,
                                       self.plane)
-            # Height above the table of the median-depth point, the point rgbd
-            # itself commands. Recorded in every mode: next to the top band it
-            # tells a mask lying on the part from one spilling beside it.
-            T = np.asarray(self.T_BC, float)
-            p_base = T[:3, :3] @ deproject_pixel(self.intrinsics, u, v, z_depth) + T[:3, 3]
-            h_median = float(self.plane.height_above(p_base))
         # Share of the mask that is table, for Orchestrator._mask_off_part.
         on_table = (table_share(depth_image, mask, self.intrinsics, self.T_BC, self.plane)
                     if self.has_geometry else None)
@@ -517,6 +548,8 @@ class PoseExtractor:
         # Mask outline -> physical top plane -> BASE XY -> minAreaRect edge.
         metric_yaw = None
         yaw_source = "metric_base_minAreaRect"
+        yaw_outline = mask
+        on_support = False
         if self.has_geometry and height is not None:
             yaw_height_mm = float(height)
             depth_trusted = (
@@ -530,12 +563,13 @@ class PoseExtractor:
             # On a support the outline comes from the part's top, cut half its
             # height down (see top_face_mask). A support is inferred only from
             # the part's own height; any other detection keeps the whole mask.
-            if (
+            on_support = (
                 depth_trusted
                 and own_height
                 and self.min_support_mm is not None
                 and float(h_depth) - float(height) >= self.min_support_mm
-            ):
+            )
+            if on_support:
                 try:
                     outline = top_face_mask(depth_image, mask, self.intrinsics,
                                             self.T_BC, self.plane, float(h_depth),
@@ -556,6 +590,7 @@ class PoseExtractor:
                     metric_yaw = None
                 if metric_yaw is not None:
                     yaw_source = "metric_base_top_face"
+                    yaw_outline = outline
             if metric_yaw is None:
                 try:
                     metric_yaw = _metric_edge_yaw_base(
@@ -572,6 +607,33 @@ class PoseExtractor:
                         e,
                     )
                     metric_yaw = None
+
+        # Known-size fit on the same outline and plane (see the docstring).
+        fit = None
+        if metric_yaw is not None and size is not None:
+            bottom_mm = yaw_height_mm - float(size[2]) if on_support else 0.0
+            try:
+                fit = fit_footprint(yaw_outline, self.intrinsics, self.T_BC, self.plane,
+                                    yaw_height_mm, size[:2], float(metric_yaw["yaw_base"]),
+                                    bottom_height_mm=max(0.0, bottom_mm))
+            except Exception as e:
+                logger.debug("Known-size fit skipped for %r: %s",
+                             detection.get("class_name"), e)
+                fit = None
+        if fit is not None:
+            detection["fit_iou"] = fit.iou
+            if fit.iou >= MIN_FOOTPRINT_IOU:
+                yaw_source = "known_size_fit"
+                u, v = fit.pixel_uv
+
+        h_median = None
+        if self.has_geometry and z_depth is not None:
+            # Height above the table of the median-depth point, the point rgbd
+            # itself commands. Recorded in every mode: next to the top band it
+            # tells a mask lying on the part from one spilling beside it.
+            T = np.asarray(self.T_BC, float)
+            p_base = T[:3, :3] @ deproject_pixel(self.intrinsics, u, v, z_depth) + T[:3, 3]
+            h_median = float(self.plane.height_above(p_base))
 
         if self.depth_mode == "rgbd":
             z_m, source = z_depth, "rgbd"
@@ -598,7 +660,8 @@ class PoseExtractor:
             float(xyz_cam[0]), float(xyz_cam[1]), float(xyz_cam[2]), yaw,
         )
         if metric_yaw is not None:
-            detection["yaw_base"] = float(metric_yaw["yaw_base"])
+            detection["yaw_base"] = (float(fit.yaw_base) if yaw_source == "known_size_fit"
+                                     else float(metric_yaw["yaw_base"]))
             detection["yaw_source"] = yaw_source
             detection["yaw_rect_long_mm"] = float(metric_yaw["long_mm"])
             detection["yaw_rect_short_mm"] = float(metric_yaw["short_mm"])

@@ -81,6 +81,10 @@ CONTEXT_FIELDNAMES = [
     # Share of the mask's pixels returning depth at table height (within 5 mm);
     # 0.3 or more and the detection is dropped as off the part.
     "table_share",
+    # IoU of the class's known top-face rectangle fitted to the mask outline; from
+    # 0.5 up its centre and yaw are the grasp pose (perception/depth_modes.py,
+    # fit_footprint), below it the mask centroid and rectangle yaw stand.
+    "fit_iou",
     # Operator verdict, scored by eye right after the trial (03 --confirm-each-trial).
     # `success` is the machine's: the detect sensor proves a part was in the gripper
     # when it closed, but nothing checks that the part was still held at PLACE or
