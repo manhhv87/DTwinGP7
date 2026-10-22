@@ -380,6 +380,8 @@ class FootprintFit:
                                       # (-pi/4, pi/4] for a near-square footprint
     iou: float                        # rectangle against the mask on the top plane
     pixel_uv: tuple[float, float]     # the centre projected into the image
+    plateau_mm: float = 0.0           # how far the centre slides along the long side
+                                      # with the IoU within 0.001 of its best, mm
 
 
 def plane_homography(intrinsics: Mapping[str, float], T_BC_mm: np.ndarray,
@@ -586,7 +588,10 @@ def fit_footprint(mask: np.ndarray, intrinsics: Mapping[str, float], T_BC_mm: np
     a range of yaws (a mask larger than the part, as with a spill, lets the rectangle
     slide and turn inside it: over 4.75 to 5.75 deg of yaw on the spilled inox masks
     of P0213 and P0216, 21 Oct), the centroid of the set and the middle of the range
-    are returned rather than an arbitrary member of them.
+    are returned rather than an arbitrary member of them. The extent of that set of
+    centres along the long side is returned as plateau_mm (searched within 25 mm of
+    the best centre, so it saturates at 50 mm): a long plateau means the mask does not
+    pin the rectangle down along the axis the jaws close on.
 
     Returns None when the mask is empty or the plane cannot be projected.
     """
@@ -712,6 +717,7 @@ def fit_footprint(mask: np.ndarray, intrinsics: Mapping[str, float], T_BC_mm: np
     _, lab = cv2.connectedComponents((iou >= v - _FIT_PLATEAU_TOL).astype(np.uint8),
                                      connectivity=8)
     rr, kk = np.nonzero(lab == lab[r0, c0])
+    plateau_mm = float(kk.max() - kk.min()) * sL
     a, b = a - R + float(kk.mean()) * sL, b - R + float(rr.mean()) * sW
     x, y = a * ct - b * st, a * st + b * ct
 
@@ -724,7 +730,7 @@ def fit_footprint(mask: np.ndarray, intrinsics: Mapping[str, float], T_BC_mm: np
             yaw += math.pi / 2.0
     p = H @ np.array([x, y, 1.0])
     return FootprintFit((float(x), float(y)), float(yaw), v,
-                        (float(p[0] / p[2]), float(p[1] / p[2])))
+                        (float(p[0] / p[2]), float(p[1] / p[2])), plateau_mm)
 
 
 def top_face_height(depth_m: np.ndarray, mask: np.ndarray, intrinsics: Mapping[str, float],

@@ -85,6 +85,9 @@ CONTEXT_FIELDNAMES = [
     # 0.5 up its centre and yaw are the grasp pose (perception/depth_modes.py,
     # fit_footprint), below it the mask centroid and rectangle yaw stand.
     "fit_iou",
+    # How far that rectangle slides along its long side at the same IoU, mm; over
+    # 10 mm the trial is refused before motion (Orchestrator._shape_contradicts_class).
+    "fit_plateau_mm",
     # Operator verdict, scored by eye right after the trial (03 --confirm-each-trial).
     # `success` is the machine's: the detect sensor proves a part was in the gripper
     # when it closed, but nothing checks that the part was still held at PLACE or

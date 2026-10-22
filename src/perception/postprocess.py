@@ -622,6 +622,7 @@ class PoseExtractor:
                 fit = None
         if fit is not None:
             detection["fit_iou"] = fit.iou
+            detection["fit_plateau_mm"] = fit.plateau_mm
             if fit.iou >= MIN_FOOTPRINT_IOU:
                 yaw_source = "known_size_fit"
                 u, v = fit.pixel_uv

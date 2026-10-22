@@ -496,6 +496,40 @@ class TestAtHome:
         assert o.robot.moves == []
 
 
+class TestFitPlateau:
+    """22 Oct 2026, kiemtra-2210 first run, trial 3 (P0216): an inox mask spilling
+    past the box's end let the known-size rectangle slide 49 to 50 mm along its long
+    side; genuine detections slid at most 7 mm."""
+
+    @staticmethod
+    def _det(slide, source="known_size_fit", long_mm=184.0):
+        return {"class_name": "inox_box", "yaw_rect_long_mm": long_mm,
+                "yaw_source": source, "fit_plateau_mm": slide}
+
+    def test_a_sliding_fit_is_refused(self):
+        reason = _orch()._shape_contradicts_class(self._det(49.0))
+        assert reason is not None and "slides" in reason
+
+    def test_a_pinned_fit_passes(self):
+        assert _orch()._shape_contradicts_class(self._det(7.0)) is None
+
+    def test_the_limit(self):
+        o = _orch()
+        assert o._shape_contradicts_class(self._det(10.0)) is None
+        assert o._shape_contradicts_class(self._det(10.5)) is not None
+
+    def test_only_a_fit_in_use_is_judged(self):
+        assert _orch()._shape_contradicts_class(
+            self._det(49.0, source="metric_base_minAreaRect")) is None
+
+    def test_no_slide_recorded_nothing_to_judge(self):
+        assert _orch()._shape_contradicts_class(self._det(None)) is None
+
+    def test_the_long_side_still_refuses_first(self):
+        reason = _orch()._shape_contradicts_class(self._det(3.0, long_mm=231.5))
+        assert reason is not None and "long side" in reason
+
+
 class TestMaskSpill:
     """A detection whose mask is largely table, at table height, is dropped."""
 

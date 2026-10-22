@@ -28,6 +28,11 @@ size_tolerance_mm: 40.0
 # C4 có độ sâu, inox thật đứng riêng đạt nhiều nhất 0,223; phép cũ theo chiều cao
 # (dải mặt trên hoặc trung vị dưới sàn lớp) loại nhầm 103 trên 842 inox.
 table_share_max: 0.3
+# Từ chối lượt khi hình chữ nhật đúng cỡ khớp vào mặt nạ trượt được quá 10 mm dọc
+# cạnh dài mà độ trùng không đổi: mặt nạ không xác định được tâm gắp theo trục má
+# kẹp đóng. Ngày 22/10 (kiemtra-2210 lần 1, lượt 3) mặt nạ inox tràn qua đầu hộp cho
+# trượt 49 tới 50 mm, tâm lệch 31,8 mm; trên 76 phát hiện thật, độ trượt không quá 7 mm.
+fit_plateau_max_mm: 10.0
 # Mỗi chu trình job cố định phải bắt đầu và kết thúc ở HOME dạy trên tay dạy
 # (taught_home_joints_deg trong khối real), sai lệch tối đa ngưỡng này.
 home_tolerance_deg: 0.5
