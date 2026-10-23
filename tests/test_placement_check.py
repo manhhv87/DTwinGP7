@@ -19,10 +19,12 @@ import numpy as np
 import pytest
 
 from src.orchestrator.placement_check import (
-    CARTON_TOP_MM, FLAG_CODES, FLAT_TOP_MM, HEIGHT_TOL_ABOVE_MM, HEIGHT_TOL_BELOW_MM,
-    MAX_RECAPTURES, POSITION_TOL_MM, YAW_TOL_DEG, CalledPose, called_pose_from_row,
-    carton_sizes_path, check_placement, class_label, load_carton_sizes,
-    missing_carton_sizes, top_centre_xy, yaw_error_deg, yaw_period_deg,
+    CARTON_TOP_MM, FLAG_CODES, FLAT_TOP_MM, HEIGHT_TOL_ABOVE_MM, HEIGHT_TOL_BELOW_MIRROR_MM,
+    HEIGHT_TOL_BELOW_MM, MAX_RECAPTURES, MIN_DEPTH_PIXELS, NEAR_SQUARE_RATIO,
+    POSITION_TOL_MM, YAW_TOL_DEG, CalledPose, called_pose_from_row, carton_sizes_path,
+    check_placement, class_label, detection_yaw_period_deg, has_depth, judged_detection,
+    load_carton_sizes, lower_tolerance_mm, missing_carton_sizes, top_centre_xy,
+    yaw_error_deg, yaw_period_deg,
 )
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -82,7 +84,16 @@ class TestFlags:
     def test_no_usable_detection_of_the_called_class(self):
         flags = check_placement(_called(cls="carton", carton_mm=120), None)
         assert [f.code for f in flags] == ["class"]
-        assert "carton(120)" in flags[0].text and "card 11" in flags[0].text
+        assert flags[0].text == "CLASS: no carton(120) found; check the part on card 11"
+
+    def test_a_class_miss_on_a_stacked_pose_names_the_support(self):
+        """Fusion P0062 of session 1, inox on the metal box for the plastic box, was
+        flagged only as class: the line now points at the support as well."""
+        flags = check_placement(_called(stack_on="plastic_box", card="4"), None)
+        assert flags[0].text == ("CLASS: no inox_box found; check the part on card 4 "
+                                 "and the plastic_box under it")
+        flags = check_placement(_called(stack_on="carton", stack_on_carton_mm=120), None)
+        assert flags[0].text.endswith("and the carton(120) under it")
 
     def test_no_frame_at_all_is_a_camera_fault_not_a_placement(self):
         assert _flags(_called(), None, frames_seen=False) == []
@@ -106,17 +117,58 @@ class TestFlags:
         assert [f.code for f in flags] == ["stack"]
         assert "nothing is under the part" in flags[0].text
 
+    def test_a_single_part_reading_low_names_no_support(self):
+        """Nothing put under a part makes it read lower: the line asks to check the
+        part, not what is under it."""
+        obj = _detection(575.0, 20.0, 41.5, h_depth=41.5 - 20.0, yaw_deg=_yaw_for(0.0))
+        flags = check_placement(_called(), obj, T_BC=T_BC, table_plane=PLANE)
+        assert [f.text for f in flags] == [
+            "STACK: top at 22 mm, 42 mm expected for inox_box alone; check the part"]
+
     def test_a_wrong_support(self):
         """Fusion P0016 of session 1: inox on the plastic box for the metal box."""
         obj = _detection(575.0, -40.0, 74.0, yaw_deg=_yaw_for(0.0))
         assert _flags(_called(stack_on="metal_box", y=-40.0), obj) == ["stack"]
 
-    @pytest.mark.parametrize("delta,flagged", [
-        (HEIGHT_TOL_ABOVE_MM - 0.5, False), (HEIGHT_TOL_ABOVE_MM + 0.5, True),
-        (-HEIGHT_TOL_BELOW_MM + 0.5, False), (-HEIGHT_TOL_BELOW_MM - 0.5, True)])
-    def test_the_height_band(self, delta, flagged):
-        obj = _detection(575.0, 20.0, 41.5, h_depth=41.5 + delta, yaw_deg=_yaw_for(0.0))
-        assert ("stack" in _flags(_called(), obj)) is flagged
+    @pytest.mark.parametrize("cls,top,delta,flagged", [
+        ("inox_box", 41.5, HEIGHT_TOL_ABOVE_MM - 0.5, False),
+        ("inox_box", 41.5, HEIGHT_TOL_ABOVE_MM + 0.5, True),
+        ("inox_box", 41.5, -HEIGHT_TOL_BELOW_MIRROR_MM + 0.5, False),
+        ("inox_box", 41.5, -HEIGHT_TOL_BELOW_MIRROR_MM - 0.5, True),
+        ("metal_box", 84.7, HEIGHT_TOL_ABOVE_MM - 0.5, False),
+        ("metal_box", 84.7, HEIGHT_TOL_ABOVE_MM + 0.5, True),
+        ("metal_box", 84.7, -HEIGHT_TOL_BELOW_MM + 0.5, False),
+        ("metal_box", 84.7, -HEIGHT_TOL_BELOW_MM - 0.5, True),
+        ("wood_box", 153.1, -HEIGHT_TOL_BELOW_MM - 0.5, True),
+        ("plastic_box", 29.5, -HEIGHT_TOL_BELOW_MM + 0.5, False)])
+    def test_the_height_band(self, cls, top, delta, flagged):
+        """A mirror top (the inox box) may read up to 15 mm low, a matte one 8 mm."""
+        obj = _detection(575.0, 20.0, top, h_depth=top + delta, cls=cls,
+                         yaw_deg=_yaw_for(0.0))
+        assert ("stack" in _flags(_called(cls=cls), obj)) is flagged
+
+    def test_the_lower_tolerance_follows_the_top(self):
+        assert lower_tolerance_mm("inox_box") == HEIGHT_TOL_BELOW_MIRROR_MM == 15.0
+        for cls in ("carton", "plastic_box", "wood_box", "metal_box"):
+            assert lower_tolerance_mm(cls) == HEIGHT_TOL_BELOW_MM == 8.0
+
+    def test_a_support_12_mm_lower_under_a_matte_part(self):
+        """The metal box on the plastic box for a call on the inox box reads 12.0 mm
+        low; with one 15 mm band for every class (b9f4e52) it passed in every mode."""
+        obj = _detection(575.0, 20.0, 84.7 + 29.5, cls="metal_box", yaw_deg=_yaw_for(0.0))
+        flags = check_placement(_called(cls="metal_box", stack_on="inox_box"), obj,
+                                T_BC=T_BC, table_plane=PLANE)
+        assert [f.text for f in flags] == [
+            "STACK: top at 114 mm, 126 mm expected for metal_box on inox_box; "
+            "check the support"]
+
+    def test_a_small_carton_on_a_support_for_a_large_carton_alone(self):
+        """carton(80) on the plastic box for a carton(120) alone reads 13.7 mm low."""
+        obj = _detection(575.0, 20.0, 82.2 + 29.5, cls="carton", yaw_deg=_yaw_for(0.0))
+        flags = check_placement(_called(cls="carton", carton_mm=120), obj,
+                                T_BC=T_BC, table_plane=PLANE)
+        assert [f.text for f in flags] == [
+            "STACK: top at 112 mm, 125 mm expected for carton(120) alone; check the part"]
 
     def test_the_other_carton_size_as_target(self):
         obj = _detection(575.0, 20.0, 82.2, cls="carton", yaw_deg=_yaw_for(0.0))
@@ -151,6 +203,19 @@ class TestFlags:
     def test_a_part_turned_half_a_turn_is_as_called(self):
         obj = _detection(575.0, 20.0, 41.5, yaw_deg=_yaw_for(40.0, 180.0))
         assert _flags(_called(yaw=40.0), obj) == []
+
+    def test_a_near_square_outline_folds_the_yaw_by_90_deg(self):
+        """Without the known-size fit PoseExtractor folds the yaw of a rectangle read
+        near square into (-45, 45] deg: a plastic box placed as called at 10 deg
+        (measured -80 deg) reads +10 deg, which is no yaw error."""
+        obj = _detection(575.0, 20.0, 29.5, cls="plastic_box", yaw_deg=10.0)
+        obj.update(yaw_near_square=True, yaw_source="metric_base_minAreaRect")
+        called = _called(cls="plastic_box", yaw=10.0)
+        assert detection_yaw_period_deg(obj, "plastic_box", SIZES) == 90.0
+        assert _flags(called, obj) == []
+        obj["yaw_source"] = "known_size_fit"          # the fit folds by the class
+        assert detection_yaw_period_deg(obj, "plastic_box", SIZES) == 180.0
+        assert _flags(called, obj) == ["yaw"]
 
     def test_the_square_wood_box_repeats_every_90_deg(self):
         obj = _detection(575.0, 20.0, 153.1, cls="wood_box", yaw_deg=_yaw_for(10.0, 87.0))
@@ -201,6 +266,14 @@ class TestCentre:
         obj["h_depth_mm"] = None
         assert top_centre_xy(obj, T_BC, PLANE) == pytest.approx((560.0, -60.0), abs=1e-6)
 
+    @pytest.mark.parametrize("bad_h", [2.0, 400.0])
+    def test_a_measured_top_outside_5_to_350_mm_falls_back_to_the_fit_plane(self, bad_h):
+        """The window PoseExtractor accepts a measured top in; outside it the ray
+        is cut on yaw_top_height_mm."""
+        obj = _detection(560.0, -60.0, 41.5, depth_mm=650.0)
+        obj["h_depth_mm"] = bad_h
+        assert top_centre_xy(obj, T_BC, PLANE) == pytest.approx((560.0, -60.0), abs=1e-6)
+
     def test_the_flags_do_not_depend_on_the_depth_mode(self):
         called = _called(stack_on="metal_box", x=525.0, y=80.0, yaw=-40.0)
         flags = []
@@ -225,7 +298,41 @@ class TestYawHelpers:
         assert yaw_period_deg("unknown", SIZES) == 180.0
 
 
+class TestJudgedDetection:
+    """rgbd drops a detection whose mask returns fewer than MIN_DEPTH_PIXELS valid
+    depth pixels; plane and fusion keep it. The check passes over such detections,
+    so it judges the same one in every mode."""
+
+    def test_min_depth_pixels_is_the_rule_of_masked_depth(self):
+        from src.perception.postprocess import masked_depth
+        mask = np.ones((10, 10), np.uint8)
+        depth = np.zeros((10, 10), np.float32)
+        depth.flat[:MIN_DEPTH_PIXELS - 1] = 0.6
+        assert masked_depth(depth, mask) is None
+        depth.flat[:MIN_DEPTH_PIXELS] = 0.6
+        assert masked_depth(depth, mask) == pytest.approx(0.6)
+
+    def test_has_depth(self):
+        assert not has_depth({"depth_valid_frac": 4 / 15000, "mask_area": 15000})
+        assert has_depth({"depth_valid_frac": MIN_DEPTH_PIXELS / 15000, "mask_area": 15000})
+        assert has_depth({"depth_valid_frac": 0.206, "mask_area": 15245})  # session 1 low
+        assert has_depth({"class_name": "inox_box"})            # not known: kept
+
+    def test_the_first_detection_with_depth_is_judged(self):
+        blind = {"class_name": "inox_box", "depth_valid_frac": 0.0, "mask_area": 15000}
+        seen = {"class_name": "inox_box", "depth_valid_frac": 0.4, "mask_area": 15000}
+        other = {"class_name": "inox_box", "depth_valid_frac": 0.9, "mask_area": 15000}
+        assert judged_detection([blind, seen, other]) is seen
+        assert judged_detection([seen, blind]) is seen
+        assert judged_detection([blind]) is None
+        assert judged_detection([]) is None and judged_detection(None) is None
+
+
 class TestConstants:
+    def test_near_square_ratio_is_the_perception_rule(self):
+        from src.perception.depth_modes import NEAR_SQUARE_RATIO as PERCEPTION_RATIO
+        assert NEAR_SQUARE_RATIO == PERCEPTION_RATIO
+
     def test_heights_are_those_measured_flat(self):
         """14 and 15 Oct 2026 (tests/test_real_cycle.FLAT_MM)."""
         from tests.test_real_cycle import FLAT_MM
@@ -286,6 +393,9 @@ SESSION1 = [
     ("fusion", "P0075", "wood_box", 623.9, 58.0, 742.0, 39.2, 0.999, 150.0, 153.4, []),
     ("rgbd", "P0087", "inox_box", 517.2, -107.7, 786.6, 31.5, 0.436, 40.0, 195.3, []),
     ("plane", "P0006", "inox_box", 507.0, 164.5, 631.2, 5.1, 0.954, 40.0, 74.7, []),
+    # the lowest matte readings of the session, 1.6 and 1.4 mm under the wood box
+    ("rgbd", "P0203", "wood_box", 542.7, -45.8, 743.2, -20.3, 0.989, 150.0, 151.5, []),
+    ("fusion", "P0011", "wood_box", 521.7, 43.1, 827.8, 8.5, 0.979, 150.0, 236.4, []),
 ]
 
 

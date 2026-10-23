@@ -14,8 +14,10 @@ pairing of the arms on the same scene, which is what the paired test relies on.
 
 What is compared, and why each quantity is the same in every depth mode:
 
-  class        the class lock found no usable detection of the called class. The
-               detector and the table-share drop are the same in every mode.
+  class        no detection of the called class with depth under its mask survived
+               the class lock. The detector, the table-share drop and the depth
+               under the mask are the same in every mode (see "Which detection is
+               judged" below).
   position     the centre of the part's top face against the called card: where
                the ray through the grasp pixel meets the plane of the measured top
                (h_depth_mm, else yaw_top_height_mm, the plane PoseExtractor fitted
@@ -28,14 +30,27 @@ What is compared, and why each quantity is the same in every depth mode:
                mode) against the called part plus the called support.
   carton_size  the same height, when it fits the other carton size instead of the
                called one, for a carton target or a carton support.
-  yaw          the measured yaw of the part against the called yaw.
+  yaw          the measured yaw of the part against the called yaw, folded with the
+               period perception folds it with: 90 deg for a footprint square to the
+               yaw (the wood box), and for a rectangle read near square when the
+               known-size fit did not give the yaw; 180 deg otherwise.
 
 None of these reads the depth mode, the commanded height or a refusal, so the same
 scene raises the same flags in every arm of a campaign whose arms differ only in the
 depth mode (E2). When the arms differ in the detector (E3 to E5), the detections
 themselves differ between arms, and so would the flags: such campaigns run without
 the check (run_blinded_campaign.py adds --no-placement-check when the arms differ in
---model-path).
+anything but --depth-mode).
+
+Which detection is judged. The first detection of the class lock whose mask returned
+depth on at least MIN_DEPTH_PIXELS pixels (judged_detection). PoseExtractor in rgbd
+mode drops a detection with fewer, since postprocess.masked_depth then gives no
+depth, while plane and fusion keep it on the table plane. The class lock ranks the
+detections that have depth by the height of their median-depth point, which every
+mode measures alike. Passing over the detections without depth therefore judges the
+same detection in every mode, and in rgbd it is always the first one, the one the
+cycle acts on. In session 1 the fewest valid depth pixels under a logged mask were
+3140 (plane P0086, 0.206 of 15245), far from this case.
 
 The check decides nothing about the trial. It returns flags; the runner shows them
 and the operator either fixes the placement, after which the orchestrator captures
@@ -57,24 +72,33 @@ without a verified deviation):
                        Flagged as well: seven stacked trials at 21 to 35 deg, among
                        them P0072 in rgbd, whose frame shows the inox turned on its
                        support.
-  HEIGHT_TOL_ABOVE_MM  the correctly staged trials read from 9.9 mm below to 3.7 mm
-  10, _BELOW_MM 15     above the expected top, the low end mirror inox tops (one
-                       more, an inox on the plastic box, read 40 mm low). A missing
-                       support takes away 29.5 mm at least (the plastic box). The
-                       nearest wrong stagings of session 1 read 12.3 mm above (an
-                       80 mm carton on the inox box instead of the plastic box) and
-                       13.7 mm above (a 120 mm carton alone for an 80 mm one on the
-                       plastic box). Not seen: supports of about the same height
-                       swapped, the 80 mm carton for the metal box (2.5 mm), and the
-                       plastic box under a part in place of the inox box (12 mm
-                       lower).
+  HEIGHT_TOL_ABOVE_MM  correctly staged trials read at most 3.7 mm above the expected
+  10                   top. The nearest wrong stagings of session 1 read 12.3 mm
+                       above (an 80 mm carton on the inox box instead of the plastic
+                       box) and 13.0 and 13.7 mm above (a 120 mm carton alone for an
+                       80 mm one on the plastic box).
+  HEIGHT_TOL_BELOW_MM  for a matte top (carton, plastic, wood and metal box): the 168
+  8                    correctly staged readings of these classes lay from 1.6 mm
+                       below to 2.9 mm above the expected top. Of the stagings the
+                       pose lists allow, the nearest wrong ones below are, from the
+                       flat heights, the plastic box in place of the inox box under
+                       the metal box (12.0 mm lower) and an 80 mm carton on the
+                       plastic box for a 120 mm carton alone (13.7 mm lower).
+  HEIGHT_TOL_BELOW_    for the mirror top of the inox box: correctly staged inox
+  MIRROR_MM 15         trials read down to 9.9 mm below (single parts), and one more,
+                       an inox on the plastic box, 40.1 mm below. A missing support
+                       takes away 29.5 mm at least (the plastic box).
+                       Not seen with these bands: the 80 mm carton and the metal box
+                       swapped as supports (2.5 mm apart).
   MAX_RECAPTURES 3     the operator fixes a placement and the scene is captured again
-                       at most this often; then the trial proceeds.
+                       at most this often; then the trial proceeds over the flags.
 
 With these values the replay flags all 22 trials with a verified deviation and 11
 others: the seven stacked yaw cases above, one control carton at 34 deg, two inox
 trials in which the class lock found no usable inox (class), and that inox on the
-plastic box read 40 mm low (stack). Going on over a flag costs one ENTER.
+plastic box read 40 mm low (stack). The values were chosen on that same session; how
+they do on staging errors they were not tuned on is for the frame audit of later
+sessions to show.
 """
 from __future__ import annotations
 
@@ -88,10 +112,16 @@ import numpy as np
 
 POSITION_TOL_MM = 40.0
 YAW_TOL_DEG = 20.0
-# The measured top may lie this far above or below the called staging's top.
+# The measured top may lie this far above or below the called staging's top. A
+# mirror top reads low (depth from its edges and reflections); a matte one does not.
 HEIGHT_TOL_ABOVE_MM = 10.0
-HEIGHT_TOL_BELOW_MM = 15.0
+HEIGHT_TOL_BELOW_MM = 8.0
+HEIGHT_TOL_BELOW_MIRROR_MM = 15.0
+MIRROR_TOP_CLASSES = frozenset({"inox_box"})
 MAX_RECAPTURES = 3
+# postprocess.masked_depth gives no depth for a mask with fewer valid depth pixels
+# than this, and PoseExtractor in rgbd mode then drops the detection.
+MIN_DEPTH_PIXELS = 5
 
 # Top face of each part standing flat on the table, measured from depth (median of
 # the top band) on 14 and 15 Oct 2026; session 1 of E2 read the same within 0.6 mm.
@@ -109,8 +139,11 @@ CARTON_TOP_MM: dict[int, float] = {80: 82.2, 120: 125.4}
 # 2026: six trials 85.8 to 89.1 deg off when compared directly, 0.9 to 4.2 after).
 POSE_YAW_OFFSET_DEG = 90.0
 # A footprint whose long side is under this many times its short side is square to
-# the yaw: the rule perception folds its yaw with (depth_modes.NEAR_SQUARE_RATIO).
+# the yaw: the rule perception folds its yaw with (depth_modes.NEAR_SQUARE_RATIO; a
+# test keeps the two equal).
 NEAR_SQUARE_RATIO = 1.15
+# PoseExtractor's yaw_source when the known-size rectangle gave the yaw.
+KNOWN_SIZE_FIT = "known_size_fit"
 
 FLAG_CODES = ("class", "position", "stack", "carton_size", "yaw")
 
@@ -228,6 +261,26 @@ def missing_carton_sizes(rows: Sequence[Mapping[str, Any]],
     return missing
 
 
+# ── which detection is judged ─────────────────────────────────────────────────
+
+def has_depth(obj: Mapping[str, Any]) -> bool:
+    """False when the detection's mask returned depth on fewer than MIN_DEPTH_PIXELS
+    pixels (depth_valid_frac times mask_area), the detections PoseExtractor drops in
+    rgbd mode; True when either number is missing."""
+    frac = _num(obj.get("depth_valid_frac"))
+    area = _num(obj.get("mask_area"))
+    if frac is None or area is None:
+        return True
+    return frac * area > MIN_DEPTH_PIXELS - 0.5
+
+
+def judged_detection(objects: Sequence[Mapping[str, Any]] | None
+                     ) -> Mapping[str, Any] | None:
+    """The detection the check judges: the first of the class lock's list (topmost
+    first) that has depth under its mask, or None. See the module docstring."""
+    return next((o for o in objects or () if has_depth(o)), None)
+
+
 # ── geometry ──────────────────────────────────────────────────────────────────
 
 def top_centre_xy(obj: Mapping[str, Any], T_BC: np.ndarray | None,
@@ -288,6 +341,20 @@ def yaw_period_deg(class_name: str, class_sizes: Mapping[str, Any] | None) -> fl
     return 90.0 if short_mm > 0 and long_mm / short_mm < NEAR_SQUARE_RATIO else 180.0
 
 
+def detection_yaw_period_deg(obj: Mapping[str, Any], class_name: str,
+                             class_sizes: Mapping[str, Any] | None) -> float:
+    """The period the detection's yaw_base was folded with.
+
+    The known-size fit folds by the class footprint (yaw_period_deg). Without it the
+    yaw is that of the outline's minimum-area rectangle, which PoseExtractor folds
+    modulo 90 deg when the rectangle reads near square (yaw_near_square), whatever
+    the class.
+    """
+    if obj.get("yaw_near_square") and obj.get("yaw_source") != KNOWN_SIZE_FIT:
+        return 90.0
+    return yaw_period_deg(class_name, class_sizes)
+
+
 def yaw_error_deg(measured_yaw_deg: float, called_yaw_deg: float,
                   period_deg: float = 180.0) -> float:
     """Signed difference between the measured and the called yaw, in pose-list terms,
@@ -318,6 +385,12 @@ def _other_carton(size: int | None) -> int | None:
 def _staging(cls: str, cls_mm: int | None, support: str, support_mm: int | None) -> str:
     part = class_label(cls, cls_mm)
     return f"{part} on {class_label(support, support_mm)}" if support else f"{part} alone"
+
+
+def lower_tolerance_mm(class_name: str, matte_mm: float = HEIGHT_TOL_BELOW_MM,
+                       mirror_mm: float = HEIGHT_TOL_BELOW_MIRROR_MM) -> float:
+    """The lower tolerance for a top face of this class: wider for a mirror top."""
+    return mirror_mm if class_name in MIRROR_TOP_CLASSES else matte_mm
 
 
 def _height_flag(called: CalledPose, h: float, above: float,
@@ -354,8 +427,14 @@ def _height_flag(called: CalledPose, h: float, above: float,
             return Flag("carton_size",
                         f"CARTON SIZE: top at {h:.0f} mm, {nearest:.0f} mm expected for "
                         f"{staging}; it reads as {looks}")
-    advice = ("check the support" if called.stack_on
-              else "check that nothing is under the part")
+    if called.stack_on:
+        advice = "check the support"
+    elif h > nearest:
+        advice = "check that nothing is under the part"
+    else:
+        # Lower than a single part stands: a part of another size, or a mirror top
+        # that returned too little depth; nothing goes under a part to cause it.
+        advice = "check the part"
     return Flag("stack", f"STACK: top at {h:.0f} mm, {nearest:.0f} mm expected for "
                          f"{staging}; {advice}")
 
@@ -368,17 +447,21 @@ def check_placement(called: CalledPose, obj: Mapping[str, Any] | None, *,
                     position_tol_mm: float = POSITION_TOL_MM,
                     yaw_tol_deg: float = YAW_TOL_DEG,
                     height_tol_above_mm: float = HEIGHT_TOL_ABOVE_MM,
-                    height_tol_below_mm: float = HEIGHT_TOL_BELOW_MM) -> list[Flag]:
-    """Flags for the detection the orchestrator would act on, against the call.
+                    height_tol_below_mm: float = HEIGHT_TOL_BELOW_MM,
+                    height_tol_below_mirror_mm: float = HEIGHT_TOL_BELOW_MIRROR_MM,
+                    ) -> list[Flag]:
+    """Flags for the judged detection against the call.
 
     Args:
         called: the trial's called staging.
-        obj: the selected detection (the class lock's first object), or None when
-            the class lock found nothing usable.
+        obj: the judged detection (judged_detection of the class lock's list), or
+            None when there is none.
         frames_seen: False when no perception message arrived at all; a camera
             fault says nothing about the placement, so nothing is flagged.
         T_BC, table_plane: camera-to-base matrix and table plane, for the centre.
         class_sizes: class_sizes_mm of the config, for the yaw period.
+        height_tol_below_mm, height_tol_below_mirror_mm: the lower tolerance for a
+            matte top and for a mirror top (MIRROR_TOP_CLASSES).
 
     A check whose inputs are missing (no top height on a mirror top, no table
     plane, no called yaw) is skipped without a flag.
@@ -387,8 +470,11 @@ def check_placement(called: CalledPose, obj: Mapping[str, Any] | None, *,
     label = class_label(called.class_name, called.carton_mm)
     if obj is None:
         if frames_seen and called.class_name:
-            flags.append(Flag("class", f"CLASS: no {label} found; check the part on "
-                                       f"card {called.card_id or '?'}"))
+            where = f"the part on card {called.card_id or '?'}"
+            if called.stack_on:
+                where += (f" and the {class_label(called.stack_on, called.stack_on_carton_mm)}"
+                          " under it")
+            flags.append(Flag("class", f"CLASS: no {label} found; check {where}"))
         return flags
 
     centre = top_centre_xy(obj, T_BC, table_plane)
@@ -400,14 +486,16 @@ def check_placement(called: CalledPose, obj: Mapping[str, Any] | None, *,
 
     h = _num(obj.get("h_depth_mm"))
     if h is not None:
-        flag = _height_flag(called, h, height_tol_above_mm, height_tol_below_mm)
+        below = lower_tolerance_mm(called.class_name, height_tol_below_mm,
+                                   height_tol_below_mirror_mm)
+        flag = _height_flag(called, h, height_tol_above_mm, below)
         if flag is not None:
             flags.append(flag)
 
     yaw = _num(obj.get("yaw_base"))
     if yaw is not None and called.yaw_deg is not None:
         err = yaw_error_deg(math.degrees(yaw), called.yaw_deg,
-                            yaw_period_deg(called.class_name, class_sizes))
+                            detection_yaw_period_deg(obj, called.class_name, class_sizes))
         if abs(err) > yaw_tol_deg:
             flags.append(Flag("yaw", f"YAW: part turned {abs(err):.0f} deg from the "
                                      f"called {called.yaw_deg:g} deg; check the yaw"))

@@ -5,12 +5,13 @@ The orchestrator is configured as 03_run_experiment configures it for --mode rea
 that answers "recapture" or "proceed" like ask_placement_fix in 03. What must hold:
 
   * no flag, no question;
-  * ENTER over a flag goes on with the detection that was checked, so a perception
+  * going on over a flag uses the detection that was checked, so a perception
     failure stays a failure and no further frame is read;
   * a fix captures again and goes on with the new detection;
-  * recaptures stop at MAX_RECAPTURES;
+  * recaptures stop at MAX_RECAPTURES, and the trial then goes on over the flags;
   * the flags are the same in every depth mode;
-  * every check, the choice and the recaptures land in the CSV.
+  * every check, the detection it judged, the choice, the recaptures and the time
+    land in the CSV, also when the run is stopped at the check.
 
 Run:
     pytest tests/test_placement_cycle.py -v
@@ -18,8 +19,10 @@ Run:
 from __future__ import annotations
 
 import csv
+import json
 import math
 import queue
+import time
 
 import numpy as np
 import pytest
@@ -91,10 +94,14 @@ def _row(tmp_path):
         return list(csv.DictReader(f))[-1]
 
 
+def _captures(row):
+    return json.loads(row["placement_captures"])
+
+
 def test_the_new_columns_are_in_the_schema():
     for col in ("carton_mm", "stack_on_carton_mm", "top_x_mm", "top_y_mm",
                 "placement_flags", "placement_recaptures", "placement_override",
-                "placement_events"):
+                "placement_events", "placement_captures", "placement_check_s"):
         assert col in CONTEXT_FIELDNAMES
 
 
@@ -110,6 +117,9 @@ def test_no_flag_no_question(tmp_path):
     assert row["placement_recaptures"] == "0" and row["placement_override"] == "0"
     assert float(row["top_x_mm"]) == pytest.approx(578.0, abs=0.5)
     assert float(row["top_y_mm"]) == pytest.approx(16.0, abs=0.5)
+    (cap,) = _captures(row)
+    assert cap["outcome"] == "clear" and cap["flags"] == [] and "answer_s" not in cap
+    assert float(row["placement_check_s"]) < 0.5
 
 
 def test_enter_over_a_flag_goes_on_with_the_checked_detection(tmp_path):
@@ -162,9 +172,11 @@ def test_recaptures_stop_at_the_limit(tmp_path):
     pick = robot.sent[0]["pick"]
     assert float(pick[1, 3]) == pytest.approx(83.0, abs=1.0)   # the fourth capture
     row = _row(tmp_path)
-    assert row["placement_recaptures"] == "3" and row["placement_override"] == "0"
+    # The trial went on with the flag still raised: an override, the events say why.
+    assert row["placement_recaptures"] == "3" and row["placement_override"] == "1"
     assert row["placement_events"] == ";".join(["position:recapture"] * 3
                                                + ["position:limit"])
+    assert [c["outcome"] for c in _captures(row)] == ["recapture"] * 3 + ["limit"]
     assert q.qsize() == 1
 
 
@@ -239,19 +251,28 @@ def test_without_the_hook_nothing_is_checked(tmp_path):
     assert row["stack_on_carton_mm"] == "80" and row["carton_mm"] == ""
 
 
-def test_stopping_at_the_check_moves_nothing_and_logs_nothing(tmp_path):
+@pytest.mark.parametrize("stop", [KeyboardInterrupt, RuntimeError])
+def test_stopping_at_the_check_moves_nothing_and_logs_the_stop(tmp_path, stop):
+    """Ctrl+C (or a servo that would not switch off) at the check stops the run;
+    the trial is written as aborted_at_check with what was judged, unscored."""
     config = _real_config("rgbd")
+    asked = []
 
     def operator(trial_id, lines, can_recapture):
-        raise KeyboardInterrupt
+        raise stop("stopped")
 
     orch, robot, q = _orch(config, operator, _called(),
                            [[_part(config, 640.0, 20.0, 41.5)]], tmp_path)
-    with pytest.raises(KeyboardInterrupt):
+    orch.human_score_hook = lambda *a: asked.append(a) or 1
+    with pytest.raises(stop):
         orch.run_one_cycle(trial_id=1)
-    assert robot.sent == []
-    with (tmp_path / "run.csv").open(newline="", encoding="utf-8") as f:
-        assert list(csv.DictReader(f)) == []
+    assert robot.sent == [] and asked == []
+    row = _row(tmp_path)
+    assert row["failure_reason"] == "aborted_at_check" and row["success"] == "0"
+    assert row["placement_events"] == "position:abort" and row["human_ok"] == ""
+    assert row["placement_flags"] == "position"
+    (cap,) = _captures(row)
+    assert cap["outcome"] == "abort" and cap["top_x_mm"] == pytest.approx(640.0, abs=0.5)
 
 
 def test_a_camera_without_frames_is_not_a_placement_flag(tmp_path):
@@ -263,7 +284,100 @@ def test_a_camera_without_frames_is_not_a_placement_flag(tmp_path):
     assert op.asked == []
     row = _row(tmp_path)
     assert row["failure_reason"] == "detection_timeout"
-    assert row["placement_events"] == "none:clear"
+    assert row["placement_events"] == "noframe:skip"
+    (cap,) = _captures(row)
+    assert cap["frames"] == 0 and cap["outcome"] == "skip"
+
+
+def test_a_recapture_that_receives_no_frame_is_not_read_as_cleared(tmp_path):
+    config = _real_config("rgbd")
+    config["detection_timeout_s"] = 0.2
+    op = Operator("recapture")
+    orch, robot, q = _orch(config, op, _called(), [[_part(config, 640.0, 20.0, 41.5)]],
+                           tmp_path)
+    assert orch.run_one_cycle(trial_id=1) is False
+    row = _row(tmp_path)
+    assert row["placement_events"] == "position:recapture;noframe:skip"
+    assert row["failure_reason"] == "detection_timeout" and robot.sent == []
+
+
+def test_every_capture_keeps_its_detection_and_frame(tmp_path):
+    """The flagged capture the operator acted on is kept beside the one the trial
+    ran on: frame, class, top centre, top height, yaw, flags, outcome, answer time."""
+    config = _real_config("rgbd")
+    answers = []
+
+    def operator(trial_id, lines, can_recapture):
+        time.sleep(0.05)
+        answers.append(lines)
+        return "recapture"
+
+    orch, robot, q = _orch(config, operator, _called(stack_on="metal_box"), [], tmp_path)
+    q.put({"timestamp": 0.0, "fps": 20.0, "frame_path": "first.png",
+           "objects": [_part(config, 575.0, 20.0, 41.5)]})
+    q.put({"timestamp": 0.0, "fps": 20.0, "frame_path": "second.png",
+           "objects": [_part(config, 577.0, 22.0, 41.5 + 84.7, rect=(193.0, 130.2))]})
+    assert orch.run_one_cycle(trial_id=2) is True
+    row = _row(tmp_path)
+    assert row["frame_path"] == "second.png"
+    first, second = _captures(row)
+    assert first["frame"] == "first.png" and second["frame"] == "second.png"
+    assert first["class"] == second["class"] == "inox_box"
+    assert first["h_depth_mm"] == pytest.approx(41.5) and second["h_depth_mm"] == 126.2
+    assert first["top_x_mm"] == pytest.approx(575.0, abs=0.5)
+    assert second["top_y_mm"] == pytest.approx(22.0, abs=0.5)
+    assert first["yaw_deg"] == pytest.approx(-50.0, abs=0.05)
+    assert first["flags"] == ["stack"] and first["outcome"] == "recapture"
+    assert first["answer_s"] >= 0.05 and second["outcome"] == "clear"
+    assert float(row["placement_check_s"]) >= 0.05
+
+
+def test_the_placement_record_is_reset_every_cycle(tmp_path):
+    config = _real_config("rgbd")
+    op = Operator("proceed")
+    orch, robot, q = _orch(config, op, _called(),
+                           [[_part(config, 640.0, 20.0, 41.5)]], tmp_path)
+    orch.run_one_cycle(trial_id=1)
+    assert _row(tmp_path)["placement_events"] == "position:proceed"
+    orch.current_called_pose = None             # a cycle without the check
+    q.put({"timestamp": 0.0, "objects": [_part(config, 575.0, 20.0, 41.5)], "fps": 20.0})
+    orch.run_one_cycle(trial_id=2)
+    row = _row(tmp_path)
+    assert row["trial_id"] == "2"
+    for col in ("placement_events", "placement_flags", "placement_override",
+                "placement_recaptures", "placement_captures", "placement_check_s"):
+        assert row[col] == "", col
+
+
+def test_of_two_detections_of_the_called_class_the_topmost_is_judged(tmp_path):
+    """A spare inox standing higher off the card and the called one on it: the
+    cycle acts on the topmost, so that is the one checked."""
+    config = _real_config("rgbd")
+    op = Operator("proceed")
+    spare = _part(config, 640.0, -120.0, 41.5)
+    spare["h_median_mm"] = 60.0
+    called_part = _part(config, 575.0, 20.0, 41.5)
+    called_part["h_median_mm"] = 40.0
+    orch, robot, q = _orch(config, op, _called(), [[called_part, spare]], tmp_path)
+    orch.run_one_cycle(trial_id=1)
+    assert op.asked and op.asked[0][1][0].startswith("POSITION: part centre 154 mm")
+    assert float(robot.sent[0]["pick"][0, 3]) == pytest.approx(640.0, abs=1.0)
+
+
+def test_a_detection_without_depth_is_passed_over_by_the_check(tmp_path):
+    """plane keeps a detection whose mask returned no depth, rgbd drops it: the
+    check judges the next one, as rgbd would see the scene."""
+    config = _real_config("plane")
+    op = Operator()
+    blind = _part(config, 640.0, -120.0, 40.0, depth_used="plane")
+    blind.update(depth_valid_frac=3 / 20000, h_depth_mm=None, h_median_mm=80.0)
+    seen = _part(config, 575.0, 20.0, 41.5, depth_used="plane")
+    seen["h_median_mm"] = 40.0
+    orch, robot, q = _orch(config, op, _called(), [[seen, blind]], tmp_path)
+    orch.run_one_cycle(trial_id=1)
+    assert op.asked == []
+    (cap,) = _captures(_row(tmp_path))
+    assert cap["top_x_mm"] == pytest.approx(575.0, abs=0.5) and cap["flags"] == []
 
 
 def test_the_centre_is_logged_as_the_top_face_centre(tmp_path):
