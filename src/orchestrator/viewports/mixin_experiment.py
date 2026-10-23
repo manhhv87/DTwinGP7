@@ -367,6 +367,7 @@ class ExperimentMixin:
             from ..orchestrator import Orchestrator
             from ...logging import TrialLogger
             from ...perception.model_artifact import capture_config_files, run_metadata
+            from ...utils.provenance import git_provenance
             from ...utils import timestamp
             from pathlib import Path
             import queue as _queue
@@ -409,6 +410,7 @@ class ExperimentMixin:
 
             config = self._assemble_experiment_config_real(ik_source)
             config_inputs = capture_config_files([root / "config" / "experiment.yaml"])
+            code = git_provenance(root)
 
             qsize = (n + 1) if perc_choice == "mock" else 3
             det_queue: _queue.Queue = _queue.Queue(maxsize=max(3, qsize))
@@ -429,7 +431,8 @@ class ExperimentMixin:
                     config_files=config_inputs,
                     runtime={"perception": perc_choice, "ik_source": ik_source,
                              "trials": n, "ultra_fast": ultra_fast,
-                             "config_assembly": "GUI overrides; not the full CLI real overlay"}))
+                             "config_assembly": "GUI overrides; not the full CLI real overlay"},
+                    code=code))
             orch = Orchestrator(det_queue, config=config, robot=twin,
                                 logger_obj=trial_logger)
             trial_logger.write_run_metadata()

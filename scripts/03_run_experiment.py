@@ -34,11 +34,24 @@ sys.path.insert(0, str(PROJECT_ROOT))
 from src.cell import CellConfig  # noqa: E402
 from src.logging import TrialLogger  # noqa: E402
 from src.orchestrator import Orchestrator  # noqa: E402
+from src.orchestrator.placement_check import (  # noqa: E402
+    called_pose_from_row, carton_sizes_path, class_label, load_carton_sizes,
+    missing_carton_sizes,
+)
 from src.perception import PerceptionNode  # noqa: E402
 from src.perception.model_artifact import (  # noqa: E402
     capture_config_files, load_configured_detector, run_metadata,
 )
 from src.utils import load_yaml, setup_logging, timestamp  # noqa: E402
+from src.utils.blind_console import install_blind_console  # noqa: E402
+from src.utils.provenance import git_provenance  # noqa: E402
+
+# A log record carrying this extra reaches the console of a blinded run as it is
+# (src/utils/blind_console.py). Only for lines that read the same in every arm.
+CONSOLE = {"console": True}
+# Shown on a blinded console in place of a refusal that may name the depth mode.
+REFUSED_AT_START = ("Run refused before start; ask the campaign administrator to "
+                    "check the run log.")
 
 
 def _load_pose_list(path: Path) -> list[dict[str, str]]:
@@ -56,6 +69,75 @@ def _load_pose_list(path: Path) -> list[dict[str, str]]:
     if not rows or "pose_id" not in rows[0]:
         raise ValueError(f"Pose list {path} must have a 'pose_id' column")
     return rows
+
+
+def placement_prompt_lines(i: int, n: int, row: dict, carton_sizes: dict,
+                           label: str | None = None) -> list[str]:
+    """The placement instruction of trial i, the same text blinded or not.
+
+    Card, position, yaw, class (with the carton size from the pose list's sidecar)
+    and, for a stacked pose, the support to put down first. A blinded run prefixes
+    its arm code.
+    """
+    target_mm, support_mm = carton_sizes.get(str(row.get("pose_id", "")), (None, None))
+    cls = str(row.get("class_hint", "") or "")
+    part = class_label(cls, target_mm) if cls else "?"
+    head = f"[{label}] " if label else ""
+    lines = [
+        f"{head}Trial {i}/{n}, PLACE: card={row.get('card_id', '?')}  "
+        f"x={row.get('x_mm', '?')} mm  y={row.get('y_mm', '?')} mm  "
+        f"yaw={row.get('yaw_deg', '?')} deg  class={part}"
+        + (f"  condition={row['condition']}" if row.get("condition") else "")
+    ]
+    support = str(row.get("stack_on", "") or "")
+    if support:
+        lines.append(f"    STACKED: put the {class_label(support, support_mm)} down on the "
+                     f"card FIRST, then the {part} on top of it.")
+    return lines
+
+
+def ask_placement_fix(trial_id: int, lines: list[str], can_recapture: bool, *,
+                      ask=input, say=print, make_safe=None, make_ready=None) -> str:
+    """Show the placement-check flags of one trial and take the operator's choice.
+
+    The check runs after the operator confirmed the cell clear, with the servo ON.
+    Returns "recapture" when the operator typed s: make_safe() runs first (servo
+    OFF, verified, before anyone reaches into the cell), the operator fixes the
+    placement and presses ENTER, then make_ready() (servo ON and the controller
+    checks, stale frames dropped) and the orchestrator captures again. Returns
+    "proceed" on a bare ENTER: the placement is as called and the trial goes on
+    with the detection that was checked. With can_recapture False (the limit is
+    reached) the flags are shown and "proceed" returned without asking. A closed
+    stdin stops the run (KeyboardInterrupt), as at the placement prompt.
+    """
+    say(f"   Trial {trial_id}: the scene does not match the call:", flush=True)
+    for line in lines:
+        say(f"     {line}", flush=True)
+    if not can_recapture:
+        say("   Recapture limit reached: going on with this detection.", flush=True)
+        return "proceed"
+    servo = make_safe is not None          # the real cell; the simulator has none
+    while True:
+        try:
+            ans = ask(("   Servo is ON. [s] = switch it OFF and fix the placement   "
+                       if servo else "   [s] = fix the placement   ")
+                      + "[ENTER] = it is placed as called, go on  ").strip().lower()
+        except EOFError:
+            raise KeyboardInterrupt from None
+        if ans == "":
+            return "proceed"
+        if ans == "s":
+            if servo:
+                make_safe()
+            try:
+                ask(("   Servo OFF. " if servo else "   ")
+                    + "Fix the placement, TAKE YOUR HAND OUT of the cell, then press ENTER ")
+            except EOFError:
+                raise KeyboardInterrupt from None
+            if make_ready is not None:
+                make_ready()
+            return "recapture"
+        say("   Type s, or press ENTER alone.", flush=True)
 
 
 def parse_args() -> argparse.Namespace:
@@ -142,7 +224,16 @@ def parse_args() -> argparse.Namespace:
              "what is being measured. It also asks the operator, after every cycle that "
              "moved the robot, whether the part ended up in the right place, and writes "
              "the answer to the human_ok column — the machine's own success column "
-             "cannot see a part dropped in transfer.")
+             "cannot see a part dropped in transfer. With a pose list it also checks the "
+             "placement before any motion (class, card, stack, carton size, yaw; see "
+             "src/orchestrator/placement_check.py) and lets the operator fix it.")
+    parser.add_argument(
+        "--no-placement-check", action="store_true",
+        help="Skip the placement check of --confirm-each-trial. It compares detections "
+             "with the call, and detections are the same in every arm only when the arms "
+             "share the detector (the depth modes of E2). A campaign whose arms differ in "
+             "the model (E3 to E5) needs this flag, since its flags would differ by arm; "
+             "tools/run_blinded_campaign.py adds it when the arms differ in --model-path.")
     parser.add_argument(
         "--save-frames", action="store_true",
         help="Save the RGB frame of every detection and log its path per trial "
@@ -153,9 +244,11 @@ def parse_args() -> argparse.Namespace:
              "the run carries on regardless.")
     parser.add_argument(
         "--blind-label", default=None, metavar="CODE",
-        help="Run blinded: the console shows only CODE and the placement prompts, and "
-             "every line naming the depth mode, the model or the outcome goes to the log "
-             "file instead. The person placing the parts is also the person scoring the "
+        help="Run blinded: the console shows only CODE, the placement prompts and checks, "
+             "safety lines and one neutral line per trial refused before motion; every "
+             "line naming the depth mode, the model, a refusal reason or the outcome goes "
+             "to the log file instead (src/utils/blind_console.py). The person placing the "
+             "parts is also the person scoring the "
              "place tolerance by eye, so if they can see which configuration is running "
              "they are an unblinded assessor of the primary endpoint. Use "
              "tools/run_blinded_campaign.py, which allocates the codes and seals the key.")
@@ -426,28 +519,30 @@ def main() -> int:
     log.info("=" * 60)
 
     if args.blind_label:
-        # Console keeps warnings and errors (safety must never be hidden); everything
-        # routine drops to the log file, which nobody reads mid-session.
-        import logging as _logging
-        for h in _logging.getLogger().handlers:
-            if isinstance(h, _logging.StreamHandler) and not isinstance(
-                    h, _logging.FileHandler):
-                h.setLevel(_logging.WARNING)
+        # The console shows only lines marked as the same in every arm (prompts,
+        # placement checks, controller and servo safety, one neutral line per
+        # refusal) and controller-side warnings; everything else, refusal reasons
+        # and numbers included, goes to the log file only.
+        install_blind_console()
         print("=" * 60)
         print(f"  BLINDED RUN, arm {args.blind_label}")
         print("  Place the parts as prompted. Which configuration this is, and how it is")
         print("  doing, are deliberately not shown. Both are in the log file.")
         print("=" * 60, flush=True)
+    # The code that runs, for the run metadata: commit, branch, uncommitted changes.
+    code_provenance = git_provenance(PROJECT_ROOT)
+    log.info("Code: %s", code_provenance)
 
     if args.confirm_each_trial:
         if args.headless:
             log.error("--confirm-each-trial needs an operator; --headless pre-fills the "
-                      "detection queue and would hang. Drop one of the two flags.")
+                      "detection queue and would hang. Drop one of the two flags.",
+                      extra=CONSOLE)
             return 2
         if not sys.stdin.isatty():
             log.error("--confirm-each-trial reads ENTER from the terminal, but stdin is "
                       "not a terminal here. Run it in a real terminal, otherwise the gate "
-                      "would silently never wait.")
+                      "would silently never wait.", extra=CONSOLE)
             return 2
 
     # Auto-pick cell config by --mode (if user did not override). Avoids the
@@ -519,8 +614,11 @@ def main() -> int:
         if problems:
             for p in problems:
                 log.error("PREFLIGHT: %s", p)
+            # The problems of plane and fusion differ from those of rgbd, so a blinded
+            # console gets neither them nor their number.
             log.error("Real-mode run refused before connecting to the robot (%d problem%s).",
-                      len(problems), "" if len(problems) == 1 else "s")
+                      len(problems), "" if len(problems) == 1 else "s",
+                      extra={"console": REFUSED_AT_START})
             return 5
         config["table_top_z_mm"] = table_z
 
@@ -543,7 +641,8 @@ def main() -> int:
                         "resolved per instance, and the configured carton height is used.")
     elif args.depth_mode != "rgbd":
         log.error("--depth-mode %s needs the calibrated cell (--mode real): it intersects "
-                  "viewing rays with the measured table plane.", args.depth_mode)
+                  "viewing rays with the measured table plane.", args.depth_mode,
+                  extra={"console": REFUSED_AT_START})
         return 2
 
     # ─── Perception: camera, detector and pose extractor ───
@@ -556,13 +655,16 @@ def main() -> int:
         if not args.blind_label:
             raise
         log.info("Perception setup detail: %s", exc, exc_info=True)
-        log.error("Perception setup failed; ask the campaign administrator to check the run log.")
+        log.error("Perception setup failed; ask the campaign administrator to check the run log.",
+                  extra=CONSOLE)
         return 5
     extractor = None
     if args.mode == "real":
         extractor = build_extractor(camera.intrinsics, detector, config, args.depth_mode,
                                     table_plane, calib_path)
         if extractor is None:
+            log.error("Pose extractor not built; run refused before connecting to the robot.",
+                      extra={"console": REFUSED_AT_START})
             camera.stop()
             return 5
 
@@ -574,7 +676,7 @@ def main() -> int:
     if args.backend is None:
         args.backend = "hse" if args.mode == "real" else "sim"
     if args.mode == "real" and args.backend != "hse":
-        log.error("--mode real only accepts --backend hse.")
+        log.error("--mode real only accepts --backend hse.", extra=CONSOLE)
         return 4
     log.info("Backend: %s", args.backend)
 
@@ -634,7 +736,8 @@ def main() -> int:
 
         hse_ip = args.hse_ip or cell_config.robot_connection.ip
         if not hse_ip:
-            log.error("--backend hse requires YRC1000 IP (via --hse-ip or cell config)")
+            log.error("--backend hse requires YRC1000 IP (via --hse-ip or cell config)",
+                      extra=CONSOLE)
             return 2
         backend = MotomanHSEBackend(
             ip=hse_ip,
@@ -645,7 +748,8 @@ def main() -> int:
         backend.set_home_joints(list(cell_config.robot.home_joints_deg))
         backend.connect()
         if not backend.Valid():
-            log.error("HSE heartbeat failed — check ping %s + HSE Server function", hse_ip)
+            log.error("HSE heartbeat failed — check ping %s + HSE Server function", hse_ip,
+                      extra=CONSOLE)
             backend.disconnect()
             return 3
         log.info("HSE backend connected: %s. Joints (sanity): %s",
@@ -682,6 +786,7 @@ def main() -> int:
                 "Clear the physical/controller fault on the teach pendant first.",
                 alarm_code,
                 alarm_sub,
+                extra=CONSOLE,
             )
 
             try:
@@ -697,6 +802,7 @@ def main() -> int:
             log.error(
                 "STARTUP REFUSED: YRC1000 reports controller error: %s",
                 status,
+                extra=CONSOLE,
             )
             try:
                 backend.servo_off()
@@ -710,6 +816,7 @@ def main() -> int:
             log.error(
                 "STARTUP REFUSED: YRC1000 HOLD is active: %s",
                 status,
+                extra=CONSOLE,
             )
             try:
                 backend.servo_off()
@@ -723,6 +830,7 @@ def main() -> int:
             log.error(
                 "STARTUP REFUSED: controller already has a running JOB: %s",
                 status,
+                extra=CONSOLE,
             )
             try:
                 backend.servo_off()
@@ -736,6 +844,7 @@ def main() -> int:
             log.error(
                 "STARTUP REFUSED: controller is not in REMOTE mode: %s",
                 status,
+                extra=CONSOLE,
             )
             try:
                 backend.servo_off()
@@ -755,6 +864,7 @@ def main() -> int:
             log.error(
                 "STARTUP REFUSED: could not verify SERVO OFF: %s",
                 status,
+                extra=CONSOLE,
             )
             backend.disconnect()
             camera.stop()
@@ -766,7 +876,8 @@ def main() -> int:
             if status.get("running", False):
                 log.error(
                     "REAL run refused: controller is already running a JOB. "
-                    "Stop it safely on the TP before starting this experiment."
+                    "Stop it safely on the TP before starting this experiment.",
+                    extra=CONSOLE,
                 )
                 backend.disconnect()
                 camera.stop()
@@ -786,6 +897,7 @@ def main() -> int:
                     "REAL run refused: could not verify SERVO OFF before "
                     "operator placement: %s",
                     status,
+                    extra=CONSOLE,
                 )
                 backend.disconnect()
                 camera.stop()
@@ -869,7 +981,8 @@ def main() -> int:
         if free_gb < 20.0:
             log.warning("Under 20 GB free where frames are written. A campaign writes "
                         "one image per processed frame; when the disk fills, saving "
-                        "fails silently and the failure context for C3 is lost.")
+                        "fails silently and the failure context for C3 is lost.",
+                        extra=CONSOLE)
     else:
         frames_dir = None
     perception = PerceptionNode(camera, detector, det_queue,
@@ -886,7 +999,8 @@ def main() -> int:
             orch.config if orch is not None else config,
             detector, entrypoint="scripts/03_run_experiment.py",
             config_files=config_inputs,
-            runtime=vars(args)),
+            runtime=vars(args),
+            code=code_provenance),
     )
 
     # ─── Orchestrator ───
@@ -908,11 +1022,11 @@ def main() -> int:
                 hi = int(hi_s) if hi_s else len(pose_rows)
             except ValueError:
                 log.error("--pose-slice must look like 25:50 (0-based, end exclusive); "
-                          "got %r", args.pose_slice)
+                          "got %r", args.pose_slice, extra=CONSOLE)
                 return 2
             if not 0 <= lo < hi <= len(pose_rows):
                 log.error("--pose-slice %s is outside the pose list of %d rows",
-                          args.pose_slice, len(pose_rows))
+                          args.pose_slice, len(pose_rows), extra=CONSOLE)
                 return 2
             pose_rows = pose_rows[lo:hi]
             args.trials = len(pose_rows)
@@ -921,12 +1035,169 @@ def main() -> int:
                      pose_rows[-1].get("pose_id", "?"))
         if len(pose_rows) < args.trials:
             log.warning("Pose list has %d entries < --trials %d → running %d trials",
-                        len(pose_rows), args.trials, len(pose_rows))
+                        len(pose_rows), args.trials, len(pose_rows), extra=CONSOLE)
             args.trials = len(pose_rows)
 
     orch.session_id = args.session_id
     orch.block_id = args.block_id
     orch.operator_id = args.operator_id
+
+    # ─── Carton size per pose, from the pose list's sidecar ───
+    # The pose list names the class only; the sidecar fixes 80 or 120 for every
+    # carton target and carton support (scripts/28_make_carton_sizes.py), so the
+    # same carton stands in every arm. The prompt and the CSV carry it.
+    carton_sizes: dict = {}
+    if pose_rows is not None:
+        side = carton_sizes_path(pl_path)
+        if side.exists():
+            try:
+                carton_sizes = load_carton_sizes(side)
+            except ValueError as e:
+                log.error("Carton size sidecar: %s", e, extra=CONSOLE)
+                return 2
+            log.info("Carton sizes per pose: %s", side)
+        missing = missing_carton_sizes(pose_rows, carton_sizes)
+        if missing:
+            log.warning("No carton size for %d pose(s) of this run (%s%s): the prompt "
+                        "names none and the placement check accepts either size.",
+                        len(missing), ", ".join(missing[:5]),
+                        " ..." if len(missing) > 5 else "", extra=CONSOLE)
+
+    def _placement_gate(i: int) -> None:
+        """REAL CELL: operator-access gate.
+
+        Before the operator places or repositions an object, the servo must be
+        OFF and the robot must not be executing a JOB.
+        """
+        status = backend.read_controller_status()
+
+        if status.get("running", False):
+            raise RuntimeError(
+                "Cannot enter placement phase: robot is still running "
+                f"a JOB: {status}"
+            )
+
+        if status.get("servo", False):
+            log.info(
+                "Trial %d placement gate: switching SERVO OFF",
+                i,
+            )
+            backend.servo_off()
+
+        status = backend.read_controller_status()
+
+        if status.get("servo", True):
+            raise RuntimeError(
+                "Operator placement refused: SERVO OFF could not be "
+                f"verified: {status}"
+            )
+
+        log.info(
+            "Trial %d placement gate PASS — SERVO OFF verified",
+            i,
+        )
+
+    def _motion_gate() -> None:
+        """REAL CELL: motion-enable gate.
+
+        ENTER is the explicit operator confirmation that everybody is out of
+        the cell. Only now is servo power allowed ON.
+        """
+        status = backend.read_controller_status()
+
+        if not status.get("remote", False):
+            raise RuntimeError(
+                "Motion refused: YRC1000 is not in REMOTE mode: "
+                f"{status}"
+            )
+
+        if status.get("running", False):
+            raise RuntimeError(
+                "Motion refused: controller is already running: "
+                f"{status}"
+            )
+
+        if status.get("alarm", False):
+            raise RuntimeError(
+                "Motion refused: controller has an active alarm: "
+                f"{status}"
+            )
+
+        if status.get("error", False):
+            raise RuntimeError(
+                "Motion refused: controller reports an error: "
+                f"{status}"
+            )
+
+        if status.get("hold", False):
+            raise RuntimeError(
+                "Motion refused: controller HOLD is active: "
+                f"{status}"
+            )
+
+        if not status.get("servo", False):
+            log.info(
+                "Operator confirmed cell clear — enabling YRC1000 SERVO"
+            )
+            backend.servo_on()
+
+        status = backend.read_controller_status()
+
+        if not status.get("servo", False):
+            raise RuntimeError(
+                "Motion refused: SERVO ON verification failed: "
+                f"{status}"
+            )
+
+        if not status.get("remote", False):
+            backend.servo_off()
+            raise RuntimeError(
+                "Motion refused: controller left REMOTE mode after "
+                f"SERVO ON: {status}"
+            )
+
+        if (
+            status.get("alarm", False)
+            or status.get("error", False)
+            or status.get("hold", False)
+        ):
+            backend.servo_off()
+            raise RuntimeError(
+                "Motion refused: controller became unsafe after "
+                f"SERVO ON: {status}"
+            )
+
+        log.info(
+            "REAL motion gate PASS — REMOTE=%s SERVO=%s "
+            "alarm=%s error=%s hold=%s",
+            status.get("remote"),
+            status.get("servo"),
+            status.get("alarm"),
+            status.get("error"),
+            status.get("hold"),
+        )
+
+    def _drop_stale_frames() -> None:
+        """Drop the frames captured while the operator was over the table.
+
+        The perception node keeps grabbing frames while the operator is still
+        over the table. Drop those stale frames AFTER ENTER, so the next
+        perception result belongs to the cleared cell.
+        """
+        dropped = 0
+
+        while True:
+            try:
+                det_queue.get_nowait()
+                dropped += 1
+            except queue.Empty:
+                break
+
+        if dropped:
+            log.debug(
+                "Dropped %d frame(s) captured before placement finished",
+                dropped,
+            )
 
     pre_trial_hook = None
 
@@ -934,36 +1205,8 @@ def main() -> int:
 
         def pre_trial_hook(i: int) -> None:
             # ─── REAL CELL: operator-access gate ────────────────────────
-            # Before the operator places/repositions an object, the servo
-            # must be OFF and the robot must not be executing a JOB.
             if args.mode == "real" and args.confirm_each_trial:
-                status = backend.read_controller_status()
-
-                if status.get("running", False):
-                    raise RuntimeError(
-                        "Cannot enter placement phase: robot is still running "
-                        f"a JOB: {status}"
-                    )
-
-                if status.get("servo", False):
-                    log.info(
-                        "Trial %d placement gate: switching SERVO OFF",
-                        i,
-                    )
-                    backend.servo_off()
-
-                status = backend.read_controller_status()
-
-                if status.get("servo", True):
-                    raise RuntimeError(
-                        "Operator placement refused: SERVO OFF could not be "
-                        f"verified: {status}"
-                    )
-
-                log.info(
-                    "Trial %d placement gate PASS — SERVO OFF verified",
-                    i,
-                )
+                _placement_gate(i)
 
             if pose_rows is not None:
                 row = pose_rows[i - 1]
@@ -973,43 +1216,17 @@ def main() -> int:
                 orch.current_expected_class = str(
                     row.get("class_hint", "") or ""
                 ).strip().lower()
-
-                log.info(
-                    "▶ Trial %d — PLACE OBJECT: card=%s  x=%s mm  y=%s mm  yaw=%s deg%s%s",
-                    i,
-                    row.get("card_id", "?"),
-                    row.get("x_mm", "?"),
-                    row.get("y_mm", "?"),
-                    row.get("yaw_deg", "?"),
-                    f"  class={row['class_hint']}" if row.get("class_hint") else "",
-                    f"  condition={row['condition']}" if row.get("condition") else "",
-                )
-
-                if row.get("stack_on"):
-                    log.info(
-                        "    STACKED: put the %s down on the card FIRST, "
-                        "then the %s on top of it.",
-                        row["stack_on"],
-                        row.get("class_hint", "part"),
-                    )
-
+                orch.current_called_pose = called_pose_from_row(row, carton_sizes)
+                lines = placement_prompt_lines(i, args.trials, row, carton_sizes,
+                                               args.blind_label)
+            else:
+                lines = ([f"[{args.blind_label}] Trial {i}/{args.trials}"]
+                         if args.blind_label else [])
             if args.blind_label:
-                row_ = pose_rows[i - 1] if pose_rows is not None else {}
-
-                print(
-                    f"\n[{args.blind_label}] Trial {i}/{args.trials}, PLACE: "
-                    f"card={row_.get('card_id', '?')}  "
-                    f"yaw={row_.get('yaw_deg', '?')} deg"
-                    f"  class={row_.get('class_hint', '?')}",
-                    flush=True,
-                )
-
-                if row_.get("stack_on"):
-                    print(
-                        f"    STACKED: {row_['stack_on']} down first, then "
-                        f"{row_.get('class_hint', 'the part')} on top.",
-                        flush=True,
-                    )
+                print(flush=True)
+            # Blinded or not, the same prompt; a blinded console shows it bare.
+            for line in lines:
+                log.info(line, extra=CONSOLE)
 
             if not args.confirm_each_trial:
                 return
@@ -1022,105 +1239,35 @@ def main() -> int:
             except EOFError:
                 log.error(
                     "stdin closed during --confirm-each-trial; stopping "
-                    "rather than moving the robot with nobody confirming."
+                    "rather than moving the robot with nobody confirming.",
+                    extra=CONSOLE,
                 )
                 raise KeyboardInterrupt from None
 
             # ─── REAL CELL: motion-enable gate ──────────────────────────
-            # ENTER is the explicit operator confirmation that everybody
-            # is out of the cell. Only now is servo power allowed ON.
             if args.mode == "real":
-                status = backend.read_controller_status()
+                _motion_gate()
 
-                if not status.get("remote", False):
-                    raise RuntimeError(
-                        "Motion refused: YRC1000 is not in REMOTE mode: "
-                        f"{status}"
-                    )
+            _drop_stale_frames()
 
-                if status.get("running", False):
-                    raise RuntimeError(
-                        "Motion refused: controller is already running: "
-                        f"{status}"
-                    )
+    if (args.confirm_each_trial and pose_rows is not None
+            and not args.no_placement_check):
 
-                if status.get("alarm", False):
-                    raise RuntimeError(
-                        "Motion refused: controller has an active alarm: "
-                        f"{status}"
-                    )
+        def _ready_after_fix() -> None:
+            # The operator fixed the placement and confirmed the cell clear.
+            if args.mode == "real":
+                _motion_gate()
+            _drop_stale_frames()
 
-                if status.get("error", False):
-                    raise RuntimeError(
-                        "Motion refused: controller reports an error: "
-                        f"{status}"
-                    )
+        def placement_check_hook(trial_id: int, lines: list[str],
+                                 can_recapture: bool) -> str:
+            """Placement-check flags to the operator; servo OFF before a fix."""
+            make_safe = ((lambda: _placement_gate(trial_id))
+                         if args.mode == "real" else None)
+            return ask_placement_fix(trial_id, lines, can_recapture,
+                                     make_safe=make_safe, make_ready=_ready_after_fix)
 
-                if status.get("hold", False):
-                    raise RuntimeError(
-                        "Motion refused: controller HOLD is active: "
-                        f"{status}"
-                    )
-
-                if not status.get("servo", False):
-                    log.info(
-                        "Operator confirmed cell clear — enabling YRC1000 SERVO"
-                    )
-                    backend.servo_on()
-
-                status = backend.read_controller_status()
-
-                if not status.get("servo", False):
-                    raise RuntimeError(
-                        "Motion refused: SERVO ON verification failed: "
-                        f"{status}"
-                    )
-
-                if not status.get("remote", False):
-                    backend.servo_off()
-                    raise RuntimeError(
-                        "Motion refused: controller left REMOTE mode after "
-                        f"SERVO ON: {status}"
-                    )
-
-                if (
-                    status.get("alarm", False)
-                    or status.get("error", False)
-                    or status.get("hold", False)
-                ):
-                    backend.servo_off()
-                    raise RuntimeError(
-                        "Motion refused: controller became unsafe after "
-                        f"SERVO ON: {status}"
-                    )
-
-                log.info(
-                    "REAL motion gate PASS — REMOTE=%s SERVO=%s "
-                    "alarm=%s error=%s hold=%s",
-                    status.get("remote"),
-                    status.get("servo"),
-                    status.get("alarm"),
-                    status.get("error"),
-                    status.get("hold"),
-                )
-
-            # The perception node keeps grabbing frames while the operator
-            # is still over the table. Drop those stale frames AFTER ENTER,
-            # so the next perception result belongs to the cleared cell.
-            dropped = 0
-
-            while True:
-                try:
-                    det_queue.get_nowait()
-                    dropped += 1
-                except queue.Empty:
-                    break
-
-            if dropped:
-                log.debug(
-                    "Dropped %d frame(s) captured before placement finished",
-                    dropped,
-                )
+        orch.placement_check_hook = placement_check_hook
 
 
     if args.confirm_each_trial:
@@ -1156,6 +1303,7 @@ def main() -> int:
                         "trial %d: %s",
                         trial_id,
                         e,
+                        extra=CONSOLE,
                     )
 
                     # Best-effort fallback to existing software emergency stop.
@@ -1165,6 +1313,7 @@ def main() -> int:
                         log.error(
                             "Fallback robot.Stop() also failed: %s",
                             stop_exc,
+                            extra=CONSOLE,
                         )
 
                     raise KeyboardInterrupt from e
@@ -1181,6 +1330,7 @@ def main() -> int:
                         "stdin closed while scoring trial %d — logging it "
                         "unscored. The next trial will stop the run.",
                         trial_id,
+                        extra=CONSOLE,
                     )
                     return ""
 
@@ -1221,7 +1371,7 @@ def main() -> int:
 
             except KeyboardInterrupt:
                 # Ctrl+C on the physical robot means immediate software stop.
-                log.warning("Ctrl+C — emergency robot stop")
+                log.warning("Ctrl+C — emergency robot stop", extra=CONSOLE)
 
                 try:
                     if args.mode == "real":
@@ -1232,7 +1382,7 @@ def main() -> int:
                         log.info("robot.Stop() sent")
 
                 except Exception as e:
-                    log.error("Error stopping robot: %s", e)
+                    log.error("Error stopping robot: %s", e, extra=CONSOLE)
 
                 stats = {
                     "attempted": 0,
@@ -1266,6 +1416,7 @@ def main() -> int:
                             "FINAL SERVO-OFF verification failed: %s. "
                             "Use the teach pendant / physical E-stop.",
                             e,
+                            extra=CONSOLE,
                         )
 
                         try:
@@ -1274,6 +1425,7 @@ def main() -> int:
                             log.error(
                                 "Fallback robot.Stop() also failed: %s",
                                 stop_exc,
+                                extra=CONSOLE,
                             )
 
                 perception.stop()
@@ -1322,6 +1474,7 @@ def main() -> int:
                 log.error(
                     "GUI shutdown could not verify SERVO OFF: %s",
                     e,
+                    extra=CONSOLE,
                 )
 
                 try:
@@ -1330,6 +1483,7 @@ def main() -> int:
                     log.error(
                         "Fallback robot.Stop() also failed: %s",
                         stop_exc,
+                        extra=CONSOLE,
                     )
         # Cleanup twin (real mode) — stop_mirror, close telemetry, close HSE socket.
         if twin is not None:

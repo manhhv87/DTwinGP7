@@ -133,11 +133,12 @@ def capture_config_files(paths) -> list[dict]:
 
 
 def run_metadata(config: dict, detector, *, entrypoint: str, runtime: dict | None = None,
-                 config_files=()) -> dict:
-    """Keep the supplied resolved config and inputs with the selected model."""
+                 config_files=(), code: dict | None = None) -> dict:
+    """Keep the supplied resolved config and inputs with the selected model, and the
+    code identity (src.utils.provenance.git_provenance) when given."""
     snapshot = json.loads(json.dumps(config, default=_json_value))
     canonical = json.dumps(snapshot, sort_keys=True, separators=(",", ":"))
-    return {
+    out = {
         "entrypoint": entrypoint,
         "config": snapshot,
         "config_sha256": hashlib.sha256(canonical.encode("utf-8")).hexdigest(),
@@ -145,3 +146,6 @@ def run_metadata(config: dict, detector, *, entrypoint: str, runtime: dict | Non
         "model": detector_metadata(detector),
         "runtime": runtime or {},
     }
+    if code is not None:
+        out["code"] = deepcopy(code)
+    return out
