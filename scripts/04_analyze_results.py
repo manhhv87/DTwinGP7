@@ -183,6 +183,64 @@ NO_MOTION_REASONS = frozenset({
 })
 
 
+# Written by the orchestrator when the run was stopped at the placement check
+# (Ctrl+C, a closed stdin, a servo that would not switch off): a record that a
+# capture was taken and the run stopped there, not an outcome of the trial.
+ABORTED_AT_CHECK = "aborted_at_check"
+
+
+def _drop_aborted(log, df, source: str):
+    """The rows of df without those of trials stopped at the placement check."""
+    if "failure_reason" not in df.columns:
+        return df
+    aborted = df["failure_reason"].fillna("").astype(str).str.strip().eq(ABORTED_AT_CHECK)
+    if aborted.any():
+        log.warning("%d row(s) in %s record a run stopped at the placement check (%s) "
+                    "and are left out: pose_id %s", int(aborted.sum()), source,
+                    ABORTED_AT_CHECK,
+                    sorted(df.loc[aborted, "pose_id"].astype(str).unique())[:10]
+                    if "pose_id" in df.columns else "?")
+        df = df[~aborted].reset_index(drop=True)
+    return df
+
+
+def _placement_table(df, split_col: str | None):
+    """Per arm (split_col, else one row 'all'), the trials the placement check
+    judged: checked, flagged at the first check, captured again after a change
+    (recaptured), and gone on over flags (over_flags, placement_override). None
+    when the runs carry no placement check."""
+    import pandas as pd
+
+    if "placement_events" not in df.columns:
+        return None
+    checked = df["placement_events"].fillna("").astype(str).str.strip().ne("")
+    if not checked.any():
+        return None
+    sub = df[checked]
+
+    def col(name):
+        return (pd.to_numeric(sub[name], errors="coerce").fillna(0)
+                if name in sub.columns else pd.Series(0, index=sub.index))
+
+    flags = (sub["placement_flags"].fillna("").astype(str).str.strip()
+             if "placement_flags" in sub.columns else pd.Series("", index=sub.index))
+    table = pd.DataFrame({"checked": 1, "flagged": flags.ne("").astype(int),
+                          "recaptured": (col("placement_recaptures") > 0).astype(int),
+                          "over_flags": (col("placement_override") > 0).astype(int)},
+                         index=sub.index)
+    by = (sub[split_col].astype(str) if split_col and split_col in sub.columns
+          else pd.Series("all", index=sub.index))
+    return table.groupby(by).sum()
+
+
+def _log_placement(log, df, split_col: str | None) -> None:
+    """Log _placement_table, when the runs carry the placement check."""
+    table = _placement_table(df, split_col)
+    if table is not None:
+        log.info("Placement check (trials judged / flagged at the first check / "
+                 "captured again / went on over flags):\n%s", table)
+
+
 def _no_motion(df):
     """True for every row whose trial was refused or skipped before motion."""
     import pandas as pd
@@ -289,6 +347,7 @@ def main() -> int:
         df = df[values.isin(args.only)].reset_index(drop=True)
         log.info("Kept %d trial(s) of %s = %s", len(df), args.split_col, args.only)
 
+    df = _drop_aborted(log, df, "--csv")
     df = _apply_score_col(log, df, args.score_col, "--csv")
     if df is None:
         return 1
@@ -324,6 +383,8 @@ def main() -> int:
         keys = ([args.split_col] if args.split_col and args.split_col in df.columns
                 else []) + ["failure_reason"]
         log.info("By reason:\n%s", df[no_motion].groupby(keys).size())
+
+    _log_placement(log, df, args.split_col)
 
     moved = df[~no_motion]
     if len(moved) and "cycle_time_s" in moved.columns:
@@ -393,7 +454,8 @@ def main() -> int:
                 log.error("--paired-with '%s' matched no file", other)
                 return 1
             df_b = _apply_score_col(
-                log, pd.concat([pd.read_csv(f) for f in files], ignore_index=True),
+                log, _drop_aborted(log, pd.concat([pd.read_csv(f) for f in files],
+                                                  ignore_index=True), other),
                 args.score_col, other)
             if df_b is None:
                 return 1

@@ -44,7 +44,7 @@ from src.perception.model_artifact import (  # noqa: E402
 )
 from src.utils import load_yaml, setup_logging, timestamp  # noqa: E402
 from src.utils.blind_console import install_blind_console  # noqa: E402
-from src.utils.provenance import git_provenance  # noqa: E402
+from src.utils.provenance import git_provenance, save_git_diff  # noqa: E402
 
 # A log record carrying this extra reaches the console of a blinded run as it is
 # (src/utils/blind_console.py). Only for lines that read the same in every arm.
@@ -96,48 +96,455 @@ def placement_prompt_lines(i: int, n: int, row: dict, carton_sizes: dict,
     return lines
 
 
-def ask_placement_fix(trial_id: int, lines: list[str], can_recapture: bool, *,
-                      ask=input, say=print, make_safe=None, make_ready=None) -> str:
-    """Show the placement-check flags of one trial and take the operator's choice.
+class CellGateError(RuntimeError):
+    """The controller state forbids the next step of the operator protocol. The
+    message names that state, which reads the same in every arm, so a blinded
+    console shows it as it is."""
 
-    The check runs after the operator confirmed the cell clear, with the servo ON.
-    Returns "recapture" when the operator typed s: make_safe() runs first (servo
-    OFF, verified, before anyone reaches into the cell), the operator fixes the
-    placement and presses ENTER, then make_ready() (servo ON and the controller
-    checks, stale frames dropped) and the orchestrator captures again. Returns
-    "proceed" on a bare ENTER: the placement is as called and the trial goes on
-    with the detection that was checked. With can_recapture False (the limit is
-    reached) the flags are shown and "proceed" returned without asking. A closed
-    stdin stops the run (KeyboardInterrupt), as at the placement prompt.
+
+def placement_gate(backend, trial_id: int, log: logging.Logger) -> None:
+    """REAL CELL: operator-access gate.
+
+    Before the operator places or repositions an object, the servo must be
+    OFF and the robot must not be executing a JOB.
+    """
+    status = backend.read_controller_status()
+
+    if status.get("running", False):
+        raise CellGateError(
+            "Cannot enter placement phase: robot is still running "
+            f"a JOB: {status}"
+        )
+
+    if status.get("servo", False):
+        log.info(
+            "Trial %d placement gate: switching SERVO OFF",
+            trial_id,
+        )
+        backend.servo_off()
+
+    status = backend.read_controller_status()
+
+    if status.get("servo", True):
+        raise CellGateError(
+            "Operator placement refused: SERVO OFF could not be "
+            f"verified: {status}"
+        )
+
+    log.info(
+        "Trial %d placement gate PASS — SERVO OFF verified",
+        trial_id,
+    )
+
+
+def motion_gate(backend, log: logging.Logger) -> None:
+    """REAL CELL: motion-enable gate.
+
+    The operator's answer is the explicit confirmation that everybody is out
+    of the cell. Only now is servo power allowed ON.
+    """
+    status = backend.read_controller_status()
+
+    if not status.get("remote", False):
+        raise CellGateError(
+            "Motion refused: YRC1000 is not in REMOTE mode: "
+            f"{status}"
+        )
+
+    if status.get("running", False):
+        raise CellGateError(
+            "Motion refused: controller is already running: "
+            f"{status}"
+        )
+
+    if status.get("alarm", False):
+        raise CellGateError(
+            "Motion refused: controller has an active alarm: "
+            f"{status}"
+        )
+
+    if status.get("error", False):
+        raise CellGateError(
+            "Motion refused: controller reports an error: "
+            f"{status}"
+        )
+
+    if status.get("hold", False):
+        raise CellGateError(
+            "Motion refused: controller HOLD is active: "
+            f"{status}"
+        )
+
+    if not status.get("servo", False):
+        log.info(
+            "Operator confirmed cell clear — enabling YRC1000 SERVO"
+        )
+        backend.servo_on()
+
+    status = backend.read_controller_status()
+
+    if not status.get("servo", False):
+        raise CellGateError(
+            "Motion refused: SERVO ON verification failed: "
+            f"{status}"
+        )
+
+    if not status.get("remote", False):
+        backend.servo_off()
+        raise CellGateError(
+            "Motion refused: controller left REMOTE mode after "
+            f"SERVO ON: {status}"
+        )
+
+    if (
+        status.get("alarm", False)
+        or status.get("error", False)
+        or status.get("hold", False)
+    ):
+        backend.servo_off()
+        raise CellGateError(
+            "Motion refused: controller became unsafe after "
+            f"SERVO ON: {status}"
+        )
+
+    log.info(
+        "REAL motion gate PASS — REMOTE=%s SERVO=%s "
+        "alarm=%s error=%s hold=%s",
+        status.get("remote"),
+        status.get("servo"),
+        status.get("alarm"),
+        status.get("error"),
+        status.get("hold"),
+    )
+
+
+def drop_stale_frames(det_queue: queue.Queue, log: logging.Logger) -> int:
+    """Drop the frames captured while the operator was over the table.
+
+    The perception node keeps grabbing frames while the operator is still
+    over the table. Drop those stale frames after the operator's answer, so the
+    next perception result belongs to the cleared cell. Returns how many.
+    """
+    dropped = 0
+
+    while True:
+        try:
+            det_queue.get_nowait()
+            dropped += 1
+        except queue.Empty:
+            break
+
+    if dropped:
+        log.debug(
+            "Dropped %d frame(s) captured before placement finished",
+            dropped,
+        )
+    return dropped
+
+
+def flush_console_input(stdin=None, platform: str | None = None) -> int:
+    """Discard keys typed before a prompt was shown; returns how many (Windows).
+
+    A key pressed twice at one prompt, a second ENTER at the placement prompt for
+    instance, stays in the console's input buffer and would answer the next
+    prompt, possibly seconds later and about something else. Only a terminal is
+    flushed: msvcrt on Windows (platform "nt", default os.name), termios
+    elsewhere. Anything else (a pipe, a test's stand-in for stdin) is left alone.
+    """
+    stdin = sys.stdin if stdin is None else stdin
+    try:
+        if not stdin.isatty():
+            return 0
+    except (AttributeError, ValueError):
+        return 0
+    if (platform or os.name) == "nt":
+        import msvcrt
+
+        n = 0
+        while msvcrt.kbhit():
+            msvcrt.getwch()
+            n += 1
+        return n
+    try:
+        import termios
+
+        termios.tcflush(stdin, termios.TCIFLUSH)
+    except (ImportError, OSError, ValueError):
+        pass
+    return 0
+
+
+# The operator's answers at a placement check, and what each returns.
+PLACEMENT_ANSWERS = {"g": "proceed", "f": "recapture"}
+
+
+def ask_placement_fix(trial_id: int, lines: list[str], can_recapture: bool, *,
+                      ask=input, say=print, make_safe=None, make_ready=None,
+                      flush=None) -> str:
+    """Show the placement-check flags of one trial and take the operator's answer.
+
+    The flags are printed, then make_safe() switches the servo OFF and verifies it
+    (the real cell; the simulator passes None), so the part may be looked at and
+    handled before anything is answered. The operator then types a letter, never
+    a bare ENTER, after taking the hand out of the cell:
+
+      g  nothing was moved: "proceed", the trial goes on with the detection that
+         was checked (the placement is as called, whatever the flags say);
+      f  the placement was changed to the call: "recapture", the orchestrator
+         captures again and checks the new detection.
+
+    With can_recapture False (the recapture limit is reached) only g is
+    accepted. Either way make_ready() follows (servo ON with the controller
+    checks, stale frames dropped) before the answer is returned. flush() runs
+    before every prompt, so a key typed earlier cannot answer it. A closed stdin
+    stops the run (KeyboardInterrupt), as at the placement prompt.
     """
     say(f"   Trial {trial_id}: the scene does not match the call:", flush=True)
     for line in lines:
         say(f"     {line}", flush=True)
-    if not can_recapture:
-        say("   Recapture limit reached: going on with this detection.", flush=True)
-        return "proceed"
     servo = make_safe is not None          # the real cell; the simulator has none
+    if servo:
+        make_safe()
+    head = "   Servo is OFF. " if servo else "   "
+    if can_recapture:
+        say(head + "Placed as called: move nothing. Not as called: fix it now.",
+            flush=True)
+        prompt = ("   TAKE YOUR HAND OUT of the cell, then type  "
+                  "[g] = nothing moved, go on   [f] = fixed, capture again  ")
+        valid = PLACEMENT_ANSWERS
+        retry = "   Type g or f."
+    else:
+        say(head + "Recapture limit reached: this capture is used.", flush=True)
+        prompt = ("   TAKE YOUR HAND OUT of the cell, then type  "
+                  "[g] = go on (Ctrl+C stops the run)  ")
+        valid = {"g": PLACEMENT_ANSWERS["g"]}
+        retry = "   Type g, or press Ctrl+C to stop the run."
     while True:
+        if flush is not None:
+            flush()
         try:
-            ans = ask(("   Servo is ON. [s] = switch it OFF and fix the placement   "
-                       if servo else "   [s] = fix the placement   ")
-                      + "[ENTER] = it is placed as called, go on  ").strip().lower()
+            ans = ask(prompt).strip().lower()
         except EOFError:
+            logging.getLogger("experiment").error(
+                "stdin closed at the placement check of trial %d; stopping before "
+                "any motion.", trial_id, extra=CONSOLE)
             raise KeyboardInterrupt from None
-        if ans == "":
-            return "proceed"
-        if ans == "s":
-            if servo:
-                make_safe()
+        if ans in valid:
+            break
+        say(retry, flush=True)
+    if make_ready is not None:
+        make_ready()
+    return valid[ans]
+
+
+def placement_check_enabled(args: argparse.Namespace, pose_rows) -> bool:
+    """The check runs with --confirm-each-trial and a pose list, unless switched
+    off with --no-placement-check."""
+    return bool(args.confirm_each_trial and pose_rows is not None
+                and not args.no_placement_check)
+
+
+def make_placement_check_hook(backend, det_queue: queue.Queue, log: logging.Logger, *,
+                              real: bool, ask=input, say=print,
+                              flush=flush_console_input):
+    """The orchestrator's placement_check_hook for this cell.
+
+    On the real cell the servo goes OFF (placement_gate) before the operator is
+    asked anything, and the motion gate switches it ON again after the answer;
+    on both the real cell and the simulator the frames captured meanwhile are
+    dropped, so a recapture reads the scene as the operator left it.
+    """
+    def make_ready() -> None:
+        if real:
+            motion_gate(backend, log)
+        drop_stale_frames(det_queue, log)
+
+    def placement_check_hook(trial_id: int, lines: list[str], can_recapture: bool) -> str:
+        make_safe = (lambda: placement_gate(backend, trial_id, log)) if real else None
+        return ask_placement_fix(trial_id, lines, can_recapture, ask=ask, say=say,
+                                 make_safe=make_safe, make_ready=make_ready,
+                                 flush=flush)
+
+    return placement_check_hook
+
+
+def wire_trial_hooks(orch, args: argparse.Namespace, pose_rows, carton_sizes: dict,
+                     backend, det_queue: queue.Queue, log: logging.Logger, *,
+                     ask=input, say=print, flush=flush_console_input):
+    """Install the operator hooks on the orchestrator; return the pre-trial hook.
+
+    pre_trial_hook(i), with a pose list or --confirm-each-trial: on the real cell
+    the placement gate (servo OFF, verified), the placement prompt, then with
+    --confirm-each-trial the operator's ENTER, the motion gate (servo ON) and the
+    stale frames dropped. orch.placement_check_hook when placement_check_enabled.
+    orch.human_score_hook with --confirm-each-trial: servo OFF, verified, then the
+    y/n verdict. Pending keys are flushed before every prompt. backend is the
+    real cell's controller, None elsewhere.
+    """
+    real = args.mode == "real"
+    pre_trial_hook = None
+
+    if pose_rows is not None or args.confirm_each_trial:
+
+        def pre_trial_hook(i: int) -> None:
+            # ─── REAL CELL: operator-access gate ────────────────────────
+            if real and args.confirm_each_trial:
+                placement_gate(backend, i, log)
+
+            if pose_rows is not None:
+                row = pose_rows[i - 1]
+                orch.current_pose_id = str(row.get("pose_id", i))
+                orch.current_condition = str(row.get("condition", ""))
+                orch.current_stack_on = str(row.get("stack_on", ""))
+                orch.current_expected_class = str(
+                    row.get("class_hint", "") or ""
+                ).strip().lower()
+                orch.current_called_pose = called_pose_from_row(row, carton_sizes)
+                lines = placement_prompt_lines(i, args.trials, row, carton_sizes,
+                                               args.blind_label)
+            else:
+                lines = ([f"[{args.blind_label}] Trial {i}/{args.trials}"]
+                         if args.blind_label else [])
+            if args.blind_label:
+                say(flush=True)
+            # Blinded or not, the same prompt; a blinded console shows it bare.
+            for line in lines:
+                log.info(line, extra=CONSOLE)
+
+            if not args.confirm_each_trial:
+                return
+
+            flush()
             try:
-                ask(("   Servo OFF. " if servo else "   ")
-                    + "Fix the placement, TAKE YOUR HAND OUT of the cell, then press ENTER ")
+                ask(
+                    "   Placed it? TAKE YOUR HAND OUT of the cell, "
+                    "then press ENTER "
+                )
             except EOFError:
+                log.error(
+                    "stdin closed during --confirm-each-trial; stopping "
+                    "rather than moving the robot with nobody confirming.",
+                    extra=CONSOLE,
+                )
                 raise KeyboardInterrupt from None
-            if make_ready is not None:
-                make_ready()
-            return "recapture"
-        say("   Type s, or press ENTER alone.", flush=True)
+
+            # ─── REAL CELL: motion-enable gate ──────────────────────────
+            if real:
+                motion_gate(backend, log)
+
+            drop_stale_frames(det_queue, log)
+
+    if placement_check_enabled(args, pose_rows):
+        orch.placement_check_hook = make_placement_check_hook(
+            backend, det_queue, log, real=real, ask=ask, say=say, flush=flush)
+
+    if args.confirm_each_trial:
+
+        def human_score_hook(
+            trial_id: int,
+            machine_success: bool,
+        ) -> int | str:
+            """Score visible placement result after making the cell safe."""
+
+            # The motion cycle has finished. Servo must be OFF before the
+            # operator is asked to inspect/remove/reposition the object.
+            if real:
+                try:
+                    backend.servo_off()
+
+                    status = backend.read_controller_status()
+
+                    if status.get("servo", True):
+                        raise RuntimeError(
+                            f"SERVO OFF verification failed: {status}"
+                        )
+
+                    log.info(
+                        "Trial %d complete — SERVO OFF verified for "
+                        "operator access",
+                        trial_id,
+                    )
+
+                except Exception as e:
+                    log.error(
+                        "CRITICAL: could not verify SERVO OFF after "
+                        "trial %d: %s",
+                        trial_id,
+                        e,
+                        extra=CONSOLE,
+                    )
+
+                    # Best-effort fallback to existing software emergency stop.
+                    try:
+                        backend.Stop()
+                    except Exception as stop_exc:
+                        log.error(
+                            "Fallback robot.Stop() also failed: %s",
+                            stop_exc,
+                            extra=CONSOLE,
+                        )
+
+                    raise KeyboardInterrupt from e
+
+            while True:
+                flush()
+                try:
+                    ans = ask(
+                        f"   Trial {trial_id}: did the robot alone leave the part "
+                        "inside the 30x30 mm frame? [y]=yes  [n]=no  "
+                    ).strip().lower()
+
+                except EOFError:
+                    log.error(
+                        "stdin closed while scoring trial %d — logging it "
+                        "unscored. The next trial will stop the run.",
+                        trial_id,
+                        extra=CONSOLE,
+                    )
+                    return ""
+
+                if ans in {"y", "t", "1"}:
+                    return 1
+
+                if ans in {"n", "h", "0"}:
+                    return 0
+
+                say("   Type y or n.", flush=True)
+
+        orch.human_score_hook = human_score_hook
+
+    return pre_trial_hook
+
+
+# What a blinded console shows when the run stops on an unexpected error: its text
+# may carry heights or reasons that differ by arm, so it goes to the log file.
+BLIND_RUN_ERROR = ("The run stopped with an error; ask the campaign administrator to "
+                   "check the run log.")
+
+
+def run_reporting_errors(drive, log: logging.Logger, blinded: bool) -> int:
+    """Run drive(); return 0, or 1 when a blinded run stopped on an exception.
+
+    Unblinded, an exception propagates as before (traceback on the console).
+    Blinded, it is logged with its traceback to the log file only; the console
+    shows the message of a CellGateError (a controller state, the same in every
+    arm) and one neutral line for anything else. KeyboardInterrupt and SystemExit
+    propagate either way.
+    """
+    if not blinded:
+        drive()
+        return 0
+    try:
+        drive()
+    except CellGateError as e:
+        log.error("Run stopped: %s", e, exc_info=True,
+                  extra={"console": f"Run stopped: {e}"})
+        return 1
+    except Exception as e:  # noqa: BLE001 - reported, not swallowed
+        log.error("Run stopped by an error: %s", e, exc_info=True,
+                  extra={"console": BLIND_RUN_ERROR})
+        return 1
+    return 0
 
 
 def parse_args() -> argparse.Namespace:
@@ -233,7 +640,8 @@ def parse_args() -> argparse.Namespace:
              "with the call, and detections are the same in every arm only when the arms "
              "share the detector (the depth modes of E2). A campaign whose arms differ in "
              "the model (E3 to E5) needs this flag, since its flags would differ by arm; "
-             "tools/run_blinded_campaign.py adds it when the arms differ in --model-path.")
+             "tools/run_blinded_campaign.py adds it when the arms differ in anything but "
+             "--depth-mode.")
     parser.add_argument(
         "--save-frames", action="store_true",
         help="Save the RGB frame of every detection and log its path per trial "
@@ -527,11 +935,15 @@ def main() -> int:
         print("=" * 60)
         print(f"  BLINDED RUN, arm {args.blind_label}")
         print("  Place the parts as prompted. Which configuration this is, and how it is")
-        print("  doing, are deliberately not shown. Both are in the log file.")
+        print("  doing, are deliberately not shown.")
         print("=" * 60, flush=True)
     # The code that runs, for the run metadata: commit, branch, uncommitted changes.
     code_provenance = git_provenance(PROJECT_ROOT)
     log.info("Code: %s", code_provenance)
+    if code_provenance.get("dirty"):
+        log.warning("The code has uncommitted changes in %d file(s); the diff is saved "
+                    "next to the run metadata.", len(code_provenance.get("changed", [])),
+                    extra=CONSOLE)
 
     if args.confirm_each_trial:
         if args.headless:
@@ -683,6 +1095,7 @@ def main() -> int:
     sim_robot: Any = None             # Orchestrator uses as `robot=`
     twin: Any = None                  # DigitalTwinMirror (None when headless/sim Open3D)
     real_viewer: Any = None           # O3DGuiSimRobot as viewport-only mirror for real mode
+    backend: Any = None               # the YRC1000 (HSE) controller, real mode only
 
     # ─── Common: client IK config (URDF chain verified match RoboDK 0.00mm) ───
     config["robot_base_xyz_mm"] = tuple(cell_config.robot.pose.xyz_mm)
@@ -1002,6 +1415,12 @@ def main() -> int:
             runtime=vars(args),
             code=code_provenance),
     )
+    if code_provenance.get("dirty"):
+        # The uncommitted changes themselves, beside the metadata that names them.
+        diff_path = trial_logger.csv_path.with_name(
+            f"{trial_logger.csv_path.stem}.{trial_logger.run_id}.diff")
+        if save_git_diff(PROJECT_ROOT, diff_path) is not None:
+            code_provenance["diff_file"] = diff_path.name
 
     # ─── Orchestrator ───
     orch = Orchestrator(det_queue, config=config, robot=sim_robot,
@@ -1063,286 +1482,13 @@ def main() -> int:
                         len(missing), ", ".join(missing[:5]),
                         " ..." if len(missing) > 5 else "", extra=CONSOLE)
 
-    def _placement_gate(i: int) -> None:
-        """REAL CELL: operator-access gate.
-
-        Before the operator places or repositions an object, the servo must be
-        OFF and the robot must not be executing a JOB.
-        """
-        status = backend.read_controller_status()
-
-        if status.get("running", False):
-            raise RuntimeError(
-                "Cannot enter placement phase: robot is still running "
-                f"a JOB: {status}"
-            )
-
-        if status.get("servo", False):
-            log.info(
-                "Trial %d placement gate: switching SERVO OFF",
-                i,
-            )
-            backend.servo_off()
-
-        status = backend.read_controller_status()
-
-        if status.get("servo", True):
-            raise RuntimeError(
-                "Operator placement refused: SERVO OFF could not be "
-                f"verified: {status}"
-            )
-
-        log.info(
-            "Trial %d placement gate PASS — SERVO OFF verified",
-            i,
-        )
-
-    def _motion_gate() -> None:
-        """REAL CELL: motion-enable gate.
-
-        ENTER is the explicit operator confirmation that everybody is out of
-        the cell. Only now is servo power allowed ON.
-        """
-        status = backend.read_controller_status()
-
-        if not status.get("remote", False):
-            raise RuntimeError(
-                "Motion refused: YRC1000 is not in REMOTE mode: "
-                f"{status}"
-            )
-
-        if status.get("running", False):
-            raise RuntimeError(
-                "Motion refused: controller is already running: "
-                f"{status}"
-            )
-
-        if status.get("alarm", False):
-            raise RuntimeError(
-                "Motion refused: controller has an active alarm: "
-                f"{status}"
-            )
-
-        if status.get("error", False):
-            raise RuntimeError(
-                "Motion refused: controller reports an error: "
-                f"{status}"
-            )
-
-        if status.get("hold", False):
-            raise RuntimeError(
-                "Motion refused: controller HOLD is active: "
-                f"{status}"
-            )
-
-        if not status.get("servo", False):
-            log.info(
-                "Operator confirmed cell clear — enabling YRC1000 SERVO"
-            )
-            backend.servo_on()
-
-        status = backend.read_controller_status()
-
-        if not status.get("servo", False):
-            raise RuntimeError(
-                "Motion refused: SERVO ON verification failed: "
-                f"{status}"
-            )
-
-        if not status.get("remote", False):
-            backend.servo_off()
-            raise RuntimeError(
-                "Motion refused: controller left REMOTE mode after "
-                f"SERVO ON: {status}"
-            )
-
-        if (
-            status.get("alarm", False)
-            or status.get("error", False)
-            or status.get("hold", False)
-        ):
-            backend.servo_off()
-            raise RuntimeError(
-                "Motion refused: controller became unsafe after "
-                f"SERVO ON: {status}"
-            )
-
-        log.info(
-            "REAL motion gate PASS — REMOTE=%s SERVO=%s "
-            "alarm=%s error=%s hold=%s",
-            status.get("remote"),
-            status.get("servo"),
-            status.get("alarm"),
-            status.get("error"),
-            status.get("hold"),
-        )
-
-    def _drop_stale_frames() -> None:
-        """Drop the frames captured while the operator was over the table.
-
-        The perception node keeps grabbing frames while the operator is still
-        over the table. Drop those stale frames AFTER ENTER, so the next
-        perception result belongs to the cleared cell.
-        """
-        dropped = 0
-
-        while True:
-            try:
-                det_queue.get_nowait()
-                dropped += 1
-            except queue.Empty:
-                break
-
-        if dropped:
-            log.debug(
-                "Dropped %d frame(s) captured before placement finished",
-                dropped,
-            )
-
-    pre_trial_hook = None
-
-    if pose_rows is not None or args.confirm_each_trial:
-
-        def pre_trial_hook(i: int) -> None:
-            # ─── REAL CELL: operator-access gate ────────────────────────
-            if args.mode == "real" and args.confirm_each_trial:
-                _placement_gate(i)
-
-            if pose_rows is not None:
-                row = pose_rows[i - 1]
-                orch.current_pose_id = str(row.get("pose_id", i))
-                orch.current_condition = str(row.get("condition", ""))
-                orch.current_stack_on = str(row.get("stack_on", ""))
-                orch.current_expected_class = str(
-                    row.get("class_hint", "") or ""
-                ).strip().lower()
-                orch.current_called_pose = called_pose_from_row(row, carton_sizes)
-                lines = placement_prompt_lines(i, args.trials, row, carton_sizes,
-                                               args.blind_label)
-            else:
-                lines = ([f"[{args.blind_label}] Trial {i}/{args.trials}"]
-                         if args.blind_label else [])
-            if args.blind_label:
-                print(flush=True)
-            # Blinded or not, the same prompt; a blinded console shows it bare.
-            for line in lines:
-                log.info(line, extra=CONSOLE)
-
-            if not args.confirm_each_trial:
-                return
-
-            try:
-                input(
-                    "   Placed it? TAKE YOUR HAND OUT of the cell, "
-                    "then press ENTER "
-                )
-            except EOFError:
-                log.error(
-                    "stdin closed during --confirm-each-trial; stopping "
-                    "rather than moving the robot with nobody confirming.",
-                    extra=CONSOLE,
-                )
-                raise KeyboardInterrupt from None
-
-            # ─── REAL CELL: motion-enable gate ──────────────────────────
-            if args.mode == "real":
-                _motion_gate()
-
-            _drop_stale_frames()
-
-    if (args.confirm_each_trial and pose_rows is not None
-            and not args.no_placement_check):
-
-        def _ready_after_fix() -> None:
-            # The operator fixed the placement and confirmed the cell clear.
-            if args.mode == "real":
-                _motion_gate()
-            _drop_stale_frames()
-
-        def placement_check_hook(trial_id: int, lines: list[str],
-                                 can_recapture: bool) -> str:
-            """Placement-check flags to the operator; servo OFF before a fix."""
-            make_safe = ((lambda: _placement_gate(trial_id))
-                         if args.mode == "real" else None)
-            return ask_placement_fix(trial_id, lines, can_recapture,
-                                     make_safe=make_safe, make_ready=_ready_after_fix)
-
-        orch.placement_check_hook = placement_check_hook
-
-
+    # ─── Operator hooks: placement gate and prompt, placement check, verdict ───
+    pre_trial_hook = wire_trial_hooks(orch, args, pose_rows, carton_sizes, backend,
+                                      det_queue, log)
     if args.confirm_each_trial:
-
-        def human_score_hook(
-            trial_id: int,
-            machine_success: bool,
-        ) -> int | str:
-            """Score visible placement result after making the cell safe."""
-
-            # The motion cycle has finished. Servo must be OFF before the
-            # operator is asked to inspect/remove/reposition the object.
-            if args.mode == "real":
-                try:
-                    backend.servo_off()
-
-                    status = backend.read_controller_status()
-
-                    if status.get("servo", True):
-                        raise RuntimeError(
-                            f"SERVO OFF verification failed: {status}"
-                        )
-
-                    log.info(
-                        "Trial %d complete — SERVO OFF verified for "
-                        "operator access",
-                        trial_id,
-                    )
-
-                except Exception as e:
-                    log.error(
-                        "CRITICAL: could not verify SERVO OFF after "
-                        "trial %d: %s",
-                        trial_id,
-                        e,
-                        extra=CONSOLE,
-                    )
-
-                    # Best-effort fallback to existing software emergency stop.
-                    try:
-                        backend.Stop()
-                    except Exception as stop_exc:
-                        log.error(
-                            "Fallback robot.Stop() also failed: %s",
-                            stop_exc,
-                            extra=CONSOLE,
-                        )
-
-                    raise KeyboardInterrupt from e
-
-            while True:
-                try:
-                    ans = input(
-                        f"   Trial {trial_id}: did the robot alone leave the part "
-                        "inside the 30x30 mm frame? [y]=yes  [n]=no  "
-                    ).strip().lower()
-
-                except EOFError:
-                    log.error(
-                        "stdin closed while scoring trial %d — logging it "
-                        "unscored. The next trial will stop the run.",
-                        trial_id,
-                        extra=CONSOLE,
-                    )
-                    return ""
-
-                if ans in {"y", "t", "1"}:
-                    return 1
-
-                if ans in {"n", "h", "0"}:
-                    return 0
-
-                print("   Type y or n.", flush=True)
-
-        orch.human_score_hook = human_score_hook
+        log.info("Placement check: %s",
+                 "on" if placement_check_enabled(args, pose_rows) else "off",
+                 extra=CONSOLE)
 
     def _drive_experiment() -> None:
         """Run N trials and always leave the real robot with servo OFF."""
@@ -1506,9 +1652,14 @@ def main() -> int:
         sys.stderr.flush()
         os._exit(0)
 
+    # A blinded run reports an unexpected error on its console with one neutral
+    # line (run_reporting_errors); the traceback goes to the log file.
+    def _drive_reporting() -> int:
+        return run_reporting_errors(_drive_experiment, log, bool(args.blind_label))
+
     # Sim non-headless: O3DGuiSimRobot.run_gui runs on main thread, experiment on worker.
     if hasattr(sim_robot, "run_gui"):
-        worker = threading.Thread(target=_drive_experiment, name="experiment",
+        worker = threading.Thread(target=_drive_reporting, name="experiment",
                                   daemon=True)
         worker.start()
         try:
@@ -1521,7 +1672,7 @@ def main() -> int:
     # Real mode with live Open3D mirror: viewer GUI runs on main thread,
     # experiment + DigitalTwinMirror run on worker thread.
     if real_viewer is not None and hasattr(real_viewer, "run_gui"):
-        worker = threading.Thread(target=_drive_experiment, name="experiment",
+        worker = threading.Thread(target=_drive_reporting, name="experiment",
                                   daemon=True)
         worker.start()
         try:
@@ -1532,8 +1683,7 @@ def main() -> int:
         return 0  # unreachable
 
     # Headless / real telemetry-only: run synchronously on main thread.
-    _drive_experiment()
-    return 0
+    return _drive_reporting()
 
 
 if __name__ == "__main__":
