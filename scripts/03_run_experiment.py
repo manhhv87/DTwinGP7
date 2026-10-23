@@ -35,8 +35,8 @@ from src.cell import CellConfig  # noqa: E402
 from src.logging import TrialLogger  # noqa: E402
 from src.orchestrator import Orchestrator  # noqa: E402
 from src.orchestrator.placement_check import (  # noqa: E402
-    called_pose_from_row, carton_sizes_path, class_label, load_carton_sizes,
-    missing_carton_sizes,
+    MAX_CHECKS, called_pose_from_row, carton_sizes_path, class_label,
+    load_carton_sizes, missing_carton_sizes,
 )
 from src.perception import PerceptionNode  # noqa: E402
 from src.perception.model_artifact import (  # noqa: E402
@@ -274,67 +274,40 @@ def flush_console_input(stdin=None, platform: str | None = None) -> int:
     return 0
 
 
-# The operator's answers at a placement check, and what each returns.
-PLACEMENT_ANSWERS = {"g": "proceed", "f": "recapture"}
+def ask_placement_fix(trial_id: int, lines: list[str], last: bool, *, ask=input,
+                      say=print, flush=None) -> None:
+    """Show the flags of one placement check and wait for the operator's ENTER.
 
-
-def ask_placement_fix(trial_id: int, lines: list[str], can_recapture: bool, *,
-                      ask=input, say=print, make_safe=None, make_ready=None,
-                      flush=None) -> str:
-    """Show the placement-check flags of one trial and take the operator's answer.
-
-    The flags are printed, then make_safe() switches the servo OFF and verifies it
-    (the real cell; the simulator passes None), so the part may be looked at and
-    handled before anything is answered. The operator then types a letter, never
-    a bare ENTER, after taking the hand out of the cell:
-
-      g  nothing was moved: "proceed", the trial goes on with the detection that
-         was checked (the placement is as called, whatever the flags say);
-      f  the placement was changed to the call: "recapture", the orchestrator
-         captures again and checks the new detection.
-
-    With can_recapture False (the recapture limit is reached) only g is
-    accepted. Either way make_ready() follows (servo ON with the controller
-    checks, stale frames dropped) before the answer is returned. flush() runs
-    before every prompt, so a key typed earlier cannot answer it. A closed stdin
-    stops the run (KeyboardInterrupt), as at the placement prompt.
+    Orchestrator.run_placement_check calls it before the trial, with the servo OFF
+    throughout; nothing here switches it. Not the last check: the operator fixes
+    the placement and presses ENTER, and it is checked again. The last (MAX_CHECKS
+    checks, all flagged): the operator makes sure the part is placed as called,
+    fixing it if not, and presses ENTER, and the trial runs as placed. Any line
+    answers, a bare ENTER included; flush() runs first, so a key typed before the
+    prompt cannot answer it. A closed stdin stops the run (KeyboardInterrupt), as
+    Ctrl+C does.
     """
-    say(f"   Trial {trial_id}: the scene does not match the call:", flush=True)
+    if last:
+        say(f"   Trial {trial_id}: still not as called after {MAX_CHECKS} checks:",
+            flush=True)
+    else:
+        say(f"   Trial {trial_id}: not as called:", flush=True)
     for line in lines:
         say(f"     {line}", flush=True)
-    servo = make_safe is not None          # the real cell; the simulator has none
-    if servo:
-        make_safe()
-    head = "   Servo is OFF. " if servo else "   "
-    if can_recapture:
-        say(head + "Placed as called: move nothing. Not as called: fix it now.",
-            flush=True)
-        prompt = ("   TAKE YOUR HAND OUT of the cell, then type  "
-                  "[g] = nothing moved, go on   [f] = fixed, capture again  ")
-        valid = PLACEMENT_ANSWERS
-        retry = "   Type g or f."
+    if last:
+        say("   Check that the part is placed as called (fix it if not).", flush=True)
+        prompt = "   TAKE YOUR HAND OUT of the cell, then press ENTER to run the trial "
     else:
-        say(head + "Recapture limit reached: this capture is used.", flush=True)
-        prompt = ("   TAKE YOUR HAND OUT of the cell, then type  "
-                  "[g] = go on (Ctrl+C stops the run)  ")
-        valid = {"g": PLACEMENT_ANSWERS["g"]}
-        retry = "   Type g, or press Ctrl+C to stop the run."
-    while True:
-        if flush is not None:
-            flush()
-        try:
-            ans = ask(prompt).strip().lower()
-        except EOFError:
-            logging.getLogger("experiment").error(
-                "stdin closed at the placement check of trial %d; stopping before "
-                "any motion.", trial_id, extra=CONSOLE)
-            raise KeyboardInterrupt from None
-        if ans in valid:
-            break
-        say(retry, flush=True)
-    if make_ready is not None:
-        make_ready()
-    return valid[ans]
+        prompt = "   Fix it, TAKE YOUR HAND OUT of the cell, then press ENTER "
+    if flush is not None:
+        flush()
+    try:
+        ask(prompt)
+    except EOFError:
+        logging.getLogger("experiment").error(
+            "stdin closed at the placement check of trial %d; stopping before "
+            "any motion.", trial_id, extra=CONSOLE)
+        raise KeyboardInterrupt from None
 
 
 def placement_check_enabled(args: argparse.Namespace, pose_rows) -> bool:
@@ -344,30 +317,6 @@ def placement_check_enabled(args: argparse.Namespace, pose_rows) -> bool:
                 and not args.no_placement_check)
 
 
-def make_placement_check_hook(backend, det_queue: queue.Queue, log: logging.Logger, *,
-                              real: bool, ask=input, say=print,
-                              flush=flush_console_input):
-    """The orchestrator's placement_check_hook for this cell.
-
-    On the real cell the servo goes OFF (placement_gate) before the operator is
-    asked anything, and the motion gate switches it ON again after the answer;
-    on both the real cell and the simulator the frames captured meanwhile are
-    dropped, so a recapture reads the scene as the operator left it.
-    """
-    def make_ready() -> None:
-        if real:
-            motion_gate(backend, log)
-        drop_stale_frames(det_queue, log)
-
-    def placement_check_hook(trial_id: int, lines: list[str], can_recapture: bool) -> str:
-        make_safe = (lambda: placement_gate(backend, trial_id, log)) if real else None
-        return ask_placement_fix(trial_id, lines, can_recapture, ask=ask, say=say,
-                                 make_safe=make_safe, make_ready=make_ready,
-                                 flush=flush)
-
-    return placement_check_hook
-
-
 def wire_trial_hooks(orch, args: argparse.Namespace, pose_rows, carton_sizes: dict,
                      backend, det_queue: queue.Queue, log: logging.Logger, *,
                      ask=input, say=print, flush=flush_console_input):
@@ -375,14 +324,22 @@ def wire_trial_hooks(orch, args: argparse.Namespace, pose_rows, carton_sizes: di
 
     pre_trial_hook(i), with a pose list or --confirm-each-trial: on the real cell
     the placement gate (servo OFF, verified), the placement prompt, then with
-    --confirm-each-trial the operator's ENTER, the motion gate (servo ON) and the
-    stale frames dropped. orch.placement_check_hook when placement_check_enabled.
-    orch.human_score_hook with --confirm-each-trial: servo OFF, verified, then the
-    y/n verdict. Pending keys are flushed before every prompt. backend is the
-    real cell's controller, None elsewhere.
+    --confirm-each-trial the operator's ENTER; when placement_check_enabled, the
+    placement check with the servo still OFF (Orchestrator.run_placement_check:
+    stale frames dropped before each of its captures, a flagged placement shown
+    with ask_placement_fix until it is as called, at most MAX_CHECKS checks); then
+    the motion gate (servo ON) and the stale frames dropped, so that run_one_cycle
+    detects afresh. orch.human_score_hook with --confirm-each-trial: servo OFF,
+    verified, then the y/n verdict. Pending keys are flushed before every prompt.
+    backend is the real cell's controller, None elsewhere.
     """
     real = args.mode == "real"
+    check = placement_check_enabled(args, pose_rows)
     pre_trial_hook = None
+
+    def fix_placement(trial_id: int, lines: list[str], last: bool) -> None:
+        ask_placement_fix(trial_id, lines, last, ask=ask, say=say, flush=flush)
+        drop_stale_frames(det_queue, log)    # the next capture: the scene as left
 
     if pose_rows is not None or args.confirm_each_trial:
 
@@ -428,15 +385,16 @@ def wire_trial_hooks(orch, args: argparse.Namespace, pose_rows, carton_sizes: di
                 )
                 raise KeyboardInterrupt from None
 
+            # ─── Placement check, the servo still OFF ───────────────────
+            if check:
+                drop_stale_frames(det_queue, log)
+                orch.run_placement_check(i, fix_placement)
+
             # ─── REAL CELL: motion-enable gate ──────────────────────────
             if real:
                 motion_gate(backend, log)
 
             drop_stale_frames(det_queue, log)
-
-    if placement_check_enabled(args, pose_rows):
-        orch.placement_check_hook = make_placement_check_hook(
-            backend, det_queue, log, real=real, ask=ask, say=say, flush=flush)
 
     if args.confirm_each_trial:
 
@@ -632,8 +590,9 @@ def parse_args() -> argparse.Namespace:
              "moved the robot, whether the part ended up in the right place, and writes "
              "the answer to the human_ok column — the machine's own success column "
              "cannot see a part dropped in transfer. With a pose list it also checks the "
-             "placement before any motion (class, card, stack, carton size, yaw; see "
-             "src/orchestrator/placement_check.py) and lets the operator fix it.")
+             "placement before the servo goes on (class, card, stack, carton size, yaw; "
+             "see src/orchestrator/placement_check.py) and asks the operator to fix it "
+             f"until it is as called, at most {MAX_CHECKS} checks.")
     parser.add_argument(
         "--no-placement-check", action="store_true",
         help="Skip the placement check of --confirm-each-trial. It compares detections "

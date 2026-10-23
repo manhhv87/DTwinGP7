@@ -20,7 +20,7 @@ import pytest
 
 from src.orchestrator.placement_check import (
     CARTON_TOP_MM, FLAG_CODES, FLAT_TOP_MM, HEIGHT_TOL_ABOVE_MM, HEIGHT_TOL_BELOW_MIRROR_MM,
-    HEIGHT_TOL_BELOW_MM, MAX_RECAPTURES, MIN_DEPTH_PIXELS, NEAR_SQUARE_RATIO,
+    HEIGHT_TOL_BELOW_MM, MAX_CHECKS, MIN_DEPTH_PIXELS, NEAR_SQUARE_RATIO,
     POSITION_TOL_MM, YAW_TOL_DEG, CalledPose, called_pose_from_row, carton_sizes_path,
     check_placement, class_label, detection_yaw_period_deg, has_depth, judged_detection,
     load_carton_sizes, lower_tolerance_mm, missing_carton_sizes, top_centre_xy,
@@ -339,8 +339,8 @@ class TestConstants:
         assert FLAT_TOP_MM == {k: v for k, v in FLAT_MM.items() if not k.startswith("carton")}
         assert CARTON_TOP_MM == {80: FLAT_MM["carton_80"], 120: FLAT_MM["carton_120"]}
 
-    def test_recaptures_are_limited(self):
-        assert MAX_RECAPTURES == 3
+    def test_checks_are_limited(self):
+        assert MAX_CHECKS == 3
 
 
 # ── session 1 rebuilt from its logged rows ─────────────────────────────────────

@@ -183,9 +183,9 @@ NO_MOTION_REASONS = frozenset({
 })
 
 
-# Written by the orchestrator when the run was stopped at the placement check
-# (Ctrl+C, a closed stdin, a servo that would not switch off): a record that a
-# capture was taken and the run stopped there, not an outcome of the trial.
+# Written by the orchestrator when the run was stopped at a prompt of the placement
+# check before the trial (Ctrl+C, a closed stdin): a record that a check capture was
+# taken and the run stopped there, not an outcome of the trial.
 ABORTED_AT_CHECK = "aborted_at_check"
 
 
@@ -205,10 +205,11 @@ def _drop_aborted(log, df, source: str):
 
 
 def _placement_table(df, split_col: str | None):
-    """Per arm (split_col, else one row 'all'), the trials the placement check
-    judged: checked, flagged at the first check, captured again after a change
-    (recaptured), and gone on over flags (over_flags, placement_override). None
-    when the runs carry no placement check."""
+    """Per arm (split_col, else one row 'all'), the trials whose placement was
+    checked before the trial: checked, flagged at the first check, asked to fix it
+    at least once (fixed: placement_recaptures > 0), and run with the last check
+    still flagged (limit: placement_override). None when the runs carry no
+    placement check."""
     import pandas as pd
 
     if "placement_events" not in df.columns:
@@ -225,8 +226,8 @@ def _placement_table(df, split_col: str | None):
     flags = (sub["placement_flags"].fillna("").astype(str).str.strip()
              if "placement_flags" in sub.columns else pd.Series("", index=sub.index))
     table = pd.DataFrame({"checked": 1, "flagged": flags.ne("").astype(int),
-                          "recaptured": (col("placement_recaptures") > 0).astype(int),
-                          "over_flags": (col("placement_override") > 0).astype(int)},
+                          "fixed": (col("placement_recaptures") > 0).astype(int),
+                          "limit": (col("placement_override") > 0).astype(int)},
                          index=sub.index)
     by = (sub[split_col].astype(str) if split_col and split_col in sub.columns
           else pd.Series("all", index=sub.index))
@@ -237,8 +238,9 @@ def _log_placement(log, df, split_col: str | None) -> None:
     """Log _placement_table, when the runs carry the placement check."""
     table = _placement_table(df, split_col)
     if table is not None:
-        log.info("Placement check (trials judged / flagged at the first check / "
-                 "captured again / went on over flags):\n%s", table)
+        log.info("Placement check before the trial (trials checked / flagged at the "
+                 "first check / asked to fix / run with the last check still "
+                 "flagged):\n%s", table)
 
 
 def _no_motion(df):

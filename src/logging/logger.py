@@ -104,29 +104,31 @@ CONTEXT_FIELDNAMES = [
     # rgbd lies at the median depth and in plane at the class height.
     "top_x_mm",
     "top_y_mm",
-    # Placement check before motion (03 --confirm-each-trial with a pose list, see
-    # Orchestrator._placement_check). Empty when the check did not run.
+    # Placement check before the trial, servo OFF (03 --confirm-each-trial with a
+    # pose list, see Orchestrator.run_placement_check). Its captures are never used
+    # for the trial, which detects afresh. Empty when the check did not run.
     #   placement_flags       flags of the first check, '+'-joined (class,
     #                         position, stack, carton_size, yaw); empty when none.
-    #   placement_recaptures  captures taken after the operator changed the
-    #                         placement (at most MAX_RECAPTURES).
-    #   placement_override    1 when the trial went on with flags still raised on
-    #                         its last check: the operator declared the placement as
-    #                         called (proceed) or the recapture limit was reached
-    #                         (limit).
+    #   placement_recaptures  checks after the first, each after the operator was
+    #                         asked to fix the placement (0 to MAX_CHECKS - 1).
+    #   placement_override    1 when the trial ran after its last check (the
+    #                         MAX_CHECKS-th) was still flagged (limit), else 0.
     #   placement_events      every check as flags:outcome, joined by ';'. flags is
     #                         'none' when nothing was flagged and 'noframe' when the
     #                         detection window received no frame; outcome is clear,
-    #                         skip (no frame), recapture, proceed, limit, or abort
-    #                         (the run was stopped at the check).
-    #   placement_captures    JSON list, one entry per capture: capture number,
+    #                         skip (no frame: nothing checked, the trial goes on),
+    #                         fixed (the operator was asked to fix it: checked
+    #                         again), limit (the last check, still flagged: the
+    #                         trial runs as placed), or abort (the run was stopped
+    #                         at the check).
+    #   placement_captures    JSON list, one entry per check: capture number,
     #                         frames received, frame path, the judged detection's
     #                         class, top_x_mm, top_y_mm, h_depth_mm and yaw_deg
     #                         (null when absent), its flags, the outcome and, for a
-    #                         flagged capture, answer_s, the seconds the operator's
-    #                         turn took (servo OFF, the answer, servo ON again).
-    #   placement_check_s     seconds spent in the check (operator, servo and
-    #                         recaptures); included in cycle_time_s.
+    #                         flagged check, answer_s, the seconds until the
+    #                         operator's ENTER.
+    #   placement_check_s     seconds from the first check to the motion gate; not
+    #                         in cycle_time_s, which starts after the checks.
     "placement_flags",
     "placement_recaptures",
     "placement_override",
