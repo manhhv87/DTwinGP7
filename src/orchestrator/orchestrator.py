@@ -28,9 +28,15 @@ import numpy as np
 
 from .coord_conv import (
     camera_to_base, camera_yaw_to_base, load_calibration, make_grasp_pose)
+from .placement_check import MAX_RECAPTURES, check_placement, top_centre_xy
 from .state_machine import PickPlaceStateMachine, PickState
 
 logger = logging.getLogger(__name__)
+
+# What a blinded console shows for every trial that ends before any motion, in
+# place of the logged reason: which guard refused, and on what numbers, differs
+# between depth modes (src/utils/blind_console.py reads the "console" extra).
+_REFUSED = "Trial {}: refused before motion (details in the log)"
 
 
 # Default config values — override via dict passed in.
@@ -181,6 +187,14 @@ class Orchestrator:
         # trial that actually moved the robot. The runner sets it under
         # --confirm-each-trial; its answer goes to the `human_ok` column.
         self.human_score_hook: Any = None
+        # Placement check (see _placement_check). The staging the current trial
+        # called, a placement_check.CalledPose set per trial by the runner, and an
+        # optional callable(trial_id, lines, can_recapture) -> "recapture" or
+        # "proceed" that shows the flags to the operator. Both must be set for the
+        # check to run. Neither is read by any motion decision.
+        self.current_called_pose: Any = None
+        self.placement_check_hook: Any = None
+        self._placement: dict[str, Any] = {}
 
         self._set_speed()
 
@@ -1556,6 +1570,7 @@ class Orchestrator:
         self.sm.reset()
         self._last_support_height_mm = 0.0
         self._last_place_z_mm = None
+        self._placement = {}
         t_start = time.time()
         # Every cycle is one ATTEMPT. Counting here (not after reachability) so
         # detection-miss / timeout / unreachable failures are included in the
@@ -1573,6 +1588,44 @@ class Orchestrator:
 
         # ─── DETECT ───
         self.sm.transition_to(PickState.DETECT)
+        objects, received_frames = self._detect_objects(trial_id)
+        if (self.placement_check_hook is not None
+                and self.current_called_pose is not None):
+            objects, received_frames = self._placement_check(
+                trial_id, objects, received_frames)
+
+        if not objects:
+            self.stats["failed"] += 1
+            if received_frames == 0:
+                logger.warning(
+                    "Trial %d: no perception message received within %.2fs",
+                    trial_id,
+                    float(self.config["detection_timeout_s"]),
+                    extra={"console": f"Trial {trial_id}: no camera frame arrived; "
+                                      "check the camera (details in the log)"},
+                )
+                self._log_trial(
+                    trial_id, False, "detection_timeout", t_start, None
+                )
+            else:
+                logger.info(
+                    "Trial %d: no usable object after %d frame(s) in %.2fs",
+                    trial_id,
+                    received_frames,
+                    float(self.config["detection_timeout_s"]),
+                    extra={"console": _REFUSED.format(trial_id)},
+                )
+                self.sm.transition_to(PickState.IDLE, "no objects")
+                self._log_trial(
+                    trial_id, False, "detection_miss", t_start, None
+                )
+            return False
+
+        return self._plan_and_execute(trial_id, objects, t_start)
+
+    def _detect_objects(self, trial_id: int) -> tuple[list[dict[str, Any]], int]:
+        """Consume perception messages until one holds a usable object, or the
+        detection window ends. Returns (objects, number of messages received)."""
         self._last_frame_path = ""
 
         # IMPORTANT: detection_timeout_s is a WINDOW for finding a usable
@@ -1628,30 +1681,94 @@ class Orchestrator:
                     max(0.0, detect_deadline - time.monotonic()),
                 )
 
-        if not objects:
-            self.stats["failed"] += 1
-            if received_frames == 0:
-                logger.warning(
-                    "Trial %d: no perception message received within %.2fs",
-                    trial_id,
-                    detect_timeout,
-                )
-                self._log_trial(
-                    trial_id, False, "detection_timeout", t_start, None
-                )
-            else:
-                logger.info(
-                    "Trial %d: no usable object after %d frame(s) in %.2fs",
-                    trial_id,
-                    received_frames,
-                    detect_timeout,
-                )
-                self.sm.transition_to(PickState.IDLE, "no objects")
-                self._log_trial(
-                    trial_id, False, "detection_miss", t_start, None
-                )
-            return False
+        return objects, received_frames
 
+    def _placement_check(
+        self,
+        trial_id: int,
+        objects: list[dict[str, Any]],
+        received_frames: int,
+    ) -> tuple[list[dict[str, Any]], int]:
+        """Show the operator how the scene differs from the called pose, before
+        any planning or motion, and capture again when they have fixed it.
+
+        The flags come from placement_check.check_placement, which reads only
+        quantities that are the same in every depth mode, and are judged on the
+        detection this cycle would act on: the class lock's first object, or none.
+        With no flag the cycle goes on at once. Otherwise placement_check_hook
+        shows them and returns "recapture" (the operator fixed the placement: the
+        detection window runs again and the new detection is checked in turn) or
+        "proceed" (the placement is as called: the cycle goes on with the detection
+        that was checked, so a perception failure stays a failure). After
+        MAX_RECAPTURES recaptures the hook is told it cannot ask, and the cycle
+        goes on with the last detection.
+
+        Recorded for the CSV: the flags of the first check, the number of
+        recaptures, whether the operator went on over a flag, and every check
+        with its outcome (clear, recapture, proceed or limit). Operator time
+        spent here counts into cycle_time_s, as the scoring prompt already does
+        under --confirm-each-trial.
+        """
+        called = self.current_called_pose
+        limit = MAX_RECAPTURES
+        events: list[str] = []
+        first: list[str] | None = None
+        recaptures = 0
+        override = False
+        while True:
+            flags = check_placement(
+                called, objects[0] if objects else None,
+                frames_seen=received_frames > 0,
+                T_BC=self.T_BC, table_plane=self.config.get("table_plane"),
+                class_sizes=self.config.get("class_sizes_mm"))
+            codes = [f.code for f in flags]
+            if first is None:
+                first = codes
+            if not flags:
+                events.append("none:clear")
+                logger.info("PLACEMENT CHECK trial %d (%s): clear", trial_id,
+                            getattr(called, "pose_id", ""))
+                break
+            can_recapture = recaptures < limit
+            logger.info("PLACEMENT CHECK trial %d (%s): %s", trial_id,
+                        getattr(called, "pose_id", ""),
+                        " / ".join(f.text for f in flags))
+            answer = self.placement_check_hook(
+                trial_id, [f.text for f in flags], can_recapture)
+            label = "+".join(codes)
+            if can_recapture and answer == "recapture":
+                events.append(f"{label}:recapture")
+                recaptures += 1
+                logger.info("PLACEMENT CHECK trial %d: operator fixed the placement, "
+                            "capture %d", trial_id, recaptures + 1)
+                objects, received_frames = self._detect_objects(trial_id)
+                continue
+            if can_recapture:
+                events.append(f"{label}:proceed")
+                override = True
+                logger.info("PLACEMENT CHECK trial %d: operator declared the "
+                            "placement as called; going on with this detection",
+                            trial_id)
+            else:
+                events.append(f"{label}:limit")
+                logger.info("PLACEMENT CHECK trial %d: %d recaptures, the limit; "
+                            "going on with this detection", trial_id, recaptures)
+            break
+        self._placement = {
+            "placement_flags": "+".join(first or []),
+            "placement_recaptures": recaptures,
+            "placement_override": int(override),
+            "placement_events": ";".join(events),
+        }
+        return objects, received_frames
+
+    def _plan_and_execute(
+        self,
+        trial_id: int,
+        objects: list[dict[str, Any]],
+        t_start: float,
+    ) -> bool:
+        """PLAN, the motion guards and the motion, for the detected objects."""
         # ─── PLAN: try each object until one is reachable ───
         self.sm.transition_to(PickState.PLAN)
         dz = self.config["approach_height_mm"]
@@ -1699,7 +1816,8 @@ class Orchestrator:
                     reason = judge(*args)
                     if reason is not None:
                         logger.error("Trial %d: pick refused (%s): %s",
-                                     trial_id, code, reason)
+                                     trial_id, code, reason,
+                                     extra={"console": _REFUSED.format(trial_id)})
                         self.sm.fail(code)
                         self.stats["failed"] += 1
                         self._log_trial(trial_id, False, code, t_start, obj)
@@ -1875,6 +1993,7 @@ class Orchestrator:
                     "(%s) -> trial FAIL, NO MOTION dispatched",
                     trial_id,
                     msg,
+                    extra={"console": _REFUSED.format(trial_id)},
                 )
                 self.sm.fail("depth_geometry_reject")
                 self.stats["failed"] += 1
@@ -1945,7 +2064,8 @@ class Orchestrator:
             return ok
 
         # No object was reachable.
-        logger.info("Trial %d: all objects out of reach", trial_id)
+        logger.info("Trial %d: all objects out of reach", trial_id,
+                    extra={"console": _REFUSED.format(trial_id)})
         self.sm.fail("unreachable")
         self.stats["failed"] += 1
         self._log_trial(trial_id, False, "unreachable", t_start, objects[0])
@@ -1979,7 +2099,8 @@ class Orchestrator:
                     # would OMIT the current→lift segment (the riskiest one) and
                     # validate a TRUNCATED path. Abort rather than move blind.
                     logger.error("Trial %d: no start joints — cannot predict safety, "
-                                 "aborting trial", trial_id)
+                                 "aborting trial", trial_id,
+                                 extra={"console": _REFUSED.format(trial_id)})
                     self.stats["failed"] += 1
                     self.sm.fail("no_start_joints_for_prediction")
                     return False
@@ -2002,7 +2123,8 @@ class Orchestrator:
             )
             if reason is not None:
                 logger.warning("Trial %d: predictive safety reject — %s",
-                               trial_id, reason)
+                               trial_id, reason,
+                               extra={"console": _REFUSED.format(trial_id)})
                 self.stats["failed"] += 1
                 self.sm.fail(reason)
                 return False
@@ -2035,7 +2157,10 @@ class Orchestrator:
                     if reason is not None:
                         logger.error("Trial %d: cycle refused, %s; return the "
                                      "robot to HOME and continue",
-                                     trial_id, reason)
+                                     trial_id, reason,
+                                     extra={"console": (
+                                         f"Trial {trial_id}: robot not at HOME; return "
+                                         "it to HOME and continue (details in the log)")})
                         self.stats["failed"] += 1
                         self.sm.fail("not_at_home")
                         return False
@@ -2133,7 +2258,9 @@ class Orchestrator:
         except Exception as e:  # noqa: BLE001
             self.stats["failed"] += 1
             self.sm.fail(f"motion_error: {e}")
-            logger.error("Trial %d: pick failed — %s", trial_id, e)
+            logger.error("Trial %d: pick failed — %s", trial_id, e,
+                         extra={"console": f"Trial {trial_id}: the cycle stopped with "
+                                           "an error (details in the log)"})
             self._return_home()
             return False
 
@@ -2202,7 +2329,7 @@ class Orchestrator:
         """
         if self.config.get("is_real_mode", False):
             logger.warning("Real cell: robot left where it stopped; the "
-                           "operator returns it to HOME")
+                           "operator returns it to HOME", extra={"console": True})
             return
         try:
             home_list = None
@@ -2327,6 +2454,18 @@ class Orchestrator:
                 extra["fit_iou"] = round(float(obj["fit_iou"]), 3)
             if obj.get("fit_plateau_mm") is not None:
                 extra["fit_plateau_mm"] = round(float(obj["fit_plateau_mm"]), 1)
+            # Centre of the top face, the same in every depth mode; the placement
+            # check compares it with the card (placement_check.top_centre_xy).
+            centre = top_centre_xy(obj, getattr(self, "T_BC", None),
+                                   (getattr(self, "config", None) or {}).get("table_plane"))
+            if centre is not None:
+                extra["top_x_mm"] = round(centre[0], 1)
+                extra["top_y_mm"] = round(centre[1], 1)
+        called = getattr(self, "current_called_pose", None)
+        if called is not None:
+            extra["carton_mm"] = getattr(called, "carton_mm", None) or ""
+            extra["stack_on_carton_mm"] = getattr(called, "stack_on_carton_mm", None) or ""
+        extra.update(getattr(self, "_placement", None) or {})
         if ask_human and self.human_score_hook is not None:
             # Ctrl+C propagates: the operator meant to stop, and this row is lost
             # on purpose rather than being written with a made-up verdict.

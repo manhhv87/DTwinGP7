@@ -95,6 +95,25 @@ CONTEXT_FIELDNAMES = [
     # human_ok=0. Empty when nobody scored the trial.
     "human_ok",
     "run_id",
+    # Called carton size of the target and of the support, mm (80 or 120), from the
+    # pose list's carton sidecar; empty for other classes.
+    "carton_mm",
+    "stack_on_carton_mm",
+    # Centre of the part's top face in the base frame, the same in every depth mode
+    # (placement_check.top_centre_xy); det_x/y_mm is the commanded point, which in
+    # rgbd lies at the median depth and in plane at the class height.
+    "top_x_mm",
+    "top_y_mm",
+    # Placement check before motion (03 --confirm-each-trial with a pose list):
+    # the flags of the first check, '+'-joined (class, position, stack, carton_size,
+    # yaw), the number of captures after the operator fixed the placement, 1 when the
+    # operator went on over a flag, and every check as flags:outcome joined by ';'
+    # (flags 'none' when there was no flag; outcome clear, recapture, proceed or
+    # limit). Empty when the check did not run.
+    "placement_flags",
+    "placement_recaptures",
+    "placement_override",
+    "placement_events",
 ]
 
 

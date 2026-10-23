@@ -16,16 +16,24 @@ tired, room light through the afternoon -- lands in the discordant cells of the 
 test looking exactly like a configuration effect. Here the arms are interleaved in
 short blocks whose order is drawn per round.
 
+The seed. Which code is which arm, and the block order, follow from one seed. A seed
+that anyone can read (a guide, the command line, the shell history) lets them rerun
+this script and recompute the key: session 1 of E2 printed S=1 in the operator guide,
+and the mapping was reproduced from it. Without --seed a secret seed is drawn from
+the operating system (secrets) and written only to the sealed key file, never to the
+console. --seed is kept for tests and for reproducing a schedule on purpose.
+
 Usage:
     python tools/run_blinded_campaign.py \\
         --arm rgbd   "--depth-mode rgbd" \\
         --arm plane  "--depth-mode plane" \\
         --arm fusion "--depth-mode fusion" \\
         --pose-list config/pose_lists/std_v2.csv --trials 200 --block 25 \\
-        --session 2026-09-20-morning --operator AN --seed 7 \\
+        --session 2026-09-20-morning --operator AN \\
         --common "--mode real --ik-source yrc --tool-no 1 --confirm-each-trial --no-viewport-mirror"
 
-Dry run first (prints the schedule, starts nothing):
+Dry run first (prints the schedule, starts nothing; without --seed it draws its own
+secret seed, so the real run will show a different order):
     ... --dry-run
 
 The key file is written before the first block, so an interrupted campaign is still
@@ -35,6 +43,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import secrets
 import shlex
 import subprocess
 import sys
@@ -42,6 +51,7 @@ from datetime import datetime
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(PROJECT_ROOT))
 CODES = "ABCDEFGHJKLMNPQRSTUVWXYZ"          # no I, no O
 
 
@@ -68,7 +78,11 @@ def parse_args() -> argparse.Namespace:
                         "session; long ones cost less restaging. Default 25.")
     p.add_argument("--session", required=True, help="Session tag, e.g. 2026-09-20-morning")
     p.add_argument("--operator", default="", help="Who is placing the parts")
-    p.add_argument("--seed", type=int, default=0, help="Seed for the block order")
+    p.add_argument("--seed", type=int, default=None,
+                   help="Seed for the code assignment and the block order, for tests and "
+                        "for reproducing a schedule on purpose. Without it a secret seed is "
+                        "drawn from the operating system and written only to the sealed "
+                        "key file. Never print the seed of a live campaign in a guide.")
     p.add_argument("--key-out", default="results/blinding_keys",
                    help="Where the sealed key file is written")
     p.add_argument("--dry-run", action="store_true",
@@ -109,7 +123,15 @@ def main() -> int:
             return 2
 
     import random
-    rng = random.Random(args.seed)
+
+    from src.utils.provenance import git_provenance
+
+    seed_source = "cli" if args.seed is not None else "secrets"
+    seed = args.seed if args.seed is not None else secrets.randbits(64)
+    rng = random.Random(seed)
+    if args.seed is not None and not args.dry_run:
+        print("WARNING: --seed was given, so anyone who knows it can recompute which "
+              "code is which arm. Leave it out for a blinded campaign.", file=sys.stderr)
 
     # Codes are assigned at random, so "A" is not the first arm on the command line.
     codes = list(CODES[:len(arms)])
@@ -129,8 +151,10 @@ def main() -> int:
     key = {
         "session": args.session,
         "operator": args.operator,
-        "seed": args.seed,
+        "seed": seed,
+        "seed_source": seed_source,
         "created": datetime.now().isoformat(timespec="seconds"),
+        "code": git_provenance(PROJECT_ROOT),
         "pose_list": args.pose_list,
         "block": args.block,
         "trials_per_arm": args.trials,
@@ -140,6 +164,16 @@ def main() -> int:
                       "code": code_of[n], "arm": n, "slice": f"{lo}:{hi}"}
                      for i, (n, lo, hi) in enumerate(schedule)],
     }
+
+    # The placement check of 03 compares detections with the call. With arms that
+    # differ in the model the detections, and so the flags, differ by arm: the check
+    # is switched off for every arm of such a campaign.
+    common = shlex.split(args.common)
+    if (any("--model-path" in shlex.split(extra) for _, extra in arms)
+            and "--no-placement-check" not in common):
+        common.append("--no-placement-check")
+        print("Arms differ in --model-path: the placement check is off for every arm, "
+              "since its flags would differ by arm.")
 
     print(f"{len(arms)} arm(s), {len(schedule)} block(s) of {args.block} trials.")
     print("Order of arm CODES (the true names are sealed):")
@@ -163,7 +197,6 @@ def main() -> int:
     print(f"\nSealed key: {key_file}")
     print("Do not open it until every block is run and scored.\n")
 
-    common = shlex.split(args.common)
     for i, (name, lo, hi) in enumerate(schedule):
         block_id = f"{args.session}-b{i + 1:03d}"
         cmd = [sys.executable, str(PROJECT_ROOT / "scripts" / "03_run_experiment.py"),
