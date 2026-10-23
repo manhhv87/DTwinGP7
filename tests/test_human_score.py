@@ -222,16 +222,16 @@ class TestPlacementColumns:
         mod = _analyze_mod()
         df = pd.DataFrame({
             "depth_mode": ["rgbd", "rgbd", "plane", "plane", "plane"],
-            "placement_events": ["none:clear", "stack:recapture;none:clear",
-                                 "yaw:proceed", "position:recapture;position:limit", ""],
-            "placement_flags": ["", "stack", "yaw", "position", ""],
-            "placement_recaptures": [0, 1, 0, 3, None],
-            "placement_override": [0, 0, 1, 1, None]})
+            "placement_events": ["none:clear", "stack:fixed;none:clear", "noframe:skip",
+                                 "position:fixed;position:fixed;position:limit", ""],
+            "placement_flags": ["", "stack", "", "position", ""],
+            "placement_recaptures": [0, 1, 0, 2, None],
+            "placement_override": [0, 0, 0, 1, None]})
         table = mod._placement_table(df, "depth_mode")
         assert table.loc["rgbd"].to_dict() == {"checked": 2, "flagged": 1,
-                                                "recaptured": 1, "over_flags": 0}
-        assert table.loc["plane"].to_dict() == {"checked": 2, "flagged": 2,
-                                                 "recaptured": 1, "over_flags": 2}
+                                                "fixed": 1, "limit": 0}
+        assert table.loc["plane"].to_dict() == {"checked": 2, "flagged": 1,
+                                                 "fixed": 1, "limit": 1}
         assert mod._placement_table(df.drop(columns="placement_events"), None) is None
 
 

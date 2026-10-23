@@ -2,21 +2,25 @@
 test_operator_hooks.py
 ──────────────────────
 The operator side of scripts/03_run_experiment.py: the servo gates, the placement
-prompt, the placement check's question, the verdict, and how they are wired.
+prompt, the placement check before the trial, the verdict, and how they are wired.
 
 What must hold for session 2 of E2:
 
   * whenever the robot waits for the operator, the servo is OFF and verified;
-  * at a placement check the flags are shown, the servo goes OFF, and only a typed
-    letter answers: g goes on with the detection that was checked, f captures again;
-    a bare ENTER, or a key typed before the prompt, answers nothing;
-  * after either answer the motion gate switches the servo ON and stale frames are
-    dropped before another frame is read;
+  * after the operator's ENTER the placement is checked with the servo still OFF,
+    stale frames dropped before every check capture; a flagged placement is shown
+    and the operator asked to fix it, any line (a bare ENTER too) answering, until
+    it is as called or three checks were made; nothing switches the servo meanwhile;
+  * only after the last answer does the motion gate switch the servo ON, and the
+    trial then detects afresh: no check capture is used for it;
+  * keys typed ahead are flushed before every prompt;
+  * Ctrl+C or a closed stdin at a check prompt writes aborted_at_check and stops;
   * the hooks are installed only where they belong;
   * a blinded run reports an unexpected error with one neutral line.
 
-The controller is a FakeCell (servo flag and the calls made) and the console a
-script of answers that records, for every prompt, whether the servo was ON.
+The controller is a FakeCell (servo flag and the calls made), the console a script
+of answers, and the perception queue a Camera that hands one scripted frame to the
+detection window after each drop of stale frames; all three write one timeline.
 
 Run:
     pytest tests/test_operator_hooks.py -v
@@ -46,6 +50,8 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 LOG = logging.getLogger("test_operator_hooks")
 STACK_LINE = ("STACK: top at 42 mm, 126 mm expected for inox_box on metal_box; "
               "check the support")
+FIX = "   Fix it, TAKE YOUR HAND OUT of the cell, then press ENTER "
+RUN = "   TAKE YOUR HAND OUT of the cell, then press ENTER to run the trial "
 
 
 def _load_runner():
@@ -60,34 +66,42 @@ RUNNER = _load_runner()
 
 
 class FakeCell:
-    """The YRC1000 as the gates see it: a status dict and the calls made."""
+    """The YRC1000 as the gates see it: a status dict and the calls made, also put
+    on a console's timeline when events is set."""
 
     def __init__(self, servo=False, servo_off_works=True, **status):
         self.status = {"remote": True, "servo": servo, "running": False,
                        "alarm": False, "error": False, "hold": False, **status}
         self.servo_off_works = servo_off_works
         self.calls = []
+        self.events = None
+
+    def _call(self, name):
+        self.calls.append(name)
+        if self.events is not None:
+            self.events.append(("cell", name))
 
     def read_controller_status(self):
-        self.calls.append("status")
+        self._call("status")
         return dict(self.status)
 
     def servo_off(self):
-        self.calls.append("servo_off")
+        self._call("servo_off")
         if self.servo_off_works:
             self.status["servo"] = False
 
     def servo_on(self):
-        self.calls.append("servo_on")
+        self._call("servo_on")
         self.status["servo"] = True
 
     def Stop(self):
-        self.calls.append("stop")
+        self._call("stop")
 
 
 class Console:
-    """Scripted answers; records each prompt with the servo state at that moment,
-    every line said, and every flush, in one ordered event list."""
+    """Scripted answers (an exception class is raised instead); records each prompt
+    with the servo state at that moment, every line said, and every flush, in one
+    ordered event list. No answer left: the stdin is closed (EOFError)."""
 
     def __init__(self, cell=None, *answers):
         self.cell = cell
@@ -99,7 +113,10 @@ class Console:
                             else self.cell.status["servo"]))
         if not self.answers:
             raise EOFError
-        return self.answers.pop(0)
+        answer = self.answers.pop(0)
+        if isinstance(answer, type) and issubclass(answer, BaseException):
+            raise answer
+        return answer
 
     def say(self, *a, **k):
         self.events.append(("say", " ".join(str(x) for x in a)))
@@ -116,16 +133,79 @@ class Console:
         return [e[1] for e in self.events if e[0] == "say"]
 
 
-class ScriptedQueue(queue.Queue):
-    """Hands out one scripted perception message per detection window; the
-    operator-side drains find nothing, so every scripted frame is read in turn."""
+class TypeAhead(Console):
+    """An operator who presses every answer twice: the second press waits in the
+    console buffer, where it would answer the next prompt unless flushed."""
+
+    def __init__(self, cell=None, *answers):
+        super().__init__(cell, *answers)
+        self.pending = []
+        self.answered_ahead = 0
+
+    def flush(self):
+        super().flush()
+        self.pending.clear()
+
+    def ask(self, prompt):
+        if self.pending:
+            self.answered_ahead += 1
+            return self.pending.pop(0)
+        answer = super().ask(prompt)
+        self.pending.append(answer)
+        return answer
+
+
+class Camera(queue.Queue):
+    """The perception queue as 03 uses it. 03 drops the stale frames after every
+    ENTER and after the motion gate (get_nowait until Empty); the next detection
+    window then reads one fresh frame, the next of the script, and finds nothing
+    more. A window not preceded by a drop gets no frame. Every drop and every frame
+    read goes on the timeline, the read with the servo state at that moment."""
+
+    def __init__(self, frames, cell=None, events=None):
+        super().__init__()
+        self.frames = list(frames)
+        self.cell = cell
+        self.events = [] if events is None else events
+        self._fresh = False
 
     def get_nowait(self):
+        self.events.append(("drop",))
+        self._fresh = True
         raise queue.Empty
+
+    def get(self, block=True, timeout=None):
+        if not (self._fresh and self.frames):
+            raise queue.Empty
+        self._fresh = False
+        msg = self.frames.pop(0)
+        self.events.append(("frame", msg.get("frame_path", ""),
+                            None if self.cell is None else self.cell.status["servo"]))
+        return msg
 
 
 def _msg(*objects, frame=""):
     return {"timestamp": 0.0, "objects": list(objects), "fps": 20.0, "frame_path": frame}
+
+
+_PROMPT_NAMES = {"Placed it?": "place", "Fix it": "fix", "run the trial": "run",
+                 "did the robot": "verdict"}
+
+
+def _timeline(events):
+    """The flow in short, in order: prompts, drops of stale frames, frames read
+    (with the servo state), and the servo switched."""
+    out = []
+    for e in events:
+        if e[0] == "ask":
+            out.append("ask:" + next(v for k, v in _PROMPT_NAMES.items() if k in e[1]))
+        elif e[0] == "frame":
+            out.append(f"frame:{e[1]}:{'on' if e[2] else 'off'}")
+        elif e[0] == "drop":
+            out.append("drop")
+        elif e[0] == "cell" and e[1] in ("servo_on", "servo_off"):
+            out.append(e[1])
+    return out
 
 
 # ── the gates ─────────────────────────────────────────────────────────────────
@@ -201,65 +281,35 @@ class TestFlush:
         assert flushed == [7]
 
 
-# ── the question at a placement check ─────────────────────────────────────────
+# ── the prompt at a flagged check ─────────────────────────────────────────────
 
 class TestAsk:
     @staticmethod
-    def _ask(*answers, can=True, servo=True):
-        cell = FakeCell(servo=True) if servo else None
-        con = Console(cell, *answers)
-
-        def make_safe():
-            con.events.append(("safe",))
-            RUNNER.placement_gate(cell, 5, LOG)
-
-        out = RUNNER.ask_placement_fix(
-            5, [STACK_LINE], can, ask=con.ask, say=con.say,
-            make_safe=make_safe if servo else None,
-            make_ready=lambda: con.events.append(("ready",)), flush=con.flush)
+    def _ask(*answers, last=False):
+        con = Console(None, *answers)
+        out = RUNNER.ask_placement_fix(5, [STACK_LINE], last, ask=con.ask, say=con.say,
+                                       flush=con.flush)
         return out, con
 
-    def test_g_goes_on_with_the_checked_detection(self):
-        out, con = self._ask("g")
-        assert out == "proceed"
-        kinds = [e[0] for e in con.events]
-        # flags first, then the servo OFF, then the question, then the motion gate
-        assert kinds == ["say", "say", "safe", "say", "flush", "ask", "ready"]
-        assert con.said[0] == "   Trial 5: the scene does not match the call:"
-        assert con.said[1] == "     " + STACK_LINE
-        assert con.said[2] == ("   Servo is OFF. Placed as called: move nothing. "
-                               "Not as called: fix it now.")
-        assert con.prompts[0][1] == ("   TAKE YOUR HAND OUT of the cell, then type  "
-                                     "[g] = nothing moved, go on   "
-                                     "[f] = fixed, capture again  ")
-        assert con.prompts[0][2] is False                     # asked with servo OFF
+    def test_a_flag_asks_for_a_fix_after_a_flush(self):
+        out, con = self._ask("")
+        assert out is None
+        assert [e[0] for e in con.events] == ["say", "say", "flush", "ask"]
+        assert con.said == ["   Trial 5: not as called:", "     " + STACK_LINE]
+        assert con.prompts[0][1] == FIX
 
-    def test_f_captures_again(self):
-        out, con = self._ask("F")
-        assert out == "recapture" and [e[0] for e in con.events][-1] == "ready"
+    def test_the_last_check_asks_to_make_sure_and_runs_the_trial(self):
+        out, con = self._ask("", last=True)
+        assert out is None
+        assert con.said == ["   Trial 5: still not as called after 3 checks:",
+                            "     " + STACK_LINE,
+                            "   Check that the part is placed as called (fix it if not)."]
+        assert con.prompts[0][1] == RUN
 
-    def test_a_bare_enter_or_another_key_answers_nothing(self):
-        """A second ENTER pressed at the placement prompt used to answer the check
-        (b9f4e52, 'position:proceed' for a part 70 mm off its card)."""
-        out, con = self._ask("", "s", "y", "g")
-        assert out == "proceed"
-        assert con.said.count("   Type g or f.") == 3
-        assert [e[0] for e in con.events].count("flush") == 4   # before every prompt
-
-    def test_at_the_limit_only_g_is_taken(self):
-        out, con = self._ask("f", "g", can=False)
-        assert out == "proceed"
-        assert con.said[2] == ("   Servo is OFF. Recapture limit reached: "
-                               "this capture is used.")
-        assert con.prompts[0][1] == ("   TAKE YOUR HAND OUT of the cell, then type  "
-                                     "[g] = go on (Ctrl+C stops the run)  ")
-        assert con.said[3] == "   Type g, or press Ctrl+C to stop the run."
-
-    def test_the_simulator_names_no_servo(self):
-        out, con = self._ask("g", servo=False)
-        assert out == "proceed"
-        assert not any("Servo" in s for s in con.said)
-        assert con.said[2] == "   Placed as called: move nothing. Not as called: fix it now."
+    @pytest.mark.parametrize("answer", ["", "g", "anything"])
+    def test_any_line_answers_a_bare_enter_too(self, answer):
+        _, con = self._ask(answer, "never read")
+        assert len(con.prompts) == 1 and con.answers == ["never read"]
 
     def test_a_closed_stdin_stops_the_run_and_says_so(self, caplog):
         with caplog.at_level(logging.ERROR, logger="experiment"):
@@ -268,44 +318,9 @@ class TestAsk:
         assert any("stdin closed at the placement check of trial 5" in r.getMessage()
                    and getattr(r, "console", None) for r in caplog.records)
 
-    def test_the_answers(self):
-        assert RUNNER.PLACEMENT_ANSWERS == {"g": "proceed", "f": "recapture"}
-
-
-# ── the hook the orchestrator calls ───────────────────────────────────────────
-
-class TestHookFactory:
-    @staticmethod
-    def _hook(cell, q, *answers, real=True):
-        con = Console(cell, *answers)
-        hook = RUNNER.make_placement_check_hook(cell, q, LOG, real=real, ask=con.ask,
-                                                say=con.say, flush=con.flush)
-        return hook, con
-
-    @pytest.mark.parametrize("answer,out", [("f", "recapture"), ("g", "proceed")])
-    def test_the_servo_is_off_while_asked_and_on_again_after(self, answer, out):
-        cell = FakeCell(servo=True)          # the motion gate left it ON to detect
-        q = queue.Queue()
-        q.put("stale")
-        hook, con = self._hook(cell, q, answer)
-        assert hook(4, [STACK_LINE], True) == out
-        assert [p[2] for p in con.prompts] == [False]
-        assert cell.calls == ["status", "servo_off", "status",      # placement gate
-                              "status", "servo_on", "status"]      # motion gate
-        assert cell.status["servo"] is True and q.empty()
-
-    def test_a_servo_that_will_not_switch_off_stops_before_the_question(self):
-        cell = FakeCell(servo=True, servo_off_works=False)
-        hook, con = self._hook(cell, queue.Queue(), "g")
-        with pytest.raises(RUNNER.CellGateError):
-            hook(4, [STACK_LINE], True)
-        assert con.prompts == []
-
-    def test_the_simulator_only_drops_the_frames(self):
-        q = queue.Queue()
-        q.put("stale")
-        hook, con = self._hook(None, q, "f", real=False)
-        assert hook(1, [STACK_LINE], True) == "recapture" and q.empty()
+    def test_the_letters_and_the_check_inside_the_cycle_are_gone(self):
+        for name in ("PLACEMENT_ANSWERS", "make_placement_check_hook"):
+            assert not hasattr(RUNNER, name)
 
 
 # ── wiring ────────────────────────────────────────────────────────────────────
@@ -322,8 +337,17 @@ def _args(**kw):
     return argparse.Namespace(**base)
 
 
-def _orch_stub():
-    return types.SimpleNamespace(placement_check_hook=None, human_score_hook=None)
+def _orch_stub(cell=None, q=None):
+    """What wire_trial_hooks touches on the orchestrator. run_placement_check
+    records the trial, the servo state and the frames still queued."""
+    stub = types.SimpleNamespace(human_score_hook=None, checks=[])
+
+    def run_placement_check(trial_id, operator):
+        stub.checks.append((trial_id, None if cell is None else cell.status["servo"],
+                            None if q is None else q.qsize()))
+
+    stub.run_placement_check = run_placement_check
+    return stub
 
 
 @pytest.mark.parametrize("confirm,rows,no_check,check,score,pre", [
@@ -335,23 +359,28 @@ def _orch_stub():
 ])
 def test_the_hooks_are_installed_where_they_belong(confirm, rows, no_check, check,
                                                    score, pre):
+    cell = FakeCell()
     orch = _orch_stub()
+    con = Console(cell, "")
     out = RUNNER.wire_trial_hooks(orch, _args(confirm_each_trial=confirm,
                                               no_placement_check=no_check),
-                                  rows, {}, FakeCell(), queue.Queue(), LOG)
-    assert (orch.placement_check_hook is not None) is check
+                                  rows, {}, cell, queue.Queue(), LOG,
+                                  ask=con.ask, say=con.say, flush=con.flush)
+    if out is not None:
+        out(1)
+    assert (len(orch.checks) == 1) is check
     assert (orch.human_score_hook is not None) is score
     assert (out is not None) is pre
     assert RUNNER.placement_check_enabled(
         _args(confirm_each_trial=confirm, no_placement_check=no_check), rows) is check
 
 
-def test_the_part_is_placed_with_the_servo_off_and_the_frames_of_it_dropped():
+def test_the_part_is_placed_and_checked_with_the_servo_off():
     cell = FakeCell(servo=True)
     q = queue.Queue()
     q.put("frame taken while the hand was in the cell")
     con = Console(cell, "")
-    orch = _orch_stub()
+    orch = _orch_stub(cell, q)
     pre = RUNNER.wire_trial_hooks(orch, _args(), ROWS, {"P0021": (None, 120)}, cell, q,
                                   LOG, ask=con.ask, say=con.say, flush=con.flush)
     pre(1)
@@ -359,6 +388,8 @@ def test_the_part_is_placed_with_the_servo_off_and_the_frames_of_it_dropped():
     assert con.prompts[0][1] == ("   Placed it? TAKE YOUR HAND OUT of the cell, "
                                  "then press ENTER ")
     assert [e[0] for e in con.events] == ["flush", "ask"]
+    # Checked after the ENTER, with the servo still OFF and the stale frame gone.
+    assert orch.checks == [(1, False, 0)]
     assert cell.calls == ["status", "servo_off", "status",
                           "status", "servo_on", "status"]
     assert q.empty()
@@ -375,7 +406,7 @@ def test_without_confirm_the_prompt_is_logged_and_nothing_asked(caplog):
                                   ask=con.ask, say=con.say, flush=con.flush)
     with caplog.at_level(logging.INFO, logger=LOG.name):
         pre(1)
-    assert con.prompts == [] and cell.calls == []
+    assert con.prompts == [] and cell.calls == [] and orch.checks == []
     assert any("STACKED: put the carton(120) down" in r.getMessage()
                for r in caplog.records)
 
@@ -411,20 +442,21 @@ CALLED_ROW = {"pose_id": "P0100", "card_id": "11", "x_mm": "575.0", "y_mm": "20.
               "yaw_deg": "40.0", "class_hint": "inox_box", "condition": ""}
 
 
-def _wired(tmp_path, mode, rows, frames, *answers, **kw):
+def _wired(tmp_path, rows, frames, *answers, mode="rgbd", console=Console, ask=None):
+    """The real Orchestrator, configured for --mode real, with 03's hooks, a
+    FakeCell left with the servo ON, a Camera and a console on one timeline."""
     config = _real_config(mode)
     robot = MotomanHSEBackend()
-    q = ScriptedQueue()
-    for objects in frames:
-        q.put(_msg(*objects))
-    orch = Orchestrator(q, config=config, robot=robot,
+    cell = FakeCell(servo=True)
+    con = console(cell, *answers)
+    cell.events = con.events
+    cam = Camera(frames, cell, con.events)
+    orch = Orchestrator(cam, config=config, robot=robot,
                         logger_obj=TrialLogger(tmp_path / "run.csv"))
-    cell = FakeCell()
-    con = Console(cell, *answers)
-    pre = RUNNER.wire_trial_hooks(orch, _args(trials=len(rows)), rows, {}, cell, q, LOG,
-                                  ask=kw.get("ask", con.ask), say=con.say,
+    pre = RUNNER.wire_trial_hooks(orch, _args(trials=len(rows)), rows, {}, cell, cam,
+                                  LOG, ask=ask or con.ask, say=con.say,
                                   flush=con.flush)
-    return orch, robot, q, cell, con, pre, config
+    return orch, robot, cell, con, pre
 
 
 def _row(tmp_path):
@@ -432,62 +464,149 @@ def _row(tmp_path):
         return list(csv.DictReader(f))[-1]
 
 
-def test_a_fixed_stack_is_captured_again_with_the_servo_off_throughout(tmp_path):
+def _three_flags(config):
+    """A part 60 to 62 mm off its card at three checks, set on it at the last
+    prompt: the trial's own capture sees it there."""
+    return ([_msg(_part(config, 575.0, 80.0 + k, 41.5), frame=f"check{k + 1}.png")
+             for k in range(3)]
+            + [_msg(_part(config, 575.0, 20.0, 41.5), frame="trial.png")])
+
+
+def test_a_placement_as_called_runs_at_once_on_a_fresh_capture(tmp_path):
+    config = _real_config("rgbd")
+    frames = [_msg(_part(config, 578.0, 16.0, 41.5, yaw_off=3.0), frame="check1.png"),
+              _msg(_part(config, 572.0, 24.0, 41.5), frame="trial.png")]
+    orch, robot, cell, con, pre = _wired(tmp_path, [CALLED_ROW], frames, "", "y")
+    orch.run_n_trials(1, pre_trial_hook=pre)
+    assert _timeline(con.events) == [
+        "servo_off", "ask:place", "drop", "frame:check1.png:off",
+        "servo_on", "drop", "frame:trial.png:on",
+        "servo_off", "ask:verdict"]
+    assert con.said == []                       # nothing flagged, nothing shown
+    row = _row(tmp_path)
+    assert row["placement_events"] == "none:clear" and row["human_ok"] == "1"
+    assert row["frame_path"] == "trial.png"
+    assert float(robot.sent[0]["pick"][0, 3]) == pytest.approx(572.0, abs=1.0)
+
+
+def test_a_flag_then_a_fix_asks_once_and_the_trial_detects_afresh(tmp_path):
     config = _real_config("rgbd")
     alone = _part(config, 575.0, 20.0, 41.5)
     stacked = _part(config, 577.0, 22.0, 41.5 + 84.7, rect=(193.0, 130.2))
+    frames = [_msg(alone, frame="check1.png"), _msg(stacked, frame="check2.png"),
+              _msg(stacked, frame="trial.png")]
     rows = [dict(CALLED_ROW, stack_on="metal_box")]
-    orch, robot, q, cell, con, pre, _ = _wired(tmp_path, "rgbd", rows,
-                                               [[alone], [stacked]], "", "f", "y")
+    orch, robot, cell, con, pre = _wired(tmp_path, rows, frames, "", "", "y")
     orch.run_n_trials(1, pre_trial_hook=pre)
-    assert len(robot.sent) == 1
+    assert _timeline(con.events) == [
+        "servo_off", "ask:place", "drop", "frame:check1.png:off",
+        "ask:fix", "drop", "frame:check2.png:off",
+        "servo_on", "drop", "frame:trial.png:on",
+        "servo_off", "ask:verdict"]
+    assert con.said == ["   Trial 1: not as called:", "     " + STACK_LINE]
+    assert con.prompts[1][1] == FIX
     row = _row(tmp_path)
-    assert row["placement_events"] == "stack:recapture;none:clear"
-    assert row["human_ok"] == "1" and row["placement_recaptures"] == "1"
-    # placed, fixed, scored: the servo was OFF at every one of the three prompts
-    assert [p[2] for p in con.prompts] == [False, False, False]
-    assert cell.calls.count("servo_on") == 2          # after placing, after fixing
-    assert [c["outcome"] for c in json.loads(row["placement_captures"])] == [
-        "recapture", "clear"]
+    assert row["placement_events"] == "stack:fixed;none:clear"
+    assert row["placement_recaptures"] == "1" and row["placement_override"] == "0"
+    assert row["human_ok"] == "1" and len(robot.sent) == 1
+
+
+def test_three_flags_then_the_trial_runs_as_placed_on_a_fresh_capture(tmp_path):
+    config = _real_config("rgbd")
+    orch, robot, cell, con, pre = _wired(tmp_path, [CALLED_ROW], _three_flags(config),
+                                         "", "", "", "", "y")
+    orch.run_n_trials(1, pre_trial_hook=pre)
+    timeline = _timeline(con.events)
+    assert timeline == [
+        "servo_off", "ask:place",
+        "drop", "frame:check1.png:off", "ask:fix",
+        "drop", "frame:check2.png:off", "ask:fix",
+        "drop", "frame:check3.png:off", "ask:run",
+        "drop", "servo_on", "drop", "frame:trial.png:on",
+        "servo_off", "ask:verdict"]
+    # The servo is not switched while the placement is checked, and goes ON only
+    # after the last answer, before the trial's own capture.
+    checks = timeline[timeline.index("frame:check1.png:off"):timeline.index("ask:run") + 1]
+    assert "servo_on" not in checks and "servo_off" not in checks
+    assert timeline.index("ask:run") < timeline.index("servo_on") < timeline.index(
+        "frame:trial.png:on")
+    assert con.said == [
+        "   Trial 1: not as called:",
+        "     POSITION: part centre 60 mm from card 11; check the card",
+        "   Trial 1: not as called:",
+        "     POSITION: part centre 61 mm from card 11; check the card",
+        "   Trial 1: still not as called after 3 checks:",
+        "     POSITION: part centre 62 mm from card 11; check the card",
+        "   Check that the part is placed as called (fix it if not)."]
+    assert [p[1] for p in con.prompts][1:4] == [FIX, FIX, RUN]
+    assert all(p[2] is False for p in con.prompts)
+    row = _row(tmp_path)
+    assert row["placement_events"] == "position:fixed;position:fixed;position:limit"
+    assert row["placement_recaptures"] == "2" and row["placement_override"] == "1"
+    assert row["frame_path"] == "trial.png"
+    assert float(robot.sent[0]["pick"][1, 3]) == pytest.approx(20.0, abs=1.0)
+
+
+def test_keys_typed_ahead_are_flushed_before_every_prompt(tmp_path):
+    config = _real_config("rgbd")
+    orch, robot, cell, con, pre = _wired(tmp_path, [CALLED_ROW], _three_flags(config),
+                                         "", "", "", "", "y", console=TypeAhead)
+    orch.run_n_trials(1, pre_trial_hook=pre)
+    assert con.answered_ahead == 0
+    asks = [k for k, e in enumerate(con.events) if e[0] == "ask"]
+    assert len(asks) == 5 and all(con.events[k - 1] == ("flush",) for k in asks)
+    assert _row(tmp_path)["placement_events"] == (
+        "position:fixed;position:fixed;position:limit")
+
+
+def test_a_bare_enter_on_the_console_answers_the_check(tmp_path, monkeypatch, capsys):
+    """input() on a stdin holding ENTER, ENTER, y: placed, fixed, scored."""
+    config = _real_config("rgbd")
+    stacked = _part(config, 577.0, 22.0, 41.5 + 84.7, rect=(193.0, 130.2))
+    frames = [_msg(_part(config, 575.0, 20.0, 41.5)), _msg(stacked), _msg(stacked)]
+    monkeypatch.setattr(sys, "stdin", io.StringIO("\n\ny\n"))
+    orch, robot, cell, con, pre = _wired(tmp_path, [dict(CALLED_ROW, stack_on="metal_box")],
+                                         frames, ask=input)
+    orch.run_n_trials(1, pre_trial_hook=pre)
+    assert FIX in capsys.readouterr().out
+    row = _row(tmp_path)
+    assert row["placement_events"] == "stack:fixed;none:clear" and row["human_ok"] == "1"
+
+
+@pytest.mark.parametrize("stop", [KeyboardInterrupt, None])
+def test_a_stop_at_a_check_prompt_writes_aborted_at_check(tmp_path, stop):
+    """Ctrl+C, or a closed stdin (no answer left), at the fix prompt."""
+    config = _real_config("rgbd")
+    frames = [_msg(_part(config, 640.0, 20.0, 41.5), frame="check1.png")]
+    answers = ("", stop) if stop else ("",)
+    orch, robot, cell, con, pre = _wired(tmp_path, [CALLED_ROW], frames, *answers)
+    with pytest.raises(KeyboardInterrupt):
+        orch.run_n_trials(1, pre_trial_hook=pre)
+    assert robot.sent == [] and "servo_on" not in cell.calls
+    assert [p[1] for p in con.prompts][-1] == FIX
+    row = _row(tmp_path)
+    assert row["failure_reason"] == "aborted_at_check" and row["human_ok"] == ""
+    assert row["placement_events"] == "position:abort"
+    (cap,) = json.loads(row["placement_captures"])
+    assert cap["frame"] == "check1.png" and cap["outcome"] == "abort"
 
 
 @pytest.mark.parametrize("mode", ["rgbd", "plane", "fusion"])
-def test_looking_closely_does_not_retry_a_perception_failure(tmp_path, mode):
+def test_the_trial_stands_on_its_own_capture_in_every_mode(tmp_path, mode):
     """The case behind b9f4e52's blocker: a 227 mm mask for the 180 mm inox, which
-    the shape guard refuses, read 30 deg off the call. The operator looks at the
-    part with the servo OFF, finds it placed as called and types g: the refusal
-    stands in every mode and the clean frame behind it is never read."""
+    the shape guard refuses. The check saw the part placed as called; the trial's
+    own capture is the spilled one, and its refusal stands in every mode."""
     config = _real_config(mode)
     used = "rgbd" if mode == "rgbd" else "plane"
+    clean = _part(config, 575.0, 20.0, 41.5, depth_used=used)
     spilled = _part(config, 575.0, 20.0, 42.6, yaw_off=30.0, rect=(227.2, 130.1),
                     depth_used=used)
-    clean = _part(config, 575.0, 20.0, 41.5, depth_used=used)
-    orch, robot, q, cell, con, pre, _ = _wired(tmp_path, mode, [CALLED_ROW],
-                                               [[spilled], [clean]], "", "g")
+    frames = [_msg(clean, frame="check1.png"), _msg(spilled, frame="trial.png")]
+    orch, robot, cell, con, pre = _wired(tmp_path, [CALLED_ROW], frames, "", mode=mode)
     orch.run_n_trials(1, pre_trial_hook=pre)
     assert robot.sent == [] and orch.sm.history[-1].note == "yaw_geometry_reject"
-    assert q.qsize() == 1                               # the clean frame, unread
-    assert [p[2] for p in con.prompts] == [False, False]
     row = _row(tmp_path)
-    assert row["placement_events"] == "yaw:proceed" and row["placement_override"] == "1"
-
-
-def test_a_second_enter_at_the_placement_prompt_does_not_answer_the_check(
-        tmp_path, monkeypatch):
-    """b9f4e52: two ENTERs at 'Placed it?' and the second one answered the check,
-    logged as the operator going on over a part 70 mm off its card."""
-    config = _real_config("rgbd")
-    off_card = _part(config, 575.0, 20.0 + 70.0, 41.5)
-    monkeypatch.setattr(sys, "stdin", io.StringIO("\n\nf\n"))
-    on_card = _part(config, 575.0, 20.0, 41.5)
-    orch, robot, q, cell, con, pre, _ = _wired(tmp_path, "rgbd", [CALLED_ROW],
-                                               [[off_card], [on_card]], ask=input)
-    orch.human_score_hook = None
-    orch.run_n_trials(1, pre_trial_hook=pre)
-    row = _row(tmp_path)
-    assert "   Type g or f." in con.said
-    assert row["placement_events"] == "position:recapture;none:clear"
-    assert float(robot.sent[0]["pick"][1, 3]) == pytest.approx(20.0, abs=1.0)
+    assert row["placement_events"] == "none:clear" and row["frame_path"] == "trial.png"
 
 
 def test_main_wires_the_hooks_through_one_function(monkeypatch, tmp_path):

@@ -1,7 +1,7 @@
 """
 placement_check.py
 ──────────────────
-Before any motion, compare the scene perception sees with the pose the trial called.
+Before a trial starts, compare the scene perception sees with the pose it called.
 
 The operator stages every trial by hand from the screen prompt: a part of the called
 class on a numbered card, at a called yaw, and for a stacked pose on a called support.
@@ -48,14 +48,22 @@ mode drops a detection with fewer, since postprocess.masked_depth then gives no
 depth, while plane and fusion keep it on the table plane. The class lock ranks the
 detections that have depth by the height of their median-depth point, which every
 mode measures alike. Passing over the detections without depth therefore judges the
-same detection in every mode, and in rgbd it is always the first one, the one the
+same detection in every mode, and in rgbd it is always the first one, the one a
 cycle acts on. In session 1 the fewest valid depth pixels under a logged mask were
 3140 (plane P0086, 0.206 of 15245), far from this case.
 
-The check decides nothing about the trial. It returns flags; the runner shows them
-and the operator either fixes the placement, after which the orchestrator captures
-again, or declares the placement as called, after which the trial proceeds with the
-detection that was checked. A perception failure therefore stays a failure.
+When the check runs, and why the arms stay comparable. 03 runs it before every trial
+of a run with --confirm-each-trial and a pose list, once the operator has placed the
+part, taken the hand out and pressed ENTER, with the servo still OFF
+(Orchestrator.run_placement_check). A flagged placement is shown to the operator,
+who fixes it and presses ENTER, and it is checked again; after MAX_CHECKS checks
+still flagged the operator makes sure the part is placed as called and the trial
+runs as placed. Only then does the motion gate switch the servo ON. The check
+decides nothing about the trial: its flags read only quantities that are identical
+in every depth mode, so every arm asks the operator the same; its captures are
+never used for the trial; and the trial's own detection is a fresh capture after
+the motion gate, as in session 1 (commit 5dcf934). Every check is logged for audit
+(the placement_* columns, src/logging/logger.py).
 
 Thresholds. Session 1 was replayed through check_placement offline, from the logged
 detections of its 300 campaign and 40 control trials (316 of them detected and
@@ -90,8 +98,10 @@ without a verified deviation):
                        takes away 29.5 mm at least (the plastic box).
                        Not seen with these bands: the 80 mm carton and the metal box
                        swapped as supports (2.5 mm apart).
-  MAX_RECAPTURES 3     the operator fixes a placement and the scene is captured again
-                       at most this often; then the trial proceeds over the flags.
+  MAX_CHECKS 3         checks of one placement in all, the first included. A flag no
+                       fix can clear, such as the class and stack flags of the replay
+                       below on inox placed as called, would otherwise hold the trial
+                       until the run is stopped.
 
 With these values the replay flags all 22 trials with a verified deviation and 11
 others: the seven stacked yaw cases above, one control carton at 34 deg, two inox
@@ -118,7 +128,7 @@ HEIGHT_TOL_ABOVE_MM = 10.0
 HEIGHT_TOL_BELOW_MM = 8.0
 HEIGHT_TOL_BELOW_MIRROR_MM = 15.0
 MIRROR_TOP_CLASSES = frozenset({"inox_box"})
-MAX_RECAPTURES = 3
+MAX_CHECKS = 3
 # postprocess.masked_depth gives no depth for a mask with fewer valid depth pixels
 # than this, and PoseExtractor in rgbd mode then drops the detection.
 MIN_DEPTH_PIXELS = 5

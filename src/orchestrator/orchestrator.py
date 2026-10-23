@@ -31,7 +31,7 @@ import numpy as np
 from .coord_conv import (
     camera_to_base, camera_yaw_to_base, load_calibration, make_grasp_pose)
 from .placement_check import (
-    MAX_RECAPTURES, check_placement, judged_detection, top_centre_xy)
+    MAX_CHECKS, check_placement, judged_detection, top_centre_xy)
 from .state_machine import PickPlaceStateMachine, PickState
 
 logger = logging.getLogger(__name__)
@@ -221,14 +221,14 @@ class Orchestrator:
         # trial that actually moved the robot. The runner sets it under
         # --confirm-each-trial; its answer goes to the `human_ok` column.
         self.human_score_hook: Any = None
-        # Placement check (see _placement_check). The staging the current trial
-        # called, a placement_check.CalledPose set per trial by the runner, and an
-        # optional callable(trial_id, lines, can_recapture) -> "recapture" or
-        # "proceed" that shows the flags to the operator. Both must be set for the
-        # check to run. Neither is read by any motion decision.
+        # Placement check (see run_placement_check). The staging the current trial
+        # called, a placement_check.CalledPose set per trial by the runner; read by
+        # the check and logged, never by a motion decision. The record of the checks
+        # made before a trial waits in _pending_placement until that trial's cycle
+        # takes it into _placement, which _log_trial writes with the trial's row.
         self.current_called_pose: Any = None
-        self.placement_check_hook: Any = None
         self._placement: dict[str, Any] = {}
+        self._pending_placement: dict[str, Any] = {}
 
         self._set_speed()
 
@@ -1604,7 +1604,9 @@ class Orchestrator:
         self.sm.reset()
         self._last_support_height_mm = 0.0
         self._last_place_z_mm = None
-        self._placement = {}
+        # The record of the placement checks made just before this cycle, empty when
+        # none were: taken here, so it goes with this trial's row and no other.
+        self._placement, self._pending_placement = self._pending_placement, {}
         t_start = time.time()
         # Every cycle is one ATTEMPT. Counting here (not after reachability) so
         # detection-miss / timeout / unreachable failures are included in the
@@ -1623,10 +1625,6 @@ class Orchestrator:
         # ─── DETECT ───
         self.sm.transition_to(PickState.DETECT)
         objects, received_frames = self._detect_objects(trial_id)
-        if (self.placement_check_hook is not None
-                and self.current_called_pose is not None):
-            objects, received_frames = self._placement_check(
-                trial_id, objects, received_frames, t_start)
 
         if not objects:
             self.stats["failed"] += 1
@@ -1717,53 +1715,51 @@ class Orchestrator:
 
         return objects, received_frames
 
-    def _placement_check(
-        self,
-        trial_id: int,
-        objects: list[dict[str, Any]],
-        received_frames: int,
-        t_start: float,
-    ) -> tuple[list[dict[str, Any]], int]:
-        """Show the operator how the scene differs from the called pose, before
-        any planning or motion, and capture again when they have fixed it.
+    def run_placement_check(self, trial_id: int, operator: Any) -> None:
+        """Check the placement of the coming trial before its cycle, until it is as
+        called or MAX_CHECKS checks have been made.
 
-        The flags come from placement_check.check_placement, which reads only
-        quantities that are the same in every depth mode, judged on
-        placement_check.judged_detection of the class lock's list: its first
-        detection with depth under the mask, the one this cycle acts on whenever
-        the first detection has depth. With no flag the cycle goes on at once; a
-        detection window that received no frame is not checked. Otherwise
-        placement_check_hook shows the flags and returns "recapture" (the operator
-        changed the placement: the detection window runs again and the new
-        detection is checked in turn) or "proceed" (the placement is as called:
-        the cycle goes on with the detection that was checked, so a perception
-        failure stays a failure and no further frame is read). After
-        MAX_RECAPTURES recaptures the hook is told it cannot offer another, and
-        the cycle goes on with the last detection once the hook returns.
+        03 calls this from its pre-trial hook once the operator has placed the part
+        and pressed ENTER, with the servo still OFF, and runs the motion gate (servo
+        ON) only after it returns; nothing here switches the servo. Each check is one
+        detection window through this orchestrator's class lock (_detect_objects,
+        current_expected_class set), judged by placement_check.check_placement on
+        placement_check.judged_detection. A check without flags ends it, and so
+        does a window that received no frame (nothing checked). Otherwise
+        operator(trial_id, lines, last) shows the flag lines and returns once the
+        operator has pressed ENTER: with last False the operator was asked to fix the
+        placement, and it is checked again; with last True, at the MAX_CHECKS-th
+        check, the operator was asked to make sure the part is placed as called, and
+        the trial runs as placed.
 
-        Recorded for the CSV (placement_* columns, see logger.py): the flags of
-        the first check, the number of recaptures, whether the trial went on over
-        flags (proceed or limit), every check as flags:outcome, the detection each
-        capture judged (class, top centre, top height, yaw, frame) with the
-        operator's time on it, and the seconds spent here, which cycle_time_s
-        includes. An exception from the hook (Ctrl+C, a closed stdin, a servo
-        that would not switch off) writes the trial as aborted_at_check before
-        it is raised again.
+        Why the arms stay comparable: the flags read only quantities that are
+        identical in every depth mode, so every arm asks the operator the same; a
+        check capture is never used for the trial; and the trial's detection is the
+        fresh capture run_one_cycle takes after the motion gate, as in session 1
+        (commit 5dcf934).
+
+        Every check is logged for audit (placement_* columns, see logger.py): the
+        record waits in _pending_placement and goes with the trial's row. It holds
+        the flags of the first check, the checks after the first, whether the trial
+        ran after the last check still flagged, every check as flags:outcome, the
+        detection each check judged (class, top centre, top height, yaw, frame) with
+        the operator's time on it, and the seconds from the first check to the
+        return, just before the motion gate (not part of cycle_time_s). An exception
+        from operator (Ctrl+C, a closed stdin) writes the trial as aborted_at_check,
+        unscored, before it is raised again.
         """
         called = self.current_called_pose
-        limit = MAX_RECAPTURES
         plane = self.config.get("table_plane")
         events: list[str] = []
         captures: list[dict[str, Any]] = []
         first: list[str] | None = None
-        recaptures = 0
         override = False
         t_check = time.time()
 
         def record() -> dict[str, Any]:
             return {
                 "placement_flags": "+".join(first or []),
-                "placement_recaptures": recaptures,
+                "placement_recaptures": len(captures) - 1,
                 "placement_override": int(override),
                 "placement_events": ";".join(events),
                 "placement_captures": json.dumps(captures, separators=(",", ":")),
@@ -1771,6 +1767,7 @@ class Orchestrator:
             }
 
         while True:
+            objects, received_frames = self._detect_objects(trial_id)
             judged = judged_detection(objects)
             flags = check_placement(
                 called, judged, frames_seen=received_frames > 0,
@@ -1795,53 +1792,43 @@ class Orchestrator:
                 logger.info("PLACEMENT CHECK trial %d (%s): clear", trial_id,
                             getattr(called, "pose_id", ""))
                 break
-            can_recapture = recaptures < limit
+            last = len(captures) >= MAX_CHECKS
             label = "+".join(codes)
             logger.info("PLACEMENT CHECK trial %d (%s): %s", trial_id,
                         getattr(called, "pose_id", ""),
                         " / ".join(f.text for f in flags))
             t_ask = time.time()
             try:
-                answer = self.placement_check_hook(
-                    trial_id, [f.text for f in flags], can_recapture)
+                operator(trial_id, [f.text for f in flags], last)
             except BaseException:
                 capture["outcome"] = "abort"
                 capture["answer_s"] = round(time.time() - t_ask, 2)
                 events.append(f"{label}:abort")
                 self._placement = record()
+                self.sm.reset()      # no cycle has begun: not the last trial's state
                 logger.warning("PLACEMENT CHECK trial %d: stopped at the check; "
                                "logged as aborted_at_check", trial_id)
                 try:
-                    self._log_trial(trial_id, False, "aborted_at_check", t_start,
+                    self._log_trial(trial_id, False, "aborted_at_check", t_check,
                                     judged)
                 except Exception:  # noqa: BLE001 - the original exception matters
                     logger.exception("Could not log trial %d as aborted_at_check",
                                      trial_id)
                 raise
             capture["answer_s"] = round(time.time() - t_ask, 2)
-            if can_recapture and answer == "recapture":
-                capture["outcome"] = "recapture"
-                events.append(f"{label}:recapture")
-                recaptures += 1
-                logger.info("PLACEMENT CHECK trial %d: operator changed the placement, "
-                            "capture %d", trial_id, recaptures + 1)
-                objects, received_frames = self._detect_objects(trial_id)
+            if not last:
+                capture["outcome"] = "fixed"
+                events.append(f"{label}:fixed")
+                logger.info("PLACEMENT CHECK trial %d: the operator was asked to fix "
+                            "it; check %d", trial_id, len(captures) + 1)
                 continue
             override = True
-            if can_recapture:
-                capture["outcome"] = "proceed"
-                events.append(f"{label}:proceed")
-                logger.info("PLACEMENT CHECK trial %d: operator declared the "
-                            "placement as called; going on with this detection",
-                            trial_id)
-            else:
-                capture["outcome"] = "limit"
-                events.append(f"{label}:limit")
-                logger.info("PLACEMENT CHECK trial %d: %d recaptures, the limit; "
-                            "going on with this detection", trial_id, recaptures)
+            capture["outcome"] = "limit"
+            events.append(f"{label}:limit")
+            logger.info("PLACEMENT CHECK trial %d: still flagged after %d checks; the "
+                        "trial runs as placed", trial_id, len(captures))
             break
-        self._placement = record()
-        return objects, received_frames
+        self._pending_placement = record()
 
     def _plan_and_execute(
         self,
