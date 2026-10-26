@@ -44,6 +44,7 @@ from src.perception.depth_modes import (
     TOP_FACE_BAND_MM,
     TablePlane,
     fit_footprint,
+    off_table_mask,
     parse_class_sizes,
     top_face_mask,
 )
@@ -284,6 +285,7 @@ class TestSingleLayerWholeMask:
     def _check(self, mask, depth, cls):
         det = extract(mask, depth, cls)
         assert det["yaw_top_height_mm"] == det["h_depth_mm"]
+        mask = off_table_mask(depth, mask, INTR, T, PLANE)    # less its table pixels
         before = _metric_edge_yaw_base(mask, INTR, T, PLANE, det["h_depth_mm"])
         assert det["yaw_rect_long_mm"] == before["long_mm"]
         assert det["yaw_rect_short_mm"] == before["short_mm"]

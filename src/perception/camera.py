@@ -64,7 +64,8 @@ class D455Camera:
             except Exception:                          # noqa: BLE001
                 pass
             raise
-        logger.info("D455 started — intrinsics fx=%.1f fy=%.1f", intr.fx, intr.fy)
+        logger.info("D455 started — intrinsics fx=%.3f fy=%.3f ppx=%.3f ppy=%.3f depth_scale=%.6f",
+                    intr.fx, intr.fy, intr.ppx, intr.ppy, self.depth_scale)
 
     def get_frame(self) -> tuple[np.ndarray | None, np.ndarray | None]:
         """Capture one (rgb, depth_m) pair. depth_m in metres, aligned and filtered."""

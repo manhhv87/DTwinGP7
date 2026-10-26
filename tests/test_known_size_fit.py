@@ -31,6 +31,7 @@ from src.orchestrator.orchestrator import Orchestrator
 from src.perception.depth_modes import (
     MIN_FOOTPRINT_IOU,
     fit_footprint,
+    off_table_mask,
     project_points,
     ray_plane_depth,
 )
@@ -161,8 +162,11 @@ class TestCornerSpill:
         # The grasp pixel feeds every mode's position: plane and fusion through the
         # ray, rgbd through the deprojection at the median depth.
         assert xy_err(det, center) < 3.0
-        # The rectangle the long-side check reads is still the outline's.
-        rect = _metric_edge_yaw_base(mask, INTR, T, PLANE, det["h_depth_mm"])
+        # The rectangle the long-side check reads is the outline's, less the table
+        # under the spill (off_table_mask): the part's own length again.
+        part = off_table_mask(depth, mask, INTR, T, PLANE)
+        rect = _metric_edge_yaw_base(part, INTR, T, PLANE, det["h_depth_mm"])
+        assert abs(rect["long_mm"] - INOX[0]) < 5.0
         assert det["yaw_rect_long_mm"] == rect["long_mm"]
         assert det["yaw_rect_short_mm"] == rect["short_mm"]
 
@@ -294,7 +298,8 @@ class TestFallback:
         assert "fit_iou" not in det
         assert det["yaw_source"] == "metric_base_minAreaRect"
         assert det["pixel_uv"] == mask_centroid(mask)
-        rect = _metric_edge_yaw_base(mask, INTR, T, PLANE, det["h_depth_mm"])
+        rect = _metric_edge_yaw_base(off_table_mask(depth, mask, INTR, T, PLANE),
+                                     INTR, T, PLANE, det["h_depth_mm"])
         assert det["yaw_base"] == rect["yaw_base"]
 
     def test_a_fit_below_the_bar_is_recorded_but_not_used(self):

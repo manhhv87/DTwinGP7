@@ -1370,15 +1370,35 @@ class Orchestrator:
         14 to 72 percent for the height test, and 0.1 percent of flat masks.
         Genuine isolated inox reached 0.223 at most. The share is logged
         (table_share) to keep checking it on the cell.
+
+        A detection at or over the limit is kept when what is left of its mask
+        still holds the class's top. Perception fits the outline and the
+        known-size rectangle on the mask less its pixels at table height
+        (depth_modes.off_table_mask, logged as part_mask_area); when that
+        rectangle fits (yaw_source known_size_fit, IoU at least 0.5) and passes
+        the shape check (_shape_contradicts_class), the mask lies on a part and
+        only spilled beside it. On 23 Oct 2026 (e2chuan-1, P0038 and P0096)
+        inox masks over the box and the row of cards beside it read 0.38 to
+        0.48 at table height, and the part was never picked. A piece of a part
+        stays dropped, because once chosen it would be refused: on rendered
+        depth the second inox mask of P0029 (23 Oct, over half the box and the
+        cards) was chosen ahead of the whole part and left a rectangle 130 mm
+        long. A false detection flat on the cards leaves almost nothing to fit
+        and is dropped as before.
         """
         share = obj.get("table_share")
         if share is None or not np.isfinite(float(share)):
             return None
         limit = float(self.config.get("table_share_max", 0.3))
-        if float(share) >= limit:
-            return (f"on the table: {float(share):.2f} of the mask returns depth "
-                    f"at table height (limit {limit:.2f})")
-        return None
+        if float(share) < limit:
+            return None
+        # What is left still holds the class's top: a spill beside a part.
+        if (obj.get("yaw_source") == "known_size_fit"
+                and self._shape_contradicts_class(obj) is None):
+            return None
+        return (f"on the table: {float(share):.2f} of the mask returns depth "
+                f"at table height (limit {limit:.2f}) and the rest holds no "
+                f"{obj.get('class_name') or 'part'} top")
 
     def _pick_floor_z(self, class_name, table_top: float):
         """Lowest Z the pick may be commanded to for this class, or None.
@@ -2518,6 +2538,8 @@ class Orchestrator:
                 extra["h_median_mm"] = round(float(obj["h_median_mm"]), 1)
             if obj.get("table_share") is not None:
                 extra["table_share"] = round(float(obj["table_share"]), 3)
+            if obj.get("part_mask_area") is not None:
+                extra["part_mask_area"] = int(obj["part_mask_area"])
             if obj.get("fit_iou") is not None:
                 extra["fit_iou"] = round(float(obj["fit_iou"]), 3)
             if obj.get("fit_plateau_mm") is not None:
