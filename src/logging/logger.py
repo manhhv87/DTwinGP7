@@ -79,8 +79,13 @@ CONTEXT_FIELDNAMES = [
     # top band) it shows whether the mask lay on the part or spilled beside it.
     "h_median_mm",
     # Share of the mask's pixels returning depth at table height (within 5 mm);
-    # 0.3 or more and the detection is dropped as off the part.
+    # from 0.3 up the detection is dropped as off the part, unless what is left
+    # still gives the class's known-size fit and passes the shape check
+    # (Orchestrator._mask_off_part).
     "table_share",
+    # Mask pixels left once those at table height are removed; the outline and the
+    # known-size fit read these (perception/depth_modes.py, off_table_mask).
+    "part_mask_area",
     # IoU of the class's known top-face rectangle fitted to the mask outline; from
     # 0.5 up its centre and yaw are the grasp pose (perception/depth_modes.py,
     # fit_footprint), below it the mask centroid and rectangle yaw stand.

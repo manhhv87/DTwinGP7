@@ -35,7 +35,8 @@ class PerceptionNode:
         camera: Object with .get_frame() and .intrinsics (D455Camera/MockCamera).
         detector: Object with .detect(rgb) (ObjectDetector/MockDetector).
         output_queue: Queue that receives detection messages.
-        save_frames_dir: If set, every processed RGB frame is saved there.
+        save_frames_dir: If set, every processed RGB frame is saved there, with
+            its depth beside it (see _save_frame).
         extractor: Pose extractor carrying the depth mode (C4) and the part
             geometry; defaults to the RGB-D median-depth baseline.
     """
@@ -119,15 +120,21 @@ class PerceptionNode:
 
         frame_path = ""
         if self.save_frames_dir is not None:
-            frame_path = self._save_frame(rgb)
+            frame_path = self._save_frame(rgb, depth)
 
         dt = max(time.time() - t0, 1e-6)
         return {"timestamp": time.time(), "objects": objects, "fps": 1.0 / dt,
                 "frame_path": frame_path}
 
-    def _save_frame(self, rgb: Any) -> str:
-        """Save the RGB frame for failure-context logging. Returns path or ''."""
+    def _save_frame(self, rgb: Any, depth: Any = None) -> str:
+        """Save the RGB frame for failure-context logging, and beside it the depth
+        it was processed with (<frame>_depth.png, 16-bit, millimetres, 0 where the
+        camera returned nothing). At the D455's depth scale of 0.001 m, logged at
+        camera start, the PNG holds the camera's own z16 values: multiplied by that
+        scale they give back exactly the metres PoseExtractor read. Returns the RGB
+        path or ''."""
         import cv2  # lazy import — only needed when frame saving is enabled
+        import numpy as np
         from pathlib import Path
 
         self._frame_counter += 1
@@ -136,6 +143,9 @@ class PerceptionNode:
         )
         try:
             cv2.imwrite(str(path), rgb)
+            if depth is not None:
+                mm = np.clip(np.rint(np.asarray(depth, dtype=np.float64) * 1000.0), 0, 65535)
+                cv2.imwrite(str(path.with_name(path.stem + "_depth.png")), mm.astype(np.uint16))
         except Exception as e:  # noqa: BLE001 — frame loss must not kill a trial
             logger.warning("Could not save frame %s: %s", path, e)
             return ""

@@ -56,7 +56,7 @@ TOP_FACE_ERODE_PX = 7
 TOP_FACE_BAND_MM = 15.0
 MIN_TOP_FACE_FRAC = 0.15
 # A depth return within this many millimetres of the table plane counts as table
-# in table_share.
+# in table_share and off_table_mask.
 TABLE_SHARE_TOL_MM = 5.0
 # Below this silhouette IoU the size decision is not trusted: on the labelled set a
 # correct decision scores 0.96 at the median and a wrong one 0.66, and every wrong
@@ -833,6 +833,31 @@ def table_share(depth_m: np.ndarray, mask: np.ndarray, intrinsics: Mapping[str, 
     T = np.asarray(T_BC_mm, float)
     h = plane.height_above(np.column_stack([x, y, z]) @ T[:3, :3].T + T[:3, 3])
     return float(np.count_nonzero(np.abs(h) < tol_mm)) / n
+
+
+def off_table_mask(depth_m: np.ndarray, mask: np.ndarray, intrinsics: Mapping[str, float],
+                   T_BC_mm: np.ndarray, plane: TablePlane,
+                   tol_mm: float = TABLE_SHARE_TOL_MM) -> np.ndarray:
+    """The mask less the pixels whose depth puts them on the table plane, as 0/1 uint8.
+
+    The pixels removed are exactly the ones table_share counts: a depth return within
+    tol_mm of the table. Pixels without depth stay, and so do returns far from the
+    table, so a mirror top that returns holes or reflections far below the table
+    keeps its outline. What goes is matte paper and table under the mask.
+    """
+    m = np.asarray(mask) > 0
+    out = m.astype(np.uint8)
+    vv, uu = np.nonzero(m & (depth_m > 0))
+    if uu.size == 0:
+        return out
+    z = depth_m[vv, uu] * 1000.0
+    x = (uu - intrinsics["ppx"]) * z / intrinsics["fx"]
+    y = (vv - intrinsics["ppy"]) * z / intrinsics["fy"]
+    T = np.asarray(T_BC_mm, float)
+    h = plane.height_above(np.column_stack([x, y, z]) @ T[:3, :3].T + T[:3, 3])
+    on = np.abs(h) < tol_mm
+    out[vv[on], uu[on]] = 0
+    return out
 
 
 def fuse_height(h_depth_mm: float | None, h_prior_mm: float, h_min_mm: float,

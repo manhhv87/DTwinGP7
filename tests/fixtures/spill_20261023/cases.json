@@ -1,0 +1,171 @@
+{
+ "b010_t4": {
+  "trial": "e2chuan-1-b010|4",
+  "pose": "P0079",
+  "arm": "plane",
+  "outcome_20261023": "yaw_geometry_reject",
+  "logged": {
+   "table_share": 0.193,
+   "yaw_rect_long_mm": 225.4,
+   "fit_plateau_mm": 29.0,
+   "fit_iou": 0.705,
+   "dropped_shares": []
+  },
+  "intrinsics": {
+   "fx": 647.1,
+   "fy": 646.3,
+   "ppx": 647.2855,
+   "ppy": 368.784
+  },
+  "part": {
+   "center_xy": [
+    583.31,
+    29.27
+   ],
+   "yaw_deg": 84.0,
+   "size_mm": [
+    180.0,
+    85.0,
+    41.5
+   ]
+  },
+  "reference": "180 x 85 mm top fitted to RGB edges, Canny 40/110 (verification of 23 Oct 2026)"
+ },
+ "b004_t21": {
+  "trial": "e2chuan-1-b004|21",
+  "pose": "P0046",
+  "arm": "rgbd",
+  "outcome_20261023": "yaw_geometry_reject",
+  "logged": {
+   "table_share": 0.228,
+   "yaw_rect_long_mm": 224.2,
+   "fit_plateau_mm": 40.0,
+   "fit_iou": 0.693,
+   "dropped_shares": []
+  },
+  "intrinsics": {
+   "fx": 647.3,
+   "fy": 646.5,
+   "ppx": 647.2855,
+   "ppy": 368.784
+  },
+  "part": {
+   "center_xy": [
+    638.12,
+    8.43
+   ],
+   "yaw_deg": 6.25,
+   "size_mm": [
+    180.0,
+    85.0,
+    41.5
+   ]
+  },
+  "reference": "180 x 85 mm top fitted to RGB edges, Canny 40/110 (verification of 23 Oct 2026)"
+ },
+ "b008_t6": {
+  "trial": "e2chuan-1-b008|6",
+  "pose": "P0056",
+  "arm": "fusion",
+  "outcome_20261023": "yaw_geometry_reject",
+  "logged": {
+   "table_share": 0.149,
+   "yaw_rect_long_mm": 235.3,
+   "fit_plateau_mm": 6.0,
+   "fit_iou": 0.853,
+   "dropped_shares": []
+  },
+  "intrinsics": {
+   "fx": 647.3,
+   "fy": 646.5,
+   "ppx": 647.2855,
+   "ppy": 368.784
+  },
+  "part": {
+   "center_xy": [
+    636.6,
+    -66.27
+   ],
+   "yaw_deg": 27.25,
+   "size_mm": [
+    180.0,
+    85.0,
+    41.5
+   ]
+  },
+  "reference": "180 x 85 mm top fitted to RGB edges, Canny 40/110 (verification of 23 Oct 2026)"
+ },
+ "b006_t13": {
+  "trial": "e2chuan-1-b006|13",
+  "pose": "P0038",
+  "arm": "plane",
+  "outcome_20261023": "detection_miss",
+  "logged": {
+   "table_share": null,
+   "yaw_rect_long_mm": null,
+   "fit_plateau_mm": null,
+   "fit_iou": null,
+   "dropped_shares": [
+    0.46,
+    0.41,
+    0.46,
+    0.44,
+    0.48,
+    0.44
+   ]
+  },
+  "intrinsics": {
+   "fx": 647.5,
+   "fy": 646.7,
+   "ppx": 647.2855,
+   "ppy": 368.784
+  },
+  "part": {
+   "center_xy": [
+    638.0,
+    79.0
+   ],
+   "yaw_deg": 82.75,
+   "size_mm": [
+    180.0,
+    85.0,
+    41.5
+   ]
+  },
+  "reference": "180 x 85 mm top fitted to RGB edges, Canny 40/110 (verification of 23 Oct 2026)"
+ },
+ "_frame": {
+  "T_BC": [
+   [
+    -0.016228402371343733,
+    0.9998679277705603,
+    0.0008751984233814655,
+    638.5508574391328
+   ],
+   [
+    0.9998476858233634,
+    0.016233683542948976,
+    -0.006408796477647867,
+    38.23434798989744
+   ],
+   [
+    -0.00642215774785182,
+    0.0007710605902988624,
+    -0.9999790804589009,
+    1304.7744042906834
+   ],
+   [
+    0.0,
+    0.0,
+    0.0,
+    1.0
+   ]
+  ],
+  "table_plane": {
+   "a": 0.0052890752543995525,
+   "b": -0.001807507249857565,
+   "c": 588.7751569482754
+  },
+  "note": "T_BC and table plane of the run (metadata of experiment_real_20261023_124354)"
+ }
+}

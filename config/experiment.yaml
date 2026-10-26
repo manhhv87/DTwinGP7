@@ -26,7 +26,10 @@ size_tolerance_mm: 40.0
 # Bỏ phát hiện khi từ 0,3 điểm ảnh của mặt nạ trở lên trả độ sâu sát mặt bàn (trong
 # 5 mm): mặt nạ tràn ra bàn bên cạnh vật, hoặc phát hiện giả trên thẻ giấy. Trên bộ
 # C4 có độ sâu, inox thật đứng riêng đạt nhiều nhất 0,223; phép cũ theo chiều cao
-# (dải mặt trên hoặc trung vị dưới sàn lớp) loại nhầm 103 trên 842 inox.
+# (dải mặt trên hoặc trung vị dưới sàn lớp) loại nhầm 103 trên 842 inox. Riêng phát
+# hiện mà phần mặt nạ còn lại sau khi bỏ các điểm ảnh sát bàn vẫn khớp hình chữ nhật
+# đúng cỡ của lớp (IoU từ 0,5) và qua kiểm tra hình dạng thì được giữ: mặt nạ nằm
+# trên vật và chỉ tràn sang thẻ bên cạnh, như ngày 23/10 (P0038, P0096: 0,38 tới 0,48).
 table_share_max: 0.3
 # Từ chối lượt khi hình chữ nhật đúng cỡ khớp vào mặt nạ trượt được quá 10 mm dọc
 # cạnh dài mà độ trùng không đổi: mặt nạ không xác định được tâm gắp theo trục má

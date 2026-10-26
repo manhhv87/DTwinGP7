@@ -31,6 +31,7 @@ from .depth_modes import (
     TablePlane,
     fit_footprint,
     fuse_height,
+    off_table_mask,
     parse_class_sizes,
     ray_plane_depth,
     resolve_size,
@@ -469,21 +470,28 @@ class PoseExtractor:
         the minimum-area rectangle fitted to it gives yaw_rect_long_mm and
         yaw_rect_short_mm (the orchestrator's long-side check and the carton's
         footprint sizing read them) and a yaw, the direction of its long side, folded
-        modulo 90 deg for a near-square rectangle. When the top plane is placed from
-        depth and lies at least min_support_mm above the part's own height, the part
-        stands on a support, and the outline is taken from top_face_mask instead, cut
-        half the part's height below the top face. The top of a flat support, a whole
-        part height down, falls below the cut, so a mask that also covers it cannot
-        turn the rectangle (B4, 20 Oct 2026, trial 14), while the tilted top of a part
-        leaning on a support stays above it. yaw_source is "metric_base_top_face" in
-        that case. If that outline gives no rectangle, the whole mask is used, as for
-        every other detection.
+        modulo 90 deg for a near-square rectangle. The outline is that of the mask less
+        its pixels whose depth lies within 5 mm of the table plane
+        (depth_modes.off_table_mask; part_mask_area counts what is left), so a mask
+        spilling over the cards beside a part no longer lengthens the rectangle, while a
+        mirror top, whose wrong returns are holes or lie far below the table, keeps its
+        outline; the carton's size resolution (resolve_size), the depth readings,
+        table_share and the centroid still read the whole mask. When the top plane is
+        placed from depth and lies at least min_support_mm above the part's own
+        height, the part stands on a support, and the outline is taken from
+        top_face_mask instead, cut half the part's height below the top face. The top
+        of a flat support, a whole part height down, falls below the cut, so a mask
+        that also covers it cannot turn the rectangle (B4, 20 Oct 2026, trial 14),
+        while the tilted top of a part leaning on a support stays above it.
+        yaw_source is "metric_base_top_face" in that case. If that outline gives no
+        rectangle, the mask less its table pixels is used, as for every other
+        detection.
 
         A support is inferred only when the part's own height is known: a class
         of one size, or a carton whose size fit is trusted (resolve_size found a
         fit with IoU at least MIN_SIZE_IOU). With no fit, or an untrusted one,
         the lowest carton height stands in, which says nothing about a support,
-        and the whole mask is kept. Of the 125 single-layer detections logged
+        and no top-face cut is made. Of the 125 single-layer detections logged
         from 12 to 20 Oct 2026 this excludes the one the height test alone took
         for a stack: B3, 14 Oct, trial 9, a carton with size IoU 0.67 whose top
         band read 173.3 mm over a median of 124.3 mm.
@@ -543,12 +551,15 @@ class PoseExtractor:
         # Share of the mask that is table, for Orchestrator._mask_off_part.
         on_table = (table_share(depth_image, mask, self.intrinsics, self.T_BC, self.plane)
                     if self.has_geometry else None)
+        # The outline and the known-size fit read the mask less those table pixels.
+        part = (off_table_mask(depth_image, mask, self.intrinsics, self.T_BC, self.plane)
+                if self.has_geometry else mask)
 
         # METRIC_BASE_YAW_V1
         # Mask outline -> physical top plane -> BASE XY -> minAreaRect edge.
         metric_yaw = None
         yaw_source = "metric_base_minAreaRect"
-        yaw_outline = mask
+        yaw_outline = part
         on_support = False
         if self.has_geometry and height is not None:
             yaw_height_mm = float(height)
@@ -594,7 +605,7 @@ class PoseExtractor:
             if metric_yaw is None:
                 try:
                     metric_yaw = _metric_edge_yaw_base(
-                        mask,
+                        part,
                         self.intrinsics,
                         self.T_BC,
                         self.plane,
@@ -672,6 +683,7 @@ class PoseExtractor:
             detection["yaw_source"] = "pixel_pca_fallback"
         detection["pixel_uv"] = (u, v)
         detection["mask_area"] = int(np.sum(mask > 0))
+        detection["part_mask_area"] = int(np.count_nonzero(part))
         detection["depth_used"] = source
         detection["depth_valid_frac"] = valid_frac
         detection["h_depth_mm"] = h_depth
