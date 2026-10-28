@@ -1267,6 +1267,32 @@ class Orchestrator:
             return True
         return min(abs(long_mm - side) for side in longs) <= tol_mm
 
+    def _reads_its_support(self, obj, tol_mm: float) -> bool:
+        """True when depth reads what the part rests on instead of its top.
+
+        Both signs at once: the measured rectangle's short side is more than
+        tol_mm off every variant, so the mask takes in a support wider than
+        the part, and the measured top (h_depth_mm) lies more than 5 mm below
+        the lowest variant's own height, which no part standing on the table
+        or on a support can show. Unknown class, no footprint or no depth:
+        nothing to contradict.
+        """
+        short_mm = obj.get("yaw_rect_short_mm")
+        top_mm = obj.get("h_depth_mm")
+        if short_mm is None or top_mm is None:
+            return False
+        short_mm, top_mm = float(short_mm), float(top_mm)
+        if not (np.isfinite(short_mm) and np.isfinite(top_mm)):
+            return False
+        variants = [v for v in self._class_variants_mm(obj.get("class_name"))
+                    if len(v) >= 3]
+        if not variants:
+            return False
+        wide = all(abs(short_mm - min(float(v[0]), float(v[1]))) > tol_mm
+                   for v in variants)
+        low = top_mm < min(float(v[2]) for v in variants) - 5.0
+        return wide and low
+
     def _commanded_pick_z(self, obj, table_top: float) -> float:
         """World Z the pick is commanded to, after every height rule.
 
@@ -1470,7 +1496,7 @@ class Orchestrator:
         longer than the class can shift the grasp centre along that axis, by
         up to half the excess, towards where a finger comes down; that is
         refused when the long side is more than size_tolerance_mm off every
-        variant. The short side is not judged: it does not move where a finger
+        variant. The short side alone is not judged: it does not move where a finger
         lands. Judging it on 15 Oct 2026 refused four inox picks whose masks
         were only too wide, with vision yaw 5.7 to 16.8 deg from the called
         yaw, while for inox, whose 199 mm diagonal is shorter than the 216 mm
@@ -1490,14 +1516,30 @@ class Orchestrator:
         merges, wrong classes) adding this test to the long side halves the
         poses that pass with a jaw on the part, 67 to 32, and refuses no
         genuine detection.
+
+        The short side is judged together with the measured top
+        (_reads_its_support): a rectangle more than size_tolerance_mm too wide
+        whose top reads below the part's own height means depth sees the
+        support around a mirror top, and a command from that depth brings the
+        fingers down on the support. On 28 Oct 2026 (e2chuan-2, P0118, inox on
+        the plastic box) the rectangle read 139 to 141 mm wide and the top 28
+        to 30 mm in rgbd and plane, and both picks ended in collision stops
+        (alarm 4315); P0062 of 27 Oct read the same in rgbd and fusion. Over
+        the 680 trials of e2chuan-1 and e2chuan-2 this refuses those four and
+        no successful pick: wide masks of tall cartons read their tops right,
+        and inox tops read low came with narrow masks.
         """
         long_mm = obj.get("yaw_rect_long_mm")
+        tol_mm = float(self.config.get("size_tolerance_mm", 40.0))
         if long_mm is not None:
-            tol_mm = float(self.config.get("size_tolerance_mm", 40.0))
             if not self._long_side_matches_class(obj.get("class_name"),
                                                  float(long_mm), tol_mm):
                 return (f"top face long side {float(long_mm):.0f} mm, no "
                         f"{obj.get('class_name')} variant within {tol_mm:.0f} mm")
+        if self._reads_its_support(obj, tol_mm):
+            return (f"top face {float(obj['yaw_rect_short_mm']):.0f} mm wide and "
+                    f"{float(obj['h_depth_mm']):.0f} mm high: depth reads what the "
+                    f"{obj.get('class_name')} rests on, not its top")
         slide = obj.get("fit_plateau_mm")
         limit = float(self.config.get("fit_plateau_max_mm", 10.0))
         if (obj.get("yaw_source") == "known_size_fit" and slide is not None

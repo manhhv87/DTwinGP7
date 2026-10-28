@@ -229,6 +229,36 @@ class TestShape:
                    if o._shape_contradicts_class(_obj(rect=rect)) is not None}
         assert refused == {23, 47, 48}
 
+    def test_inox_read_at_its_support_is_refused(self):
+        """28 Oct 2026, P0118: inox on the plastic box, depth read the box.
+
+        rgbd and plane both ended in collision stops (alarm 4315).
+        """
+        o = _orch()
+        for rect, top in (((203.3, 140.9), 29.7), ((203.6, 139.1), 28.4),
+                          ((205.0, 142.0), 30.4), ((204.4, 144.1), 29.7)):
+            why = o._shape_contradicts_class(_obj(rect=rect, h_depth=top))
+            assert why is not None and "rests on" in why
+
+    def test_wide_mask_with_a_right_top_passes(self):
+        """A tall carton 120 read 152 mm wide with its top right (P0129)."""
+        o = _orch()
+        assert o._shape_contradicts_class(
+            _obj(class_name="carton", rect=(184.8, 153.0), h_depth=124.8)) is None
+
+    def test_low_inox_top_with_a_narrow_mask_passes(self):
+        """A single mirror inox read 21.6 mm high, mask the part's width (P0110)."""
+        assert _orch()._shape_contradicts_class(
+            _obj(rect=(188.0, 91.8), h_depth=21.6)) is None
+
+    def test_support_check_needs_depth_and_a_footprint(self):
+        o = _orch()
+        assert not o._reads_its_support(_obj(rect=(203.0, 141.0), h_depth=None), 40.0)
+        assert not o._reads_its_support(
+            _obj(class_name="teapot", rect=(203.0, 141.0), h_depth=10.0), 40.0)
+        assert not o._reads_its_support({"class_name": "inox_box",
+                                         "h_depth_mm": 20.0}, 40.0)
+
 
 class TestCommandedPickZ:
     """Every height rule for the pick, judged on the commanded point."""
