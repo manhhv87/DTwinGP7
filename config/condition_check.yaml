@@ -1,0 +1,27 @@
+# Kiem dieu kien anh truoc buoi (scripts/29_check_condition.py, src/perception/condition_check.py).
+# Mot khung anh cua camera cell, ban de nhu se chay nhung khong co vat.
+#
+# Vung anh tinh bang pixel tren khung 1280x720 cua camera co dinh (A2 kiem camera con dung cho):
+# ban gap va ban tha nhu tren hai anh mau dieu kien kho; bo the vi tri tren ban gap khong tinh,
+# vi anh tham chieu chup truoc khi dan the.
+pick_area: [230, 1080, 30, 455]     # x0, x1, y0, y1
+place_area: [230, 1080, 495, 700]
+cards: [430, 845, 220, 400]
+
+# Dieu kien kho = nen xanh la phu kin ban + thieu sang, dung bo anh novelbg_dim (110 anh,
+# 27/08/2026) ma detector duoc danh gia. Tren 110 anh ay, vung ban tha (it vat nhat) cho:
+# phan diem xanh 0,51 den 0,98 (trung vi 0,84), ti le kenh xanh 0,415 den 0,488, do sang
+# 15,4 den 42,4. Tren ban gap, bo cac diem cua vat theo do sau, phan diem xanh cua tam nen la
+# 0,53 den 0,92 (5% thap nhat duoi 0,56), ti le kenh xanh 0,406 den 0,487, do sang 11,0 den
+# 30,9. Moi anh cua cac bo khac deu truot it nhat mot nguong: 345 anh nen xanh du sang (do sang
+# 89 den 110), 811 anh thieu sang nen thuong (phan diem xanh toi da 0,49 nhung ti le kenh xanh
+# toi da 0,395), 2010 anh chuan, 220 anh den xien, 28 anh ban trong. Lan dung ngay 29/10/2026
+# (tam nen gan nhu den, ban tha de tran) truot: phan diem xanh 0,12 va 0,00, ban tha sang 53,6.
+# Mot diem anh la "xanh" khi hue 80 den 170 do, bao hoa tu 70/255, sang tu 6/255.
+hard:
+  green_hue_deg: [80, 170]
+  green_min_saturation: 70
+  green_min_value: 6
+  min_green_cover: 0.50       # phan diem xanh trong moi vung
+  min_green_chroma: 0.40      # trung vi G/(R+G+B) trong moi vung
+  luminance: [10.0, 45.0]     # trung vi do sang trong moi vung, thang 0 den 255
