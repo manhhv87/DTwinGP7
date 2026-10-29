@@ -24,5 +24,6 @@ hard:
   green_min_saturation: 70
   green_min_value: 6
   min_green_cover: 0.50       # phan diem xanh trong moi vung
-  min_green_chroma: 0.40      # trung vi G/(R+G+B) trong moi vung
+  min_green_chroma: 0.38      # trung vi G/(R+G+B) trong moi vung; tam nen tham chieu 0,406 den 0,488,
+                              # va voi phan diem xanh tu 0,50 khong anh nao cua bo khac dat ke ca o 0,37
   luminance: [10.0, 45.0]     # trung vi do sang trong moi vung, thang 0 den 255
