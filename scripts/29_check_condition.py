@@ -5,9 +5,10 @@ out of the camera's view:
 
     python scripts/29_check_condition.py --session $B --condition hard
 
-It captures from the cell camera, measures the pick and place tables separately
-(src/perception/condition_check.py, thresholds in config/condition_check.yaml) and
-writes results/do_sang_<session>.png (the frame), results/do_sang_<session>_kiem.png
+It captures from the cell camera, measures the upper and lower parts of the table
+separately as they appear in the image (src/perception/condition_check.py,
+thresholds in config/condition_check.yaml) and writes results/do_sang_<session>.png
+(the frame), results/do_sang_<session>_kiem.png
 (what was measured) and results/do_sang_<session>.txt (the numbers and the verdict).
 For --condition hard it prints PASS or FAIL with what to change and exits 0 or 1;
 for --condition std it only records the numbers. --image evaluates a saved frame
