@@ -267,14 +267,20 @@ class TestDecoupledRates:
             telemetry_hz=100.0,                            # rất cao
             alarm_poll_period_s=0.1,                       # 10/sec
         )
+        t0 = time.monotonic()
         twin.start_mirror()
         time.sleep(0.35)                                   # ~3 alarm polls expected
         twin.stop_mirror()
-        # ~3-4 alarm polls (so với joint polls ~35) — verify alarm dùng time-based.
+        elapsed = time.monotonic() - t0
         # Trừ 1 lần poll ĐỒNG BỘ lúc start_mirror (refresh alarm state, #7).
         alarm_calls = mock_hse.read_alarm.call_count - 1
         joints_calls = mock_hse.Joints.call_count
-        assert alarm_calls < joints_calls / 5             # alarm thưa hơn joint nhiều
+        # Time-based: không quá một lần mỗi chu kỳ 0,1 s (cộng một lần ở biên chu kỳ).
+        # Không so với một tỉ lệ joint cố định: trên Windows vòng lặp 100 Hz chỉ đạt
+        # khoảng 57 Hz (bước timer ~15,6 ms), máy cell 29/10/2026 đo 20 joint / 4 alarm,
+        # đúng biên của phép so cũ alarm < joints / 5. Poll theo tick thì alarm = joints.
+        assert alarm_calls <= elapsed / 0.1 + 1
+        assert alarm_calls < joints_calls / 2
 
 
 class TestAlarmAutoPoll:
