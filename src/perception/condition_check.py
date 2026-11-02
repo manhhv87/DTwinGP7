@@ -6,12 +6,16 @@ not establish it: on 29 Oct 2026 a near-black sheet over the upper part of the t
 with the lower part left bare, read 25/255, inside the old 15 to 35 window, because
 the bare part and the white cards lifted the mean. The check therefore measures the
 upper and lower parts of the one table separately, as they appear in the image, from
-one camera frame of the empty table, with the card block
-left out because the reference images predate the cards: the share of green pixels
-(hue, saturation and value bounds), the median green share of the colour,
-G/(R+G+B), and the median brightness. The thresholds and the ranges they come from
-are in config/condition_check.yaml. Frames are BGR, as the camera stream and
-cv2.imread deliver them.
+one camera frame of the empty table, with the card block left out.
+
+The measures are taken on square blocks, not on pixels. In this dim light a pixel's
+hue is mostly sensor noise, and a pixel count near its threshold changed from run to
+run (2 Nov 2026), whereas a block mean averages over about 1000 pixels. Each part
+gives the median green share of the colour, G/(R+G+B), the median brightness, and
+the share of its blocks as bright as bare table, judged against the white cards in
+the same frame so that the exposure does not enter. The thresholds and the ranges
+they come from are in config/condition_check.yaml. Frames are BGR, as the camera
+stream and cv2.imread deliver them.
 """
 
 from __future__ import annotations
@@ -33,41 +37,54 @@ def load_criteria(path: str | Path) -> dict[str, Any]:
         return yaml.safe_load(fh)
 
 
-def _area_mask(shape, box, cut=None) -> np.ndarray:
-    h, w = shape[:2]
-    m = np.zeros((h, w), bool)
+def _blocks(bgr: np.ndarray, box, px: int, cut=None):
+    """Mean BGR of the px-square blocks of an area, which of them to keep (those
+    clear of cut), and their top-left corners."""
     x0, x1, y0, y1 = (int(v) for v in box)
-    m[max(y0, 0):min(y1, h), max(x0, 0):min(x1, w)] = True
+    nx, ny = (x1 - x0) // px, (y1 - y0) // px
+    crop = bgr[y0:y0 + ny * px, x0:x0 + nx * px].astype(np.float32)
+    means = cv2.resize(crop, (nx, ny), interpolation=cv2.INTER_AREA)
+    xs, ys = x0 + px * np.arange(nx), y0 + px * np.arange(ny)
+    keep = np.ones((ny, nx), bool)
     if cut is not None:
-        x0, x1, y0, y1 = (int(v) for v in cut)
-        m[max(y0, 0):min(y1, h), max(x0, 0):min(x1, w)] = False
-    return m
+        cx0, cx1, cy0, cy1 = (int(v) for v in cut)
+        keep &= ~(((xs + px > cx0) & (xs < cx1))[None, :]
+                  & ((ys + px > cy0) & (ys < cy1))[:, None])
+    return means, keep, xs, ys
 
 
-def green_pixels(bgr: np.ndarray, hard: dict[str, Any]) -> np.ndarray:
-    """Pixels counted as the green sheet, on a lightly blurred frame."""
-    hsv = cv2.cvtColor(cv2.GaussianBlur(bgr, (7, 7), 0), cv2.COLOR_BGR2HSV)
-    lo, hi = (float(v) / 2.0 for v in hard["green_hue_deg"])   # OpenCV hue is 0..180
-    h, s, v = hsv[..., 0], hsv[..., 1], hsv[..., 2]
-    return ((h >= lo) & (h <= hi) & (s >= int(hard["green_min_saturation"]))
-            & (v >= int(hard["green_min_value"])))
+def _luminance(means: np.ndarray) -> np.ndarray:
+    return 0.114 * means[..., 0] + 0.587 * means[..., 1] + 0.299 * means[..., 2]
+
+
+def _green_share(means: np.ndarray) -> np.ndarray:
+    return means[..., 1] / (means.sum(axis=-1) + 1e-6)
+
+
+def _cut(area: str, criteria: dict[str, Any]):
+    return criteria.get("cards") if area == "upper_area" else None
+
+
+def _card_brightness(bgr: np.ndarray, criteria: dict[str, Any]) -> float:
+    means, _, _, _ = _blocks(bgr, criteria["cards"], int(criteria["hard"]["block_px"]))
+    return float(np.median(_luminance(means)))
 
 
 def measure(bgr: np.ndarray, criteria: dict[str, Any]) -> dict[str, Any]:
-    """Mean brightness of the frame and, per part of the table, green cover, green
-    share and median brightness."""
-    f = cv2.GaussianBlur(bgr, (7, 7), 0).astype(float)
-    total = f.sum(axis=2) + 1e-6
-    chroma = f[..., 1] / total
-    lum = 0.114 * f[..., 0] + 0.587 * f[..., 1] + 0.299 * f[..., 2]
-    green = green_pixels(bgr, criteria["hard"])
-    out: dict[str, Any] = {"mean_brightness": float(bgr.astype(float).mean())}
+    """Mean brightness of the frame, brightness of the cards and, per part of the
+    table, median green share, median brightness and share of bare blocks."""
+    hard = criteria["hard"]
+    px = int(hard["block_px"])
+    cards = _card_brightness(bgr, criteria)
+    bare_above = float(hard["bare_relative_brightness"]) * cards
+    out: dict[str, Any] = {"mean_brightness": float(bgr.astype(float).mean()),
+                           "card_brightness": cards}
     for area in AREAS:
-        m = _area_mask(bgr.shape, criteria[area],
-                       criteria.get("cards") if area == "upper_area" else None)
-        out[area] = {"green_cover": float(green[m].mean()),
-                     "green_chroma": float(np.median(chroma[m])),
-                     "brightness": float(np.median(lum[m]))}
+        means, keep, _, _ = _blocks(bgr, criteria[area], px, _cut(area, criteria))
+        lum = _luminance(means)[keep]
+        out[area] = {"green_share": float(np.median(_green_share(means)[keep])),
+                     "brightness": float(np.median(lum)),
+                     "bare_share": float((lum > bare_above).mean())}
     return out
 
 
@@ -78,12 +95,13 @@ def judge_hard(m: dict[str, Any], criteria: dict[str, Any]) -> list[str]:
     problems: list[str] = []
     for area in AREAS:
         a, name = m[area], LABELS[area]
-        if (a["green_cover"] < float(hard["min_green_cover"])
-                or a["green_chroma"] < float(hard["min_green_chroma"])):
-            problems.append(
-                f"{name}: not covered by the green sheet (green {100 * a['green_cover']:.0f}%, "
-                f"need {100 * float(hard['min_green_cover']):.0f}%; green share "
-                f"{a['green_chroma']:.2f}, need {float(hard['min_green_chroma']):.2f})")
+        need = float(hard["min_green_share"][area])
+        if a["bare_share"] > float(hard["max_bare_share"]):
+            problems.append(f"{name}: {100 * a['bare_share']:.0f}% of it is as bright as the "
+                            "white cards: bare table, cover it with the green sheet")
+        if a["green_share"] < need:
+            problems.append(f"{name}: not green enough (green share {a['green_share']:.3f}, "
+                            f"need {need:.3f}): check the sheet")
         if a["brightness"] < lo:
             problems.append(f"{name}: too dark ({a['brightness']:.1f}, allowed {lo:.0f} to "
                             f"{hi:.0f}): raise the light a little")
@@ -95,22 +113,36 @@ def judge_hard(m: dict[str, Any], criteria: dict[str, Any]) -> list[str]:
 
 def report_lines(m: dict[str, Any]) -> list[str]:
     """The measured values, one line per part of the table."""
-    lines = [f"Brightness, whole frame: {m['mean_brightness']:.1f}/255"]
+    lines = [f"Brightness, whole frame: {m['mean_brightness']:.1f}/255, "
+             f"cards: {m['card_brightness']:.1f}"]
     for area in AREAS:
         a = m[area]
-        lines.append(f"{LABELS[area]:17}: green {100 * a['green_cover']:3.0f}%  green share "
-                     f"{a['green_chroma']:.2f}  brightness {a['brightness']:.1f}")
+        lines.append(f"{LABELS[area]:17}: green share {a['green_share']:.3f}  brightness "
+                     f"{a['brightness']:.1f}  bare {100 * a['bare_share']:.0f}%")
     return lines
 
 
 def overlay(bgr: np.ndarray, criteria: dict[str, Any]) -> np.ndarray:
-    """The frame with the two parts of the table framed, the card block crossed out and the
-    pixels counted as green tinted, for the operator to see what was measured."""
-    out = bgr.copy()
-    green = green_pixels(bgr, criteria["hard"])
-    tint = out.copy()
-    tint[green] = (0, 255, 0)
-    out = cv2.addWeighted(tint, 0.35, out, 0.65, 0)
+    """The frame with each block tinted, green when it reaches the part's green share,
+    red when it is as bright as bare table, and the card block crossed out, for the
+    operator to see what was measured."""
+    hard = criteria["hard"]
+    px = int(hard["block_px"])
+    bare_above = float(hard["bare_relative_brightness"]) * _card_brightness(bgr, criteria)
+    tint = bgr.copy()
+    for area in AREAS:
+        need = float(hard["min_green_share"][area])
+        means, keep, xs, ys = _blocks(bgr, criteria[area], px, _cut(area, criteria))
+        lum, share = _luminance(means), _green_share(means)
+        for j, y in enumerate(ys):
+            for i, x in enumerate(xs):
+                if not keep[j, i]:
+                    continue
+                if lum[j, i] > bare_above:
+                    tint[y:y + px, x:x + px] = (0, 0, 255)
+                elif share[j, i] >= need:
+                    tint[y:y + px, x:x + px] = (0, 255, 0)
+    out = cv2.addWeighted(tint, 0.35, bgr, 0.65, 0)
     for area, colour in (("upper_area", (255, 200, 0)), ("lower_area", (0, 200, 255))):
         x0, x1, y0, y1 = (int(v) for v in criteria[area])
         cv2.rectangle(out, (x0, y0), (x1, y1), colour, 2)

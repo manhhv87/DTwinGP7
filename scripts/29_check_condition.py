@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -29,33 +30,26 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from src.perception.condition_check import (  # noqa: E402
-    AREAS, judge_hard, load_criteria, measure, overlay, report_lines)
+    judge_hard, load_criteria, measure, overlay, report_lines)
 
 
-def capture(n_warmup: int = 20, n_frames: int = 5) -> list[np.ndarray]:
-    """BGR frames from the cell camera after the auto exposure has settled."""
+def capture(warmup_s: float = 5.0, n_frames: int = 10) -> np.ndarray:
+    """One BGR frame from the cell camera: the mean of n_frames, taken once the auto
+    exposure has settled, which in dim light takes seconds after the camera starts."""
     from src.perception.camera import D455Camera
     cam = D455Camera()
     try:
-        for _ in range(n_warmup):
+        t0 = time.monotonic()
+        while time.monotonic() - t0 < warmup_s:
             cam.get_frame()
-        frames = []
+        frames: list[np.ndarray] = []
         while len(frames) < n_frames:
             bgr, _ = cam.get_frame()
             if bgr is not None:
-                frames.append(np.asarray(bgr).copy())
-        return frames
+                frames.append(np.asarray(bgr, dtype=np.float32))
+        return np.clip(np.mean(frames, axis=0) + 0.5, 0, 255).astype(np.uint8)
     finally:
         cam.stop()
-
-
-def median_measure(frames: list[np.ndarray], criteria: dict) -> dict:
-    """Per-value median over the frames, against single-frame noise."""
-    ms = [measure(f, criteria) for f in frames]
-    out = {"mean_brightness": float(np.median([m["mean_brightness"] for m in ms]))}
-    for area in AREAS:
-        out[area] = {k: float(np.median([m[area][k] for m in ms])) for k in ms[0][area]}
-    return out
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -73,16 +67,15 @@ def main(argv: list[str] | None = None) -> int:
         if frame is None:
             print(f"Cannot read {args.image}")
             return 2
-        frames = [frame]
     else:
-        frames = capture()
-    m = median_measure(frames, criteria)
+        frame = capture()
+    m = measure(frame, criteria)
 
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     stem = out_dir / f"do_sang_{args.session}"
-    cv2.imwrite(str(stem) + ".png", frames[-1])
-    cv2.imwrite(str(stem) + "_kiem.png", overlay(frames[-1], criteria))
+    cv2.imwrite(str(stem) + ".png", frame)
+    cv2.imwrite(str(stem) + "_kiem.png", overlay(frame, criteria))
 
     lines = [f"Session: {args.session}", f"Time: {datetime.now().isoformat(timespec='seconds')}",
              f"Condition: {args.condition}"] + report_lines(m)

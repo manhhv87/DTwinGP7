@@ -16,47 +16,81 @@ GREEN_DIM = (23, 31, 11)       # BGR of the sheet in the second sample image
 BLACK = (10, 9, 8)             # the near-black sheet of 29 Oct 2026
 BARE_TABLE = (62, 52, 50)      # the uncovered lower part that day
 GREEN_BRIGHT = (70, 130, 40)   # the green sheet under room light
-CARD_WHITE = (60, 58, 52)
+UPPER_2NOV = (15, 21, 14)      # the sheet above the black strip on 2 Nov 2026
+LOWER_2NOV = (20, 23, 21)      # and below it
+CARDS_DIM = (60, 58, 52)
+CARDS_2NOV = (92, 89, 96)
+CARDS_ROOM = (250, 250, 250)
 
 
-def frame(upper, lower, cards=True):
+def frame(upper, lower, cards=CARDS_DIM):
     img = np.full((720, 1280, 3), 40, np.uint8)
     x0, x1, y0, y1 = CRITERIA["upper_area"]
     img[y0:y1, x0:x1] = upper
     x0, x1, y0, y1 = CRITERIA["lower_area"]
     img[y0:y1, x0:x1] = lower
-    if cards:
-        x0, x1, y0, y1 = CRITERIA["cards"]
-        img[y0:y1, x0:x1] = CARD_WHITE
+    x0, x1, y0, y1 = CRITERIA["cards"]
+    img[y0:y1, x0:x1] = cards
     return img
 
 
+def judge(img):
+    return judge_hard(measure(img, CRITERIA), CRITERIA)
+
+
 def test_green_sheet_over_the_whole_table_in_dim_light_passes():
-    assert judge_hard(measure(frame(GREEN_DIM, GREEN_DIM), CRITERIA), CRITERIA) == []
+    assert judge(frame(GREEN_DIM, GREEN_DIM)) == []
+
+
+def test_the_setup_of_2_november_passes():
+    assert judge(frame(UPPER_2NOV, LOWER_2NOV, CARDS_2NOV)) == []
+
+
+def test_the_upper_part_is_held_to_the_green_of_the_reference():
+    """The grey-green of the lower part on 2 Nov would not do where the parts stand."""
+    problems = judge(frame(LOWER_2NOV, LOWER_2NOV, CARDS_2NOV))
+    assert len(problems) == 1 and problems[0].startswith("TABLE, UPPER PART: not green")
 
 
 def test_the_setup_of_29_october_fails_on_both_parts():
-    problems = judge_hard(measure(frame(BLACK, BARE_TABLE), CRITERIA), CRITERIA)
-    text = " | ".join(problems)
-    assert "TABLE, UPPER PART: not covered by the green sheet" in text
-    assert "TABLE, LOWER PART: not covered by the green sheet" in text
-    assert "TABLE, LOWER PART: too bright" in text
+    text = " | ".join(judge(frame(BLACK, BARE_TABLE, (57, 48, 47))))
+    assert "TABLE, UPPER PART: not green enough" in text
     assert "TABLE, UPPER PART: too dark" in text
+    assert "TABLE, LOWER PART: 100% of it is as bright as the white cards" in text
+    assert "TABLE, LOWER PART: not green enough" in text
+    assert "TABLE, LOWER PART: too bright" in text
 
 
-def test_bare_lower_part_alone_fails():
-    problems = judge_hard(measure(frame(GREEN_DIM, BARE_TABLE), CRITERIA), CRITERIA)
-    assert problems and all(p.startswith("TABLE, LOWER PART") for p in problems)
+def test_a_bare_patch_is_found_though_the_median_stays_green():
+    img = frame(GREEN_DIM, GREEN_DIM)
+    x0, x1, y0, y1 = CRITERIA["lower_area"]
+    img[y0:y1, x0:x0 + (x1 - x0) // 4] = BARE_TABLE
+    problems = judge(img)
+    assert len(problems) == 1 and "as bright as the white cards" in problems[0]
 
 
 def test_green_sheet_in_room_light_is_too_bright():
-    problems = judge_hard(measure(frame(GREEN_BRIGHT, GREEN_BRIGHT), CRITERIA), CRITERIA)
-    assert problems and all("too bright" in p for p in problems)
+    problems = judge(frame(GREEN_BRIGHT, GREEN_BRIGHT, CARDS_ROOM))
+    assert len(problems) == 2 and all("too bright" in p for p in problems)
 
 
 def test_the_card_block_is_left_out():
-    with_cards = measure(frame(GREEN_DIM, GREEN_DIM, cards=True), CRITERIA)
-    assert with_cards["upper_area"]["green_cover"] > 0.95
+    m = measure(frame(GREEN_DIM, GREEN_DIM), CRITERIA)
+    assert m["upper_area"]["bare_share"] == 0.0
+    assert m["upper_area"]["green_share"] == pytest.approx(31 / 65, abs=1e-3)
+    assert m["card_brightness"] > m["upper_area"]["brightness"]
+
+
+def test_the_measures_hold_under_pixel_noise():
+    """2 Nov 2026: a pixel count near its threshold changed from run to run."""
+    clean = frame(UPPER_2NOV, LOWER_2NOV, CARDS_2NOV).astype(float)
+    shares = []
+    for seed in range(5):
+        noise = np.random.default_rng(seed).normal(0.0, 10.0, clean.shape)
+        noisy = np.clip(clean + noise, 0, 255).astype(np.uint8)
+        m = measure(noisy, CRITERIA)
+        shares.append((m["upper_area"]["green_share"], m["lower_area"]["green_share"]))
+    assert np.ptp(np.array(shares), axis=0).max() < 0.01
 
 
 def _cli():
