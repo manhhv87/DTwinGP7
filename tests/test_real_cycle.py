@@ -7,6 +7,7 @@ unnoticed. These run run_one_cycle as 03_run_experiment configures it for
 on detections measured on 15 Oct 2026, and check what the fixed DTWINRUN job
 would have been sent.
 """
+import csv
 import pathlib
 import queue
 import threading
@@ -16,6 +17,7 @@ import pytest
 import yaml
 
 from src.cell.cell_models import CellConfig
+from src.logging.logger import TrialLogger
 from src.orchestrator.backends.motoman_hse import MotomanHSEBackend as RealHSEBackend
 from src.orchestrator.coord_conv import load_calibration
 from src.orchestrator.frame_convert import place_approach_base
@@ -232,6 +234,42 @@ class TestHome:
         assert ok is False and len(robot.sent) == 1
         assert "cycle incomplete" in orch.sm.history[-1].note
         assert robot.moves == []
+
+
+class TestStageTimes:
+    """The stage durations each row carries for the cycle-time table (E6)."""
+
+    PICKED = TestHome.ARGS
+    REFUSED = ((572.5, 168.2, 596.9, "inox_box"),
+               dict(frac=0.74, h_depth=42.6, rect=(227.2, 130.1), yaw_deg=-89.1))
+
+    def _row(self, tmp_path, det_args):
+        config = _real_config("rgbd")
+        det = _detection(config, *det_args[0], **det_args[1])
+        q = queue.Queue(maxsize=3)
+        orch = Orchestrator(q, config=config, robot=MotomanHSEBackend(),
+                            logger_obj=TrialLogger(tmp_path / "run.csv"))
+        orch.current_expected_class = det["class_name"]
+        q.put({"timestamp": 0.0, "objects": [det], "fps": 20.0,
+               "inference_ms": 31.0, "localize_ms": 4.0})
+        ok = orch.run_one_cycle(trial_id=1)
+        with open(tmp_path / "run.csv", newline="", encoding="utf-8") as f:
+            return ok, next(csv.DictReader(f))
+
+    def test_a_picked_trial_logs_every_stage_within_its_cycle(self, tmp_path):
+        ok, row = self._row(tmp_path, self.PICKED)
+        assert ok is True
+        assert float(row["inference_ms"]) == 31.0          # as the frame reported it
+        assert float(row["localize_ms"]) >= 4.0            # plus the class selection
+        stages = [float(row[k]) for k in ("detect_window_ms", "plan_ms", "job_ms")]
+        assert min(stages) >= 0.0
+        assert sum(stages) <= 1000.0 * float(row["cycle_time_s"]) + 1.0
+
+    def test_a_trial_refused_before_motion_has_no_plan_or_job_time(self, tmp_path):
+        ok, row = self._row(tmp_path, self.REFUSED)
+        assert ok is False and row["failure_reason"] == "yaw_geometry_reject"
+        assert row["detect_window_ms"] != "" and row["inference_ms"] != ""
+        assert row["plan_ms"] == "" and row["job_ms"] == ""
 
 
 # Heights measured with each part placed flat on 14 and 15 Oct 2026 (median of

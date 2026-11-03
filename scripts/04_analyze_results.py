@@ -243,6 +243,26 @@ def _log_placement(log, df, split_col: str | None) -> None:
                  "flagged):\n%s", table)
 
 
+STAGE_COLUMNS = ("detect_window_ms", "inference_ms", "localize_ms", "plan_ms", "job_ms")
+
+
+def _stage_table(moved):
+    """P50 and P95 in ms of each logged stage and of the whole cycle, with the
+    number of trials each rests on, over the trials with motion. The total is each
+    cycle's own duration (cycle_time_s), not a sum of stage percentiles. None when
+    the runs carry no stage times."""
+    import pandas as pd
+
+    cols = [c for c in STAGE_COLUMNS if c in moved.columns]
+    if not cols or not len(moved) or "cycle_time_s" not in moved.columns:
+        return None
+    data = {c: pd.to_numeric(moved[c], errors="coerce") for c in cols}
+    data["cycle_ms"] = 1000.0 * pd.to_numeric(moved["cycle_time_s"], errors="coerce")
+    return pd.DataFrame({name: {"n": int(v.notna().sum()), "P50": v.quantile(0.5),
+                                "P95": v.quantile(0.95)}
+                         for name, v in data.items()}).T
+
+
 def _no_motion(df):
     """True for every row whose trial was refused or skipped before motion."""
     import pandas as pd
@@ -392,6 +412,10 @@ def main() -> int:
     if len(moved) and "cycle_time_s" in moved.columns:
         log.info("Cycle time over the %d trial(s) with motion: median %.2f s",
                  len(moved), float(moved["cycle_time_s"].median()))
+    stages = _stage_table(moved)
+    if stages is not None:
+        log.info("Stage durations over the trials with motion, ms (n, P50, P95):\n%s",
+                 stages.round(1))
 
     # ─── Paired exact McNemar: RGB-only vs RGB-D ───
     # Binary paired outcomes → McNemar on the discordant pairs (paper §3.7).

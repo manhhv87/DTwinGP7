@@ -1669,7 +1669,11 @@ class Orchestrator:
         # The record of the placement checks made just before this cycle, empty when
         # none were: taken here, so it goes with this trial's row and no other.
         self._placement, self._pending_placement = self._pending_placement, {}
+        # Stage durations of this cycle in ms, logged with its row (_log_trial);
+        # a stage the cycle did not reach stays out.
+        self._stage_ms = {}
         t_start = time.time()
+        t_cycle = time.perf_counter()
         # Every cycle is one ATTEMPT. Counting here (not after reachability) so
         # detection-miss / timeout / unreachable failures are included in the
         # denominator — otherwise the success rate is inflated and the trial counts
@@ -1687,6 +1691,9 @@ class Orchestrator:
         # ─── DETECT ───
         self.sm.transition_to(PickState.DETECT)
         objects, received_frames = self._detect_objects(trial_id)
+        self._t_detected = time.perf_counter()
+        self._stage_ms["detect_window_ms"] = 1000.0 * (self._t_detected - t_cycle)
+        self._stage_ms.update(self._last_detection_ms)
 
         if not objects:
             self.stats["failed"] += 1
@@ -1721,6 +1728,8 @@ class Orchestrator:
         """Consume perception messages until one holds a usable object, or the
         detection window ends. Returns (objects, number of messages received)."""
         self._last_frame_path = ""
+        # Timings of the frame that gave the detection, for run_one_cycle.
+        self._last_detection_ms = {}
 
         # IMPORTANT: detection_timeout_s is a WINDOW for finding a usable
         # object, not merely a timeout for receiving one queue message.
@@ -1752,8 +1761,18 @@ class Orchestrator:
             if frame_path:
                 self._last_frame_path = frame_path
 
+            t_select = time.perf_counter()
             objects = self._select_objects(det_msg)
             if objects:
+                # Inference and localization of the frame that gave the
+                # detection: the detector and pose extractor (perception_node)
+                # and the selection, with its known-size fit, here.
+                if det_msg.get("inference_ms") is not None:
+                    self._last_detection_ms["inference_ms"] = float(det_msg["inference_ms"])
+                if det_msg.get("localize_ms") is not None:
+                    self._last_detection_ms["localize_ms"] = (
+                        float(det_msg["localize_ms"])
+                        + 1000.0 * (time.perf_counter() - t_select))
                 if empty_frames:
                     logger.info(
                         "Trial %d: detection recovered after %d empty frame(s) "
@@ -2323,13 +2342,21 @@ class Orchestrator:
                         trial_id,
                     )
                     self.sm.transition_to(PickState.APPROACH)
-                    motion_backend.run_dtwinrun_motion(
-                        pick_T_base=p0_base,
-                        approach_T_base=p1_base,
-                        place_T_base=p2_base,
-                        job_name="DTWINRUN",
-                    )
-                    reason = self._check_at_home("after")
+                    # Planning and checks end here; the job, timed whether or not
+                    # it completes, holds the motion and the gripping, which run
+                    # on the controller and cannot be timed apart from the PC.
+                    t_job = time.perf_counter()
+                    self._stage_ms["plan_ms"] = 1000.0 * (t_job - self._t_detected)
+                    try:
+                        motion_backend.run_dtwinrun_motion(
+                            pick_T_base=p0_base,
+                            approach_T_base=p1_base,
+                            place_T_base=p2_base,
+                            job_name="DTWINRUN",
+                        )
+                        reason = self._check_at_home("after")
+                    finally:
+                        self._stage_ms["job_ms"] = 1000.0 * (time.perf_counter() - t_job)
                     if reason is not None:
                         raise RuntimeError(f"cycle incomplete: {reason}")
 
@@ -2598,6 +2625,7 @@ class Orchestrator:
             extra["carton_mm"] = getattr(called, "carton_mm", None) or ""
             extra["stack_on_carton_mm"] = getattr(called, "stack_on_carton_mm", None) or ""
         extra.update(getattr(self, "_placement", None) or {})
+        extra.update({k: round(v, 1) for k, v in (getattr(self, "_stage_ms", None) or {}).items()})
         if ask_human and self.human_score_hook is not None:
             # Ctrl+C propagates: the operator meant to stop, and this row is lost
             # on purpose rather than being written with a made-up verdict.

@@ -104,19 +104,25 @@ class PerceptionNode:
     def process_once(self) -> dict[str, Any] | None:
         """Process exactly one frame and return a detection message.
 
-        Decoupled from the loop so it can be tested without a thread.
+        Decoupled from the loop so it can be tested without a thread. The message
+        carries the time the detector took on this frame (inference_ms) and the
+        pose extractor after it (localize_ms), for the stage timings of the
+        trial that uses the frame (Orchestrator.run_one_cycle).
         """
         t0 = time.time()
         rgb, depth = self.camera.get_frame()
         if rgb is None or depth is None:
             return None
 
+        t_detect = time.perf_counter()
         detections = self.detector.detect(rgb)
+        t_extract = time.perf_counter()
         objects: list[dict[str, Any]] = []
         for det in detections:
             enriched = self.extractor.extract(field_dict(det), depth)
             if enriched is not None and enriched["pose_camera"] is not None:
                 objects.append(enriched)
+        t_done = time.perf_counter()
 
         frame_path = ""
         if self.save_frames_dir is not None:
@@ -124,7 +130,9 @@ class PerceptionNode:
 
         dt = max(time.time() - t0, 1e-6)
         return {"timestamp": time.time(), "objects": objects, "fps": 1.0 / dt,
-                "frame_path": frame_path}
+                "frame_path": frame_path,
+                "inference_ms": 1000.0 * (t_extract - t_detect),
+                "localize_ms": 1000.0 * (t_done - t_extract)}
 
     def _save_frame(self, rgb: Any, depth: Any = None) -> str:
         """Save the RGB frame for failure-context logging, and beside it the depth

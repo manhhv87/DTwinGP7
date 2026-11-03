@@ -140,6 +140,25 @@ CONTEXT_FIELDNAMES = [
     "placement_events",
     "placement_captures",
     "placement_check_s",
+    # Stage durations of the cycle, ms (Orchestrator.run_one_cycle); empty for a
+    # stage the trial did not reach.
+    #   detect_window_ms  from the start of the cycle, the instant cycle_time_s
+    #                     starts from, until a usable detection was taken or the
+    #                     detection window ended.
+    #   inference_ms      the detector on the frame that gave the detection.
+    #   localize_ms       the pose extractor on that frame (depth modes) and the
+    #                     selection of the called class with its known-size fit.
+    #   plan_ms           from the detection to the dispatch of the job: commanded
+    #                     height, the refusals, reachability, IK and the predictive
+    #                     safety check.
+    #   job_ms            the parametric job from dispatch until the robot was
+    #                     confirmed back at HOME, P-variable writes included. Motion
+    #                     and gripping run on the controller and are timed together.
+    "detect_window_ms",
+    "inference_ms",
+    "localize_ms",
+    "plan_ms",
+    "job_ms",
 ]
 
 
