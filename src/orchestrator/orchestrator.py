@@ -1673,7 +1673,7 @@ class Orchestrator:
         # a stage the cycle did not reach stays out.
         self._stage_ms = {}
         t_start = time.time()
-        t_cycle = time.perf_counter()
+        self._t_cycle = t_cycle = time.perf_counter()
         # Every cycle is one ATTEMPT. Counting here (not after reachability) so
         # detection-miss / timeout / unreachable failures are included in the
         # denominator — otherwise the success rate is inflated and the trial counts
@@ -1887,6 +1887,7 @@ class Orchestrator:
                 events.append(f"{label}:abort")
                 self._placement = record()
                 self.sm.reset()      # no cycle has begun: not the last trial's state
+                self._stage_ms, self._t_cycle = {}, None   # nor its stage times
                 logger.warning("PLACEMENT CHECK trial %d: stopped at the check; "
                                "logged as aborted_at_check", trial_id)
                 try:
@@ -2555,6 +2556,13 @@ class Orchestrator:
         """
         if self.trial_logger is None:
             return
+        # The cycle's own duration, read before the operator's verdict below,
+        # which cycle_time_s includes; none for a row written outside a cycle.
+        stage_ms = dict(getattr(self, "_stage_ms", None) or {})
+        t_cycle = getattr(self, "_t_cycle", None)
+        if t_cycle is not None:
+            stage_ms["cycle_ms"] = 1000.0 * (time.perf_counter() - t_cycle)
+            self._t_cycle = None
         extra: dict[str, Any] = {
             "frame_path": self._last_frame_path,
             "pose_id": self.current_pose_id,
@@ -2625,7 +2633,7 @@ class Orchestrator:
             extra["carton_mm"] = getattr(called, "carton_mm", None) or ""
             extra["stack_on_carton_mm"] = getattr(called, "stack_on_carton_mm", None) or ""
         extra.update(getattr(self, "_placement", None) or {})
-        extra.update({k: round(v, 1) for k, v in (getattr(self, "_stage_ms", None) or {}).items()})
+        extra.update({k: round(v, 1) for k, v in stage_ms.items()})
         if ask_human and self.human_score_hook is not None:
             # Ctrl+C propagates: the operator meant to stop, and this row is lost
             # on purpose rather than being written with a made-up verdict.

@@ -22,7 +22,7 @@ cards: [430, 845, 220, 400]
 #   gon o vach, du hai phia cung loai tam nen va chinh den lam ca hai phia cung tang; nguyen
 #   nhan chua ro. Nguong nay chi xac nhan co sac xanh (xam trung tinh la 0,333); ban trang duoc
 #   phat hien bang bare_*, khong bang mau.
-# luminance = do sang trung vi moi phan. Tham chieu 10,5 den 42,6.
+# luminance = do sang trung vi moi phan. Tham chieu 11,0 den 42,6 (tinh bang ma nay tren 110 anh).
 # bare_* = o duoc tinh la ban tran khi sang hon bare_relative_brightness lan do sang the trang
 #   trong cung khung (khong phu thuoc phoi sang); ngay 29/10/2026 phan ban tran sang 1,14 lan
 #   the, tam nen 0,17 lan; ngay 02/11/2026 tam nen 0,20 va 0,24 lan.

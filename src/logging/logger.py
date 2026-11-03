@@ -154,11 +154,18 @@ CONTEXT_FIELDNAMES = [
     #   job_ms            the parametric job from dispatch until the robot was
     #                     confirmed back at HOME, P-variable writes included. Motion
     #                     and gripping run on the controller and are timed together.
+    #   cycle_ms          from the start of the cycle until its row is written,
+    #                     before the operator's verdict. cycle_time_s, kept as it was
+    #                     for comparison with earlier runs, also holds the wait for
+    #                     that verdict under --confirm-each-trial.
+    # The perception thread runs continuously, so the frame that gave the detection
+    # may have been processed before the detection window opened.
     "detect_window_ms",
     "inference_ms",
     "localize_ms",
     "plan_ms",
     "job_ms",
+    "cycle_ms",
 ]
 
 

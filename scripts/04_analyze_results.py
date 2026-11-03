@@ -243,21 +243,28 @@ def _log_placement(log, df, split_col: str | None) -> None:
                  "flagged):\n%s", table)
 
 
-STAGE_COLUMNS = ("detect_window_ms", "inference_ms", "localize_ms", "plan_ms", "job_ms")
+STAGE_COLUMNS = ("detect_window_ms", "inference_ms", "localize_ms", "plan_ms", "job_ms",
+                 "cycle_ms")
 
 
 def _stage_table(moved):
     """P50 and P95 in ms of each logged stage and of the whole cycle, with the
-    number of trials each rests on, over the trials with motion. The total is each
-    cycle's own duration (cycle_time_s), not a sum of stage percentiles. None when
+    number of trials each rests on, over the complete cycles among the trials with
+    motion: those whose job ran to its end without a failure (job_ms logged,
+    failure_reason empty). The total is each cycle's own duration (cycle_ms, which
+    leaves out the operator's verdict), not a sum of stage percentiles. None when
     the runs carry no stage times."""
     import pandas as pd
 
-    cols = [c for c in STAGE_COLUMNS if c in moved.columns]
-    if not cols or not len(moved) or "cycle_time_s" not in moved.columns:
+    if not len(moved) or "job_ms" not in moved.columns or "cycle_ms" not in moved.columns:
         return None
-    data = {c: pd.to_numeric(moved[c], errors="coerce") for c in cols}
-    data["cycle_ms"] = 1000.0 * pd.to_numeric(moved["cycle_time_s"], errors="coerce")
+    job = pd.to_numeric(moved["job_ms"], errors="coerce")
+    reason = (moved["failure_reason"].fillna("").astype(str).str.strip()
+              if "failure_reason" in moved.columns else pd.Series("", index=moved.index))
+    done = moved[job.notna() & reason.eq("")]
+    if not len(done):
+        return None
+    data = {c: pd.to_numeric(done[c], errors="coerce") for c in STAGE_COLUMNS if c in done.columns}
     return pd.DataFrame({name: {"n": int(v.notna().sum()), "P50": v.quantile(0.5),
                                 "P95": v.quantile(0.95)}
                          for name, v in data.items()}).T
@@ -414,8 +421,8 @@ def main() -> int:
                  len(moved), float(moved["cycle_time_s"].median()))
     stages = _stage_table(moved)
     if stages is not None:
-        log.info("Stage durations over the trials with motion, ms (n, P50, P95):\n%s",
-                 stages.round(1))
+        log.info("Stage durations over the complete cycles (job ended without a failure), "
+                 "ms (n, P50, P95):\n%s", stages.round(1))
 
     # ─── Paired exact McNemar: RGB-only vs RGB-D ───
     # Binary paired outcomes → McNemar on the discordant pairs (paper §3.7).
