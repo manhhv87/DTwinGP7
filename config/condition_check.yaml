@@ -19,8 +19,9 @@ cards: [430, 845, 220, 400]
 #   den 0,493 khi bo vat theo do sau.
 #   Nua duoi: 0,345. Bo tham chieu 0,415 den 0,490, nhung vat khong dat o day; ngay 02/11/2026
 #   be mat phia duoi vach den do 0,355 ngay duoi vach, phia tren 0,401 ngay tren vach: buoc nhay
-#   gon o vach, deu theo ca hai chieu, nen la khac be mat, khong phai do den. Nguong nay chi xac
-#   nhan co sac xanh; ban trang duoc phat hien bang bare_*, khong bang mau.
+#   gon o vach, du hai phia cung loai tam nen va chinh den lam ca hai phia cung tang; nguyen
+#   nhan chua ro. Nguong nay chi xac nhan co sac xanh (xam trung tinh la 0,333); ban trang duoc
+#   phat hien bang bare_*, khong bang mau.
 # luminance = do sang trung vi moi phan. Tham chieu 10,5 den 42,6.
 # bare_* = o duoc tinh la ban tran khi sang hon bare_relative_brightness lan do sang the trang
 #   trong cung khung (khong phu thuoc phoi sang); ngay 29/10/2026 phan ban tran sang 1,14 lan
