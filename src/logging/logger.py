@@ -151,13 +151,41 @@ CONTEXT_FIELDNAMES = [
     #   plan_ms           from the detection to the dispatch of the job: commanded
     #                     height, the refusals, reachability, IK and the predictive
     #                     safety check.
-    #   job_ms            the parametric job from dispatch until the robot was
-    #                     confirmed back at HOME, P-variable writes included. Motion
-    #                     and gripping run on the controller and are timed together.
-    #   cycle_ms          from the start of the cycle until its row is written,
-    #                     before the operator's verdict. cycle_time_s, kept as it was
-    #                     for comparison with earlier runs, also holds the wait for
-    #                     that verdict under --confirm-each-trial.
+    #   job_ms            the parametric job, from its dispatch (P-variable writes,
+    #                     JOB_SELECT, START) to its end: Running clearing with the
+    #                     robot back at HOME, taken as the middle of the last status
+    #                     read that saw the job running or held and the first that
+    #                     saw it over (MotomanHSEBackend.last_job_timing). Motion and
+    #                     gripping run on the controller and are timed together.
+    #                     Empty when no end could be bracketed (job_flags says why).
+    #   cycle_ms          from the start of the cycle to that end; empty without it.
+    #   cycle_pc_ms       from the start of the cycle until its row is written, when
+    #                     the PC has confirmed the end (alarm and HOME reads), before
+    #                     the operator's verdict. cycle_time_s, kept as it was for
+    #                     comparison with earlier runs, also holds that verdict wait
+    #                     under --confirm-each-trial.
+    #   confirm_ms        cycle_pc_ms - cycle_ms: noticing the end and confirming it.
+    #   job_end_lo_ms,    the bracket of the end, from the start of the cycle: the
+    #   job_end_hi_ms     send of the last read that saw the job running or held and
+    #                     the receipt of the first that saw it over.
+    #   job_flags         '+'-joined: held (a HOLD during the job; the hold lasts as
+    #                     long as the operator takes), race (the read that ended the
+    #                     wait showed a hold its follow-up did not, so the job may have
+    #                     resumed: no end), untimed (no bracket), timeout, mismatch and
+    #                     error (an HSE timeout, request_id mismatch or other failed
+    #                     read during the job).
+    #   cycle_start_perf_s the start of the cycle on the time.perf_counter axis, s;
+    #                     the telemetry's t_perf is on the same axis.
+    #   frame_capture_ms  when the frame that gave the detection was captured, from
+    #                     the start of the cycle (negative: before it); its age when
+    #                     taken is detect_window_ms - frame_capture_ms.
+    #   frame_arrival_ms  when that frame reached the host (camera TIME_OF_ARRIVAL),
+    #                     same axis; empty when the camera does not report it.
+    #   frame_capture_src the camera instant behind frame_capture_ms
+    #                     (camera.frame_clock): global_mid or global_readout (device
+    #                     timestamp mapped by global time, accuracy not published),
+    #                     arrival (host arrival: a lower bound of the frame's age),
+    #                     got (when get_frame received it: later still), mock.
     # The perception thread runs continuously, so the frame that gave the detection
     # may have been processed before the detection window opened.
     "detect_window_ms",
@@ -166,6 +194,15 @@ CONTEXT_FIELDNAMES = [
     "plan_ms",
     "job_ms",
     "cycle_ms",
+    "cycle_pc_ms",
+    "confirm_ms",
+    "job_end_lo_ms",
+    "job_end_hi_ms",
+    "job_flags",
+    "cycle_start_perf_s",
+    "frame_capture_ms",
+    "frame_arrival_ms",
+    "frame_capture_src",
 ]
 
 

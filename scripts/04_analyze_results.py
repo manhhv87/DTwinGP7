@@ -244,27 +244,65 @@ def _log_placement(log, df, split_col: str | None) -> None:
 
 
 STAGE_COLUMNS = ("detect_window_ms", "inference_ms", "localize_ms", "plan_ms", "job_ms",
-                 "cycle_ms")
+                 "cycle_ms", "confirm_ms", "cycle_pc_ms")
+
+
+def _complete_cycles(moved):
+    """The complete cycles the cycle-time table rests on, and how many of each
+    kind were set aside, by rules fixed before the E3 sessions. A complete cycle
+    ended its job with a bracketed end (job_ms logged) and no failure. Set aside,
+    in this order: held (a HOLD during the job, which lasts as long as the operator
+    takes); hse_fault, a timeout, mismatch or error in job_flags (a stale reply or
+    a failed read can widen or move the bracket); wide, a bracket over 200 ms
+    (an end known only to within more than 100 ms; normal ones stay under 160 ms);
+    and the first trial of each run (warm-up), reported apart. Also counted:
+    no_end, successful cycles whose end could not be bracketed, by their flags.
+    Only rows with job_flags carry this definition of job_ms: (None, {}) for runs
+    without it, which includes those recorded before the bracket existed."""
+    import pandas as pd
+
+    if not len(moved) or "job_ms" not in moved.columns or "job_flags" not in moved.columns:
+        return None, {}
+
+    def col(frame, name, default=""):
+        return frame[name] if name in frame.columns else pd.Series(default, index=frame.index)
+
+    reason = col(moved, "failure_reason").fillna("").astype(str).str.strip()
+    timed = pd.to_numeric(moved["job_ms"], errors="coerce").notna()
+    no_end = col(moved, "job_flags").fillna("").astype(str)[~timed & reason.eq("")]
+    done = moved[timed & reason.eq("")]
+    flags = col(done, "job_flags").fillna("").astype(str)
+    held = flags.str.contains("held")
+    fault = flags.str.contains("timeout|mismatch|error") & ~held
+    width = (pd.to_numeric(col(done, "job_end_hi_ms", None), errors="coerce")
+             - pd.to_numeric(col(done, "job_end_lo_ms", None), errors="coerce"))
+    wide = (width > 200.0) & ~held & ~fault
+    first = pd.to_numeric(col(done, "trial_id", None), errors="coerce").eq(1) & ~held & ~fault & ~wide
+    keep = ~held & ~fault & ~wide & ~first
+    src = col(done, "frame_capture_src").fillna("").astype(str)[keep]
+    counts = {"complete": len(done), "held": int(held.sum()), "hse_fault": int(fault.sum()),
+              "wide": int(wide.sum()), "first_of_run": int(first.sum()),
+              "no_end": {k or "none": int(v) for k, v in no_end.value_counts().items()},
+              "frame_src": {k: int(v) for k, v in src[src.ne("")].value_counts().items()}}
+    return done[keep], counts
 
 
 def _stage_table(moved):
-    """P50 and P95 in ms of each logged stage and of the whole cycle, with the
-    number of trials each rests on, over the complete cycles among the trials with
-    motion: those whose job ran to its end without a failure (job_ms logged,
-    failure_reason empty). The total is each cycle's own duration (cycle_ms, which
-    leaves out the operator's verdict), not a sum of stage percentiles. None when
-    the runs carry no stage times."""
+    """P50 and P95 in ms of each logged stage, of the cycle to the robot's return
+    (cycle_ms), of the PC's confirmation (confirm_ms), of the cycle to that
+    confirmation (cycle_pc_ms) and of the frame's age when taken (frame_age_ms =
+    detect_window_ms - frame_capture_ms), with the number of cycles each rests on,
+    over _complete_cycles. Totals are each cycle's own duration, not sums of stage
+    percentiles. None when the runs carry no bracketed job ends."""
     import pandas as pd
 
-    if not len(moved) or "job_ms" not in moved.columns or "cycle_ms" not in moved.columns:
-        return None
-    job = pd.to_numeric(moved["job_ms"], errors="coerce")
-    reason = (moved["failure_reason"].fillna("").astype(str).str.strip()
-              if "failure_reason" in moved.columns else pd.Series("", index=moved.index))
-    done = moved[job.notna() & reason.eq("")]
-    if not len(done):
+    done, _ = _complete_cycles(moved)
+    if done is None or not len(done):
         return None
     data = {c: pd.to_numeric(done[c], errors="coerce") for c in STAGE_COLUMNS if c in done.columns}
+    if "frame_capture_ms" in done.columns and "detect_window_ms" in done.columns:
+        data["frame_age_ms"] = (pd.to_numeric(done["detect_window_ms"], errors="coerce")
+                                - pd.to_numeric(done["frame_capture_ms"], errors="coerce"))
     return pd.DataFrame({name: {"n": int(v.notna().sum()), "P50": v.quantile(0.5),
                                 "P95": v.quantile(0.95)}
                          for name, v in data.items()}).T
@@ -421,8 +459,14 @@ def main() -> int:
                  len(moved), float(moved["cycle_time_s"].median()))
     stages = _stage_table(moved)
     if stages is not None:
-        log.info("Stage durations over the complete cycles (job ended without a failure), "
-                 "ms (n, P50, P95):\n%s", stages.round(1))
+        _, counts = _complete_cycles(moved)
+        log.info("Cycle times over the complete cycles, ms (n, P50, P95):\n%s", stages.round(1))
+        log.info("Complete cycles %d; set aside %d with a HOLD, %d with an HSE fault, %d "
+                 "with a bracket over 200 ms and %d first of a run; successful cycles "
+                 "without a bracketed end: %s; frame capture source: %s",
+                 counts["complete"], counts["held"], counts["hse_fault"], counts["wide"],
+                 counts["first_of_run"], counts["no_end"] or "none",
+                 counts["frame_src"] or "none")
 
     # ─── Paired exact McNemar: RGB-only vs RGB-D ───
     # Binary paired outcomes → McNemar on the discordant pairs (paper §3.7).

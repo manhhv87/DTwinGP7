@@ -106,8 +106,9 @@ class PerceptionNode:
 
         Decoupled from the loop so it can be tested without a thread. The message
         carries the time the detector took on this frame (inference_ms) and the
-        pose extractor after it (localize_ms), for the stage timings of the
-        trial that uses the frame (Orchestrator.run_one_cycle).
+        pose extractor after it (localize_ms), and the frame's camera instants
+        (clock: camera.frame_clock), for the stage timings of the trial that uses
+        the frame (Orchestrator.run_one_cycle).
         """
         t0 = time.time()
         rgb, depth = self.camera.get_frame()
@@ -132,7 +133,8 @@ class PerceptionNode:
         return {"timestamp": time.time(), "objects": objects, "fps": 1.0 / dt,
                 "frame_path": frame_path,
                 "inference_ms": 1000.0 * (t_extract - t_detect),
-                "localize_ms": 1000.0 * (t_done - t_extract)}
+                "localize_ms": 1000.0 * (t_done - t_extract),
+                "clock": dict(getattr(self.camera, "last_frame_clock", None) or {})}
 
     def _save_frame(self, rgb: Any, depth: Any = None) -> str:
         """Save the RGB frame for failure-context logging, and beside it the depth

@@ -168,6 +168,20 @@ class TestMirrorThread:
         telemetry.close.assert_called_once()
         assert telemetry.log_state.call_count >= 3
 
+    def test_mirror_stamps_each_row_with_the_reads_own_exchange(self, mock_hse, viewport_cb):
+        """t_perf is the middle of the joint read's exchange (the backend's per-thread
+        last_exchange), on the clock of the trial rows' stage timings."""
+        telemetry = MagicMock()
+        mock_hse.last_exchange = MagicMock(return_value=(500.0, 500.0104))
+        twin = DigitalTwinMirror(
+            mock_hse, viewport_callback=viewport_cb, telemetry=telemetry,
+            telemetry_hz=50.0, mirror_hz=50.0,
+        )
+        twin.start_mirror()
+        time.sleep(0.15)
+        twin.stop_mirror()
+        assert telemetry.log_state.call_args.kwargs["t_perf"] == pytest.approx(500.0052)
+
     def test_stop_mirror_joins_thread(self, mock_hse, viewport_cb):
         twin = DigitalTwinMirror(mock_hse, viewport_callback=viewport_cb, telemetry_hz=20.0, mirror_hz=20.0)
         twin.start_mirror()

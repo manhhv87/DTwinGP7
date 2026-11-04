@@ -1669,11 +1669,14 @@ class Orchestrator:
         # The record of the placement checks made just before this cycle, empty when
         # none were: taken here, so it goes with this trial's row and no other.
         self._placement, self._pending_placement = self._pending_placement, {}
-        # Stage durations of this cycle in ms, logged with its row (_log_trial);
-        # a stage the cycle did not reach stays out.
-        self._stage_ms = {}
+        # Stage durations of this cycle in ms, and its timing labels, logged with
+        # its row (_log_trial); a stage the cycle did not reach stays out.
+        self._stage_ms, self._stage_text, self._job_end = {}, {}, None
         t_start = time.time()
         self._t_cycle = t_cycle = time.perf_counter()
+        # The cycle start on the perf_counter axis itself, so telemetry rows
+        # (t_perf) line up with this row's relative times exactly.
+        self._stage_text["cycle_start_perf_s"] = f"{t_cycle:.6f}"
         # Every cycle is one ATTEMPT. Counting here (not after reachability) so
         # detection-miss / timeout / unreachable failures are included in the
         # denominator — otherwise the success rate is inflated and the trial counts
@@ -1694,6 +1697,15 @@ class Orchestrator:
         self._t_detected = time.perf_counter()
         self._stage_ms["detect_window_ms"] = 1000.0 * (self._t_detected - t_cycle)
         self._stage_ms.update(self._last_detection_ms)
+        # When the frame that gave the detection was captured, from the cycle
+        # start (negative: before it), and from which camera instant
+        # (camera.frame_clock); its age when taken is detect_window_ms minus this.
+        clock = self._last_frame_clock or {}
+        if clock.get("capture") is not None:
+            self._stage_ms["frame_capture_ms"] = 1000.0 * (clock["capture"] - t_cycle)
+            if clock.get("arrival") is not None:
+                self._stage_ms["frame_arrival_ms"] = 1000.0 * (clock["arrival"] - t_cycle)
+            self._stage_text["frame_capture_src"] = str(clock.get("src", ""))
 
         if not objects:
             self.stats["failed"] += 1
@@ -1728,8 +1740,9 @@ class Orchestrator:
         """Consume perception messages until one holds a usable object, or the
         detection window ends. Returns (objects, number of messages received)."""
         self._last_frame_path = ""
-        # Timings of the frame that gave the detection, for run_one_cycle.
-        self._last_detection_ms = {}
+        # Timings and camera instants of the frame that gave the detection, for
+        # run_one_cycle.
+        self._last_detection_ms, self._last_frame_clock = {}, None
 
         # IMPORTANT: detection_timeout_s is a WINDOW for finding a usable
         # object, not merely a timeout for receiving one queue message.
@@ -1773,6 +1786,7 @@ class Orchestrator:
                     self._last_detection_ms["localize_ms"] = (
                         float(det_msg["localize_ms"])
                         + 1000.0 * (time.perf_counter() - t_select))
+                self._last_frame_clock = det_msg.get("clock")
                 if empty_frames:
                     logger.info(
                         "Trial %d: detection recovered after %d empty frame(s) "
@@ -1887,7 +1901,8 @@ class Orchestrator:
                 events.append(f"{label}:abort")
                 self._placement = record()
                 self.sm.reset()      # no cycle has begun: not the last trial's state
-                self._stage_ms, self._t_cycle = {}, None   # nor its stage times
+                # nor its stage times
+                self._stage_ms, self._stage_text, self._job_end, self._t_cycle = {}, {}, None, None
                 logger.warning("PLACEMENT CHECK trial %d: stopped at the check; "
                                "logged as aborted_at_check", trial_id)
                 try:
@@ -2343,9 +2358,9 @@ class Orchestrator:
                         trial_id,
                     )
                     self.sm.transition_to(PickState.APPROACH)
-                    # Planning and checks end here; the job, timed whether or not
-                    # it completes, holds the motion and the gripping, which run
-                    # on the controller and cannot be timed apart from the PC.
+                    # Planning and checks end here; the job holds the motion and
+                    # the gripping, which run on the controller and cannot be timed
+                    # apart from the PC.
                     t_job = time.perf_counter()
                     self._stage_ms["plan_ms"] = 1000.0 * (t_job - self._t_detected)
                     try:
@@ -2357,7 +2372,7 @@ class Orchestrator:
                         )
                         reason = self._check_at_home("after")
                     finally:
-                        self._stage_ms["job_ms"] = 1000.0 * (time.perf_counter() - t_job)
+                        self._note_job_end(motion_backend, t_job)
                     if reason is not None:
                         raise RuntimeError(f"cycle incomplete: {reason}")
 
@@ -2431,6 +2446,25 @@ class Orchestrator:
             )
         except Exception as e:  # noqa: BLE001
             logger.debug("setSpeed skipped: %s", e)
+
+    def _note_job_end(self, backend: Any, t_job: float) -> None:
+        """job_ms, the bracket of the job's end and its flags, from the status
+        reads the backend timed while it waited for the job (last_job_timing): the
+        end is the middle of the last read that saw the job running or held and
+        the first that saw it over, so neither the poll interval nor the alarm and
+        HOME reads after it run into the time. Without an end, job_ms and the
+        bracket stay out and job_flags says why."""
+        timing = backend.last_job_timing() if hasattr(backend, "last_job_timing") else None
+        if not timing:
+            self._stage_text["job_flags"] = "untimed"
+            return
+        self._stage_text["job_flags"] = "+".join(timing.get("flags") or [])
+        if timing.get("end") is None:
+            return
+        self._job_end = timing["end"]
+        self._stage_ms["job_ms"] = 1000.0 * (timing["end"] - t_job)
+        self._stage_ms["job_end_lo_ms"] = 1000.0 * (timing["lo"] - self._t_cycle)
+        self._stage_ms["job_end_hi_ms"] = 1000.0 * (timing["hi"] - self._t_cycle)
 
     def _check_at_home(self, when: str) -> str | None:
         """Why the robot is not at HOME, or None. Real cell only.
@@ -2556,12 +2590,19 @@ class Orchestrator:
         """
         if self.trial_logger is None:
             return
-        # The cycle's own duration, read before the operator's verdict below,
-        # which cycle_time_s includes; none for a row written outside a cycle.
+        # The cycle's own durations, read before the operator's verdict below,
+        # which cycle_time_s includes; none for a row written outside a cycle:
+        # cycle_ms to the job's end (the robot back at HOME), cycle_pc_ms to now,
+        # when the PC has confirmed it, and confirm_ms the difference.
         stage_ms = dict(getattr(self, "_stage_ms", None) or {})
         t_cycle = getattr(self, "_t_cycle", None)
         if t_cycle is not None:
-            stage_ms["cycle_ms"] = 1000.0 * (time.perf_counter() - t_cycle)
+            now = time.perf_counter()
+            stage_ms["cycle_pc_ms"] = 1000.0 * (now - t_cycle)
+            job_end = getattr(self, "_job_end", None)
+            if job_end is not None:
+                stage_ms["cycle_ms"] = 1000.0 * (job_end - t_cycle)
+                stage_ms["confirm_ms"] = 1000.0 * (now - job_end)
             self._t_cycle = None
         extra: dict[str, Any] = {
             "frame_path": self._last_frame_path,
@@ -2634,6 +2675,7 @@ class Orchestrator:
             extra["stack_on_carton_mm"] = getattr(called, "stack_on_carton_mm", None) or ""
         extra.update(getattr(self, "_placement", None) or {})
         extra.update({k: round(v, 1) for k, v in stage_ms.items()})
+        extra.update(getattr(self, "_stage_text", None) or {})
         if ask_human and self.human_score_hook is not None:
             # Ctrl+C propagates: the operator meant to stop, and this row is lost
             # on purpose rather than being written with a made-up verdict.

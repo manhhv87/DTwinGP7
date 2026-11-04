@@ -131,6 +131,9 @@ class MotomanHSEBackend:
         self._sock: socket.socket | None = None
         self._request_id = request_id_seed % 256
         self._lock = threading.Lock()       # request_id ++ must be atomic
+        # Per-thread record of the exchanges each thread made (_exchanges), so the
+        # mirror's polling never touches the orchestrator's timing of a job.
+        self._tls = threading.local()
         # Cache for JointsHome — set via config from orchestrator
         self._home_joints: list[float] = [0.0] * 6
         # FTP credentials for job upload (YRC1000 defaults to "" / "")
@@ -250,6 +253,7 @@ class MotomanHSEBackend:
                 service=service, payload=payload, request_id=request_id,
             )
             packet = req.encode()
+            t_send = time.perf_counter()
             self._sock.sendto(packet, (self.ip, self.port))
 
             try:
@@ -259,10 +263,12 @@ class MotomanHSEBackend:
                 # request, so a stale reply can't be mis-read as the answer to
                 # the NEXT request (UDP keeps it buffered otherwise).
                 self._drain_socket()
+                self._exchanges().timeouts += 1
                 raise TimeoutError(
                     f"HSE request 0x{command:02X} timeout {self.timeout_s}s — "
                     f"YRC1000 not responding. Check ping + HSE Server function."
                 ) from e
+            t_recv = time.perf_counter()
 
         try:
             resp = HSEResponse.decode(raw)
@@ -270,16 +276,52 @@ class MotomanHSEBackend:
             logger.error("HSE response decode error, raw bytes: %s", raw.hex())
             raise
 
+        rec = self._exchanges()
+        rec.last = (t_send, t_recv)
         # NOTE: request_id is WARNED on but NOT enforced — the YRC1000 does not
         # reliably echo it, so discarding mismatches would drop valid replies. The
         # _drain_socket() on the timeout path is the actual stale-datagram guard.
         if resp.request_id != request_id:
+            rec.mismatches += 1
             logger.warning(
                 "HSE request_id mismatch: sent=%d got=%d", request_id, resp.request_id
             )
 
         resp.raise_for_status()
         return resp
+
+    def _exchanges(self) -> threading.local:
+        """The calling thread's record of its HSE exchanges: last, the
+        perf_counter instants just before sendto and just after recvfrom of its
+        latest one, taken inside the lock so waiting for another thread's exchange
+        does not enter; status, (running, hold, last) of its latest READ_STATUS;
+        timeouts and mismatches, counts of timed-out requests and request_id
+        mismatches; job, the end of the last job it waited for (_wait_idle)."""
+        tls = self.__dict__.get("_tls")
+        if tls is None:                          # a backend built without __init__
+            tls = self._tls = threading.local()
+        if not hasattr(tls, "timeouts"):
+            tls.last, tls.status, tls.job = None, None, None
+            tls.timeouts = tls.mismatches = 0
+        return tls
+
+    def last_exchange(self) -> tuple[float, float] | None:
+        """Send and receive instants (perf_counter) of the calling thread's latest
+        HSE exchange, or None."""
+        return self._exchanges().last
+
+    def last_job_timing(self) -> dict | None:
+        """The end of the last job the calling thread waited for, from the status
+        reads _wait_idle made, or None. Keys: lo and hi, the send of the last read
+        that saw the job running or held and the receipt of the first that saw it
+        over, between which Running cleared; end, the middle of those two
+        exchanges' midpoints, or None when no bracket could be formed; flags,
+        held (a HOLD during the job), race (the read that ended the wait showed a
+        hold its follow-up did not, so the job may have resumed), untimed (a read
+        of the bracket carried no instants), timeout, mismatch and error (a
+        timed-out request, a request_id mismatch, or another failed read during
+        the job)."""
+        return self._exchanges().job
 
     def _drain_socket(self) -> None:
         """Discard any datagrams currently buffered on the socket — e.g. a late
@@ -632,9 +674,12 @@ class MotomanHSEBackend:
         # "Running" is bit3 (0x08); the previous 0x02 read the 1-Cycle MODE flag,
         # so _wait_idle could mis-detect completion. If payload empty → idle.
         # NOTE: verify against the real controller — see Stop()'s caveat.
-        if not resp.payload:
-            return False
-        return bool(resp.payload[0] & 0x08)
+        p = resp.payload or b""
+        running = bool(p[0] & 0x08) if p else False
+        rec = self._exchanges()
+        # The hold bits of this same reply (Data2 bits 1-3), for timing the job.
+        rec.status = (running, bool(p[4] & 0x0E) if len(p) >= 5 else False, rec.last)
+        return running
 
     def read_controller_status(self) -> dict:
         """READ_STATUS (0x72) decoded into operation mode / cycle / servo / alarm.
@@ -650,6 +695,8 @@ class MotomanHSEBackend:
         p = resp.payload or b""
         d1 = p[0] if len(p) >= 1 else 0
         d2 = p[4] if len(p) >= 5 else 0
+        rec = self._exchanges()
+        rec.status = (bool(d1 & 0x08), bool(d2 & 0x0E), rec.last)
         remote, play, teach = bool(d1 & 0x80), bool(d1 & 0x40), bool(d1 & 0x20)
         return {
             "data1": d1, "data2": d2,
@@ -807,9 +854,22 @@ class MotomanHSEBackend:
         otherwise drive the gripper / next move blind). start_confirm_timeout_s
         MUST exceed the controller's worst-case START→Running latency; the default
         is generous and Phase 1 breaks as soon as Running is seen. Setting it to 0
-        skips Phase 1 (unit tests only — no real start latency to cover)."""
+        skips Phase 1 (unit tests only — no real start latency to cover).
+
+        It also times the job's end (last_job_timing) from the reads it makes
+        anyway: Running clears between the last read that saw the job running or
+        held (L) and the first whose own reply shows it neither (U). The end is
+        taken as the middle of the two exchanges' midpoints, so the poll interval
+        and the alarm and HOME reads after U do not run into it. Nothing is sent
+        that was not sent before."""
         total = timeout_s or self.wait_completion_timeout_s
         deadline = time.monotonic() + total
+        rec = self._exchanges()
+        rec.job = None
+        counts0 = (rec.timeouts, rec.mismatches)
+        in_job = None                       # L: the last read showing Running or a hold
+        held = False
+        errors = 0                          # failed reads other than timeouts
         # Phase 1 — confirm the job actually STARTED (Running asserted).
         confirm = min(self.start_confirm_timeout_s, total)
         if confirm > 0:
@@ -817,10 +877,16 @@ class MotomanHSEBackend:
             running_seen = False
             while time.monotonic() < confirm_deadline:
                 try:
-                    if self.read_status_running():
+                    rec.status = None
+                    running = self.read_status_running()
+                    if rec.status is not None and rec.status[1]:
+                        held = True                 # a hold inside the start latency
+                    if running:
+                        in_job = rec.status
                         running_seen = True
                         break                        # started — go wait for it to finish
                 except Exception as e:              # noqa: BLE001
+                    errors += not isinstance(e, TimeoutError)
                     logger.warning("READ_STATUS error while confirming start: %s", e)
                 time.sleep(0.02)
             if not running_seen:
@@ -840,25 +906,61 @@ class MotomanHSEBackend:
         held_logged = False
         while time.monotonic() < deadline:
             try:
-                if not self.read_status_running():
+                rec.status = None
+                running = self.read_status_running()
+                first = rec.status                   # this read's own reply
+                if first is not None and (first[0] or first[1]):
+                    in_job, held = first, held or first[1]
+                if not running:
+                    rec.status = None
                     if self.read_controller_status().get("hold"):
+                        if rec.status is not None:
+                            in_job = rec.status
+                        held = True
                         if not held_logged:
                             logger.warning("Job on HOLD: waiting for it to resume "
                                            "and finish")
                             held_logged = True
                         time.sleep(0.1)
                         continue
+                    self._record_job_end(rec, in_job, first, held, counts0, errors)
                     self._raise_if_alarm()
                     return
             except RobotAlarmError:
                 raise
             except Exception as e:                  # noqa: BLE001
+                errors += not isinstance(e, TimeoutError)
                 logger.warning("READ_STATUS error while polling: %s", e)
             time.sleep(0.1)
         self._raise_if_alarm()                       # surface an alarm behind a timeout
         raise TimeoutError(
             f"Job did not complete within {total}s — check teach pendant / alarm."
         )
+
+    @staticmethod
+    def _record_job_end(rec, in_job, over, held: bool, counts0: tuple[int, int],
+                        errors: int = 0) -> None:
+        """Store last_job_timing from L (in_job) and U (over), each (running,
+        hold, (t_send, t_recv)) or None. A hold in U's own reply means the wait
+        ended on a follow-up read that saw none, so the job may have resumed: no
+        end then (race), and the trial is flagged rather than timed. errors counts
+        the reads that failed other than by a timeout (error)."""
+        flags = ["held"] if held else []
+        lo = hi = end = None
+        if over is not None and over[1]:
+            flags.append("race")
+        elif over is None or in_job is None or over[2] is None or in_job[2] is None:
+            flags.append("untimed")
+        else:
+            (ls, lr), (us, ur) = in_job[2], over[2]
+            lo, hi, end = ls, ur, 0.25 * (ls + lr + us + ur)
+        if rec.timeouts > counts0[0]:
+            flags.append("timeout")
+        if rec.mismatches > counts0[1]:
+            flags.append("mismatch")
+        if errors:
+            flags.append("error")
+        rec.job = {"lo": lo, "hi": hi, "end": end, "flags": flags}
 
     def _next_job_name(self) -> str:
         self._job_counter += 1
@@ -1343,6 +1445,7 @@ class MotomanHSEBackend:
         # Runtime performs zero FTP uploads.
         # Gripper close/open and the wait for the carrier-detect sensor are in
         # the taught job, supervised by the PLC; this method sends no I/O.
+        self._exchanges().job = None          # no timing left over from a job before
         if self._halted:
             raise MotionHaltedError(
                 "DTWINRUN refused - motion halted (call servo_on to resume)"

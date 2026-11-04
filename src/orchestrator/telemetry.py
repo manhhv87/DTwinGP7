@@ -26,12 +26,15 @@ class TelemetryLogger:
     """Log joint angles + optional IO state to CSV with a UNIX timestamp.
 
     CSV structure:
-        timestamp,j1,j2,j3,j4,j5,j6,running,alarm
+        timestamp,j1,j2,j3,j4,j5,j6,running,alarm,t_perf
 
     `running` and `alarm` are optional (None if the mirror thread could not read them).
+    `t_perf` is the time.perf_counter instant of the joint read, the clock of the
+    stage timings in the trial rows, so motion seen here lines up with them exactly;
+    empty when not given.
     """
 
-    HEADER = ("timestamp", "j1", "j2", "j3", "j4", "j5", "j6", "running", "alarm")
+    HEADER = ("timestamp", "j1", "j2", "j3", "j4", "j5", "j6", "running", "alarm", "t_perf")
 
     def __init__(self, csv_path: str | Path) -> None:
         self.csv_path = Path(csv_path)
@@ -56,6 +59,7 @@ class TelemetryLogger:
         joints: list[float],
         running: bool | None = None,
         alarm: int | None = None,
+        t_perf: float | None = None,
     ) -> None:
         """Write one state row. Thread-safe."""
         if len(joints) != 6:
@@ -66,6 +70,7 @@ class TelemetryLogger:
             *(f"{j:.4f}" for j in joints),
             "" if running is None else int(running),
             "" if alarm is None else int(alarm),
+            "" if t_perf is None else f"{t_perf:.6f}",
         )
         # Check + write INSIDE the lock so a concurrent close() (which nulls _writer
         # under the same lock) cannot let us writerow() into a just-closed file.

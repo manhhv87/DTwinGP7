@@ -211,7 +211,15 @@ class DigitalTwinMirror:
         while not self._stop_flag.is_set():
             tick_start = time.monotonic()
             try:
+                t0 = time.perf_counter()
                 actual = self.hse.Joints()                # (1) Poll real state
+                # The read's own exchange (inside the backend lock) when the backend
+                # records it, else the middle of the call, on the trial rows' clock.
+                exchange = getattr(self.hse, "last_exchange", None)
+                exchange = exchange() if callable(exchange) else None
+                t_perf = (0.5 * (exchange[0] + exchange[1])
+                          if isinstance(exchange, tuple) and len(exchange) == 2
+                          else 0.5 * (t0 + time.perf_counter()))
 
                 # (4) Viewport throttled — only call callback every N ticks
                 self._viewport_tick += 1
@@ -238,7 +246,8 @@ class DigitalTwinMirror:
                 # (2) Telemetry CSV every tick — high resolution for analysis
                 if self.telemetry is not None:
                     self.telemetry.log_state(
-                        actual, running=last_running, alarm=alarm_code or None)
+                        actual, running=last_running, alarm=alarm_code or None,
+                        t_perf=t_perf)
                 with self._lock:
                     self._last_actual = list(actual)
             except Exception as e:                          # noqa: BLE001
