@@ -171,20 +171,153 @@ def test_package_cannot_overwrite_or_pollute_sources(real: Path, runner: Path, t
         inspect_sources(real, [real])
 
 
-def test_e4_parent_is_copied_with_hash_and_requires_explicit_budget(real: Path, runner: Path, tmp_path: Path) -> None:
-    synth = make_source(tmp_path / "synth", synthetic=True)
-    parent = tmp_path / "parent.pt"
-    parent.write_bytes(b"fake checkpoint for copying test")
-    with pytest.raises(ValueError, match="E4 requires"):
-        build_package(real, [synth], tmp_path / "bad1", experiment="E4", version=1, model=parent, runner_source=runner)
-    with pytest.raises(ValueError, match="E4 requires"):
-        build_package(real, [synth], tmp_path / "bad2", experiment="E4", version=1, epochs=30, runner_source=runner)
+def finish_runs(package: Path, tmp_path: Path, seeds: list[int]) -> dict[int, Path]:
+    """Run records as train.py leaves them, each with its own fake best checkpoint."""
+    checkpoints = {}
+    for seed in seeds:
+        checkpoint = tmp_path / f"{package.name}_seed{seed}.pt"
+        checkpoint.write_bytes(f"fake checkpoint {package.name} {seed}".encode())
+        run = package / "runs" / f"seed{seed}"
+        run.mkdir(parents=True)
+        (run / "run_record.json").write_text(json.dumps({
+            "status": "complete", "seed": seed, "checkpoint_sha256": sha256(checkpoint),
+            "manifest_sha256": sha256(package / "manifest.json")}), encoding="utf-8")
+        checkpoints[seed] = checkpoint
+    return checkpoints
+
+
+@pytest.fixture
+def f0(real: Path, runner: Path, tmp_path: Path) -> tuple[Path, Path, Path]:
+    """The selected E3 package (real + its synthetic batch) and its seed-0 checkpoint."""
+    initial = make_source(tmp_path / "anchored", synthetic=True)
+    package = tmp_path / "e3"
+    build_package(real, [initial], package, experiment="E3", version=1, runner_source=runner)
+    return package, initial, finish_runs(package, tmp_path, [0])[0]
+
+
+def test_e4_parent_is_copied_with_hash_and_lineage(real: Path, runner: Path, tmp_path: Path, f0) -> None:
+    parent_package, initial, parent = f0
+    loop1 = make_source(tmp_path / "loop1", synthetic=True)
+    sources = [initial, loop1]
+    complete = dict(model=parent, epochs=30, parent_package=parent_package, arm="loop", runner_source=runner)
+    for missing in ("model", "epochs", "parent_package", "arm"):
+        partial = {key: value for key, value in complete.items() if key != missing}
+        with pytest.raises(ValueError, match="E4 requires"):
+            build_package(real, sources, tmp_path / f"bad_{missing}", experiment="E4", version=1, **partial)
     destination = tmp_path / "e4"
-    result = build_package(real, [synth], destination, experiment="E4", version=1, model=parent, epochs=30, runner_source=runner)
+    result = build_package(real, sources, destination, experiment="E4", version=1, **complete)
     assert result["training"]["initialization"]["sha256"] == sha256(destination / "initial.pt") == sha256(parent)
     assert result["training"]["initialization"]["model"] == "initial.pt"
     assert result["training"]["recipe"]["epochs"] == 30
     assert result["training"]["seeds"] == [0, 1, 2]
+    lineage = result["training"]["e4"]
+    assert (lineage["arm"], lineage["update"], lineage["parent"]["run_seed"]) == ("loop", 1, 0)
+    assert lineage["parent"]["manifest_sha256"] == sha256(parent_package / "manifest.json")
+
+
+def test_e4_keeps_the_parent_real_and_synthetic_images(real: Path, runner: Path, tmp_path: Path, f0) -> None:
+    parent_package, initial, parent = f0
+    loop1 = make_source(tmp_path / "loop1", synthetic=True)
+    options = dict(experiment="E4", version=1, model=parent, epochs=30, parent_package=parent_package,
+                   arm="loop", inspect_only=True)
+    with pytest.raises(ValueError, match="1 of its 1 are missing"):
+        build_package(real, [loop1], tmp_path / "x", **options)
+    with pytest.raises(ValueError, match="adds no synthetic images"):
+        build_package(real, [initial], tmp_path / "x", **options)
+    (real / "images/train/extra.png").write_bytes(b"one more real image")
+    (real / "labels/train/extra.txt").write_text("")
+    with pytest.raises(ValueError, match="real train set differs"):
+        build_package(real, [initial, loop1], tmp_path / "x", **options)
+    stranger = tmp_path / "other.pt"
+    stranger.write_bytes(b"not trained by the parent package")
+    with pytest.raises(ValueError, match="0 complete run records"):
+        build_package(real, [initial, loop1], tmp_path / "x", **{**options, "model": stranger})
+
+
+def test_e4_update_two_continues_its_own_arm_seed_and_schedule(real: Path, runner: Path, tmp_path: Path, f0) -> None:
+    parent_package, initial, parent = f0
+    loop1, loop2, loop3 = (make_source(tmp_path / name, synthetic=True) for name in ("loop1", "loop2", "loop3"))
+    update1 = tmp_path / "loop_u1"
+    build_package(real, [initial, loop1], update1, experiment="E4", version=1, model=parent, epochs=30,
+                  parent_package=parent_package, arm="loop", runner_source=runner)
+    checkpoints = finish_runs(update1, tmp_path, [0, 1, 2])
+    sources = [initial, loop1, loop2]
+    options = dict(experiment="E4", version=2, model=checkpoints[1], epochs=30, parent_package=update1,
+                   arm="loop", seeds=[1], inspect_only=True)
+    with pytest.raises(ValueError, match="--seeds 1"):
+        build_package(real, sources, tmp_path / "x", **{**options, "seeds": None})
+    with pytest.raises(ValueError, match="own arm"):
+        build_package(real, sources, tmp_path / "x", **{**options, "arm": "control"})
+    with pytest.raises(ValueError, match="same fine-tuning schedule"):
+        build_package(real, sources, tmp_path / "x", **{**options, "epochs": 40})
+    update2 = tmp_path / "loop_u2_seed1"
+    result = build_package(real, sources, update2, **{**options, "inspect_only": False, "runner_source": runner})
+    assert result["training"]["e4"]["update"] == 2 and result["training"]["e4"]["parent"]["run_seed"] == 1
+    third = finish_runs(update2, tmp_path, [1])[1]
+    with pytest.raises(ValueError, match="at most 2"):
+        build_package(real, [*sources, loop3], tmp_path / "x", **{**options, "model": third, "parent_package": update2})
+
+
+def test_e4_arms_are_checked_against_each_other(real: Path, runner: Path, tmp_path: Path, f0) -> None:
+    parent_package, initial, parent = f0
+    loop1, control1 = (make_source(tmp_path / name, synthetic=True) for name in ("loop1", "control1"))
+    loop_package = tmp_path / "loop_u1"
+    build_package(real, [initial, loop1], loop_package, experiment="E4", version=1, model=parent, epochs=30,
+                  parent_package=parent_package, arm="loop", runner_source=runner)
+    options = dict(experiment="E4", version=1, model=parent, parent_package=parent_package, arm="control",
+                   paired_package=loop_package, inspect_only=True)
+    with pytest.raises(ValueError, match="same fine-tuning schedule: epochs 30"):
+        build_package(real, [initial, control1], tmp_path / "x", epochs=20, **options)
+    with pytest.raises(ValueError, match="same training seeds"):
+        build_package(real, [initial, control1], tmp_path / "x", epochs=30, seeds=[0, 1], **options)
+    with pytest.raises(ValueError, match="not the other arm"):
+        build_package(real, [initial, control1], tmp_path / "x", epochs=30, **{**options, "arm": "loop"})
+    result = build_package(real, [initial, control1], tmp_path / "x", epochs=30, **options)
+    assert result["training"]["e4"]["paired_package"]["training_sha256"] == sha256(loop_package / "training.json")
+    with pytest.raises(ValueError, match="belong to E4"):
+        build_package(real, [initial], tmp_path / "x", experiment="E3", version=1, arm="loop", inspect_only=True)
+
+
+def make_batch(tmp_path: Path, name: str, seed: int, indices: range) -> Path:
+    """A generated batch as 20_generate_synth.py lays it out: specs/ beside dataset/."""
+    dataset = tmp_path / name / "dataset"
+    dataset.parent.mkdir()
+    make_source(dataset, synthetic=True)
+    (dataset / "images/train/sample.png").write_bytes(name.encode())
+    specs = tmp_path / name / "specs"
+    specs.mkdir()
+    (specs / "manifest.json").write_text(json.dumps({
+        "spec_version": 1, "seed": seed, "mode": "anchored", "kappa": 2.0,
+        "files": [f"scene_{i:06d}.json" for i in indices]}), encoding="utf-8")
+    return dataset
+
+
+def test_synthetic_batches_must_not_share_generation_streams(real: Path, tmp_path: Path) -> None:
+    e3 = make_batch(tmp_path, "anchored_k2", 0, range(3000))
+    reused = make_batch(tmp_path, "control_bad", 2000, range(1000))
+    fresh = make_batch(tmp_path, "control_k1", 20000, range(1000))
+    unrecorded = make_source(tmp_path / "loose", synthetic=True)
+    with pytest.raises(ValueError, match="synth01 and synth02, 1000 scene"):
+        inspect_sources(real, [e3, reused])
+    inspected = inspect_sources(real, [e3, fresh, unrecorded])
+    assert inspected["generation_overlap_check"]["checked"] == ["synth01", "synth02"]
+    assert inspected["generation_overlap_check"]["unchecked"] == ["synth03"]
+    assert inspected["sources"][1]["generation"]["kappa"] == 2.0
+    assert inspected["sources"][2]["generation"]["streams"] == [[20000, 21000]]
+
+
+def test_cli_requires_a_declared_real_training_set(real: Path, tmp_path: Path) -> None:
+    script = Path(__file__).resolve().parents[1] / "scripts/23_launch_retrain.py"
+    command = [sys.executable, str(script), "--real", str(real), "--experiment", "E2", "--version", "0",
+               "--out", str(tmp_path / "packages")]
+    completed = subprocess.run(command, capture_output=True, text=True)
+    assert completed.returncode == 2
+    assert "--real-train-list, --expected-real-train" in completed.stderr
+    assert not (tmp_path / "packages").exists()
+    # Looking at the data first creates nothing and needs no declaration.
+    completed = subprocess.run([*command, "--inspect-only"], capture_output=True, text=True)
+    assert completed.returncode == 0, completed.stderr
+    assert json.loads(completed.stdout)["manifest"]["expected_real_train"] is None
 
 
 @pytest.mark.parametrize("experiment", ["E3", "E4", "E5"])
@@ -245,7 +378,7 @@ def test_generated_ultralytics_cache_is_allowed_but_unmanifested_labels_are_not(
         (package / "labels" / split / "real.cache").write_bytes(b"generated Ultralytics cache")
     config, manifest = module.verify_package(package)
     assert manifest["counts"]["real_train"] == 1
-    assert config["selection"]["seed_tie"] == "first_in_declared_seed_order"
+    assert config["selection"]["seed_tie"] == "lowest_seed"
     completed = subprocess.run([sys.executable, str(package / "train.py"), "--dry-run"], capture_output=True, text=True)
     assert completed.returncode == 0, completed.stderr
     (package / "labels/train/bogus.txt").write_text("")

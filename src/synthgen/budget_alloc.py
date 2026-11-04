@@ -10,7 +10,9 @@ using the largest-remainder method so the parts sum EXACTLY to N_k
 
 Each allocation entry also carries the sampler `condition` dict that
 SceneSampler.sample() understands — the concrete bridge that maps a physical
-failure mode back into renderer parameters.
+failure mode back into renderer parameters. The staged supports of the mode's
+failures (stack_on) travel beside it as context only: the sampler has no
+stacking control, so they are not part of the condition.
 
 Pure stdlib — fully unit-testable.
 """
@@ -25,8 +27,8 @@ logger = logging.getLogger(__name__)
 def condition_for(cluster: dict[str, Any]) -> dict[str, Any]:
     """Failure cluster → SceneSampler condition constraint.
 
-    class 'unknown' (e.g. detection_timeout rows) → no class constraint;
-    missing region (no coordinates) → no region constraint;
+    class 'unknown' (no staged class) → no class constraint;
+    missing region (no staged position) → no region constraint;
     lighting 'unlabelled' → no lighting constraint.
     """
     cls = cluster.get("class_name")
@@ -55,8 +57,8 @@ def allocate(
         floor_frac: Per-cluster minimum share of n_total.
 
     Returns:
-        List of {"key", "n_images", "condition", "count", "frac"} entries,
-        sum(n_images) == n_total. Empty list if there are no clusters.
+        List of {"key", "n_images", "condition", "count", "frac", "stack_on"}
+        entries, sum(n_images) == n_total. Empty list if there are no clusters.
     """
     if n_total <= 0:
         raise ValueError(f"n_total must be positive, got {n_total}")
@@ -92,6 +94,7 @@ def allocate(
             "condition": condition_for(c),
             "count": int(c["count"]),
             "frac": c.get("frac", 0.0),
+            "stack_on": c.get("stack_on", {}),
         })
     assert sum(e["n_images"] for e in out) == n_total
     return out

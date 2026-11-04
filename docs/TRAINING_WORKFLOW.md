@@ -35,7 +35,9 @@ một tập ứng viên, không xác nhận rằng baseline lịch sử đã dù
 
 Sau khi xác minh, lưu quyết định vào campaign manifest. Khi đóng gói thật, truyền
 `--expected-real-train` bằng số đã khóa; nếu chỉ chọn một tập con, luôn truyền
-allowlist. Mặc định công cụ lấy toàn bộ ảnh trong `images/train`.
+allowlist. Thiếu cả hai thì công cụ từ chối tạo package (chỉ `--inspect-only` được
+chạy không khai), để package không lặng lẽ lấy 1.318 hay 1.256 ảnh. Số khai không
+khớp số ảnh được chọn thì công cụ cũng từ chối.
 
 ## 2. Chuẩn bị synthetic
 
@@ -52,6 +54,9 @@ Sampler dùng `seed + index`. E3/full E5 có thể dùng chung dải 0..2999 đ�
 recipe. E4 phải dùng dải mới: ví dụ update 1 dùng guided seed 10000 và control
 20000; update 2 dùng 30000 và 40000, mỗi đợt 1000 ảnh. Lưu cả seed, start index,
 số ảnh và scene manifest. Không dùng seed 1000/2000 với E3 seed 0 vì các dải giao nhau.
+`21_mine_failures.py --guided-seed --control-seed` kiểm dải dự định với các scene
+manifest đã có; khi đóng gói, hai nguồn synthetic có `specs/manifest.json` cạnh
+`dataset/` mà dùng chung `seed + index` thì package bị từ chối.
 
 ## 3. Tạo package chuyển máy
 
@@ -136,18 +141,28 @@ Khóa số epochs fine-tune trước khi xem kết quả. `--epochs` bắt buộ
 người thực hiện điền từ campaign manifest:
 
 ```bash
-python scripts/23_launch_retrain.py --experiment E4 --version 1 \
+python scripts/23_launch_retrain.py --experiment E4 --arm loop --version 1 \
   --real "$REAL" --synth "$INITIAL_SYNTH" "$GUIDED_UPDATE1" \
-  --model "$SELECTED_E3_CHECKPOINT" --epochs "$E4_EPOCHS" \
+  --model "$SELECTED_E3_CHECKPOINT" --parent-package "$SELECTED_E3_PACKAGE" \
+  --epochs "$E4_EPOCHS" \
   --expected-real-train "$REAL_COUNT" --expected-synth-train 4000 \
   --out data/packages/e4_guided
 ```
 
+`--parent-package` là package đã huấn luyện ra checkpoint cha, còn đủ
+`runs/seedN/run_record.json`: checkpoint phải là `best.pt` của một run hoàn tất
+trong đó. Package E4 phải giữ nguyên ảnh thật train/val của package cha và mọi ảnh
+synthetic của nó, cộng ảnh mới; thiếu một ảnh thì bị từ chối.
+
 Control có cùng f0, cùng số ảnh mới và training schedule; chỉ dùng ảnh unguided
-của chính nó. Update 2 giữ dữ liệu tích lũy của nhánh tương ứng, tổng 5.000 ảnh
-synthetic, và tiếp tục checkpoint update 1 của **cùng nhánh và training seed**.
-Vì mỗi package nhận một `--model`, tạo package riêng cho từng seed ở update 2,
-với `--seeds 0`, `--seeds 1` hoặc `--seeds 2` và đúng checkpoint cha.
+của chính nó (`--arm control`). Package thứ hai của mỗi update truyền thêm
+`--paired-package` trỏ tới package nhánh kia để kiểm cùng số epoch, cùng seed, cùng
+ảnh thật, cùng số ảnh synthetic và, ở update 1, cùng f0. Update 2 giữ dữ liệu tích
+lũy của nhánh tương ứng, tổng 5.000 ảnh synthetic, và tiếp tục checkpoint update 1
+của **cùng nhánh và training seed**. Vì mỗi package nhận một `--model`, tạo package
+riêng cho từng seed ở update 2, với `--seeds 0`, `--seeds 1` hoặc `--seeds 2` và đúng
+checkpoint cha; công cụ từ chối seed khác seed của run cha, nhánh khác hay recipe
+khác update 1, và từ chối update thứ ba.
 
 ## 6. Hồ sơ trả về và lựa chọn model
 
@@ -159,9 +174,18 @@ chưa làm tròn tại mỗi lần lưu. Run thiếu epochs/bằng chứng đư�
 
 Giữ checkpoint theo **tổng box + mask mAP@0.5:0.95**. Với E3, so κ bằng trung
 bình điểm đó trên đủ năm seed; hòa thì κ nhỏ hơn. Chọn deployed seed trong cấu
-hình bằng cùng điểm; hòa dùng thứ tự seed đã khai. Không dùng CSV đã làm tròn
+hình bằng cùng điểm; hòa thì seed nhỏ nhất. Không dùng CSV đã làm tròn
 để giải quyết chênh lệch rất nhỏ; dùng `selected_validation` trong run record.
 Không dùng kết quả cuối cùng để chọn κ/seed hay quyết định dừng E4.
+
+`scripts/select_trained_models.py` áp các luật này lên package đã trả về và ghi
+một bản ghi lựa chọn (không ghi đè) cùng file `.sha256` của nó. Lệnh `kappa` chọn
+κ rồi seed triển khai (f0); `deploy` chọn seed của một cấu hình; `e4-adaptation`
+chọn model update 1 của nhánh loop chạy adaptation block 2; `e4-final` chọn
+checkpoint cuối của từng nhánh và từ chối khi hai nhánh khác update, recipe (kể cả
+số epoch), seed hoặc ảnh thật. Mỗi run được kiểm lại: hoàn tất, epoch giữ lại là
+epoch điểm cao nhất (hòa thì epoch muộn hơn), lịch sử khớp `results.csv`, run record
+gắn đúng `manifest.json` và `training.json`; trung bình so bằng phân số chính xác.
 
 Seed 1 E2 hiện có là lựa chọn lịch sử theo mask-only giữa các seed; không đổi
 mô tả đó thành composite hồi tố. Image mAP và task success là hai kết quả riêng.

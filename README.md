@@ -244,11 +244,15 @@ blenderproc run src/synthgen/render_blenderproc.py -- --scenes data/synth/anchor
 
 # 3. Convert → YOLO-seg dataset + lệnh train:
 python scripts/20_generate_synth.py --make-labels --out data/synth/anchored_k2
-python scripts/23_launch_retrain.py --synth data/synth/anchored_k2/dataset --real data/real_dataset --version 1
+python scripts/23_launch_retrain.py --synth data/synth/anchored_k2/dataset --real data/real_dataset --version 1 \
+    --real-train-list <danh sách train đã khóa> --expected-synth-train 3000
 
-# Vòng failure-driven (C3): mine lỗi từ trial CSV → phân bổ budget → sinh batch mới
-python scripts/21_mine_failures.py --runs "results/experiment_real_*.csv" --n-budget 1000
-python scripts/20_generate_synth.py --from-failures results/failure_modes.json --out data/synth/loop_k1 --seed 1000
+# Vòng failure-driven (C3): mine lỗi của buổi adaptation (tư thế 221-300) → phân bổ budget → sinh batch mới
+python scripts/21_mine_failures.py --runs "results/e4adapt-1/experiment_real_*.csv" --n-budget 1000 \
+    --guided-seed 10000 --control-seed 20000 --out results/adaptation/e4_k1/failure_modes.json
+python scripts/20_generate_synth.py --from-failures results/adaptation/e4_k1/failure_modes.json --out data/synth/loop_k1 --seed 10000
+# Chọn κ / seed / model E4 từ run record trả về (docs/HUONG_DAN_HUAN_LUYEN.md)
+python scripts/select_trained_models.py kappa --candidate 1=<gói κ1> --candidate 2=<gói κ2> --candidate 4=<gói κ4> --out results/selection/e3_kappa.json
 
 # Pose list cặp đôi cho so sánh McNemar (dùng CHUNG 1 list cho mọi cấu hình).
 # std_v1.csv + hard_v1.csv đã sinh sẵn: 200 lượt, 20 thẻ, 5 lớp × 40 lượt.
