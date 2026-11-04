@@ -11,6 +11,7 @@ import numpy as np
 import pytest
 
 from src.synthgen import SceneSampler, SynthgenConfig
+from src.synthgen.scene_sampler import footprint, footprints_overlap
 
 ROOT = Path(__file__).resolve().parent.parent
 FACTORS = ("illumination", "background", "distractors", "camera", "pose")
@@ -32,6 +33,15 @@ def cli():
     return module
 
 
+def _footprint(config, obj):
+    length, width, _ = config.objects.mesh_sizes_mm[obj["mesh"]]
+    return footprint(obj["xyz_mm"][:2], length, width, obj["yaw_deg"])
+
+
+def _square(d):
+    return footprint(d["xyz_mm"][:2], d["size_mm"], d["size_mm"], d["yaw_deg"])
+
+
 @pytest.mark.parametrize("factor", FACTORS)
 def test_only_selected_factor_changes(config, factor):
     """Ablating an early factor must not shift RNG draws for later factors."""
@@ -50,6 +60,14 @@ def test_only_selected_factor_changes(config, factor):
                 for key in ("xyz_mm", "yaw_deg"):
                     original.pop(key)
                     fixed.pop(key)
+            # Distractors the slot poses would cut through move (test below); every
+            # one keeps its shape, size, yaw and colour, in order.
+            looks = [{k: v for k, v in d.items() if k != "xyz_mm"}
+                     for d in before.pop("distractors")]
+            moved = [{k: v for k, v in d.items() if k != "xyz_mm"}
+                     for d in after.pop("distractors")]
+            rest = iter(looks)
+            assert all(any(m == d for d in rest) for m in moved)
         else:
             key = "lights" if factor == "illumination" else factor
             changed |= before.pop(key) != after.pop(key)
@@ -81,10 +99,25 @@ def test_fixed_settings_use_supplied_anchors(config):
     assert SceneSampler(config, T_BC, ablation="distractors").sample(0)["distractors"] == []
 
 
-@pytest.mark.parametrize("count", [1, 2, 3])
+def _on_table(spec):
+    return [o for o in spec["objects"] if "stack_on_index" not in o]
+
+
+def _check_stacked_follow_support(config, spec):
+    for obj in spec["objects"]:
+        if "stack_on_index" in obj:
+            support = spec["objects"][obj["stack_on_index"]]
+            x, y, z = support["xyz_mm"]
+            height = config.objects.mesh_sizes_mm[support["mesh"]][2]
+            assert obj["xyz_mm"] == pytest.approx([x, y, z + height])
+            assert obj["yaw_deg"] == support["yaw_deg"]
+
+
+@pytest.mark.parametrize("count", [1, 2])
 def test_pose_reference_conditional_on_count(config, count):
     # Expected slots follow from the configured envelope, not from copied numbers:
-    # the envelope is re-measured whenever the cell is re-calibrated.
+    # the envelope is re-measured whenever the cell is re-calibrated. Slots hold the
+    # placements on the table; a stacked product sits on its support's slot.
     config.objects.count_range = [count, count]
     (x0, x1), (y0, y1) = config.objects.region_x_mm, config.objects.region_y_mm
     assert y1 - y0 > x1 - x0, "this case exercises the long-Y branch"
@@ -92,29 +125,65 @@ def test_pose_reference_conditional_on_count(config, count):
     expected = [[(x0 + x1) / 2, y0 + (i + 0.5) * (y1 - y0) / count, z] for i in range(count)]
     yaw = sum(config.objects.yaw_range_deg) / 2
     sampler = SceneSampler(config, T_BC, seed=17, ablation="pose")
-    for index in range(10):
+    stacked = 0
+    for index in range(30):
         spec = sampler.sample(index)
-        got = [v for o in spec["objects"] for v in o["xyz_mm"]]
-        assert got == pytest.approx([v for xyz in expected for v in xyz])
-        assert [o["yaw_deg"] for o in spec["objects"]] == pytest.approx([yaw] * count)
+        on_table = _on_table(spec)
+        got = [v for o in on_table for v in o["xyz_mm"]]
+        assert got == pytest.approx([v for xyz in expected[:len(on_table)] for v in xyz])
+        assert [o["yaw_deg"] for o in on_table] == pytest.approx([yaw] * len(on_table))
+        _check_stacked_follow_support(config, spec)
+        stacked += len(spec["objects"]) > len(on_table)
         assert spec["ablation"]["reference"]["axis"] == "y"
+    assert stacked > 0
 
 
 def test_pose_long_axis_tie_uses_x_and_yaw_midpoint(config):
     config.objects.count_range = [2, 2]
-    config.objects.region_x_mm = [0., 400.]
-    config.objects.region_y_mm = [-200., 200.]
+    config.objects.region_x_mm = [0., 600.]
+    config.objects.region_y_mm = [-300., 300.]
     config.objects.yaw_range_deg = [-30., 90.]
-    spec = SceneSampler(config, T_BC, ablation="pose").sample(0)
+    sampler = SceneSampler(config, T_BC, ablation="pose")
     z = config.objects.table_z_mm
-    assert [o["xyz_mm"] for o in spec["objects"]] == [[100., 0., z], [300., 0., z]]
-    assert [o["yaw_deg"] for o in spec["objects"]] == [30., 30.]
+    for index in range(10):
+        spec = sampler.sample(index)
+        on_table = _on_table(spec)
+        assert [o["xyz_mm"] for o in on_table] == [[150., 0., z], [450., 0., z]][:len(on_table)]
+        assert [o["yaw_deg"] for o in on_table] == [30.] * len(on_table)
+        _check_stacked_follow_support(config, spec)
 
 
-def test_impossible_pose_spacing_is_rejected(config):
-    config.objects.count_range = [1, 10]
-    with pytest.raises(ValueError, match="min_separation"):
+@pytest.mark.parametrize("counts", [[1, 3], [1, 10]])
+def test_impossible_pose_spacing_is_rejected(config, counts):
+    # Three slots of 130 mm cannot hold the 190 mm wood box without overlap.
+    config.objects.count_range = counts
+    with pytest.raises(ValueError, match="slots overlap"):
         SceneSampler(config, T_BC, ablation="pose")
+
+
+def test_pose_arm_moves_only_the_distractors_in_the_way(config):
+    full = SceneSampler(config, T_BC, kappa=2, seed=17)
+    ablated = SceneSampler(config, T_BC, kappa=2, seed=17, ablation="pose")
+    moved = 0
+    for index in range(60):
+        before, after = full.sample(index), ablated.sample(index)
+        products = [_footprint(config, o) for o in after["objects"]]
+        for i in range(len(products)):
+            for j in range(i + 1, len(products)):
+                a, b = after["objects"][i], after["objects"][j]
+                if a.get("stack_on_index") == j or b.get("stack_on_index") == i:
+                    continue
+                assert not footprints_overlap(products[i], products[j])
+        squares = [_square(d) for d in after["distractors"]]
+        for k, sq in enumerate(squares):
+            assert not any(footprints_overlap(sq, p) for p in products)
+            assert not any(footprints_overlap(sq, other) for other in squares[k + 1:])
+        # A distractor clear of the slot poses stays exactly where it was.
+        for d in before["distractors"]:
+            if not any(footprints_overlap(_square(d), p) for p in products):
+                assert d in after["distractors"]
+        moved += sum(d not in before["distractors"] for d in after["distractors"])
+    assert moved > 0
 
 
 @pytest.mark.parametrize("factor", FACTORS)
@@ -206,9 +275,42 @@ def test_cli_writes_requested_treatment_without_rendering(cli, config, tmp_path,
     monkeypatch.setattr(sys, "argv", ["20_generate_synth.py", "--out", str(out),
                         "--config", str(ROOT / "config/synthgen.yaml"),
                         "--calib", str(calib), "--sigma", str(tmp_path / "absent.json"),
+                        "--allow-sigma-fallback",
                         "--ablation", factor, "--n", "2", "--seed", "17"])
     assert cli.main() == 0
     manifest = json.loads((out / "specs/manifest.json").read_text())
     assert manifest["ablation"]["factor"] == factor
+    assert manifest["sigma_source"] == "yaml_fallback"
     assert len(manifest["files"]) == 2
     assert not (out / "render").exists()
+
+
+@pytest.mark.parametrize("extra", [[], ["--ablation", "camera"], ["--from-failures", "f.json"]])
+def test_cli_stops_without_bootstrap_sigma(cli, tmp_path, monkeypatch, extra):
+    # The fallback widths are configured, not measured: a paper run must not slip
+    # onto them because a file is missing.
+    calib = tmp_path / "T_BC.npy"
+    np.save(calib, T_BC)
+    report = tmp_path / "f.json"
+    report.write_text(json.dumps({"allocation": [
+        {"key": "k", "n_images": 2, "condition": {"class_name": "carton"}}]}))
+    extra = [str(report) if a == "f.json" else a for a in extra]
+    out = tmp_path / "run"
+    monkeypatch.setattr(sys, "argv", ["20_generate_synth.py", "--out", str(out),
+                        "--config", str(ROOT / "config/synthgen.yaml"),
+                        "--calib", str(calib), "--sigma", str(tmp_path / "absent.json"),
+                        "--n", "2", *extra])
+    assert cli.main() == 1
+    assert not out.exists()
+
+
+def test_cli_blind_needs_no_sigma(cli, tmp_path, monkeypatch):
+    calib = tmp_path / "T_BC.npy"
+    np.save(calib, T_BC)
+    out = tmp_path / "run"
+    monkeypatch.setattr(sys, "argv", ["20_generate_synth.py", "--out", str(out),
+                        "--config", str(ROOT / "config/synthgen.yaml"),
+                        "--calib", str(calib), "--sigma", str(tmp_path / "absent.json"),
+                        "--mode", "blind", "--n", "2"])
+    assert cli.main() == 0
+    assert len(json.loads((out / "specs/manifest.json").read_text())["files"]) == 2

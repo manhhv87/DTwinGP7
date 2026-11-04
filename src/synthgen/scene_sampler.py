@@ -10,10 +10,18 @@ ANCHORED mode: nuisance parameters (camera extrinsics/intrinsics, lighting,
 background) are drawn around the twin's calibrated ground state theta* with
 widths kappa*sigma; sigma comes from the bootstrap of the hand-eye calibration
 (config/calibration/T_base_camera_sigma.json) or, as a fallback, from
-config/synthgen.yaml. Task variables (object pose, count) are fully random.
+config/synthgen.yaml. Quantities that must stay positive (light power, light
+height above the table, albedo) are perturbed as theta* * exp(eta), so no kappa
+drives them to zero, below the table or onto a floor value.
 
 BLIND mode: wide hand-set perturbation ranges around the same camera reference,
-with a different appearance recipe. It is not independent of calibration.
+with a different appearance recipe. It is not independent of calibration. Its
+light power is a log-uniform multiple of the anchored reference power.
+
+Task variables are drawn alike in both modes: one or more placements on the
+table whose footprints never overlap; the first product's class, and whether it
+rests on a support, follow the physical pose lists; distractors keep off the
+products.
 
 The sampler runs in the repo venv and writes plain-JSON scene specs; rendering
 happens separately under `blenderproc run` (render_blenderproc.py), which only
@@ -33,8 +41,15 @@ import numpy as np
 from .anchored_config import LIGHTING_CONDITION_SCALE, SynthgenConfig
 
 # Schema version of the scene-spec JSON contract with render_blenderproc.py.
-SPEC_VERSION = 1
+# 2: an object's xyz_mm z is the height of its base, which is the top face of its
+# support for a stacked product (stack_on_index names the support).
+SPEC_VERSION = 2
 ABLATION_FACTORS = ("none", "illumination", "background", "distractors", "camera", "pose")
+# Draws of position and yaw for one product or distractor before it is left out.
+PLACEMENT_TRIES = 200
+# Third SeedSequence word of the stream that moves distractors in the pose arm, so
+# that the full scene's own draws stay untouched.
+_RELOCATION_STREAM = 1
 
 
 def _rotvec_deg_to_matrix(rv_deg: np.ndarray) -> np.ndarray:
@@ -50,6 +65,32 @@ def _rotvec_deg_to_matrix(rv_deg: np.ndarray) -> np.ndarray:
         [-axis[1], axis[0], 0.0],
     ])
     return np.eye(3) + np.sin(angle) * K + (1.0 - np.cos(angle)) * (K @ K)
+
+
+def footprint(center_xy: Any, length: float, width: float, yaw_deg: float) -> np.ndarray:
+    """Corners (4x2, mm) of a length x width rectangle turned by yaw about +Z.
+
+    The length runs along the mesh X axis, which is how the renderer turns a mesh
+    by the spec's yaw.
+    """
+    c, s = np.cos(np.deg2rad(yaw_deg)), np.sin(np.deg2rad(yaw_deg))
+    half = np.array([[1.0, 1.0], [-1.0, 1.0], [-1.0, -1.0], [1.0, -1.0]]) * [
+        length / 2.0, width / 2.0]
+    return half @ np.array([[c, s], [-s, c]]) + np.asarray(center_xy, dtype=float)
+
+
+def footprints_overlap(a: np.ndarray, b: np.ndarray) -> bool:
+    """Separating-axis test for two convex quadrilaterals.
+
+    True when they share area; rectangles that only touch count as apart.
+    """
+    for poly in (a, b):
+        edges = np.roll(poly, -1, axis=0) - poly
+        for normal in np.column_stack([-edges[:, 1], edges[:, 0]]):
+            pa, pb = a @ normal, b @ normal
+            if pa.max() <= pb.min() or pb.max() <= pa.min():
+                return False
+    return True
 
 
 def load_sigma_json(path: str | Path) -> dict[str, Any] | None:
@@ -74,8 +115,10 @@ class SceneSampler:
         kappa: Width multiplier for anchored sampling (Eq. 1). Ignored in blind.
         sigma: Optional dict from T_base_camera_sigma.json with keys
             sigma_trans_mm [3] and sigma_rot_deg [3]; overrides YAML fallbacks.
-        seed: Base RNG seed. Scene i uses default_rng(seed + i) → any subset of
-            a run can be regenerated deterministically.
+        seed: Run seed, a non-negative integer. Scene i draws from
+            default_rng(SeedSequence([seed, i])): any subset of a run regenerates
+            exactly, and runs with different seeds share no scenes, whatever their
+            index ranges. Within one seed, an index range must not be reused.
         ablation: One E5 factor to fix/remove, or "none" for the full recipe.
             Available only for unconditional anchored sampling. All factors are
             drawn before applying the intervention, preserving paired RNG draws.
@@ -97,6 +140,8 @@ class SceneSampler:
             raise ValueError(f"ablation must be one of {ABLATION_FACTORS}, got '{ablation}'")
         if ablation != "none" and mode != "anchored":
             raise ValueError("E5 ablation requires mode='anchored'")
+        if int(seed) < 0:
+            raise ValueError(f"seed must be a non-negative integer, got {seed}")
         T = np.asarray(T_BC_mm, dtype=float)
         if T.shape != (4, 4):
             raise ValueError(f"T_BC_mm must be 4x4, got {T.shape}")
@@ -118,7 +163,7 @@ class SceneSampler:
             self.sigma_source = "yaml_fallback"
 
         self.ablation_protocol = {
-            "protocol_version": 1,
+            "protocol_version": 2,
             "factor": ablation,
             "reference": self._ablation_reference(),
         }
@@ -144,21 +189,27 @@ class SceneSampler:
         if self.ablation == "distractors":
             return []
 
-        # Pose is fixed conditional on count; class, size and material still vary.
-        # Slots are cell centres along the longer region axis (X breaks a tie).
+        # Pose is fixed conditional on the number of placements; class, size,
+        # material and stacking still vary. Slots are cell centres along the longer
+        # region axis (X breaks a tie); a stacked product sits square on the centre
+        # of its support's slot.
         obj = self.config.objects
         ranges = np.asarray([obj.region_x_mm, obj.region_y_mm], dtype=float)
         widths = ranges[:, 1] - ranges[:, 0]
         axis = int(np.argmax(widths))
         centre = ranges.mean(axis=1)
         counts = obj.count_range
-        if len(counts) != 2 or counts[0] < 1 or counts[1] < counts[0]:
-            raise ValueError("pose ablation requires a positive ordered objects.count_range")
-        if counts[1] > 1 and widths[axis] / counts[1] < obj.min_separation_mm:
-            raise ValueError("pose reference slots cannot satisfy min_separation_mm; "
-                             "revise and document the reference region/count protocol")
-        poses_by_count = {}
         yaw = float(np.mean(obj.yaw_range_deg))
+        # Every mesh, at the fixed yaw, must fit its slot, or the reference itself
+        # would put products inside one another.
+        reach = max(float(np.ptp(footprint((0.0, 0.0), *size[:2], yaw)[:, axis]))
+                    for size in obj.mesh_sizes_mm.values())
+        if counts[1] > 1 and widths[axis] / counts[1] < reach:
+            raise ValueError(
+                f"pose reference slots overlap: {counts[1]} slots of "
+                f"{widths[axis] / counts[1]:.1f} mm cannot hold a {reach:.1f} mm footprint; "
+                "revise and document the reference region/count protocol")
+        poses_by_count = {}
         for n in range(counts[0], counts[1] + 1):
             poses = []
             for i in range(n):
@@ -168,7 +219,9 @@ class SceneSampler:
                               "yaw_deg": yaw})
             poses_by_count[str(n)] = poses
         return {"rule": "count_conditional_long_axis_cell_centres",
-                "axis": "xy"[axis], "poses_by_count": poses_by_count}
+                "axis": "xy"[axis], "poses_by_count": poses_by_count,
+                "stacked": "support_slot_centre",
+                "distractors": "moved_off_products"}
 
     def _generator_profile(self) -> dict[str, Any]:
         """Persist remaining distributions and effective camera widths for audit."""
@@ -181,16 +234,52 @@ class SceneSampler:
         if self.ablation != "none" and condition:
             raise ValueError("E5 ablation cannot be combined with failure conditioning")
 
-    def _apply_ablation(self, spec: dict[str, Any]) -> None:
+    def _apply_ablation(self, spec: dict[str, Any], index: int) -> None:
         reference = deepcopy(self.ablation_protocol["reference"])
         if self.ablation == "pose":
-            poses = reference["poses_by_count"][str(len(spec["objects"]))]
-            for obj, pose in zip(spec["objects"], poses):
+            objects = spec["objects"]
+            on_table = [o for o in objects if "stack_on_index" not in o]
+            for obj, pose in zip(on_table, reference["poses_by_count"][str(len(on_table))]):
                 obj.update(pose)
+            for obj in objects:
+                if "stack_on_index" in obj:
+                    support = objects[obj["stack_on_index"]]
+                    x, y, z = support["xyz_mm"]
+                    obj["xyz_mm"] = [x, y, z + self._size(support["mesh"])[2]]
+                    obj["yaw_deg"] = support["yaw_deg"]
+            self._relocate_distractors(spec, index)
         elif self.ablation != "none":
             key = "lights" if self.ablation == "illumination" else self.ablation
             spec[key] = reference
         spec["ablation"] = deepcopy(self.ablation_protocol)
+
+    def _relocate_distractors(self, spec: dict[str, Any], index: int) -> None:
+        """Pose arm: move each distractor that the fixed poses would cut through.
+
+        The full scene placed every distractor clear of the products where they
+        were; at the slot poses some would sit inside a product. Only those move,
+        keeping their shape, size, yaw and colour, to a free position drawn from a
+        stream of their own; one that finds no free position is left out.
+        """
+        products = [self._footprint(o) for o in spec["objects"]]
+        squares = [footprint(d["xyz_mm"][:2], d["size_mm"], d["size_mm"], d["yaw_deg"])
+                   for d in spec["distractors"]]
+        blocked = [any(footprints_overlap(sq, p) for p in products) for sq in squares]
+        if not any(blocked):
+            return
+        taken = products + [sq for sq, hit in zip(squares, blocked) if not hit]
+        rng = np.random.default_rng(
+            np.random.SeedSequence([self.seed, int(index), _RELOCATION_STREAM]))
+        kept = []
+        for d, hit in zip(spec["distractors"], blocked):
+            if hit:
+                pose = self._place(rng, d["size_mm"], d["size_mm"], self._region(), taken,
+                                   yaw_deg=d["yaw_deg"])
+                if pose is None:
+                    continue
+                d["xyz_mm"] = [pose[0], pose[1], d["xyz_mm"][2]]
+            kept.append(d)
+        spec["distractors"] = kept
 
     # ────────────────────────────────────────────────────────────
     # Per-factor sampling
@@ -223,25 +312,31 @@ class SceneSampler:
         scale = LIGHTING_CONDITION_SCALE.get(lighting_condition or "", 1.0)
         lights: list[dict[str, Any]] = []
         if self.mode == "anchored":
+            z_table = self.config.objects.table_z_mm
             for pos in lit.anchor_positions_mm:
-                p = np.asarray(pos, dtype=float) + rng.normal(
-                    0.0, self.kappa * lit.sigma_position_mm, size=3
-                )
-                energy = lit.anchor_intensity_w * scale * (
-                    1.0 + rng.normal(0.0, self.kappa * lit.sigma_intensity_frac)
-                )
+                p = np.asarray(pos, dtype=float)
+                d = rng.normal(0.0, self.kappa * lit.sigma_position_mm, size=3)
+                # The height above the table is a log scale: near the anchor it moves
+                # like the Gaussian sd kappa*sigma, and no kappa takes it to the table.
+                height = p[2] - z_table
+                p[:2] += d[:2]
+                p[2] = z_table + height * np.exp(d[2] / height)
+                # Power likewise: the reference times exp(eta), never at a floor.
+                energy = lit.anchor_intensity_w * scale * np.exp(
+                    rng.normal(0.0, self.kappa * lit.sigma_intensity_frac))
                 temp = lit.anchor_color_temp_k + rng.normal(
                     0.0, self.kappa * lit.sigma_color_temp_k
                 )
                 lights.append({
                     "type": "point",
                     "position_mm": p.tolist(),
-                    "energy_w": float(max(1.0, energy)),
+                    "energy_w": float(energy),
                     "color_temp_k": float(np.clip(temp, 1500.0, 12000.0)),
                 })
         else:
             n = int(rng.integers(lit.blind_count_range[0], lit.blind_count_range[1] + 1))
             (x0, x1), (y0, y1), (z0, z1) = lit.blind_position_box_mm
+            log_lo, log_hi = np.log(lit.blind_intensity_rel_range)
             for _ in range(max(1, n)):
                 lights.append({
                     "type": "point",
@@ -250,7 +345,10 @@ class SceneSampler:
                         float(rng.uniform(y0, y1)),
                         float(rng.uniform(z0, z1)),
                     ],
-                    "energy_w": float(rng.uniform(*lit.blind_intensity_range_w) * scale),
+                    # A multiple of the anchored reference, so a refitted anchor moves
+                    # the wide-range power with it.
+                    "energy_w": float(lit.anchor_intensity_w * scale
+                                      * np.exp(rng.uniform(log_lo, log_hi))),
                     "color_temp_k": float(rng.uniform(*lit.blind_color_temp_range_k)),
                 })
         return lights
@@ -263,12 +361,13 @@ class SceneSampler:
             # brightness that differs between images, not the hue. Scale the table as
             # a whole and jitter the channels only slightly; independent draws at this
             # width hand the anchored arm pink and green tables, which is precisely
-            # what anchoring is supposed to rule out.
+            # what anchoring is supposed to rule out. Both factors are exp(.), so the
+            # table never goes black.
             base = np.asarray(bg.anchor_albedo_rgb, dtype=float)
             rel = bg.sigma_albedo / max(1e-6, float(base.mean()))
-            scale = max(0.0, 1.0 + rng.normal(0.0, self.kappa * rel))
-            hue = rng.normal(0.0, self.kappa * rel * 0.2, size=3)
-            albedo = base * scale * (1.0 + hue)
+            scale = np.exp(rng.normal(0.0, self.kappa * rel))
+            hue = np.exp(rng.normal(0.0, self.kappa * rel * 0.2, size=3))
+            albedo = base * scale * hue
         else:
             lo, hi = bg.blind_albedo_range
             albedo = rng.uniform(lo, hi, size=3)
@@ -301,10 +400,12 @@ class SceneSampler:
             # images, not hue), so all three channels scale together. A small
             # independent term keeps some genuine colour variation without turning a
             # grey steel box green, which independent draws at the full width do.
+            # Both are exp(.): the factor max(0, 1 + eta) rendered 18% of inox boxes
+            # black at kappa 2 and 32% at kappa 4.
             base = np.asarray(mat.albedo_rgb, dtype=float)
-            scale = 1.0 + rng.normal(0.0, self.kappa * mat.sigma_albedo_rel)
-            hue = rng.normal(0.0, self.kappa * mat.sigma_albedo_rel * 0.2, size=3)
-            albedo = base * max(0.0, scale) * (1.0 + hue)
+            scale = np.exp(rng.normal(0.0, self.kappa * mat.sigma_albedo_rel))
+            hue = np.exp(rng.normal(0.0, self.kappa * mat.sigma_albedo_rel * 0.2, size=3))
+            albedo = base * scale * hue
             rough = float(mat.roughness + rng.normal(0.0, self.kappa * obj.sigma_roughness))
             metal = float(mat.metallic)
         return {
@@ -313,109 +414,185 @@ class SceneSampler:
             "metallic": float(np.clip(metal, 0.0, 1.0)),
         }
 
+    def _region(self) -> tuple[float, float, float, float]:
+        obj = self.config.objects
+        return (obj.region_x_mm[0], obj.region_x_mm[1],
+                obj.region_y_mm[0], obj.region_y_mm[1])
+
     def _sample_xy(
         self, rng: np.random.Generator, region: tuple[float, float, float, float]
     ) -> tuple[float, float]:
         x0, x1, y0, y1 = region
         return float(rng.uniform(x0, x1)), float(rng.uniform(y0, y1))
 
-    def _place_non_overlapping(
+    def _sample_yaw(self, rng: np.random.Generator) -> float:
+        lo, hi = self.config.objects.yaw_range_deg
+        return float(rng.uniform(lo, hi))
+
+    def _size(self, mesh: str) -> list[float]:
+        return self.config.objects.mesh_sizes_mm[mesh]
+
+    def _footprint(self, obj: dict[str, Any]) -> np.ndarray:
+        length, width, _ = self._size(obj["mesh"])
+        return footprint(obj["xyz_mm"][:2], length, width, obj["yaw_deg"])
+
+    def _place(
         self,
         rng: np.random.Generator,
-        n: int,
+        length: float,
+        width: float,
         region: tuple[float, float, float, float],
-        min_sep: float,
-        max_tries: int = 100,
-    ) -> list[tuple[float, float]]:
-        """Rejection-sample n positions with pairwise min separation.
+        taken: list[np.ndarray],
+        yaw_deg: float | None = None,
+    ) -> tuple[float, float, float] | None:
+        """(x, y, yaw) uniform over the poses whose footprint clears every one in
+        taken, which then holds it too; None after PLACEMENT_TRIES draws. A given
+        yaw_deg is kept; otherwise every draw draws the yaw as well."""
+        for _ in range(PLACEMENT_TRIES):
+            x, y = self._sample_xy(rng, region)
+            yaw = self._sample_yaw(rng) if yaw_deg is None else float(yaw_deg)
+            fp = footprint((x, y), length, width, yaw)
+            if not any(footprints_overlap(fp, t) for t in taken):
+                taken.append(fp)
+                return x, y, yaw
+        return None
 
-        Falls back to progressively halving min_sep instead of failing — a
-        cluttered scene is still a valid (and useful) training scene.
-        """
-        placed: list[tuple[float, float]] = []
-        sep = float(min_sep)
-        while len(placed) < n:
-            for _ in range(max_tries):
-                x, y = self._sample_xy(rng, region)
-                if all((x - px) ** 2 + (y - py) ** 2 >= sep**2 for px, py in placed):
-                    placed.append((x, y))
-                    break
-            else:
-                sep *= 0.5  # relax and keep going
-                if sep < 1.0:
-                    placed.append(self._sample_xy(rng, region))
-        return placed
+    def _draw_first(
+        self, rng: np.random.Generator, forced_class: str | None
+    ) -> tuple[str, str | None]:
+        """Class of the first product and the class of its support (None: it stands
+        on the table), drawn with the frequencies of the pose-list rows. A forced
+        class keeps only that class's rows."""
+        obj = self.config.objects
+        if forced_class is not None and forced_class not in obj.classes:
+            raise ValueError(f"condition class '{forced_class}' not in objects.classes")
+        if obj.first_object_mix:
+            rows = []
+            for cls in sorted(obj.first_object_mix):
+                mix = obj.first_object_mix[cls]
+                rows.append((cls, None, mix.single))
+                rows += [(cls, sup, k) for sup, k in sorted(mix.stacked_on.items())]
+        else:
+            rows = [(cls, None, 1) for cls in sorted(obj.classes)]
+        rows = [r for r in rows if r[2] > 0]
+        if forced_class is not None:
+            rows = [r for r in rows if r[0] == forced_class] or [(forced_class, None, 1)]
+        cdf = np.cumsum([r[2] for r in rows], dtype=float)
+        k = int(np.searchsorted(cdf / cdf[-1], rng.random(), side="right"))
+        cls, support, _ = rows[min(k, len(rows) - 1)]
+        return cls, support
+
+    def _draw_look(self, rng: np.random.Generator, cls: str) -> tuple[str, dict[str, Any]]:
+        """Mesh and material of one product of class cls."""
+        # A class may map to several physical sizes (carton: two); pick one per
+        # placement, from the same seeded generator so scenes stay reproducible.
+        meshes = self.config.objects.classes[cls]
+        if isinstance(meshes, list):
+            mesh = meshes[int(rng.integers(0, len(meshes)))]
+        else:
+            mesh = meshes
+        return mesh, self._sample_material(rng, cls)
+
+    def _product(
+        self,
+        cls: str,
+        mesh: str,
+        xyz: list[float],
+        yaw: float,
+        material: dict[str, Any],
+        stack_on_index: int | None = None,
+    ) -> dict[str, Any]:
+        spec_obj: dict[str, Any] = {
+            "class_name": cls,
+            "class_id": self.config.objects.class_ids[cls],
+            "mesh": mesh,
+            "xyz_mm": [float(v) for v in xyz],
+            "yaw_deg": float(yaw),
+        }
+        if stack_on_index is not None:
+            spec_obj["stack_on_index"] = stack_on_index
+        if material:
+            spec_obj["material"] = material
+        return spec_obj
 
     def _sample_objects(
         self, rng: np.random.Generator, condition: dict[str, Any] | None
-    ) -> list[dict[str, Any]]:
+    ) -> tuple[list[dict[str, Any]], list[np.ndarray]]:
+        """Products, and the footprints they occupy on the table.
+
+        The first placement is drawn before any other, so it is uniform over its
+        region: the whole envelope, or the cell a failure condition names. Each
+        further placement is uniform over the poses that clear the footprints
+        already there, and is left out when PLACEMENT_TRIES draws find none.
+        """
         obj = self.config.objects
         names = sorted(obj.classes)
         n = int(rng.integers(obj.count_range[0], obj.count_range[1] + 1))
-        n = max(1, n)
-
-        region = (
-            obj.region_x_mm[0], obj.region_x_mm[1],
-            obj.region_y_mm[0], obj.region_y_mm[1],
-        )
+        region = self._region()
         forced_class = None
-        forced_region = None
+        first_region = region
         if condition:
             forced_class = condition.get("class_name") or None
             if condition.get("region"):
                 r = condition["region"]
-                forced_region = (float(r[0]), float(r[1]), float(r[2]), float(r[3]))
+                first_region = (float(r[0]), float(r[1]), float(r[2]), float(r[3]))
 
-        positions = self._place_non_overlapping(rng, n, region, obj.min_separation_mm)
-        objects: list[dict[str, Any]] = []
-        for i, (x, y) in enumerate(positions):
-            if i == 0 and forced_class is not None:
-                cls = forced_class
-                if cls not in obj.classes:
-                    raise ValueError(f"condition class '{cls}' not in objects.classes")
-            else:
-                cls = names[int(rng.integers(0, len(names)))]
-            if i == 0 and forced_region is not None:
-                x, y = self._sample_xy(rng, forced_region)
-            yaw = float(rng.uniform(obj.yaw_range_deg[0], obj.yaw_range_deg[1]))
-            # A class may map to several physical sizes (carton: two); pick one per
-            # placement, from the same seeded generator so scenes stay reproducible.
-            meshes = obj.classes[cls]
-            if isinstance(meshes, list):
-                mesh = meshes[int(rng.integers(0, len(meshes)))]
-            else:
-                mesh = meshes
-            spec_obj = {
-                "class_name": cls,
-                "class_id": obj.class_ids[cls],
-                "mesh": mesh,
-                "xyz_mm": [x, y, obj.table_z_mm],
-                "yaw_deg": yaw,
-            }
-            material = self._sample_material(rng, cls)
-            if material:
-                spec_obj["material"] = material
-            objects.append(spec_obj)
-        return objects
+        cls, support_cls = self._draw_first(rng, forced_class)
+        mesh, material = self._draw_look(rng, cls)
+        x, y = self._sample_xy(rng, first_region)
+        yaw = self._sample_yaw(rng)
+        z = obj.table_z_mm
+        if support_cls is None:
+            objects = [self._product(cls, mesh, [x, y, z], yaw, material)]
+        else:
+            # Staged as in the trials: the support stands at the placement and the
+            # product rests on its top face, its centre within stack_offset_mm of the
+            # support's centre. The trials do not call the support's yaw, so it is
+            # drawn on its own.
+            sup_mesh, sup_material = self._draw_look(rng, support_cls)
+            sup_yaw = self._sample_yaw(rng)
+            dx, dy = rng.uniform(-obj.stack_offset_mm, obj.stack_offset_mm, size=2)
+            objects = [
+                self._product(cls, mesh, [x + dx, y + dy, z + self._size(sup_mesh)[2]],
+                              yaw, material, stack_on_index=1),
+                self._product(support_cls, sup_mesh, [x, y, z], sup_yaw, sup_material),
+            ]
+        taken = [self._footprint(o) for o in objects]
+        for _ in range(1, n):
+            c = names[int(rng.integers(0, len(names)))]
+            mesh, material = self._draw_look(rng, c)
+            pose = self._place(rng, *self._size(mesh)[:2], region, taken)
+            if pose is not None:
+                objects.append(self._product(c, mesh, [pose[0], pose[1], z], pose[2], material))
+        return objects, taken
 
-    def _sample_distractors(self, rng: np.random.Generator) -> list[dict[str, Any]]:
+    def _sample_distractors(
+        self, rng: np.random.Generator, taken: list[np.ndarray]
+    ) -> list[dict[str, Any]]:
+        """Distractors in the placement envelope, clear of the products and of one
+        another. Each occupies its size-wide square at its yaw, which holds the
+        sphere and the cylinder as well. One that finds no free position in
+        PLACEMENT_TRIES draws is left out."""
         dis = self.config.distractors
         obj = self.config.objects
         rng_range = dis.count_range if self.mode == "anchored" else dis.blind_count_range
         n = int(rng.integers(rng_range[0], rng_range[1] + 1))
-        region = (
-            obj.region_x_mm[0], obj.region_x_mm[1],
-            obj.region_y_mm[0], obj.region_y_mm[1],
-        )
+        taken = list(taken)
         out: list[dict[str, Any]] = []
         for _ in range(n):
-            x, y = self._sample_xy(rng, region)
+            shape = ["cube", "sphere", "cylinder"][int(rng.integers(0, 3))]
+            size = float(rng.uniform(*dis.size_range_mm))
+            yaw = float(rng.uniform(-180.0, 180.0))
+            albedo = rng.uniform(0.05, 0.95, size=3).tolist()
+            pose = self._place(rng, size, size, self._region(), taken, yaw_deg=yaw)
+            if pose is None:
+                continue
             out.append({
-                "shape": ["cube", "sphere", "cylinder"][int(rng.integers(0, 3))],
-                "size_mm": float(rng.uniform(*dis.size_range_mm)),
-                "xyz_mm": [x, y, obj.table_z_mm],
-                "yaw_deg": float(rng.uniform(-180.0, 180.0)),
-                "albedo_rgb": rng.uniform(0.05, 0.95, size=3).tolist(),
+                "shape": shape,
+                "size_mm": size,
+                "xyz_mm": [pose[0], pose[1], obj.table_z_mm],
+                "yaw_deg": yaw,
+                "albedo_rgb": albedo,
             })
         return out
 
@@ -427,15 +604,25 @@ class SceneSampler:
         """Draw one scene spec. Deterministic in (seed, index, condition).
 
         Args:
-            index: Scene index within the run (also drives the RNG stream).
+            index: Scene index within the run, a non-negative integer. With the run
+                seed it seeds the scene's generator, SeedSequence([seed, index]).
             condition: Optional C3 failure-mode constraint:
                 {"class_name": str|None, "region": [x0,x1,y0,y1]|None,
-                 "lighting": str|None} — forces the first object's class/region
-                and scales lighting to the named regime.
+                 "lighting": str|None} — forces the first product's class (its
+                support, if any, follows that class's pose-list rows) and the
+                region of its placement, and scales lighting to the named regime.
         """
         self._check_condition(condition)
-        rng = np.random.default_rng(self.seed + index)
+        if int(index) < 0:
+            raise ValueError(f"index must be non-negative, got {index}")
+        # SeedSequence mixes both words, so the stream of (seed, index) is not the
+        # stream of (seed + 1, index - 1), as it was when seeded with seed + index.
+        rng = np.random.default_rng(np.random.SeedSequence([self.seed, int(index)]))
         lighting_condition = (condition or {}).get("lighting")
+        camera = self._sample_camera(rng)
+        lights = self._sample_lights(rng, lighting_condition)
+        background = self._sample_background(rng)
+        objects, taken = self._sample_objects(rng, condition)
         spec = {
             "spec_version": SPEC_VERSION,
             "index": int(index),
@@ -443,14 +630,14 @@ class SceneSampler:
             "mode": self.mode,
             "kappa": self.kappa if self.mode == "anchored" else None,
             "sigma_source": self.sigma_source,
-            "camera": self._sample_camera(rng),
-            "lights": self._sample_lights(rng, lighting_condition),
-            "background": self._sample_background(rng),
-            "objects": self._sample_objects(rng, condition),
-            "distractors": self._sample_distractors(rng),
+            "camera": camera,
+            "lights": lights,
+            "background": background,
+            "objects": objects,
+            "distractors": self._sample_distractors(rng, taken),
             "condition": condition or None,
         }
-        self._apply_ablation(spec)
+        self._apply_ablation(spec, index)
         return spec
 
     def write_specs(
