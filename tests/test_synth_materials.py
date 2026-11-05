@@ -55,13 +55,13 @@ class TestShippedConfig:
     def test_metals_carry_a_physical_reflectance(self, config):
         # The image colour of a metal is its surroundings, not its reflectance: the
         # two metal classes carry an F0 (fitted per channel on the whole top face in the E2
-        # hard-condition trial frames, 06/11/2026, under the shaped overhead; the steel box's
+        # hard-condition trial frames, 06/11/2026, on the merged model: textures, shaped overhead; the steel box's
         # is the face mean of its top-face pattern), the dielectric ones their colour.
         mats = config.objects.materials
         inox, metal = mats["inox_box"], mats["metal_box"]
-        assert inox.f0_rgb == [0.5287, 0.5941, 0.4528] and inox.albedo_rgb is None and inox.coat_ior is None
+        assert inox.f0_rgb == [0.5271, 0.5863, 0.4358] and inox.albedo_rgb is None and inox.coat_ior is None
         assert inox.roughness == 0.05 and inox.roughness_range == [0.02, 0.10]
-        assert metal.f0_rgb == [0.2389, 0.2631, 0.2543] and metal.roughness == 0.9 and metal.coat_ior == 1.5
+        assert metal.f0_rgb == [0.2399, 0.2644, 0.2563] and metal.roughness == 0.9 and metal.coat_ior == 1.5
         assert metal.face_pattern.floor == 0.0 and metal.face_pattern.sigma_mm == [77.0, 42.4]
         assert inox.face_pattern is None
         assert metal.coat_roughness == 0.30 and metal.sigma_coat_roughness == 0.05

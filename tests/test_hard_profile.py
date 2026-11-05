@@ -77,9 +77,9 @@ class TestColourSpace:
         s = float(raw["render"]["reflectance_scale"])
         assert s == pytest.approx(0.305 / (0.85 / 1.29), abs=0.01)
         mats = raw["objects"]["materials"]
-        # F0 fitted on the E2 trial frames (06/11/2026, whole top face, shaped overhead and
-        # the steel box's face pattern): Base Color R of inox 0.5287 x 0.46, of the painted
-        # steel box 0.2389 x 0.46 (its face mean; 2.79 times that at the middle of the lid)
+        # F0 fitted on the E2 trial frames (06/11/2026, whole top face, merged model with textures, shaped overhead and
+        # the steel box's face pattern): Base Color R of inox 0.5271 x 0.46, of the painted
+        # steel box 0.2399 x 0.46 (its face mean; 2.79 times that at the middle of the lid)
         assert mats["inox_box"]["f0_rgb"][0] * s == pytest.approx(0.243, abs=0.002)
         assert mats["metal_box"]["f0_rgb"][0] * s == pytest.approx(0.110, abs=0.002)
         table = float(sm.srgb_to_linear(raw["background"]["standard_table_rgb"]) @ sm.LUMINANCE_709)

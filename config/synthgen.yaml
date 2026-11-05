@@ -279,6 +279,24 @@ objects:
   #     dương của sampler; nhựa render vẫn đỏ hơn thật (R/G gấp 1,35 lần). Roughness 0,2 và 0,5 cũng không
   #     đưa R/G vào khoảng tứ phân vị thật (thử 05/11/2026). Số cũ (0,0559, 0,1165, 0,1774) khớp ngày
   #     05/11/2026 trên tập train (ánh sáng medium), nay thay bằng số khớp trên E2.
+  # KHỚP LẠI CẢ NĂM LỚP TRÊN MÔ HÌNH GỘP (06/11/2026, synth_fix/chot2/bao_cao.md): hoa văn mặt trên + hộp
+  # metal góc bo với face_pattern + nền trên cao có dạng, cùng 30 dòng E2, cùng thước đo cả mặt trên.
+  # Lượt B (mọi albedo, F0 = 0) và A (giá trị trước đó) render lại trên mô hình gộp (nền trên cao đổi lớp
+  # gương điện môi); mỗi lớp giải ba tham số sao cho trung vị (qua 6 dòng ghép cặp) của lệch log độ sáng,
+  # R/G và B/G đều bằng 0 (metal: độ cong k 0,40 như trên). Lượt C (15 khung ở giá trị dưới) trùng mô
+  # hình tới 0,3 % và lệch log thật p10/trung vị/p90, R/G, B/G (tuyến tính; ảnh 8 bit có nhiễu trong
+  # ngoặc): carton +0,12/−0,00/−0,17, −0,00/+0,00 (+0,05/−0,00/−0,11); gỗ +0,02/+0,00/−0,06, −0,00/−0,00
+  # (−0,00/−0,01/−0,04); nhựa +0,37/+0,00/−0,28, +0,35/+0,00 (+0,12/−0,01/−0,08); metal
+  # +0,07/−0,00/+0,05, +0,00/+0,00 (+0,05/−0,00/+0,05); inox +0,19/−0,00/−0,11, −0,00/−0,00
+  # (+0,13/+0,00/−0,07). Kênh R nhựa vẫn ở biên (lớp gương một mình đã cho R gấp 1,27 lần R thật),
+  # nên G, B nhựa giải theo độ sáng và B/G. Kiểm chéo hai buổi (khớp một buổi, đoán buổi kia; độ sáng):
+  # carton −0,05/+0,05, inox −0,07/+0,07, metal −0,20/+0,20, nhựa −0,09/+0,08, gỗ −0,18/+0,18.
+  # Đã thử, KHÔNG nhận: (1) texture nhựa chuẩn hóa theo độ sáng (giữ sắc ảnh train) với albedo xám: R/G
+  # +0,39, B/G −0,44; với albedo từng kênh: R về biên, độ sáng không khớp cùng màu (+0,17); (2) texture F0
+  # cho inox cắt từ 24 ảnh train như T1: sau khi khớp trung vị, p10/p90 xấu đi (tuyến tính +0,19/−0,10
+  # thành +0,22/−0,12; 8 bit +0,13/−0,06 thành +0,15/−0,07), vì texture mang cả phản chiếu phòng lúc chụp
+  # train. (3) Carton: texture 1,25 px/mm đã mịn hơn ảnh (mặt carton chiếm 1,02-1,10 px/mm ở các chỗ E2),
+  # nên không tăng độ phân giải.
   #
   # sigma_albedo_rel là độ lệch TƯƠNG ĐỐI (phần của chính màu đó), vì độ lệch đo
   # được tỉ lệ thuận với từng kênh — carton lệch 9/101, 8/81, 6/56, đều quanh 0,10.
@@ -298,11 +316,11 @@ objects:
   #   F0 KHỚP trên khung E2 như các lớp điện môi ở trên (p = F0 từng kênh; lớp phủ của metal nằm trong S).
   #   F0 có màu vì nó gánh cả màu môi trường mà gương phản chiếu ở điều kiện khó (tông nền trên cao đo ở
   #   ánh sáng chuẩn); sampler nhân chung một hệ số nên giữ sắc.
-  #   inox: thép 304 đánh bóng, F0 (0,5287, 0,5941, 0,4528) dưới nền trên cao có dạng (khớp nền đều:
+  #   inox: thép 304 đánh bóng, F0 (0,5271, 0,5863, 0,4358) trên mô hình gộp (T2 trước gộp (0,5287, 0,5941, 0,4528); khớp nền đều:
   #     (0,4968, 0,5581, 0,4254)); số cũ 0,57 (tài liệu). Lệch tương đối 0,053
   #     (0,03 / 0,57) giữ; roughness 0,05 trong 0,02-0,10 (mép đèn sắc trên gương inox train, độ chính
   #     xác cân bằng 0,98); không lớp phủ.
-  #   metal (hộp thép sơn): kim loại nhám F0 trung bình mặt (0,2389, 0,2631, 0,2543) với face_pattern
+  #   metal (hộp thép sơn): kim loại nhám F0 trung bình mặt (0,2399, 0,2644, 0,2563) với face_pattern (T2 trước gộp (0,2389, 0,2631, 0,2543))
   #     (khớp mặt đều trước đó: (0,2428, 0,2617, 0,2663)); số cũ 0,34. Ở roughness 0,9 độ sáng
   #     không tuyến tính theo F0 (GGX tán xạ nhiều lần): một lượt render ở F0 0,61-0,67 sáng hơn mô hình
   #     tuyến tính 10 %, nên giải bằng r = S + a·F0·(1 + k·F0), k = 0,40 đo từ lượt đó; lượt kiểm ở giá
@@ -313,13 +331,13 @@ objects:
   # Màu đo cũ của hai lớp kim loại (metal 54,56,56, inox 83,88,78) là màu ảnh, không phải phản xạ:
   # render ra hộp inox và metal tối gấp 4-6 lần ảnh thật.
   materials:
-    carton:      {albedo_rgb: [0.3853, 0.3017, 0.1698], sigma_albedo_rel: 0.10, roughness: 0.85, metallic: 0.0}
-    plastic_box: {albedo_rgb: [0.0001, 0.0405, 0.1203], sigma_albedo_rel: 0.33, roughness: 0.80, metallic: 0.0}
-    wood_box:    {albedo_rgb: [0.5005, 0.4252, 0.2527], sigma_albedo_rel: 0.10, roughness: 0.80, metallic: 0.0}
-    metal_box:   {f0_rgb: [0.2389, 0.2631, 0.2543], sigma_f0_rel: 0.15, roughness: 0.90, roughness_range: [0.80, 1.0],
+    carton:      {albedo_rgb: [0.3856, 0.2948, 0.1627], sigma_albedo_rel: 0.10, roughness: 0.85, metallic: 0.0}
+    plastic_box: {albedo_rgb: [0.0001, 0.0316, 0.1125], sigma_albedo_rel: 0.33, roughness: 0.80, metallic: 0.0}
+    wood_box:    {albedo_rgb: [0.4907, 0.4259, 0.2522], sigma_albedo_rel: 0.10, roughness: 0.80, metallic: 0.0}
+    metal_box:   {f0_rgb: [0.2399, 0.2644, 0.2563], sigma_f0_rel: 0.15, roughness: 0.90, roughness_range: [0.80, 1.0],
                   metallic: 1.0, coat_ior: 1.5, coat_roughness: 0.30, sigma_coat_roughness: 0.05,
                   face_pattern: {floor: 0.0, sigma_mm: [77.0, 42.4]}}
-    inox_box:    {f0_rgb: [0.5287, 0.5941, 0.4528], sigma_f0_rel: 0.053, roughness: 0.05,
+    inox_box:    {f0_rgb: [0.5271, 0.5863, 0.4358], sigma_f0_rel: 0.053, roughness: 0.05,
                   roughness_range: [0.02, 0.10], metallic: 1.0}
   # HOA VĂN MẶT TRÊN (chỉ recipe anchored, chỉ carton, nhựa, gỗ): danh sách texture đo được, mỗi mesh
   # 21-24 cái, cắt từ ảnh TẬP TRAIN bằng scripts/make_top_textures.py (ảnh một vật của thư mục lớp, mặt
