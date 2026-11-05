@@ -130,14 +130,18 @@ class TestBlindSampling:
 
 
 class TestBackgroundColour:
-    def test_table_stays_neutral_grey(self, config):
-        # The photographed table is neutral (150, 151, 150). An anchored table that
-        # comes out pink or green defeats the point of anchoring.
+    def test_table_keeps_the_anchor_hue(self, config):
+        # The anchor is the green sheet of the hard condition, the table of every
+        # E3-E5 trial (it was the neutral grey table until 11/2026). An anchored table
+        # that drifts to another hue defeats the point of anchoring: brightness varies
+        # between images, hue only slightly.
         s = SceneSampler(config, T_BC, mode="anchored", kappa=2.0, seed=8)
+        anchor = np.asarray(config.background.anchor_albedo_rgb)
+        anchor = anchor / anchor.mean()
         worst = 0.0
         for i in range(60):
             a = np.asarray(s.sample(i)["background"]["albedo_rgb"])
-            worst = max(worst, float((a.max() - a.min()) / max(a.mean(), 1e-6)))
+            worst = max(worst, float(np.abs(a / max(a.mean(), 1e-6) - anchor).max()))
         assert worst < 0.25, f"table hue drifted by {worst:.2f} of its brightness"
 
     def test_table_brightness_tracks_the_measurement(self, config):
