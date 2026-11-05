@@ -361,6 +361,77 @@ class TestManifest:
         assert copied["profile_sha256"] == hp.profile_sha256(cfg)
 
 
+class TestResume:
+    """A rerun of the renderer skips the frames that are done (hard_profile.frame_complete)."""
+
+    def write(self, out, stem="frame_000003", scene="scene_000003.json", sha="ab" * 32, **meta):
+        import cv2
+        cv2.imwrite(str(out / f"{stem}_rgb.png"), np.zeros((8, 8, 3), np.uint8))
+        cv2.imwrite(str(out / f"{stem}_inst.png"), np.zeros((8, 8), np.uint16))
+        record = {"instances": {"14": 2}, "scene": scene, "spec_sha256": sha, **meta}
+        (out / f"{stem}_meta.json").write_text(json.dumps(record), encoding="utf-8")
+
+    def test_complete_frame_is_skipped(self, tmp_path):
+        self.write(tmp_path)
+        assert hp.frame_complete(tmp_path, "frame_000003", "scene_000003.json", "ab" * 32,
+                                 {"frame_000003"})
+
+    def test_frame_not_in_the_manifest_is_rendered(self, tmp_path):
+        self.write(tmp_path)
+        assert not hp.frame_complete(tmp_path, "frame_000003", "scene_000003.json", "ab" * 32, set())
+
+    def test_frame_of_another_spec_is_rendered(self, tmp_path):
+        self.write(tmp_path)
+        listed = {"frame_000003"}
+        assert not hp.frame_complete(tmp_path, "frame_000003", "scene_000003.json", "cd" * 32, listed)
+        assert not hp.frame_complete(tmp_path, "frame_000003", "scene_000004.json", "ab" * 32, listed)
+
+    def test_frame_without_spec_hash_is_rendered(self, tmp_path):
+        """Frames of the renderer before the resume rule carry no spec hash."""
+        self.write(tmp_path, sha=None)
+        assert not hp.frame_complete(tmp_path, "frame_000003", "scene_000003.json", "ab" * 32,
+                                     {"frame_000003"})
+
+    def test_cut_off_png_and_missing_files_are_rendered(self, tmp_path):
+        self.write(tmp_path)
+        rgb = tmp_path / "frame_000003_rgb.png"
+        assert hp.png_written_to_end(rgb)
+        rgb.write_bytes(rgb.read_bytes()[:-12])            # IEND chunk lost
+        assert not hp.png_written_to_end(rgb)
+        assert not hp.frame_complete(tmp_path, "frame_000003", "scene_000003.json", "ab" * 32,
+                                     {"frame_000003"})
+        self.write(tmp_path)
+        (tmp_path / "frame_000003_inst.png").unlink()
+        assert not hp.frame_complete(tmp_path, "frame_000003", "scene_000003.json", "ab" * 32,
+                                     {"frame_000003"})
+        self.write(tmp_path)
+        (tmp_path / "frame_000003_meta.json").write_text('{"instances": {', encoding="utf-8")
+        assert not hp.frame_complete(tmp_path, "frame_000003", "scene_000003.json", "ab" * 32,
+                                     {"frame_000003"})
+
+
+def test_renderer_resumes_and_stops_on_a_failed_frame():
+    """Source check: the renderer skips complete frames, writes each file under a
+    temporary name, records the spec hash, and on a failure removes that frame's files,
+    lists only the complete frames and exits 4 with a message naming the spec."""
+    src = _renderer_source()
+    assert "hp.frame_complete(out_dir, stem, spec_path.name, sha, listed)" in src
+    assert src.count("write_atomic(out_dir /") == 4          # rgb, inst, linear, meta
+    assert '"spec_sha256": spec_sha' in src
+    assert "RENDER STOPPED at" in src and "return 4" in src
+    assert "write_manifest(finished)" in src
+
+
+def test_renderer_keeps_the_compositor_from_growing():
+    """BlenderProc adds two compositor nodes per enable_segmentation_output call and
+    never removes them; the renderer removes the previous frame's and stops if the
+    node count changes (source check: it runs only under Blender)."""
+    src = _renderer_source()
+    assert "tree.nodes.remove(tree.nodes[name])" in src
+    assert "seg_nodes = [n.name for n in bpy.context.scene.node_tree.nodes if n.name not in before]" in src
+    assert "segmentation outputs pile up" in src
+
+
 def _renderer_calls(name: str) -> list[ast.Call]:
     src = (ROOT / "src" / "synthgen" / "render_blenderproc.py").read_text(encoding="utf-8")
     return [n for n in ast.walk(ast.parse(src)) if isinstance(n, ast.Call)

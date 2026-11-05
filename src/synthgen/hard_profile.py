@@ -410,6 +410,38 @@ def merge_manifest(old: dict[str, Any], new: dict[str, Any]) -> dict[str, Any]:
     return merged
 
 
+def png_written_to_end(path: str | Path) -> bool:
+    """True when the file ends with a PNG's IEND chunk: a write that was cut off does not."""
+    try:
+        with Path(path).open("rb") as f:
+            f.seek(-12, 2)
+            return f.read(12)[4:8] == b"IEND"
+    except OSError:
+        return False
+
+
+def frame_complete(out_dir: str | Path, stem: str, spec_name: str, spec_sha256: str,
+                   listed: set[str] | list[str]) -> bool:
+    """Whether a frame of a render directory is done and may be skipped on a rerun.
+
+    Done means: the manifest lists it (the renderer adds a frame only after all its
+    files are written), its RGB and instance PNGs are written to the end, and its meta
+    file names this scene spec and the SHA-256 of the spec's bytes. A frame rendered
+    from another version of the spec, or cut off while being written, is rendered again.
+    """
+    out = Path(out_dir)
+    if stem not in listed:
+        return False
+    if not (png_written_to_end(out / f"{stem}_rgb.png") and png_written_to_end(out / f"{stem}_inst.png")):
+        return False
+    try:
+        meta = json.loads((out / f"{stem}_meta.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    return (isinstance(meta, dict) and isinstance(meta.get("instances"), dict)
+            and meta.get("scene") == spec_name and meta.get("spec_sha256") == spec_sha256)
+
+
 def check_arms_match(manifests: dict[str, dict[str, Any]]) -> None:
     """Raise ValueError unless every arm's render manifest matches the first one.
 

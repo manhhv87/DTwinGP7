@@ -55,14 +55,24 @@ Design notes:
   - Meshes are placed so their bounding-box bottom rests at the spec height
     xyz_mm[2]: the table top, or the top of the part underneath for a stack (STL
     origins are arbitrary).
+  - Rerunning the same command continues an interrupted batch: a frame whose files
+    are complete (hard_profile.frame_complete: listed in the manifest, PNGs written
+    to the end, meta naming the spec and its SHA-256) is skipped, every other frame
+    is rendered. Files are written under a temporary name and renamed, so a kill
+    leaves no half-written frame under the final name. A frame that fails stops the
+    batch with a message naming it, exit code 4; its partial files are removed and
+    the manifest lists only complete frames, so the rerun starts at that frame.
   - SMOKE TEST before a full run:
         blenderproc run src/synthgen/render_blenderproc.py -- \
             --scenes <dir-with-3-specs> --out /tmp/smoke --samples 16
 """
 
 import argparse
+import hashlib
 import json
+import os
 import sys
+import traceback
 from pathlib import Path
 
 import numpy as np
@@ -153,6 +163,14 @@ def main() -> int:
     if not spec_files:
         print(f"No scene_*.json in {scenes_dir}", file=sys.stderr)
         return 1
+    # (spec path, spec, frame stem, SHA-256 of the spec's bytes); the hash goes into
+    # the frame's meta, so a rerun can tell a frame of this spec from one of another.
+    batch = []
+    for spec_path in spec_files:
+        raw = spec_path.read_bytes()
+        spec = json.loads(raw)
+        batch.append((spec_path, spec, f"frame_{int(spec['index']):06d}",
+                      hashlib.sha256(raw).hexdigest()))
 
     # Frames already in the directory must come from a batch rendered the same way,
     # which only a manifest can show. Frames without one predate the manifest (the
@@ -227,18 +245,32 @@ def main() -> int:
     blender_version = str(bpy.app.version_string)
     bproc_version = str(getattr(bproc, "__version__", "unknown"))
 
+    # Frames of an earlier run of this directory: those of other specs are kept as
+    # listed; those of this batch count only when complete, the rest are rendered.
+    listed = set((old_manifest or {}).get("frames", []))
+    batch_stems = {stem for _, _, stem, _ in batch}
+    done = [stem for spec_path, _, stem, sha in batch
+            if hp.frame_complete(out_dir, stem, spec_path.name, sha, listed)]
+    kept = sorted(listed - batch_stems)
+
     def write_manifest(frames: list[str]) -> None:
         new = hp.build_manifest(cfg, render_settings, device=device,
                                 blender_version=blender_version,
                                 blenderproc_version=bproc_version,
                                 config_path=str(config_path), scenes_dir=str(scenes_dir),
-                                frames=frames)
-        merged = hp.merge_manifest(old_manifest, new) if old_manifest else new
-        with manifest_path.open("w", encoding="utf-8") as f:
-            json.dump(merged, f, indent=2)
+                                frames=kept + frames)
+        if old_manifest:
+            hp.merge_manifest(old_manifest, new)   # refuses a batch rendered differently
+        tmp = manifest_path.with_name(manifest_path.name + ".part")
+        with tmp.open("w", encoding="utf-8") as f:
+            json.dump(new, f, indent=2)
+        os.replace(tmp, manifest_path)
 
     # Refuse a mismatching batch before spending hours on it, not after.
-    write_manifest([])
+    write_manifest(done)
+    if done:
+        print(f"Resume: {len(set(done))} of {len(batch)} frames already complete in "
+              f"{out_dir}; rendering the other {len(batch) - len(done)}")
 
     def import_mesh(path: Path):
         """Load STL/OBJ/PLY → bproc MeshObject (STL via bpy operator fallback)."""
@@ -307,10 +339,21 @@ def main() -> int:
             mat.set_principled_shader_value("Coat IOR", float(ms["coat_ior"]))
         return mat
 
-    rendered: list[str] = []
-    for spec_path in spec_files:
-        with spec_path.open("r", encoding="utf-8") as f:
-            spec = json.load(f)
+    def write_atomic(path: Path, write) -> None:
+        """Write to <name>.part, then rename: a kill leaves no half file under the name."""
+        tmp = path.with_name(path.name + ".part")
+        write(tmp)
+        os.replace(tmp, path)
+
+    # Compositor nodes the previous frame's enable_segmentation_output added. Each call
+    # adds a file-output node and a colour node and never removes them; left in place,
+    # frame k wrote k identical segmentation EXRs and rendering slowed down frame by
+    # frame (2.1 s to 3.3 s over 20 frames).
+    seg_nodes: list[str] = []
+    n_nodes: int | None = None
+
+    def render_frame(spec_path: Path, spec: dict, stem: str, spec_sha: str) -> None:
+        nonlocal seg_nodes, n_nodes
         idx = int(spec["index"])
         # Only the profile fit's reference render (mode "reference") goes without a
         # session exposure and an overhead; a sampled spec without them predates
@@ -418,8 +461,14 @@ def main() -> int:
         # call, so a mesh or a material created afterwards still renders in colour but
         # is absent from BOTH segmentation maps — every frame then yields an empty
         # label file, with nothing in the logs to say so.
+        tree = bpy.context.scene.node_tree
+        if tree is not None:
+            for name in seg_nodes:
+                tree.nodes.remove(tree.nodes[name])
+        before = set() if tree is None else {n.name for n in tree.nodes}
         bproc.renderer.enable_segmentation_output(map_by=["instance", "custom_class_id"],
                                                   default_values={"custom_class_id": -1})
+        seg_nodes = [n.name for n in bpy.context.scene.node_tree.nodes if n.name not in before]
         data = bproc.renderer.render()
         linear = np.asarray(data["colors"][0], dtype=np.float32)[..., :3]
         inst = np.asarray(data["instance_segmaps"][0])
@@ -430,17 +479,10 @@ def main() -> int:
         noise_rng = np.random.default_rng([int(spec.get("seed", 0)), idx, NOISE_STREAM_TAG])
         rgb = sm.apply_sensor(linear, cfg["sensor"], noise_rng, exposure_gain=exposure_gain)
 
-        stem = f"frame_{idx:06d}"
-        Image.fromarray(rgb).save(out_dir / f"{stem}_rgb.png")
-        Image.fromarray(inst.astype(np.uint16)).save(out_dir / f"{stem}_inst.png")
-        if args.save_linear:
-            np.save(out_dir / f"{stem}_linear.npy", linear)
-        with (out_dir / f"{stem}_meta.json").open("w", encoding="utf-8") as f:
-            json.dump({"instances": {str(k): v for k, v in instances.items()},
-                       "scene": spec_path.name, "exposure_gain": exposure_gain}, f, indent=2)
         # A scene holding more lights or meshes than its spec asked for means the
         # per-scene reset leaked, and every later frame is lit by the frames before
-        # it. That went unnoticed once already, so it stops the run now.
+        # it. That went unnoticed once already, so it stops the run now; so does a
+        # compositor that grows from frame to frame.
         n_lights = len([o for o in bpy.data.objects if o.type == "LIGHT"])
         n_meshes = len(bproc.object.get_all_mesh_objects())
         want_meshes = len(static) + len(spec["objects"]) + len(spec.get("distractors", []))
@@ -449,12 +491,56 @@ def main() -> int:
                 f"{stem}: scene has {n_lights} lights and {n_meshes} meshes, but the "
                 f"spec asks for {len(spec['lights'])} and {want_meshes} — the "
                 f"per-scene reset leaked objects from an earlier frame.")
-        rendered.append(stem)
-        write_manifest(rendered)
+        count = len(bpy.context.scene.node_tree.nodes)
+        if n_nodes is None:
+            n_nodes = count
+        elif count != n_nodes:
+            raise RuntimeError(f"{stem}: the compositor holds {count} nodes, the first frame of "
+                               f"this run {n_nodes}: segmentation outputs pile up")
+
+        write_atomic(out_dir / f"{stem}_rgb.png",
+                     lambda t: Image.fromarray(rgb).save(t, format="PNG"))
+        write_atomic(out_dir / f"{stem}_inst.png",
+                     lambda t: Image.fromarray(inst.astype(np.uint16)).save(t, format="PNG"))
+        if args.save_linear:
+            def save_npy(t: Path) -> None:
+                with t.open("wb") as f:
+                    np.save(f, linear)
+            write_atomic(out_dir / f"{stem}_linear.npy", save_npy)
+
+        def save_meta(t: Path) -> None:
+            with t.open("w", encoding="utf-8") as f:
+                json.dump({"instances": {str(k): v for k, v in instances.items()},
+                           "scene": spec_path.name, "spec_sha256": spec_sha,
+                           "exposure_gain": exposure_gain}, f, indent=2)
+        write_atomic(out_dir / f"{stem}_meta.json", save_meta)
         print(f"[{stem}] objects={len(spec['objects'])} "
               f"distractors={len(spec.get('distractors', []))} lights={n_lights}")
 
-    print(f"Rendered {len(spec_files)} frames → {out_dir}")
+    finished = list(done)
+    complete = set(done)
+    for spec_path, spec, stem, spec_sha in batch:
+        if stem in complete:
+            continue
+        try:
+            render_frame(spec_path, spec, stem, spec_sha)
+        except Exception as exc:  # noqa: BLE001  (any failure stops the batch, named)
+            traceback.print_exc()
+            for suffix in ("_rgb.png", "_inst.png", "_meta.json", "_linear.npy"):
+                for path in (out_dir / f"{stem}{suffix}", out_dir / f"{stem}{suffix}.part"):
+                    path.unlink(missing_ok=True)
+            write_manifest(finished)
+            print(f"RENDER STOPPED at {spec_path.name} ({stem}): {type(exc).__name__}: {exc}\n"
+                  f"{len(set(finished))} of {len(batch)} frames are complete in {out_dir} and "
+                  f"listed in {manifest_path.name}. Remove the cause and run the same command "
+                  f"again: complete frames are skipped and rendering continues at {spec_path.name}.",
+                  file=sys.stderr, flush=True)
+            return 4
+        finished.append(stem)
+        complete.add(stem)
+        write_manifest(finished)
+
+    print(f"Rendered {len(batch) - len(done)} frames, {len(done)} were already complete → {out_dir}")
     return 0
 
 
