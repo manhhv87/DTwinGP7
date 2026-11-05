@@ -53,6 +53,14 @@ Design notes:
     and NOT scaled, also when the part is drawn metallic, so a wide-range metal's F0
     spans 0 to 0.89 linear; that span holds the anchored metals' scaled F0 (0.11 to
     0.26 linear), the only claim the wide range has to meet.
+  - Top-face textures (anchored specs, material "top_texture"; top_texture.py): the
+    top face of the mesh (its polygons facing +z at the top of the bounding box) takes
+    a second material whose Base Color is the material's linear colour times the
+    texture's mean-one pattern, mapped over the face in the mesh's own axes (u along
+    mesh x, v along mesh y); the other faces keep the flat colour. The pattern is
+    decoded by top_texture.decode and handed to Blender as a float image, so Blender's
+    colour management never touches it. Each file is checked against the spec's
+    SHA-256 once per run.
   - Cycles renders scene-linear EXR; sensor_model.apply_sensor then applies white
     balance, the gain (sensor.gain times the scene's exposure gain), Poisson-Gaussian
     noise and the sRGB curve (Blender's "Standard" view, no tone mapping) in numpy.
@@ -153,6 +161,7 @@ def main() -> int:
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     import hard_profile as hp
     import sensor_model as sm
+    import top_texture as tt
 
     config_path = Path(args.config)
     if not config_path.is_absolute():
@@ -333,17 +342,77 @@ def main() -> int:
         mat.set_principled_shader_value("Specular IOR Level", 0.0)
         return mat
 
-    def product_material(name: str, ms: dict):
+    textures: dict[str, object] = {}
+
+    def texture_image(tex: dict):
+        """The Blender float image of a top-face texture (decoded pattern, rows
+        flipped: Blender's first row is the bottom one), made once per file."""
+        if tex["sha256"] in textures:
+            return textures[tex["sha256"]]
+        path = repo_root / tex["file"]
+        sha = tt.file_sha256(path)
+        if sha != tex["sha256"]:
+            raise ValueError(f"texture {tex['file']} has SHA-256 {sha[:12]}, the spec "
+                             f"{tex['sha256'][:12]}")
+        t = tt.decode(tt.read_png(path), float(tex["scale"]))
+        h, w = t.shape[:2]
+        img = bpy.data.images.new(f"toptex_{sha[:12]}", width=w, height=h, alpha=True,
+                                  float_buffer=True)
+        img.colorspace_settings.name = "Non-Color"
+        rgba = np.concatenate([t[::-1], np.ones((h, w, 1), np.float32)], axis=2)
+        img.pixels.foreach_set(rgba.astype(np.float32).ravel())
+        img.update()
+        img.use_fake_user = True          # kept across the per-scene clean-up
+        textures[tex["sha256"]] = img
+        return img
+
+    def texture_top(mesh, side_mat, top_mat) -> None:
+        """Second material slot and a UV map on the mesh's top face (polygons facing
+        +z at the top of its bounding box), u along mesh x, v along mesh y."""
+        me = mesh.blender_obj.data
+        co = np.array([v.co[:] for v in me.vertices])
+        lo, hi = co.min(axis=0), co.max(axis=0)
+        mesh.replace_materials(side_mat)
+        me.materials.append(top_mat.blender_obj)
+        uv = me.uv_layers.new(name="top")
+        n_top = 0
+        for poly in me.polygons:
+            if poly.normal[2] > 0.999 and abs(poly.center[2] - hi[2]) < 1e-3 * (hi[2] - lo[2]):
+                poly.material_index = len(me.materials) - 1
+                n_top += 1
+                for li in poly.loop_indices:
+                    x, y = co[me.loops[li].vertex_index][:2]
+                    uv.data[li].uv = ((x - lo[0]) / (hi[0] - lo[0]), (y - lo[1]) / (hi[1] - lo[1]))
+        if n_top == 0:
+            raise RuntimeError(f"{mesh.get_name()}: no top face to texture")
+
+    def product_material(name: str, ms: dict, texture=None):
         """Principled material of a workpiece: a metal's physical F0 (f0_rgb, linear)
         or a dielectric's albedo (albedo_rgb, sRGB-encoded) as Base Color, the
         dielectric specular and a clear coat, every physical reflectance times
-        render.reflectance_scale."""
+        render.reflectance_scale. With a texture image, Base Color is the albedo
+        times the image on the "top" UV map."""
         mat = bproc.material.create(name)
         if "f0_rgb" in ms:
             base = [float(v) * reflectance_scale for v in ms["f0_rgb"]]
         else:
             base = [float(v) for v in sm.srgb_to_linear(ms["albedo_rgb"])]
         mat.set_principled_shader_value("Base Color", base + [1.0])
+        if texture is not None:
+            nt = mat.blender_obj.node_tree
+            bsdf = next(n for n in nt.nodes if n.type == "BSDF_PRINCIPLED")
+            uvmap = nt.nodes.new("ShaderNodeUVMap")
+            uvmap.uv_map = "top"
+            tex = nt.nodes.new("ShaderNodeTexImage")
+            tex.image = texture
+            tex.interpolation = "Linear"
+            tex.extension = "EXTEND"
+            mult = nt.nodes.new("ShaderNodeVectorMath")
+            mult.operation = "MULTIPLY"
+            mult.inputs[1].default_value = base
+            nt.links.new(uvmap.outputs["UV"], tex.inputs["Vector"])
+            nt.links.new(tex.outputs["Color"], mult.inputs[0])
+            nt.links.new(mult.outputs["Vector"], bsdf.inputs["Base Color"])
         mat.set_principled_shader_value("Roughness", float(ms["roughness"]))
         mat.set_principled_shader_value("Metallic", float(ms["metallic"]))
         mat.set_principled_shader_value("Specular IOR Level",
@@ -422,7 +491,13 @@ def main() -> int:
             # sampler drew: an STL carries no material of its own.
             ms = obj_spec.get("material")
             if ms:
-                mesh.replace_materials(product_material(f"mat_{idx}_{obj_spec['class_name']}", ms))
+                name = f"mat_{idx}_{obj_spec['class_name']}"
+                side = product_material(name, ms)
+                if ms.get("top_texture"):
+                    texture_top(mesh, side, product_material(
+                        f"{name}_top", ms, texture_image(ms["top_texture"])))
+                else:
+                    mesh.replace_materials(side)
 
         # ── Distractors (never labelled: class id stays -1) ──
         for d in spec.get("distractors", []):

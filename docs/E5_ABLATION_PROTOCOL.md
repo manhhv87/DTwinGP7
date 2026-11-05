@@ -65,7 +65,8 @@ quyết thành giá trị cụ thể. `specs/manifest.json` lưu thêm toàn b�
 Các trường `camera/lights/environment/exposure/background/objects/distractors` của
 scene là dữ liệu thực tế renderer sử dụng. Bố trí đèn, phần ánh sáng của nền trên cao
 và độ lợi phơi sáng (`exposure.gain`, luồng riêng `SeedSequence([seed, index, 2])`) là
-factor tự do: giống nhau ở mọi nhánh của cùng seed và index. Manifest từ chối trộn nhánh, cấu hình, calibration,
+factor tự do: giống nhau ở mọi nhánh của cùng seed và index. Hoa văn mặt trên của carton, nhựa, gỗ
+(`material.top_texture`, luồng riêng `SeedSequence([seed, index, 3])`) cũng giống nhau ở mọi nhánh. Manifest từ chối trộn nhánh, cấu hình, calibration,
 sigma, seed hoặc ghi đè scene index đã có. Các manifest cũ thiếu provenance này
 phải dùng thư mục chạy mới; không suy đoán cấu hình của một bộ ảnh lịch sử.
 

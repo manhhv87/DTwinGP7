@@ -42,9 +42,13 @@ from typing import Any
 
 import numpy as np
 
+from . import top_texture
 from .anchored_config import LIGHTING_CONDITION_SCALE, SynthgenConfig
 from .hard_profile import luminaire_lights
 from .seed_ranges import WORD
+
+# Repo root: mesh and texture paths in the config are relative to it.
+REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 
 # Schema version of the scene-spec JSON contract with render_blenderproc.py.
 # 2: an object's xyz_mm z is the height of its base, which is the top face of its
@@ -54,8 +58,10 @@ from .seed_ranges import WORD
 # a metal carries its physical f0_rgb, and every scene has a session exposure gain
 # (spec "exposure"), drawn from SeedSequence([seed, i, 2]); the renderer refuses a
 # spec without one.
+# 4: an anchored product of a mesh with measured top-face textures carries one of them
+# (material "top_texture": file, SHA-256, scale), drawn from SeedSequence([seed, i, 3]).
 # A change of the RNG scheme needs a bump and its rule in seed_ranges.STREAM_RULE.
-SPEC_VERSION = 3
+SPEC_VERSION = 4
 ABLATION_FACTORS = ("none", "illumination", "background", "distractors", "camera", "pose")
 # Draws of position and yaw for one product or distractor before it is left out.
 PLACEMENT_TRIES = 200
@@ -65,6 +71,10 @@ _RELOCATION_STREAM = 1
 # Third word of the session exposure's stream: the gain depends on (seed, index)
 # only, so the kappa arms, the E5 arms and both recipes of a seed share it.
 _EXPOSURE_STREAM = 2
+# Third word of the stream of the anchored products' top-face textures: one draw per
+# product in spec order, textured or not, so a product's texture depends on (seed,
+# index, its place in the list) only, and every kappa and E5 arm of a seed shares it.
+_TEXTURE_STREAM = 3
 # Index of refraction of the clear coat the blind recipe puts on some products.
 BLIND_COAT_IOR = 1.5
 
@@ -198,6 +208,23 @@ class SceneSampler:
             self.sigma_rot = np.asarray(cam.sigma_rot_deg, dtype=float)
             self.sigma_source = "yaml_fallback"
 
+        # Measured top-face textures per mesh (anchored only); every file is checked
+        # against its SHA-256 here, and the list enters the generator profile.
+        self.top_textures: dict[str, list[dict[str, Any]]] = {}
+        if config.objects.top_textures:
+            self.top_textures = top_texture.load_manifest(REPO_ROOT, config.objects.top_textures)
+            meshes = {m for cls in config.objects.classes for m in config.objects.meshes_of(cls)}
+            for mesh in self.top_textures:
+                if mesh not in meshes:
+                    raise ValueError(f"{config.objects.top_textures}: textures for {mesh}, "
+                                     "which no class uses")
+                cls = next(c for c in config.objects.classes if mesh in config.objects.meshes_of(c))
+                mat = config.objects.materials.get(cls)
+                if mat is not None and mat.albedo_rgb is None:
+                    # (a class without a material renders grey, untextured)
+                    raise ValueError(f"{config.objects.top_textures}: textures for {mesh}, but "
+                                     f"{cls} is a metal, whose f0_rgb they cannot multiply")
+
         self.ablation_protocol = {
             "protocol_version": 3,
             "factor": ablation,
@@ -267,7 +294,8 @@ class SceneSampler:
         return {"config": self.config.model_dump(mode="json"),
                 "T_BC_mm": self.T_BC.tolist(),
                 "sigma_trans_mm": self.sigma_trans.tolist(),
-                "sigma_rot_deg": self.sigma_rot.tolist()}
+                "sigma_rot_deg": self.sigma_rot.tolist(),
+                "top_textures": self.top_textures}
 
     def _check_condition(self, condition: dict[str, Any] | None) -> None:
         if self.ablation != "none" and condition:
@@ -496,6 +524,22 @@ class SceneSampler:
             "metallic": float(np.clip(metal, 0.0, 1.0)),
         }
 
+    def _assign_textures(self, objects: list[dict[str, Any]], index: int) -> None:
+        """Anchored: give each product of a textured mesh one of its measured top-face
+        textures, uniformly, from the stream SeedSequence([seed, index, 3]). One draw
+        per product in spec order whether textured or not, so no product's texture
+        depends on the others' classes; the main stream is not touched, so every
+        other draw of the scene is that of a sampler without textures."""
+        if self.mode != "anchored" or not self.top_textures:
+            return
+        rng = np.random.default_rng(
+            np.random.SeedSequence([self.seed, int(index), _TEXTURE_STREAM]))
+        for obj in objects:
+            u = float(rng.random())
+            entries = self.top_textures.get(obj["mesh"])
+            if entries and obj.get("material"):
+                obj["material"]["top_texture"] = top_texture.pick(entries, u)
+
     def _region(self) -> tuple[float, float, float, float]:
         obj = self.config.objects
         return (obj.region_x_mm[0], obj.region_x_mm[1],
@@ -706,6 +750,7 @@ class SceneSampler:
         lights, environment = self._sample_lights(rng, lighting_condition)
         background = self._sample_background(rng)
         objects, taken = self._sample_objects(rng, condition)
+        self._assign_textures(objects, index)
         spec = {
             "spec_version": SPEC_VERSION,
             "index": int(index),

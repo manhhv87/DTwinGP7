@@ -61,7 +61,7 @@ MATCH_KEYS = ("blender_version", "blenderproc_version", "device", "render", "pro
 # touches packaging, training or the cell must not split E4/E5 from the E3 arms, but a
 # change to any of these would.
 GENERATOR_CODE = ("anchored_config.py", "hard_profile.py", "render_blenderproc.py",
-                  "scene_sampler.py", "seed_ranges.py", "sensor_model.py")
+                  "scene_sampler.py", "seed_ranges.py", "sensor_model.py", "top_texture.py")
 
 
 def _rgb(value: Any, name: str) -> list[float]:

@@ -265,6 +265,12 @@ class ObjectFactors(BaseModel):
     # teaches the detector nothing about that product's colour, so the generator
     # script warns about any class missing here.
     materials: dict[str, MaterialFactors] = Field(default_factory=dict)
+    # Manifest of the measured top-face textures (src/synthgen/top_texture.py, written
+    # by scripts/make_top_textures.py), relative to the repo root; None: every product
+    # renders in its flat colour. Anchored only: the sampler gives each product of a
+    # listed mesh one of that mesh's textures, which multiplies its albedo on the top
+    # face; the blind recipe keeps flat colours.
+    top_textures: str | None = None
     sigma_roughness: float = 0.08
     blind_albedo_range: list[float] = Field(default=[0.0, 0.95])
     blind_roughness_range: list[float] = Field(default=[0.02, 1.0])
@@ -311,6 +317,8 @@ class ObjectFactors(BaseModel):
         if self.first_object_mix and not sum(
                 m.single + sum(m.stacked_on.values()) for m in self.first_object_mix.values()):
             raise ValueError("objects.first_object_mix holds no rows")
+        if self.top_textures is not None and not self.top_textures.strip():
+            raise ValueError("objects.top_textures must name a manifest or be left out")
         if self.stack_offset_mm < 0.0:
             raise ValueError("objects.stack_offset_mm cannot be negative")
         # The top's centre must stay over its support: the offset reaches

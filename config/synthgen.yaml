@@ -250,10 +250,18 @@ objects:
   # không có (inox, gỗ): giới hạn của mô hình đèn, không của vật. Bảng số và lệnh:
   # synth_fix/appearance/bao_cao.md. Lần khớp 05/11/2026 (commit bcdadfe) dùng ô 17 px ở tâm mặt trên;
   # ô đó rơi vào đốm sáng của metal (F0 0,57-0,61, cả hộp render sáng), nên thay bằng cả mặt.
-  #   carton: tuyến tính (0,1226, 0,0730, 0,0242). Số cũ (0,396, 0,318, 0,220) đo 12/09/2026 trên ảnh
-  #     điều kiện chuẩn (101, 81, 56).
-  #   gỗ: tuyến tính (0,2190, 0,1556, 0,0526). Số cũ (0,471, 0,412, 0,290) đo 12/09/2026 (120, 105, 74).
-  #   nhựa: G, B tuyến tính (0,0030, 0,0157). Kênh R NGOÀI TẦM: riêng lớp gương điện môi đã cho R gấp
+  # BA LỚP ĐIỆN MÔI KHỚP LẠI cùng ngày khi thêm hoa văn mặt trên (top_textures bên dưới): cùng 30 dòng,
+  # cùng lượt S (p = 0, hoa văn không đổi lớp gương), lượt D render có hoa văn (mỗi vật một texture rút
+  # như sampler), giải như trên; render lại 15 khung ở giá trị giải được: lệch log trung vị độ sáng
+  # carton +0,02, nhựa +0,04, gỗ +0,00; p10/p90 của mặt render cách thật carton +0,14/−0,14, gỗ
+  # +0,03/−0,05, nhựa +0,40/−0,24 (đo trên ảnh 8 bit có nhiễu như ảnh thật: carton +0,07/−0,09, gỗ
+  # +0,01/−0,03, nhựa +0,16/−0,04). Số và lệnh: synth_fix/texture/bao_cao.md. Metal, inox giữ.
+  #   carton: tuyến tính (0,1228, 0,0741, 0,0245); trước khi có hoa văn (0,1226, 0,0730, 0,0242). Số cũ
+  #     (0,396, 0,318, 0,220) đo 12/09/2026 trên ảnh điều kiện chuẩn (101, 81, 56).
+  #   gỗ: tuyến tính (0,2145, 0,1512, 0,0520); trước khi có hoa văn (0,2190, 0,1556, 0,0526). Số cũ (0,471,
+  #     0,412, 0,290) đo 12/09/2026 (120, 105, 74).
+  #   nhựa: G, B tuyến tính (0,0031, 0,0135); trước khi có hoa văn (0,0030, 0,0157). Kênh R NGOÀI TẦM:
+  #     riêng lớp gương điện môi đã cho R gấp
   #     1,27 lần R thật, nên R ở biên 0, ghi 0,0001 (bước nhỏ nhất của số 4 chữ số) để giữ quy tắc albedo
   #     dương của sampler; nhựa render vẫn đỏ hơn thật (R/G gấp 1,35 lần). Roughness 0,2 và 0,5 cũng không
   #     đưa R/G vào khoảng tứ phân vị thật (thử 05/11/2026). Số cũ (0,0559, 0,1165, 0,1774) khớp ngày
@@ -290,13 +298,24 @@ objects:
   # Màu đo cũ của hai lớp kim loại (metal 54,56,56, inox 83,88,78) là màu ảnh, không phải phản xạ:
   # render ra hộp inox và metal tối gấp 4-6 lần ảnh thật.
   materials:
-    carton:      {albedo_rgb: [0.385, 0.2994, 0.1687], sigma_albedo_rel: 0.10, roughness: 0.85, metallic: 0.0}
-    plastic_box: {albedo_rgb: [0.0001, 0.0386, 0.132], sigma_albedo_rel: 0.33, roughness: 0.80, metallic: 0.0}
-    wood_box:    {albedo_rgb: [0.5053, 0.431, 0.2543], sigma_albedo_rel: 0.10, roughness: 0.80, metallic: 0.0}
+    carton:      {albedo_rgb: [0.3853, 0.3017, 0.1698], sigma_albedo_rel: 0.10, roughness: 0.85, metallic: 0.0}
+    plastic_box: {albedo_rgb: [0.0001, 0.0405, 0.1203], sigma_albedo_rel: 0.33, roughness: 0.80, metallic: 0.0}
+    wood_box:    {albedo_rgb: [0.5005, 0.4252, 0.2527], sigma_albedo_rel: 0.10, roughness: 0.80, metallic: 0.0}
     metal_box:   {f0_rgb: [0.2428, 0.2617, 0.2663], sigma_f0_rel: 0.15, roughness: 0.90, roughness_range: [0.80, 1.0],
                   metallic: 1.0, coat_ior: 1.5, coat_roughness: 0.30, sigma_coat_roughness: 0.05}
     inox_box:    {f0_rgb: [0.4968, 0.5581, 0.4254], sigma_f0_rel: 0.053, roughness: 0.05,
                   roughness_range: [0.02, 0.10], metallic: 1.0}
+  # HOA VĂN MẶT TRÊN (chỉ recipe anchored, chỉ carton, nhựa, gỗ): danh sách texture đo được, mỗi mesh
+  # 21-24 cái, cắt từ ảnh TẬP TRAIN bằng scripts/make_top_textures.py (ảnh một vật của thư mục lớp, mặt
+  # trên định vị bằng cách khớp hình chiếu hộp thước kẹp qua camera hiệu chuẩn vào nhãn người; carton hai
+  # cỡ tách theo IoU; bỏ ảnh có vệt phản chiếu đèn trên màng nhựa). Mỗi texture chia cho trung bình của
+  # chính nó từng kênh tuyến tính, nên chỉ mang hoa văn (mép, băng dính, chữ, vân gỗ, viền đen và vít của
+  # hộp nhựa); renderer nhân nó với albedo ở trên (cùng các hệ số anchored của sampler) trên mặt trên, mặt
+  # bên giữ màu phẳng. Sampler chọn đều một texture của mesh cho mỗi vật từ luồng riêng SeedSequence([seed,
+  # index, 3]); danh sách (file, SHA-256) nằm trong generator_profile. Kim loại, inox và recipe wide-range
+  # không dùng texture. Giới hạn: vít của hộp nhựa render ra xanh thay vì xám, vì hoa văn nhân từng kênh
+  # với albedo nhựa mà kênh R ở biên 0,0001.
+  top_textures: models/textures/manifest.json
   sigma_roughness: 0.08
   # Blind: dải rộng cố định, KHÔNG dùng bất kỳ số đo nào ở trên: albedo (cũng là F0 của phần kim
   # loại) đều từng kênh, metallic đều 0-1, roughness đều 0,02-1 (bao inox 0,02 và metal 1,0), và
