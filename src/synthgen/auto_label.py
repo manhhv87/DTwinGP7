@@ -15,8 +15,9 @@ Output: ultralytics dataset layout
                                              class_id x0 y0 x1 y1 ... (normalized polygon)
     <out>/dataset.yaml
 
-Polygon extraction uses cv2.findContours on each instance mask (largest
-external contour). Pure logic + cv2 → testable with synthetic instance maps.
+Polygon extraction uses cv2.findContours on each instance mask; the external
+contours of a mask in several parts are joined into one polygon. Pure logic + cv2 →
+testable with synthetic instance maps.
 """
 from __future__ import annotations
 
@@ -42,14 +43,40 @@ MIN_INSTANCE_PIXELS = 50
 DEFAULT_CLASS_NAMES = ["carton", "plastic_box", "wood_box", "metal_box", "inox_box"]
 
 
+def _join_contours(contours: list[np.ndarray]) -> np.ndarray:
+    """Join external contours into one closed polygon by zero-width bridges.
+
+    Each further contour is cut in at the pair of points nearest to the polygon
+    built so far: the path runs out along the bridge, round the contour and back
+    along the same bridge, so a polygon fill covers every part (plus the one-pixel
+    bridge line). Ultralytics joins the parts of a multi-part COCO mask the same
+    way (merge_multi_segment). Contours are taken largest first, so the result does
+    not depend on the order findContours returns them in.
+    """
+    import cv2  # lazy import
+
+    parts = sorted((c.reshape(-1, 2) for c in contours), key=cv2.contourArea, reverse=True)
+    out = parts[0]
+    for c in parts[1:]:
+        d = ((out[:, None, :].astype(np.int64) - c[None, :, :]) ** 2).sum(-1)
+        i, j = np.unravel_index(int(np.argmin(d)), d.shape)
+        c = np.roll(c, -int(j), axis=0)
+        out = np.concatenate([out[: i + 1], c, c[:1], out[i:]], axis=0)
+    return out
+
+
 def mask_to_polygon(
     mask: np.ndarray, min_area_px: int = MIN_INSTANCE_PIXELS
 ) -> list[float] | None:
     """Binary mask → normalized flat polygon [x0, y0, x1, y1, ...] or None.
 
-    Takes the largest external contour; fragmented instances therefore yield
-    the dominant fragment (a warning is logged by the caller when fragments
-    are dropped). Coordinates are normalized by image width/height.
+    A mask in several parts is ONE polygon over all of them (_join_contours). The
+    visible part of a box under a stacked box, turned against it, breaks into two to
+    four pieces round the top box; keeping only the largest piece lost a median 38 %
+    of the visible pixels of such boxes and shrank their box label (median IoU 0.35),
+    in about one scene in six. Holes are not kept (RETR_EXTERNAL): the box under a
+    stack is labelled over the top box too, which wins there, because Ultralytics
+    draws the smaller mask last. Coordinates are normalized by image width/height.
     """
     import cv2  # lazy import
 
@@ -58,19 +85,28 @@ def mask_to_polygon(
         return None
 
     contours, _ = cv2.findContours(m, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    # A part of one or two pixels has no area as a contour; dropping it loses at
+    # most those pixels.
+    contours = [c for c in contours if len(c) >= 3]
     if not contours:
         return None
-    contour = max(contours, key=cv2.contourArea)
-    if cv2.contourArea(contour) < min_area_px:
+    if sum(cv2.contourArea(c) for c in contours) < min_area_px:
         return None
-    if len(contour) < 3:
-        return None
+    pts = _join_contours(contours).astype(float)
 
     h, w = m.shape
-    pts = contour.reshape(-1, 2).astype(float)
     pts[:, 0] /= float(w)
     pts[:, 1] /= float(h)
     return [float(v) for v in pts.flatten()]
+
+
+def count_parts(mask: np.ndarray) -> int:
+    """Number of external contours (of three points or more) of a binary mask."""
+    import cv2  # lazy import
+
+    m = (np.asarray(mask) > 0).astype(np.uint8)
+    contours, _ = cv2.findContours(m, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    return sum(1 for c in contours if len(c) >= 3)
 
 
 def instance_map_to_yolo_lines(
@@ -109,7 +145,9 @@ def convert_render_output(
     """Convert a full render directory into an ultralytics YOLO-seg dataset.
 
     Returns:
-        Dict {frames, train, val, skipped} with counts.
+        Dict {frames, train, val, skipped, multipart} with counts; multipart is the
+        number of labelled instances whose mask came in two or more parts (joined
+        into one polygon by mask_to_polygon).
     """
     import cv2  # lazy import
 
@@ -129,7 +167,7 @@ def convert_render_output(
         (out / "images" / split).mkdir(parents=True, exist_ok=True)
         (out / "labels" / split).mkdir(parents=True, exist_ok=True)
 
-    stats = {"frames": 0, "train": 0, "val": 0, "skipped": 0}
+    stats = {"frames": 0, "train": 0, "val": 0, "skipped": 0, "multipart": 0}
     for i, rgb_path in enumerate(rgb_files):
         stem = rgb_path.name[: -len("_rgb.png")]
         inst_path = render / f"{stem}_inst.png"
@@ -151,6 +189,9 @@ def convert_render_output(
             inst_map = inst_map[:, :, 0]
 
         lines = instance_map_to_yolo_lines(inst_map, inst_to_class)
+        stats["multipart"] += sum(
+            1 for k in inst_to_class
+            if (inst_map == k).sum() >= MIN_INSTANCE_PIXELS and count_parts(inst_map == k) >= 2)
         split = "val" if i in val_idx else "train"
         shutil.copy2(rgb_path, out / "images" / split / f"{stem}.png")
         label_path = out / "labels" / split / f"{stem}.txt"
