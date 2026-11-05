@@ -16,6 +16,7 @@ venv/
 # data/raw/ : ảnh chụp từ D455 (chỉ thu trên máy Windows, rồi copy sang Linux)
 data/raw/*
 data/packages/*
+data/synth/*
 results/*
 logs/*
 !**/.gitkeep
