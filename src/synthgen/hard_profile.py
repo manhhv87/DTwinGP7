@@ -17,11 +17,15 @@ and writes and compares the render manifest. Both recipes use the profile: the
 sampler draws the upper sheet's colour (spec background.albedo_rgb) and the light
 around the profile's level, and the static elements stay as measured.
 
-The light is a set of 600 mm area luminaires above the cell plus a uniform overhead
-(the world), as the mirror top of the stainless case shows them in the training
-images; luminaire_lights() turns a drawn layout and level into the spec's lights and
+The light is a set of 600 mm area luminaires above the cell plus an overhead (the
+world), as the mirror top of the stainless case shows them in the training images;
+luminaire_lights() turns a drawn layout and level into the spec's lights and
 environment, so the sampler and the profile fit (scripts/fit_hard_profile.py) share
-one definition of the level: the irradiance at the card block's centre.
+one definition of the level: the irradiance at the card block's centre. The spec
+gives the overhead as the radiance of a uniform world of that irradiance; the
+profile's overhead section gives its shape over directions (overhead_shape), which
+the renderer applies to every spec of both recipes and which leaves the irradiance
+on a level surface unchanged.
 
 Every number of the profile is fitted on the empty-table frames of the condition
 check (scripts/fit_hard_profile.py); the config comments say which.
@@ -120,6 +124,51 @@ def check_render_config(cfg: dict[str, Any]) -> None:
     _rgb(cards["albedo_rgb"], "hard_profile.cards.albedo_rgb")
     for side in ("left", "right", "near"):
         _rgb(prof["surround"][f"{side}_albedo_rgb"], f"hard_profile.surround.{side}_albedo_rgb")
+    overhead_shape(cfg)
+
+
+def overhead_norm(gradient: float, clip: Any) -> float:
+    """Irradiance on a level surface from the shaped overhead over that from a uniform one.
+
+    Shape exp(gradient * clip(w_x, lo, hi)) over the upper hemisphere, w_x the x component
+    of the unit direction (base frame). Cosine-weighted, the hemisphere projects onto the
+    unit disk (w_x, w_y) with uniform weight, so the ratio is (1/pi) times the integral of
+    the shape over the disk: a chord of length 2 sqrt(1 - x^2) at each x.
+    """
+    g = float(gradient)
+    lo, hi = (float(v) for v in clip)
+    if g == 0.0:
+        return 1.0
+
+    def area(a: float, b: float) -> float:          # integral of 2 sqrt(1 - x^2) on [a, b]
+        f = lambda x: x * np.sqrt(1.0 - x * x) + np.arcsin(x)
+        return float(f(b) - f(a))
+
+    t, w = np.polynomial.legendre.leggauss(64)
+    x = 0.5 * (hi - lo) * t + 0.5 * (hi + lo)
+    mid = 0.5 * (hi - lo) * float(np.sum(w * 2.0 * np.sqrt(1.0 - x * x) * np.exp(g * x)))
+    return (np.exp(g * lo) * area(-1.0, lo) + mid + np.exp(g * hi) * area(hi, 1.0)) / np.pi
+
+
+def overhead_shape(cfg: dict[str, Any]) -> dict[str, Any]:
+    """The overhead's direction dependence from hard_profile.overhead.
+
+    The world's radiance in direction w is the spec's uniform radiance (environment.
+    radiance_rgb) times exp(gradient_x * clip(w_x, clip_x)) / norm, norm from
+    overhead_norm, so the irradiance on a level surface, which the light level was
+    fitted to, stays that of the uniform world. Without the section the overhead is
+    uniform (gradient 0, norm 1).
+    """
+    sec = cfg["hard_profile"].get("overhead")
+    if sec is None:
+        return {"gradient_x": 0.0, "clip_x": [-1.0, 1.0], "norm": 1.0}
+    g = float(sec["gradient_x"])
+    clip = [float(v) for v in sec["clip_x"]]
+    if not np.isfinite(g):
+        raise ValueError("hard_profile.overhead.gradient_x must be a finite number")
+    if len(clip) != 2 or not -1.0 <= clip[0] < clip[1] <= 1.0:
+        raise ValueError("hard_profile.overhead.clip_x must be [lo, hi] with -1 <= lo < hi <= 1")
+    return {"gradient_x": g, "clip_x": clip, "norm": float(overhead_norm(g, clip))}
 
 
 def load_render_config(path: str | Path) -> dict[str, Any]:
@@ -274,7 +323,7 @@ def read_cards(path: str | Path) -> list[tuple[int, float, float]]:
 
 
 # ────────────────────────────────────────────────────────────
-# Light: area luminaires and the uniform overhead
+# Light: area luminaires and the overhead (uniform-equivalent radiance; shape above)
 # ────────────────────────────────────────────────────────────
 
 def panel_irradiance_factor(centre_mm: Any, size_mm: Any, point_mm: Any, n: int = 20) -> float:
@@ -310,7 +359,8 @@ def luminaire_lights(centres_mm: list, weights: Any, overhead_share: float, irra
     """Spec lights and environment for a luminaire layout and a light level.
 
     irradiance is the luminance-weighted irradiance at reference_mm (the centre of the
-    card block on the table) in render units; the uniform overhead carries
+    card block on the table) in render units; the overhead (as a uniform world of the same
+    irradiance; overhead_shape gives its direction dependence) carries
     overhead_share of it, each luminaire weights[i] of the rest. A luminaire's colour
     (color_temp_k, as sensor_model.light_rgb renders it) has unit luminance, and so has
     the overhead's tint, so these shares hold at the reference point whatever the colours.

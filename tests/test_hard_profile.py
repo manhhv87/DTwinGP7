@@ -77,10 +77,11 @@ class TestColourSpace:
         s = float(raw["render"]["reflectance_scale"])
         assert s == pytest.approx(0.305 / (0.85 / 1.29), abs=0.01)
         mats = raw["objects"]["materials"]
-        # F0 fitted on the E2 trial frames (06/11/2026, whole top face): Base Color R of inox
-        # 0.4968 x 0.46, of the painted steel box 0.2428 x 0.46
-        assert mats["inox_box"]["f0_rgb"][0] * s == pytest.approx(0.229, abs=0.002)
-        assert mats["metal_box"]["f0_rgb"][0] * s == pytest.approx(0.112, abs=0.002)
+        # F0 fitted on the E2 trial frames (06/11/2026, whole top face, shaped overhead and
+        # the steel box's face pattern): Base Color R of inox 0.5287 x 0.46, of the painted
+        # steel box 0.2389 x 0.46 (its face mean; 2.79 times that at the middle of the lid)
+        assert mats["inox_box"]["f0_rgb"][0] * s == pytest.approx(0.243, abs=0.002)
+        assert mats["metal_box"]["f0_rgb"][0] * s == pytest.approx(0.110, abs=0.002)
         table = float(sm.srgb_to_linear(raw["background"]["standard_table_rgb"]) @ sm.LUMINANCE_709)
         assert table == pytest.approx(0.305, abs=0.005)
 
@@ -491,9 +492,84 @@ def test_renderer_scales_every_physical_specular_reflectance():
 
 def test_renderer_shades_parts_flat_and_lights_with_luminaires():
     src = _renderer_source()
-    assert "poly.use_smooth = False" in src
+    assert "poly.use_smooth = smooth_facet(poly.normal)" in src
     assert 'light.set_type("AREA")' in src and 'light.set_type("POINT")' not in src
     assert 'environment["radiance_rgb"]' in src
+    assert "shape = hp.overhead_shape(cfg)" in src
+    assert 'nt.links.new(tc.outputs["Generated"], sep.inputs[0])' in src
+
+
+def test_only_rounded_corner_facets_are_smooth():
+    """The rule of import_mesh, run on the facet normals of every shipped mesh: a planar
+    box face (normal along a mesh axis) is flat, so no face bends like a pillow; the
+    facets of the steel box's rounded corners are smooth (source check plus the rule)."""
+    import struct
+    tree = ast.parse(_renderer_source())
+    fn = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "smooth_facet")
+    ns: dict = {}
+    exec(compile(ast.Module(body=[fn], type_ignores=[]), "smooth_facet", "exec"), ns)
+    smooth_facet = ns["smooth_facet"]
+    raw = yaml.safe_load(CONFIG.read_text(encoding="utf-8"))
+    for mesh in raw["objects"]["mesh_sizes_mm"]:
+        data = (ROOT / mesh).read_bytes()
+        n = struct.unpack("<I", data[80:84])[0]
+        v = np.frombuffer(data, np.dtype([("n", "<f4", 3), ("v", "<f4", (3, 3)), ("a", "<u2")]), count=n, offset=84)["v"]
+        normals = np.cross(v[:, 1] - v[:, 0], v[:, 2] - v[:, 0])
+        normals /= np.linalg.norm(normals, axis=1)[:, None]
+        smooth = np.array([smooth_facet(nn) for nn in normals])
+        planar = (np.abs(normals) > 1 - 1e-6).any(axis=1)
+        assert not smooth[planar].any(), mesh
+        if mesh.endswith("metal_box.stl"):
+            assert smooth.sum() == 4 * 16 * 2 and (smooth | planar).all()
+        else:
+            assert not smooth.any() and planar.all(), mesh
+
+
+class TestOverheadShape:
+    def test_norm_keeps_the_level_irradiance(self):
+        # brute force over the unit disk (the cosine-weighted hemisphere)
+        x, y = np.meshgrid(np.linspace(-1, 1, 2001), np.linspace(-1, 1, 2001))
+        inside = x * x + y * y <= 1.0
+        for g, clip in ((1.84, [-0.257, 0.063]), (-2.0, [-1.0, 1.0]), (0.7, [0.1, 0.5])):
+            brute = np.exp(g * np.clip(x, *clip))[inside].sum() * (2 / 2000) ** 2 / np.pi
+            assert hp.overhead_norm(g, clip) == pytest.approx(brute, rel=2e-3)
+        assert hp.overhead_norm(0.0, [-0.3, 0.3]) == 1.0
+        # unclipped: 2 I1(g) / g
+        from math import factorial
+        i1 = sum((1.84 / 2) ** (2 * k + 1) / (factorial(k) * factorial(k + 1)) for k in range(20))
+        assert hp.overhead_norm(1.84, [-1.0, 1.0]) == pytest.approx(2 * i1 / 1.84, rel=1e-5)
+
+    def test_shipped_shape(self, cfg):
+        sh = hp.overhead_shape(cfg)
+        # between-row slope of the stainless mirror's log brightness on the reflected
+        # direction, E2 trial frames, and the range of directions it mirrored (p1-p99)
+        assert sh["gradient_x"] == 1.84 and sh["clip_x"] == [-0.257, 0.063]
+        assert sh["norm"] == pytest.approx(0.8988, abs=1e-4)
+
+    def test_without_the_section_the_overhead_is_uniform(self, cfg):
+        c = copy.deepcopy(cfg)
+        c["hard_profile"].pop("overhead")
+        assert hp.overhead_shape(c) == {"gradient_x": 0.0, "clip_x": [-1.0, 1.0], "norm": 1.0}
+
+    @pytest.mark.parametrize("bad", [{"gradient_x": 1.0, "clip_x": [0.2, 0.1]},
+                                     {"gradient_x": 1.0, "clip_x": [-1.5, 0.1]},
+                                     {"gradient_x": float("nan"), "clip_x": [-0.2, 0.1]},
+                                     {"gradient_x": 1.0, "clip_x": [0.1]}])
+    def test_bad_section_is_refused(self, raw, tmp_path, bad):
+        d = copy.deepcopy(raw)
+        d["hard_profile"]["overhead"] = bad
+        p = tmp_path / "bad.yaml"
+        p.write_text(yaml.safe_dump(d), encoding="utf-8")
+        with pytest.raises(ValueError):
+            hp.load_render_config(p)
+
+
+def test_renderer_applies_the_face_pattern_to_the_top_face_only():
+    src = _renderer_source()
+    assert 'if ms.get("face_pattern"):' in src
+    assert 'apply_face_pattern(mat, ms["face_pattern"], np.ptp(bb, axis=0))' in src
+    assert 'nt.links.new(tc.outputs["Normal"], sep.inputs[0])' in src          # top: normal z > 0.5
+    assert 'nt.links.new(cw.outputs["Value"], bsdf.inputs["Coat Weight"])' in src
 
 
 def test_renderer_applies_the_exposure_and_refuses_specs_without_it():

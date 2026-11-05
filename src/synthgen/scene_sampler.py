@@ -442,7 +442,8 @@ class SceneSampler:
         its estimated roughness; a metal class's physical reflectance F0 times
         exp(eta), eta ~ N(0, (kappa*sigma_f0_rel)^2), its roughness spread over
         kappa times roughness_range about the fitted value, and its clear coat's
-        roughness N(coat_roughness, (kappa*sigma_coat_roughness)^2). Blind: the wide
+        roughness N(coat_roughness, (kappa*sigma_coat_roughness)^2), and its top-face
+        pattern as fitted (face_pattern, no spread). Blind: the wide
         hand-set ranges, using none of those measurements — including metallic, so a
         cardboard box may come out chrome, which is exactly what a blind treatment
         does — and a clear coat on blind_coat_probability of the products. Empty dict
@@ -475,6 +476,9 @@ class SceneSampler:
                 coat = mat.coat_roughness + rng.normal(0.0, self.kappa * mat.sigma_coat_roughness)
                 out["coat_ior"] = float(mat.coat_ior)
                 out["coat_roughness"] = float(np.clip(coat, 0.02, 1.0))
+            if mat.face_pattern is not None:
+                out["face_pattern"] = {"floor": float(mat.face_pattern.floor),
+                                       "sigma_mm": [float(v) for v in mat.face_pattern.sigma_mm]}
             return out
         else:
             # The measured spread is proportional to each channel (brightness between
