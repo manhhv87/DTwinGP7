@@ -212,6 +212,25 @@ class TestBackgroundColour:
         assert spread > 0.3          # hue all over the place, by design
 
 
+class TestWideRangeHoldsTheFittedColours:
+    def test_every_fitted_product_colour_is_inside_the_wide_range(self, config):
+        """The wide recipe is wider than the anchored one: each fitted dielectric colour,
+        and each anchored metal F0 as rendered (x reflectance_scale, linear), lies in it.
+        The plastic red fitted on the E2 frames is 0.0001, below the former floor 0.05."""
+        import yaml
+        from src.synthgen.sensor_model import srgb_to_linear
+        lo, hi = config.objects.blind_albedo_range
+        scale = yaml.safe_load((ROOT / "config" / "synthgen.yaml").read_text(encoding="utf-8"))[
+            "render"]["reflectance_scale"]
+        for name, mat in config.objects.materials.items():
+            if mat.albedo_rgb is not None:
+                assert all(lo <= v <= hi for v in mat.albedo_rgb), name
+            else:   # rendered F0 against the wide range's linear Base Color
+                lin = srgb_to_linear(np.asarray([lo, hi]))
+                assert all(lin[0] <= v * scale <= lin[1] for v in mat.f0_rgb), name
+        assert lo == 0.0
+
+
 class TestMissingMaterial:
     def test_class_without_material_gets_no_material_key(self, config):
         cfg = config.model_copy(deep=True)

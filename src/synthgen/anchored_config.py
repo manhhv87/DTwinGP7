@@ -266,7 +266,7 @@ class ObjectFactors(BaseModel):
     # script warns about any class missing here.
     materials: dict[str, MaterialFactors] = Field(default_factory=dict)
     sigma_roughness: float = 0.08
-    blind_albedo_range: list[float] = Field(default=[0.05, 0.95])
+    blind_albedo_range: list[float] = Field(default=[0.0, 0.95])
     blind_roughness_range: list[float] = Field(default=[0.02, 1.0])
     # Blind: share of products drawn with a clear coat (index 1.5, roughness from
     # blind_roughness_range), so the wide range holds the coated steel box too.

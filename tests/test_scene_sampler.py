@@ -379,6 +379,30 @@ class TestTaskVariables:
             assert abs(float(v.mean()) - (a + b) / 2) < 4 * se
             assert abs(float(v.std()) - (b - a) / np.sqrt(12)) < 0.1 * (b - a) / np.sqrt(12)
 
+    def test_config_ties_to_the_calibration_files(self, config):
+        """The camera intrinsics and the table height of the config are the numbers of
+        the 18/09/2026 calibration (T_base_camera_meta.json, table_plane.json), to the
+        three decimals the config keeps, and the calibration's T_BC is the table fit's."""
+        import json
+        calib = Path(__file__).resolve().parent.parent / "config" / "calibration"
+        meta = json.loads((calib / "T_base_camera_meta.json").read_text(encoding="utf-8"))["intrinsics"]
+        intr = config.camera.intrinsics
+        for key in ("fx", "fy", "ppx", "ppy"):
+            assert abs(float(intr[key]) - meta[key]) < 5e-4, key
+        for key in ("width", "height"):
+            assert int(intr[key]) == meta[key], key
+        plane = json.loads((calib / "table_plane.json").read_text(encoding="utf-8"))
+        assert abs(config.objects.table_z_mm - plane["z_top_mm"]) < 0.05
+        assert np.allclose(np.load(calib / "T_base_camera.npy"), np.asarray(plane["T_BC"]), atol=1e-9)
+
+    def test_class_ids_are_the_dataset_order(self, config):
+        """config class_ids, the labeller, the dataset check and the runner share one order."""
+        from src.synthgen.auto_label import DEFAULT_CLASS_NAMES
+        from src.utils.dataset_check import EXPECTED_NAMES
+        ids = config.objects.class_ids
+        assert sorted(ids, key=ids.get) == DEFAULT_CLASS_NAMES == list(EXPECTED_NAMES)
+        assert sorted(ids.values()) == list(range(len(ids)))
+
     def test_class_ids_consistent(self, config):
         s = make_sampler(config)
         for i in range(20):

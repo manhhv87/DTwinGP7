@@ -18,9 +18,6 @@
 #   - Chế độ --mode blind: biên rộng cố định ở các khóa blind_* và recipe vật liệu
 #     khác; vẫn dùng CÙNG camera reference T_BC và intrinsics. Vì vậy đây không phải
 #     đối chứng độc lập với calibration hoặc chỉ khác một nguồn uncertainty.
-#
-# ⚠ Các giá trị đánh dấu [MEASURE] là proxy tạm — phải đo tại cell thật rồi
-#   cập nhật trước khi chạy E3 (xem WORKFLOW_CODE_TO_PAPER.md mục 5).
 # =============================================================================
 
 camera:
@@ -297,7 +294,12 @@ objects:
   # Blind: dải rộng cố định, KHÔNG dùng bất kỳ số đo nào ở trên: albedo (cũng là F0 của phần kim
   # loại) đều từng kênh, metallic đều 0-1, roughness đều 0,02-1 (bao inox 0,02 và metal 1,0), và
   # một nửa số vật có lớp phủ bóng IOR 1,5 với roughness đều trong cùng khoảng.
-  blind_albedo_range: [0.05, 0.95]
+  # albedo là giá trị mã hóa sRGB; renderer tuyến tính hóa và KHÔNG nhân render.reflectance_scale,
+  # kể cả khi vật được rút metallic (khác F0 anchored ở trên, vốn nhân 0,46). F0 kim loại wide-range
+  # vì vậy trải 0-0,89 tuyến tính, vẫn bao F0 anchored sau khi nhân (0,21-0,28 tuyến tính).
+  # Sàn 0 (trước 05/11/2026 là 0,05): kênh R của nhựa khớp trên khung E2 là 0,0001, dưới 0,05,
+  # nên sàn 0,05 để màu thật của lớp nhựa nằm ngoài dải rộng.
+  blind_albedo_range: [0.0, 0.95]
   blind_roughness_range: [0.02, 1.0]
   blind_coat_probability: 0.5
 
