@@ -303,7 +303,7 @@ objects:
   # một nửa số vật có lớp phủ bóng IOR 1,5 với roughness đều trong cùng khoảng.
   # albedo là giá trị mã hóa sRGB; renderer tuyến tính hóa và KHÔNG nhân render.reflectance_scale,
   # kể cả khi vật được rút metallic (khác F0 anchored ở trên, vốn nhân 0,46). F0 kim loại wide-range
-  # vì vậy trải 0-0,89 tuyến tính, vẫn bao F0 anchored sau khi nhân (0,21-0,28 tuyến tính).
+  # vì vậy trải 0-0,89 tuyến tính, vẫn bao F0 anchored sau khi nhân (0,11-0,26 tuyến tính, khớp 06/11/2026).
   # Sàn 0 (trước 05/11/2026 là 0,05): kênh R của nhựa khớp trên khung E2 là 0,0001, dưới 0,05,
   # nên sàn 0,05 để màu thật của lớp nhựa nằm ngoài dải rộng.
   blind_albedo_range: [0.0, 0.95]

@@ -51,8 +51,8 @@ Design notes:
     and a clear coat's weight. The wide-range recipe draws no f0_rgb: its albedo_rgb
     (sRGB-encoded, uniform per channel) is the Base Color of every part, linearised
     and NOT scaled, also when the part is drawn metallic, so a wide-range metal's F0
-    spans 0 to 0.89 linear; that span holds the anchored metals' scaled F0 (0.21 to
-    0.28 linear), the only claim the wide range has to meet.
+    spans 0 to 0.89 linear; that span holds the anchored metals' scaled F0 (0.11 to
+    0.26 linear), the only claim the wide range has to meet.
   - Cycles renders scene-linear EXR; sensor_model.apply_sensor then applies white
     balance, the gain (sensor.gain times the scene's exposure gain), Poisson-Gaussian
     noise and the sRGB curve (Blender's "Standard" view, no tone mapping) in numpy.
