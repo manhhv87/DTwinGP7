@@ -370,6 +370,21 @@ class TestSeedRanges:
             alike += same
         assert alike == 5   # stream 1000 three ways (3 pairs); 5 and 0 across versions
 
+    def test_version_3_adds_an_exposure_stream_no_scene_shares(self, tmp_path):
+        # Version 3 keeps version 2's scene stream and adds SeedSequence([seed, i, 2])
+        # for the exposure gain: the overlap rule is version 2's, so a version 2 and a
+        # version 3 batch of one seed share the indices they have in common.
+        v3 = manifest_streams(_specs(tmp_path / "manifest.json", 3, 0, range(3000)))
+        assert v3["streams"] == [[[0, 1], [0, 3000]]] and 3 in STREAM_RULE
+        assert shared_streams(planned_streams(0, 1000, spec_version=2), v3["streams"]) == 1000
+        assert shared_streams(planned_streams(1, 1000, spec_version=3), v3["streams"]) == 0
+        # The third word keeps the exposure stream apart from every two-word stream
+        # (SeedSequence pads with zero words) and from the pose arm's word 1.
+        states = {key: np.random.SeedSequence(list(key)).generate_state(4).tobytes()
+                  for key in ((0, 5), (0, 5, 0), (0, 5, 1), (0, 5, 2), (5, 2), (2, 5))}
+        assert states[(0, 5)] == states[(0, 5, 0)]
+        assert len({states[k] for k in ((0, 5), (0, 5, 1), (0, 5, 2), (5, 2), (2, 5))}) == 5
+
     def test_unknown_spec_version_or_split_seed_is_reported_unchecked(self, tmp_path):
         info = manifest_streams(_specs(tmp_path / "a.json", 99, 0, [0]))
         assert info["streams"] is None and "spec_version 99" in info["unchecked"]
@@ -481,9 +496,22 @@ class TestGeneratorUsesTheCheckedPlan:
         assert code == 0
         for arm, manifest in (("guided", loop), ("control", control)):
             assert manifest_streams(manifest)["streams"] == plan["planned_streams"][arm]
+        # The control renders the session's lighting, as every guided bin does, so
+        # both arms draw the same light and exposure distributions.
         written = json.loads(control.read_text())
-        assert written["mode"] == "anchored" and written["condition"] is None
-        assert json.loads(loop.read_text())["condition"]["class_name"] == "inox_box"
+        assert written["mode"] == "anchored"
+        assert written["condition"] == {"class_name": None, "region": None, "lighting": "dim"}
+        guided = json.loads(loop.read_text())
+        assert guided["condition"]["class_name"] == "inox_box"
+        assert {b["condition"]["lighting"] for b in guided.get("batches", [guided])} == {"dim"}
+
+    @pytest.mark.parametrize("flag", ["--from-failures", "--control-for"])
+    def test_a_lighting_label_the_profile_does_not_render_is_refused(self, tmp_path, flag):
+        report = self._report(tmp_path, "--guided-seed", "10000", "--control-seed", "20000")
+        data = load_report(report)
+        data["allocation"][0]["condition"]["lighting"] = "bright"
+        report.write_text(json.dumps(data))
+        assert self._generate(tmp_path, flag, report, "refused") == (1, None)
 
     @pytest.mark.parametrize("flag, extra", [
         ("--from-failures", ["--seed", "10001"]),

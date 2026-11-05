@@ -6,22 +6,26 @@ domain randomization — the implementation of Eq. (1) of the paper:
 
     theta_i ~ D_i(theta_i*, kappa * sigma_i)
 
-ANCHORED mode: nuisance parameters (camera extrinsics/intrinsics, lighting,
-background) are drawn around the twin's calibrated ground state theta* with
-widths kappa*sigma; sigma comes from the bootstrap of the hand-eye calibration
+ANCHORED mode: the measured nuisance parameters (camera extrinsics/intrinsics,
+light level and colour, table and product appearance) are drawn around the
+twin's calibrated or fitted state theta* with widths kappa*sigma; the camera's
+sigma comes from the bootstrap of the hand-eye calibration
 (config/calibration/T_base_camera_sigma.json) or, as a fallback, from
-config/synthgen.yaml. Quantities that must stay positive (light power, light
-height above the table, albedo) are perturbed as theta* * exp(eta), so no kappa
-drives them to zero, below the table or onto a floor value.
+config/synthgen.yaml. Quantities that must stay positive (light level, albedo,
+metal reflectance) are perturbed as theta* * exp(eta), so no kappa drives them
+to zero or onto a floor value.
 
-BLIND mode: wide hand-set perturbation ranges around the same camera reference,
-with a different appearance recipe. It is not independent of calibration. Its
-light power is a log-uniform multiple of the anchored reference power.
+BLIND mode: wide hand-set ranges for the same measured factors, around the same
+camera reference, with a different appearance recipe. It is not independent of
+calibration. Its light level is a log-uniform multiple of the anchored level.
 
-Task variables are drawn alike in both modes: one or more placements on the
-table whose footprints never overlap; the first product's class, and whether it
-rests on a support, follow the physical pose lists; distractors keep off the
-products.
+FREE factors are drawn alike in both modes and in every E5 arm: the task
+variables (one or more placements on the table whose footprints never overlap;
+the first product's class, and whether it rests on a support, follow the
+physical pose lists; distractors keep off the products) and the factors no
+capture pins down, which are drawn over physical or admitted bounds: where the
+luminaires hang and how they share the light, the overhead share of the light,
+and the session exposure gain.
 
 The sampler runs in the repo venv and writes plain-JSON scene specs; rendering
 happens separately under `blenderproc run` (render_blenderproc.py), which only
@@ -39,20 +43,47 @@ from typing import Any
 import numpy as np
 
 from .anchored_config import LIGHTING_CONDITION_SCALE, SynthgenConfig
+from .hard_profile import luminaire_lights
 from .seed_ranges import WORD
 
 # Schema version of the scene-spec JSON contract with render_blenderproc.py.
 # 2: an object's xyz_mm z is the height of its base, which is the top face of its
 # support for a stacked product (stack_on_index names the support); scene i draws
 # from SeedSequence([seed, i]), where version 1 drew from default_rng(seed + i).
+# 3: the lights are area luminaires plus a uniform overhead (spec "environment"),
+# a metal carries its physical f0_rgb, and every scene has a session exposure gain
+# (spec "exposure"), drawn from SeedSequence([seed, i, 2]); the renderer refuses a
+# spec without one.
 # A change of the RNG scheme needs a bump and its rule in seed_ranges.STREAM_RULE.
-SPEC_VERSION = 2
+SPEC_VERSION = 3
 ABLATION_FACTORS = ("none", "illumination", "background", "distractors", "camera", "pose")
 # Draws of position and yaw for one product or distractor before it is left out.
 PLACEMENT_TRIES = 200
 # Third SeedSequence word of the stream that moves distractors in the pose arm, so
 # that the full scene's own draws stay untouched.
 _RELOCATION_STREAM = 1
+# Third word of the session exposure's stream: the gain depends on (seed, index)
+# only, so the kappa arms, the E5 arms and both recipes of a seed share it.
+_EXPOSURE_STREAM = 2
+# Index of refraction of the clear coat the blind recipe puts on some products.
+BLIND_COAT_IOR = 1.5
+
+
+def lighting_scale(label: str | None, anchor_condition: str) -> float:
+    """Factor on the profile's light level for a condition's lighting label.
+
+    The level was fitted in anchor_condition; a label renders at
+    SCALE[label] / SCALE[anchor_condition], None at the anchor's own level. A label
+    the table does not hold raises: it used to render at 1.0 unnoticed.
+    """
+    for name in sorted({label, anchor_condition} - {None}):
+        if name not in LIGHTING_CONDITION_SCALE:
+            raise ValueError(f"lighting '{name}' is not rendered by the hard-condition profile "
+                             f"({sorted(LIGHTING_CONDITION_SCALE)}): mine only hard-condition "
+                             "sessions")
+    if label is None:
+        return 1.0
+    return LIGHTING_CONDITION_SCALE[label] / LIGHTING_CONDITION_SCALE[anchor_condition]
 
 
 def _rotvec_deg_to_matrix(rv_deg: np.ndarray) -> np.ndarray:
@@ -168,7 +199,7 @@ class SceneSampler:
             self.sigma_source = "yaml_fallback"
 
         self.ablation_protocol = {
-            "protocol_version": 2,
+            "protocol_version": 3,
             "factor": ablation,
             "reference": self._ablation_reference(),
         }
@@ -181,11 +212,14 @@ class SceneSampler:
             return {"T_BC_mm": self.T_BC.tolist(),
                     "intrinsics": dict(self.config.camera.intrinsics)}
         if self.ablation == "illumination":
+            # The measured light factors at the profile; the free ones (luminaire
+            # layout, overhead share, exposure) stay as drawn.
             lit = self.config.lighting
-            return [{"type": "point", "position_mm": list(pos),
-                     "energy_w": float(lit.anchor_intensity_w),
-                     "color_temp_k": float(lit.anchor_color_temp_k)}
-                    for pos in lit.anchor_positions_mm]
+            return {"rule": "profile_level_and_colour",
+                    "irradiance": float(lit.anchor_irradiance),
+                    "color_temp_k": float(lit.anchor_color_temp_k),
+                    "overhead_tint_rgb": [float(v) for v in lit.overhead_tint_rgb],
+                    "kept": ["luminaire_layout", "overhead_share", "exposure"]}
         if self.ablation == "background":
             bg = self.config.background
             return {"kind": "plane", "z_mm": self.config.objects.table_z_mm,
@@ -238,6 +272,8 @@ class SceneSampler:
     def _check_condition(self, condition: dict[str, Any] | None) -> None:
         if self.ablation != "none" and condition:
             raise ValueError("E5 ablation cannot be combined with failure conditioning")
+        if condition:
+            lighting_scale(condition.get("lighting"), self.config.lighting.anchor_condition)
 
     def _apply_ablation(self, spec: dict[str, Any], index: int) -> None:
         reference = deepcopy(self.ablation_protocol["reference"])
@@ -253,9 +289,15 @@ class SceneSampler:
                     obj["xyz_mm"] = [x, y, z + self._size(support["mesh"])[2]]
                     obj["yaw_deg"] = support["yaw_deg"]
             self._relocate_distractors(spec, index)
+        elif self.ablation == "illumination":
+            lit = self.config.lighting
+            spec["lights"], spec["environment"] = self._light(
+                [li["position_mm"] for li in spec["lights"]],
+                [li["irradiance_share"] for li in spec["lights"]],
+                spec["environment"]["overhead_share"], lit.anchor_irradiance,
+                [lit.anchor_color_temp_k] * len(spec["lights"]), lit.overhead_tint_rgb)
         elif self.ablation != "none":
-            key = "lights" if self.ablation == "illumination" else self.ablation
-            spec[key] = reference
+            spec[self.ablation] = reference
         spec["ablation"] = deepcopy(self.ablation_protocol)
 
     def _relocate_distractors(self, spec: dict[str, Any], index: int) -> None:
@@ -312,51 +354,61 @@ class SceneSampler:
 
     def _sample_lights(
         self, rng: np.random.Generator, lighting_condition: str | None
-    ) -> list[dict[str, Any]]:
+    ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        """Luminaires and overhead of one scene: the spec's lights and environment.
+
+        The free factors come first and are drawn alike in both recipes: one
+        luminaire beyond the far edge of the table, a second anywhere with
+        extra_luminaire_probability, their shares of the luminaire light, and the
+        overhead share. Then the measured ones: the level (the irradiance at the
+        cards), each luminaire's colour temperature and the overhead's tint, around
+        the profile (anchored) or over the wide ranges (blind).
+        """
         lit = self.config.lighting
-        scale = LIGHTING_CONDITION_SCALE.get(lighting_condition or "", 1.0)
-        lights: list[dict[str, Any]] = []
+        z_table = self.config.objects.table_z_mm
+        scale = lighting_scale(lighting_condition, lit.anchor_condition)
+
+        def centre(x_range: list[float], y_range: list[float]) -> list[float]:
+            x, y = float(rng.uniform(*x_range)), float(rng.uniform(*y_range))
+            return [x, y, z_table + float(rng.uniform(*lit.luminaire_height_mm))]
+
+        centres = [centre(lit.far_luminaire_x_mm, lit.far_luminaire_y_mm)]
+        if rng.random() < lit.extra_luminaire_probability:
+            centres.append(centre(lit.extra_luminaire_x_mm, lit.extra_luminaire_y_mm))
+        weights = rng.dirichlet(np.ones(len(centres)))
+        log_lo, log_hi = np.log(lit.overhead_share_range)
+        share = float(np.exp(rng.uniform(log_lo, log_hi)))
         if self.mode == "anchored":
-            z_table = self.config.objects.table_z_mm
-            for pos in lit.anchor_positions_mm:
-                p = np.asarray(pos, dtype=float)
-                d = rng.normal(0.0, self.kappa * lit.sigma_position_mm, size=3)
-                # The height above the table is a log scale: near the anchor it moves
-                # like the Gaussian sd kappa*sigma, and no kappa takes it to the table.
-                height = p[2] - z_table
-                p[:2] += d[:2]
-                p[2] = z_table + height * np.exp(d[2] / height)
-                # Power likewise: the reference times exp(eta), never at a floor.
-                energy = lit.anchor_intensity_w * scale * np.exp(
-                    rng.normal(0.0, self.kappa * lit.sigma_intensity_frac))
-                temp = lit.anchor_color_temp_k + rng.normal(
-                    0.0, self.kappa * lit.sigma_color_temp_k
-                )
-                lights.append({
-                    "type": "point",
-                    "position_mm": p.tolist(),
-                    "energy_w": float(energy),
-                    "color_temp_k": float(np.clip(temp, 1500.0, 12000.0)),
-                })
+            # The level is the fitted one times exp(eta), never at a floor.
+            level = np.exp(rng.normal(0.0, self.kappa * lit.sigma_intensity_frac))
+            temps = lit.anchor_color_temp_k + rng.normal(
+                0.0, self.kappa * lit.sigma_color_temp_k, size=len(centres))
+            tint = np.asarray(lit.overhead_tint_rgb, dtype=float) * np.exp(
+                rng.normal(0.0, self.kappa * lit.sigma_overhead_tint, size=3))
         else:
-            n = int(rng.integers(lit.blind_count_range[0], lit.blind_count_range[1] + 1))
-            (x0, x1), (y0, y1), (z0, z1) = lit.blind_position_box_mm
-            log_lo, log_hi = np.log(lit.blind_intensity_rel_range)
-            for _ in range(max(1, n)):
-                lights.append({
-                    "type": "point",
-                    "position_mm": [
-                        float(rng.uniform(x0, x1)),
-                        float(rng.uniform(y0, y1)),
-                        float(rng.uniform(z0, z1)),
-                    ],
-                    # A multiple of the anchored reference, so a refitted anchor moves
-                    # the wide-range power with it.
-                    "energy_w": float(lit.anchor_intensity_w * scale
-                                      * np.exp(rng.uniform(log_lo, log_hi))),
-                    "color_temp_k": float(rng.uniform(*lit.blind_color_temp_range_k)),
-                })
-        return lights
+            # A multiple of the fitted level, so a refit moves the wide range with it.
+            level = np.exp(rng.uniform(*np.log(lit.blind_intensity_rel_range)))
+            temps = rng.uniform(*lit.blind_color_temp_range_k, size=len(centres))
+            tint = np.exp(rng.uniform(-lit.blind_overhead_tint_log, lit.blind_overhead_tint_log,
+                                      size=3))
+        return self._light(centres, weights, share, lit.anchor_irradiance * scale * level,
+                           np.clip(temps, 1500.0, 12000.0), tint)
+
+    def _light(self, centres: list, weights: Any, share: float, irradiance: float,
+               temps: Any, tint: Any) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        lit = self.config.lighting
+        reference = [*lit.reference_point_mm, self.config.objects.table_z_mm]
+        return luminaire_lights(centres, weights, share, irradiance, [float(t) for t in temps],
+                                tint, lit.luminaire_size_mm, reference)
+
+    def _sample_exposure(self, index: int) -> dict[str, float]:
+        """Session exposure gain of scene index, log-uniform over the admitted range,
+        from a stream of its own (SeedSequence([seed, index, 2])): it depends on
+        (seed, index) only, so every kappa, E5 arm and recipe of a seed shares it."""
+        lo, hi = self.config.exposure.gain_range
+        rng = np.random.default_rng(
+            np.random.SeedSequence([self.seed, int(index), _EXPOSURE_STREAM]))
+        return {"gain": float(np.exp(rng.uniform(np.log(lo), np.log(hi))))}
 
     def _sample_background(self, rng: np.random.Generator) -> dict[str, Any]:
         bg = self.config.background
@@ -386,20 +438,44 @@ class SceneSampler:
     def _sample_material(self, rng: np.random.Generator, cls: str) -> dict[str, Any]:
         """Appearance of one workpiece.
 
-        Anchored: the class's measured colour, widened by kappa*sigma, and its
-        estimated reflectance. Blind: the wide hand-set ranges, using none of those
-        measurements — including metallic, so a cardboard box may come out chrome,
-        which is exactly what a blind treatment does. Empty dict when the class has
-        no material configured; the renderer then leaves the mesh in default grey.
+        Anchored: a dielectric class's measured colour, widened by kappa*sigma, and
+        its estimated roughness; a metal class's physical reflectance F0 times
+        exp(eta), eta ~ N(0, (kappa*sigma_f0_rel)^2), its roughness spread over
+        kappa times roughness_range about the fitted value, and its clear coat's
+        roughness N(coat_roughness, (kappa*sigma_coat_roughness)^2). Blind: the wide
+        hand-set ranges, using none of those measurements — including metallic, so a
+        cardboard box may come out chrome, which is exactly what a blind treatment
+        does — and a clear coat on blind_coat_probability of the products. Empty dict
+        when the class has no material configured; the renderer then leaves the mesh
+        in default grey.
         """
         obj = self.config.objects
         mat = obj.materials.get(cls)
         if self.mode == "blind":
             albedo = rng.uniform(*obj.blind_albedo_range, size=3)
-            rough = float(rng.uniform(*obj.blind_roughness_range))
-            metal = float(rng.uniform(0.0, 1.0))
-        elif mat is None:
+            out = {"albedo_rgb": np.clip(albedo, 0.0, 1.0).tolist(),
+                   "roughness": float(np.clip(rng.uniform(*obj.blind_roughness_range), 0.02, 1.0)),
+                   "metallic": float(rng.uniform(0.0, 1.0))}
+            if rng.random() < obj.blind_coat_probability:
+                out["coat_ior"] = BLIND_COAT_IOR
+                out["coat_roughness"] = float(np.clip(rng.uniform(*obj.blind_roughness_range),
+                                                      0.02, 1.0))
+            return out
+        if mat is None:
             return {}
+        if mat.f0_rgb is not None:
+            f0 = np.asarray(mat.f0_rgb, dtype=float) * np.exp(
+                rng.normal(0.0, self.kappa * mat.sigma_f0_rel))
+            lo, hi = mat.roughness_range or (mat.roughness, mat.roughness)
+            rough = mat.roughness + self.kappa * rng.uniform(lo - mat.roughness, hi - mat.roughness)
+            out = {"f0_rgb": np.clip(f0, 0.0, 1.0).tolist(),
+                   "roughness": float(np.clip(rough, 0.02, 1.0)),
+                   "metallic": float(mat.metallic)}
+            if mat.coat_ior is not None:
+                coat = mat.coat_roughness + rng.normal(0.0, self.kappa * mat.sigma_coat_roughness)
+                out["coat_ior"] = float(mat.coat_ior)
+                out["coat_roughness"] = float(np.clip(coat, 0.02, 1.0))
+            return out
         else:
             # The measured spread is proportional to each channel (brightness between
             # images, not hue), so all three channels scale together. A small
@@ -407,6 +483,7 @@ class SceneSampler:
             # grey steel box green, which independent draws at the full width do.
             # Both are exp(.): the factor max(0, 1 + eta) rendered 18% of inox boxes
             # black at kappa 2 and 32% at kappa 4.
+            assert mat.albedo_rgb is not None
             base = np.asarray(mat.albedo_rgb, dtype=float)
             scale = np.exp(rng.normal(0.0, self.kappa * mat.sigma_albedo_rel))
             hue = np.exp(rng.normal(0.0, self.kappa * mat.sigma_albedo_rel * 0.2, size=3))
@@ -615,7 +692,8 @@ class SceneSampler:
                 {"class_name": str|None, "region": [x0,x1,y0,y1]|None,
                  "lighting": str|None} — forces the first product's class (its
                 support, if any, follows that class's pose-list rows) and the
-                region of its placement, and scales lighting to the named regime.
+                region of its placement, and scales the light level to the named
+                regime (lighting_scale; an unknown label raises).
         """
         self._check_condition(condition)
         if not 0 <= int(index) < WORD:
@@ -625,7 +703,7 @@ class SceneSampler:
         rng = np.random.default_rng(np.random.SeedSequence([self.seed, int(index)]))
         lighting_condition = (condition or {}).get("lighting")
         camera = self._sample_camera(rng)
-        lights = self._sample_lights(rng, lighting_condition)
+        lights, environment = self._sample_lights(rng, lighting_condition)
         background = self._sample_background(rng)
         objects, taken = self._sample_objects(rng, condition)
         spec = {
@@ -637,6 +715,8 @@ class SceneSampler:
             "sigma_source": self.sigma_source,
             "camera": camera,
             "lights": lights,
+            "environment": environment,
+            "exposure": self._sample_exposure(index),
             "background": background,
             "objects": objects,
             "distractors": self._sample_distractors(rng, taken),

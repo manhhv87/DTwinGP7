@@ -5,11 +5,16 @@ Typed schema for the synthetic-data generator (config/synthgen.yaml).
 
 Encodes the paper's factor table: which rendering factors are ANCHORED
 (distributions centred on the twin's calibrated/measured values, widths
-kappa*sigma) and which are FREE task variables (fully randomized under both
-the anchored and the blind treatment). The blind baseline uses the blind_*
-ranges around the same camera reference, with a different appearance recipe;
-it is not independent of calibration. E5 ablations fix/remove one factor after
-the full anchored draw; their intervention is recorded in scene manifests.
+kappa*sigma) and which are FREE (drawn alike under both the anchored and the
+blind treatment and in every E5 arm). Free are the task variables (product
+poses, counts) and the factors that neither calibration nor measurement pins
+down: the session exposure gain, the luminaire layout and the overhead share of
+the light. The two recipes differ only in the measured factors: camera
+extrinsics, light level and colour around the fitted profile, table and product
+appearance, the blind_* ranges being wider than anchored at every kappa. The
+blind baseline keeps the same camera reference, so it is not independent of
+calibration. E5 ablations fix/remove one factor after the full anchored draw;
+their intervention is recorded in scene manifests.
 
 Pure pydantic + yaml — no heavy imports; testable everywhere.
 """
@@ -24,6 +29,7 @@ __all__ = [
     "BackgroundFactors",
     "CameraFactors",
     "DistractorFactors",
+    "ExposureFactors",
     "FirstObjectMix",
     "LightingFactors",
     "MaterialFactors",
@@ -31,23 +37,25 @@ __all__ = [
     "SynthgenConfig",
 ]
 
-# Multiplier applied to the anchored light intensity when a failure-mode
-# condition requests a specific lighting regime (C3 loop). Labels must match
-# the --lighting labels used when running trials (03_run_experiment.py).
+# Factor on the profile's light level for the lighting label of a failure-mode
+# condition (C3 loop), relative to lighting.anchor_condition, the regime the level
+# was fitted in: a label renders at SCALE[label] / SCALE[anchor_condition]. Labels
+# are the --lighting labels the trials log (03_run_experiment.py).
 #
-# CALIBRATED 12/09/2026, not guessed. The dataset audit measured the mean image
-# brightness of the three real regimes as 1.00 / 0.83 / 0.46 of the bright one
-# over 3524 photographs. Rendering one scene at a ladder of light energies and
-# matching the same statistic gives the energy factors below: the renderer's
-# response is heavily compressive (roughly the fourth root of the energy, because
-# Blender 4.2 tone-maps with AgX), so a factor is nowhere near the brightness
-# ratio it produces. The previous values, 0.6 and 0.3, rendered a "dim" scene
-# about four times brighter than the real dim condition.
+# Only "dim": the hard profile renders the condition that every E3-E5 trial runs in
+# and logs as "dim", so the label maps to the profile itself, and any other label is
+# refused rather than rendered at a guess. The former bright/medium/dim factors
+# 1 / 0.48 / 0.08 were fitted in standard light through Filmic; applied to the hard
+# profile, 0.08 would render the guided arm's upper sheet at a median luma of about 2.
 LIGHTING_CONDITION_SCALE: dict[str, float] = {
-    "bright": 1.0,
-    "medium": 0.48,
-    "dim": 0.08,
+    "dim": 1.0,
 }
+
+
+def _range(value: list[float], name: str, lo: float | None = None) -> None:
+    if len(value) != 2 or not value[0] <= value[1] or (lo is not None and value[0] < lo):
+        raise ValueError(f"{name} must be [low, high] with low <= high"
+                         + ("" if lo is None else f" and low >= {lo}"))
 
 
 class CameraFactors(BaseModel):
@@ -73,45 +81,69 @@ class CameraFactors(BaseModel):
 
 
 class LightingFactors(BaseModel):
-    """Light sources: anchored around the measured cell lighting proxy.
+    """Light of the hard condition: 600 mm area luminaires above the cell and a
+    uniform, tinted overhead (hard_profile.luminaire_lights).
 
-    sigma_intensity_frac is a LOG scale: the anchored power is the reference times
-    exp(eta), so it stays positive at every kappa instead of piling up at a floor.
-
-    The wide-range power is a MULTIPLE of anchor_intensity_w, drawn log-uniformly
-    from blind_intensity_rel_range, so it stays centred on the anchor and wider
-    than it whenever the absolute anchor is refitted. An absolute range in watts
-    did not: set when the anchor was 60 W, it stayed above the 19 W refit.
+    The level is the irradiance at the centre of the card block, anchor_irradiance,
+    fitted on the empty-table frames of the condition check in anchor_condition.
+    MEASURED, so anchored around the profile and wide in the blind recipe: the level
+    (anchored: times exp(eta), eta ~ N(0, (kappa*sigma_intensity_frac)^2); blind: a
+    log-uniform multiple from blind_intensity_rel_range), each luminaire's colour
+    temperature and the overhead's tint. FREE, drawn alike in both recipes and every
+    E5 arm, because no capture fixes them: where the luminaires hang (one beyond the
+    far edge of the table, a second anywhere with extra_luminaire_probability), how
+    the luminaires share their light (Dirichlet) and the overhead share of the
+    irradiance at the cards (log-uniform in overhead_share_range).
     """
 
-    anchor_positions_mm: list[list[float]]
-    anchor_intensity_w: float = 60.0
+    anchor_condition: str = "dim"
+    anchor_irradiance: float
+    reference_point_mm: list[float] = Field(default=[572.7, 20.0])
     anchor_color_temp_k: float = 5000.0
-    sigma_position_mm: float = 150.0
     sigma_intensity_frac: float = 0.20
     sigma_color_temp_k: float = 300.0
-    blind_count_range: list[int] = Field(default=[1, 4])
-    blind_position_box_mm: list[list[float]] = Field(
-        default=[[200.0, 1200.0], [-600.0, 600.0], [800.0, 2000.0]]
-    )
-    blind_intensity_rel_range: list[float] = Field(default=[0.033, 2.7])
+    luminaire_size_mm: list[float] = Field(default=[600.0, 600.0])
+    luminaire_height_mm: list[float] = Field(default=[1700.0, 2000.0])
+    far_luminaire_x_mm: list[float] = Field(default=[1100.0, 2800.0])
+    far_luminaire_y_mm: list[float] = Field(default=[-500.0, 400.0])
+    extra_luminaire_probability: float = 0.5
+    extra_luminaire_x_mm: list[float] = Field(default=[0.0, 2800.0])
+    extra_luminaire_y_mm: list[float] = Field(default=[-1500.0, 1500.0])
+    overhead_share_range: list[float] = Field(default=[0.25, 0.95])
+    overhead_tint_rgb: list[float] = Field(default=[0.886, 1.0, 0.852])
+    sigma_overhead_tint: float = 0.04
+    blind_intensity_rel_range: list[float] = Field(default=[0.111, 9.0])
     blind_color_temp_range_k: list[float] = Field(default=[2500.0, 9000.0])
+    blind_overhead_tint_log: float = 0.5
 
     @model_validator(mode="after")
     def _check(self) -> "LightingFactors":
-        if not self.anchor_positions_mm:
-            raise ValueError("lighting.anchor_positions_mm must not be empty")
-        for p in self.anchor_positions_mm:
-            if len(p) != 3:
-                raise ValueError("each anchor light position must be [x, y, z] mm")
-        if self.anchor_intensity_w <= 0.0:
-            raise ValueError("lighting.anchor_intensity_w must be positive")
+        if self.anchor_condition not in LIGHTING_CONDITION_SCALE:
+            raise ValueError(f"lighting.anchor_condition must be one of "
+                             f"{sorted(LIGHTING_CONDITION_SCALE)}")
+        if self.anchor_irradiance <= 0.0:
+            raise ValueError("lighting.anchor_irradiance must be positive")
+        if len(self.reference_point_mm) != 2:
+            raise ValueError("lighting.reference_point_mm must be [x, y] mm")
+        if len(self.luminaire_size_mm) != 2 or min(self.luminaire_size_mm) <= 0.0:
+            raise ValueError("lighting.luminaire_size_mm must be two positive sides")
+        _range(self.luminaire_height_mm, "lighting.luminaire_height_mm", lo=1.0)
+        for key in ("far_luminaire_x_mm", "far_luminaire_y_mm", "extra_luminaire_x_mm",
+                    "extra_luminaire_y_mm", "blind_color_temp_range_k"):
+            _range(getattr(self, key), f"lighting.{key}")
+        if not 0.0 <= self.extra_luminaire_probability <= 1.0:
+            raise ValueError("lighting.extra_luminaire_probability must lie in [0, 1]")
+        lo, hi = self.overhead_share_range
+        if len(self.overhead_share_range) != 2 or not 0.0 < lo <= hi <= 1.0:
+            raise ValueError("lighting.overhead_share_range must be [low, high] in (0, 1]")
+        if len(self.overhead_tint_rgb) != 3 or min(self.overhead_tint_rgb) <= 0.0:
+            raise ValueError("lighting.overhead_tint_rgb must be three positive values")
         if len(self.blind_intensity_rel_range) != 2:
             raise ValueError("lighting.blind_intensity_rel_range must be [low, high]")
         lo, hi = self.blind_intensity_rel_range
         if not 0.0 < lo < 1.0 < hi:
             raise ValueError("lighting.blind_intensity_rel_range must bracket the anchor: "
-                             "0 < low < 1 < high, in multiples of anchor_intensity_w")
+                             "0 < low < 1 < high, in multiples of anchor_irradiance")
         return self
 
 
@@ -127,11 +159,17 @@ class BackgroundFactors(BaseModel):
 class MaterialFactors(BaseModel):
     """Appearance of ONE product class.
 
-    albedo_rgb and sigma_albedo_rel are MEASURED, not invented: the median colour of
-    that class's human-labelled pixels over the standard-condition images, and the
-    spread of that median across images. roughness and metallic are physical
-    ESTIMATES — they set how the surface reflects, which is what makes the
-    mirror-finish class lose depth on the real sensor.
+    A dielectric class (carton, wood, plastic) has albedo_rgb and sigma_albedo_rel,
+    MEASURED, not invented: the median colour of that class's human-labelled pixels
+    over the standard-condition images, and the spread of that median across images.
+    A metal class (metallic 1) has instead f0_rgb, its PHYSICAL normal reflectance
+    (linear), which the renderer multiplies by render.reflectance_scale like every
+    specular reflectance; sigma_f0_rel is its relative spread at kappa 1,
+    roughness_range the roughness spread at kappa 1, and coat_ior/coat_roughness a
+    clear coat over the metal (the steel box: rough metal under a glossy coat).
+    roughness and metallic are physical ESTIMATES or fits; they set how the surface
+    reflects, which is what makes the mirror-finish class lose depth on the real
+    sensor.
 
     sigma_albedo_rel is RELATIVE (a fraction of the colour), because the measured
     spread is proportional to each channel: the carton's per-channel spread is
@@ -142,21 +180,40 @@ class MaterialFactors(BaseModel):
     the old factor max(0, 1 + eta) rendered 18% of inox boxes black at kappa 2.
     """
 
-    albedo_rgb: list[float]
+    albedo_rgb: list[float] | None = None
     sigma_albedo_rel: float = 0.10
     roughness: float = 0.6
     metallic: float = 0.0
+    f0_rgb: list[float] | None = None
+    sigma_f0_rel: float = 0.0
+    roughness_range: list[float] | None = None
+    coat_ior: float | None = None
+    coat_roughness: float = 0.30
+    sigma_coat_roughness: float = 0.0
 
     @model_validator(mode="after")
     def _check(self) -> "MaterialFactors":
-        if len(self.albedo_rgb) != 3:
-            raise ValueError("albedo_rgb must be [r, g, b]")
-        if not all(0.0 <= c <= 1.0 for c in self.albedo_rgb):
-            raise ValueError("albedo_rgb components must lie in [0, 1]")
-        if self.sigma_albedo_rel < 0.0:
-            raise ValueError("sigma_albedo_rel is a fraction and cannot be negative")
+        if (self.albedo_rgb is None) == (self.f0_rgb is None):
+            raise ValueError("a material has either albedo_rgb (dielectric) or f0_rgb (metal)")
+        colour = self.albedo_rgb if self.f0_rgb is None else self.f0_rgb
+        if len(colour) != 3:
+            raise ValueError("albedo_rgb / f0_rgb must be [r, g, b]")
+        if not all(0.0 <= c <= 1.0 for c in colour):
+            raise ValueError("albedo_rgb / f0_rgb components must lie in [0, 1]")
+        if self.f0_rgb is not None and self.metallic != 1.0:
+            raise ValueError("f0_rgb is the reflectance of a metal: metallic must be 1")
+        if self.sigma_albedo_rel < 0.0 or self.sigma_f0_rel < 0.0 or self.sigma_coat_roughness < 0.0:
+            raise ValueError("spreads cannot be negative")
         if not 0.0 <= self.roughness <= 1.0 or not 0.0 <= self.metallic <= 1.0:
             raise ValueError("roughness and metallic must lie in [0, 1]")
+        if self.roughness_range is not None:
+            _range(self.roughness_range, "roughness_range")
+            if not self.roughness_range[0] <= self.roughness <= self.roughness_range[1]:
+                raise ValueError("roughness_range must contain roughness")
+        if self.coat_ior is not None and self.coat_ior <= 1.0:
+            raise ValueError("coat_ior must exceed 1")
+        if not 0.0 <= self.coat_roughness <= 1.0:
+            raise ValueError("coat_roughness must lie in [0, 1]")
         return self
 
 
@@ -210,7 +267,10 @@ class ObjectFactors(BaseModel):
     materials: dict[str, MaterialFactors] = Field(default_factory=dict)
     sigma_roughness: float = 0.08
     blind_albedo_range: list[float] = Field(default=[0.05, 0.95])
-    blind_roughness_range: list[float] = Field(default=[0.05, 1.0])
+    blind_roughness_range: list[float] = Field(default=[0.02, 1.0])
+    # Blind: share of products drawn with a clear coat (index 1.5, roughness from
+    # blind_roughness_range), so the wide range holds the coated steel box too.
+    blind_coat_probability: float = 0.5
 
     def meshes_of(self, cls: str) -> list[str]:
         meshes = self.classes[cls]
@@ -272,6 +332,27 @@ class DistractorFactors(BaseModel):
     size_range_mm: list[float] = Field(default=[20.0, 80.0])
 
 
+class ExposureFactors(BaseModel):
+    """Session exposure: a sensor gain per scene, log-uniform in gain_range, times
+    the gain at which the profile was fitted (sensor.gain). FREE factor: drawn the
+    same way in both recipes, at every kappa and in every E5 arm.
+
+    gain_range is where both table parts of the profile meet the condition check's
+    luminance bounds, check_luminance (hard_profile.admitted_gain_range, from the
+    profile colours reference_upper_rgb/reference_lower_rgb at gain 1)."""
+
+    gain_range: list[float]
+    check_luminance: list[float] = Field(default=[10.0, 45.0])
+    reference_upper_rgb: list[float]
+    reference_lower_rgb: list[float]
+
+    @model_validator(mode="after")
+    def _check(self) -> "ExposureFactors":
+        if len(self.gain_range) != 2 or not 0.0 < self.gain_range[0] < self.gain_range[1]:
+            raise ValueError("exposure.gain_range must be [lo, hi] with 0 < lo < hi")
+        return self
+
+
 class SynthgenConfig(BaseModel):
     """Root schema of config/synthgen.yaml."""
 
@@ -280,18 +361,7 @@ class SynthgenConfig(BaseModel):
     background: BackgroundFactors
     objects: ObjectFactors
     distractors: DistractorFactors
-
-    @model_validator(mode="after")
-    def _check(self) -> "SynthgenConfig":
-        # The anchored light height is perturbed as a multiple of its height above
-        # the table, which needs that height to be positive; the wide-range box
-        # must not reach the table either.
-        z_table = self.objects.table_z_mm
-        if any(p[2] <= z_table for p in self.lighting.anchor_positions_mm):
-            raise ValueError("lighting.anchor_positions_mm must lie above objects.table_z_mm")
-        if self.lighting.blind_position_box_mm[2][0] <= z_table:
-            raise ValueError("lighting.blind_position_box_mm must lie above objects.table_z_mm")
-        return self
+    exposure: ExposureFactors
 
     @classmethod
     def from_yaml(cls, path: str | Path) -> "SynthgenConfig":

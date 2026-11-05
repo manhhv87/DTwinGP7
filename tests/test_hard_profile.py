@@ -5,8 +5,10 @@ The render side of the synthetic generator, without Blender: the colour conventi
 the sensor model, the hard-condition scene profile and the render manifest.
 
 The renderer itself only runs under `blenderproc run`; these tests cover what it
-takes from src/synthgen/sensor_model.py and src/synthgen/hard_profile.py, plus a
-source check of the placement rule that stacked scenes depend on.
+takes from src/synthgen/sensor_model.py and src/synthgen/hard_profile.py (the
+luminaires and the overhead, the session exposure), plus source checks of the rules
+that cannot run without Blender: the placement of stacked parts, flat shading, the
+reflectance scale and the refusal of specs without an exposure draw.
 """
 from __future__ import annotations
 
@@ -24,7 +26,7 @@ from src.synthgen import sensor_model as sm
 
 ROOT = Path(__file__).resolve().parent.parent
 CONFIG = ROOT / "config" / "synthgen.yaml"
-CLASSES = ["carton", "plastic_box", "wood_box", "metal_box", "inox_box"]
+CLASSES = ["carton", "plastic_box", "wood_box"]     # the dielectric classes: a measured colour
 QUIET = {"gain": 1.0, "white_balance_rgb": [1.0, 1.0, 1.0], "shot_noise": 0.0,
          "read_noise": 0.0, "grain_sigma_px": 0.0}
 
@@ -67,6 +69,18 @@ class TestColourSpace:
         patch = np.broadcast_to(sm.srgb_to_linear(measured) * e_over_pi, (2, 2, 3))
         out = sm.apply_sensor(patch, QUIET, None)[0, 0]
         assert np.abs(out.astype(int) - np.round(measured * 255).astype(int)).max() <= 1
+
+    def test_metals_render_their_physical_f0_times_the_scale(self, raw):
+        """A metal's Base Color is its physical F0 times render.reflectance_scale: the
+        config's albedos sit about 0.46 below physical (bare table 0.305 against 0.66),
+        so an unscaled F0 would be 2.2 times too strong against the diffuse classes."""
+        s = float(raw["render"]["reflectance_scale"])
+        assert s == pytest.approx(0.305 / (0.85 / 1.29), abs=0.01)
+        mats = raw["objects"]["materials"]
+        assert mats["inox_box"]["f0_rgb"][0] * s == pytest.approx(0.262, abs=0.002)
+        assert mats["metal_box"]["f0_rgb"][0] * s == pytest.approx(0.156, abs=0.002)
+        table = float(sm.srgb_to_linear(raw["background"]["standard_table_rgb"]) @ sm.LUMINANCE_709)
+        assert table == pytest.approx(0.305, abs=0.005)
 
     def test_the_old_bug_would_fail(self, raw):
         # Writing the sRGB value into Base Color as if it were linear: plastic came out
@@ -154,6 +168,58 @@ class TestSensorModel:
         std = sm.highpass_noise_std(sm.luma601(img))
         assert 1.4 < std < 2.6
 
+    def test_exposure_gain_is_a_gain(self):
+        """exposure_gain multiplies sensor.gain: signal and noise alike."""
+        sensor = {**QUIET, "shot_noise": 2e-4, "read_noise": 1e-6, "gain": 1.0}
+        y = np.full((100, 100, 3), 0.03, np.float32)
+        for g in (0.43, 2.9):
+            a = sm.apply_sensor(y, sensor, np.random.default_rng(7), exposure_gain=g)
+            b = sm.apply_sensor(y, {**sensor, "gain": g}, np.random.default_rng(7))
+            assert np.array_equal(a, b)
+        with pytest.raises(ValueError, match="exposure_gain"):
+            sm.apply_sensor(y, sensor, None, exposure_gain=0.0)
+
+    def test_admitted_gain_range_is_the_configured_one(self, cfg, raw):
+        """exposure.gain_range is where both table parts of the profile meet the
+        check's luminance bounds; it has to be redone after every profile fit."""
+        e = raw["exposure"]
+        lo, hi = hp.admitted_gain_range(cfg["sensor"], e["reference_upper_rgb"],
+                                        e["reference_lower_rgb"], e["check_luminance"])
+        assert lo == pytest.approx(e["gain_range"][0], rel=0.02)
+        assert hi == pytest.approx(e["gain_range"][1], rel=0.02)
+
+
+class TestLuminaires:
+    REF = [572.7, 20.0, 593.9]
+
+    def test_a_panel_over_the_whole_sky_gives_pi(self):
+        assert hp.panel_irradiance_factor([0, 0, 1000], [1e6, 1e6], [0, 0, 0], n=2000) == \
+            pytest.approx(np.pi, rel=1e-3)
+        far = hp.panel_irradiance_factor([1950, -50, 2443.9], [600, 600], self.REF)
+        d2 = (1950 - 572.7) ** 2 + (-50 - 20) ** 2 + 1850 ** 2
+        assert far == pytest.approx(1850 ** 2 / d2 ** 2 * 360000, rel=0.01)   # small-source limit
+        with pytest.raises(ValueError):
+            hp.panel_irradiance_factor([0, 0, 500], [600, 600], self.REF)
+
+    def test_power_is_pi_area_radiance(self):
+        # Checked on the reference render of the profile fit: an albedo-1 card lit to
+        # irradiance 1 rendered at 0.9996 / pi.
+        assert hp.area_light_power(2.0, [600, 600]) == pytest.approx(np.pi * 2.0 * 0.36)
+
+    def test_lights_give_the_level_and_share(self):
+        centres = [[2000.0, 100.0, 2500.0], [300.0, -900.0, 2400.0]]
+        lights, env = hp.luminaire_lights(centres, [0.3, 0.7], 0.4, 1.5, [5000.0, 4000.0],
+                                          [0.886, 1.0, 0.852], [600.0, 600.0], self.REF)
+        e_lamps = sum(li["energy_w"] / (np.pi * 0.36) * hp.panel_irradiance_factor(
+            li["position_mm"], li["size_mm"], self.REF) for li in lights)
+        e_over = np.pi * float(sm.LUMINANCE_709 @ np.asarray(env["radiance_rgb"]))
+        assert e_lamps + e_over == pytest.approx(1.5)
+        assert e_over / 1.5 == pytest.approx(0.4) and env["overhead_share"] == 0.4
+        rgb = np.asarray(env["radiance_rgb"])
+        assert rgb / rgb[1] == pytest.approx([0.886, 1.0, 0.852])
+        assert [li["irradiance_share"] for li in lights] == [0.3, 0.7]
+        assert all(li["type"] == "area" for li in lights)
+
 
 class TestProfile:
     def test_render_settings(self, cfg):
@@ -165,6 +231,8 @@ class TestProfile:
         for change in (lambda d: d.pop("hard_profile"),
                        lambda d: d["render"].update(view_transform="Filmic"),
                        lambda d: d["render"].update(max_bounces=2),
+                       lambda d: d["render"].update(reflectance_scale=0.0),
+                       lambda d: d["render"].pop("reflectance_scale"),
                        lambda d: d["hard_profile"]["cards"].update(albedo_rgb=[1.5, 0.0, 0.0])):
             d = copy.deepcopy(raw)
             change(d)
@@ -272,13 +340,50 @@ def _renderer_calls(name: str) -> list[ast.Call]:
             and (getattr(n.func, "id", None) == name or getattr(n.func, "attr", None) == name)]
 
 
+def _renderer_source() -> str:
+    return (ROOT / "src" / "synthgen" / "render_blenderproc.py").read_text(encoding="utf-8")
+
+
+def _shader_values(socket: str) -> list[str]:
+    return [ast.unparse(c.args[1]) for c in _renderer_calls("set_principled_shader_value")
+            if isinstance(c.args[0], ast.Constant) and c.args[0].value == socket]
+
+
 def test_renderer_linearises_every_base_colour():
-    """Every Base Color the renderer sets goes through srgb_to_linear (source check)."""
-    calls = [c for c in _renderer_calls("set_principled_shader_value")
-             if isinstance(c.args[0], ast.Constant) and c.args[0].value == "Base Color"]
+    """Every Base Color the renderer sets goes through srgb_to_linear, except a metal's
+    physical F0, which is linear already and scaled by render.reflectance_scale
+    (source check)."""
+    calls = _shader_values("Base Color")
     assert len(calls) == 3           # static elements, workpieces, distractors
-    for call in calls:
-        assert "srgb_to_linear" in ast.unparse(call.args[1])
+    direct = [c for c in calls if "srgb_to_linear" in c]
+    assert len(direct) == 2 and calls[1] == "base + [1.0]"
+    src = _renderer_source()
+    assert 'base = [float(v) * reflectance_scale for v in ms["f0_rgb"]]' in src
+    assert 'base = [float(v) for v in sm.srgb_to_linear(ms["albedo_rgb"])]' in src
+
+
+def test_renderer_scales_every_physical_specular_reflectance():
+    """Dielectric specular (workpieces and distractors) and the clear coat's weight
+    carry render.reflectance_scale; the static elements stay pure Lambertian."""
+    levels = _shader_values("Specular IOR Level")
+    assert levels.count("DIELECTRIC_SPECULAR_LEVEL * reflectance_scale") == 2
+    assert levels.count("0.0") == 1
+    assert _shader_values("Coat Weight") == ["reflectance_scale"]
+
+
+def test_renderer_shades_parts_flat_and_lights_with_luminaires():
+    src = _renderer_source()
+    assert "poly.use_smooth = False" in src
+    assert 'light.set_type("AREA")' in src and 'light.set_type("POINT")' not in src
+    assert 'environment["radiance_rgb"]' in src
+
+
+def test_renderer_applies_the_exposure_and_refuses_specs_without_it():
+    src = _renderer_source()
+    calls = [ast.unparse(c) for c in _renderer_calls("apply_sensor")]
+    assert calls == ["sm.apply_sensor(linear, cfg['sensor'], noise_rng, exposure_gain=exposure_gain)"]
+    assert 'spec.get("mode") != "reference" and (exposure is None or environment is None)' in src
+    assert "no exposure draw" in src
 
 
 def test_renderer_places_every_part_at_its_spec_height():

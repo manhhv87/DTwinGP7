@@ -40,9 +40,18 @@ Design notes:
   - The scene is the hard condition of the trials (hard_profile.py): green sheet in
     two parts split by the black strip, the 21 cards, the cell around the table's
     edges. The spec's background albedo is the upper sheet's colour.
+  - Light: the spec's area luminaires (600 mm panels above the cell) and its uniform
+    overhead (spec environment.radiance_rgb, the world), as the sampler drew them
+    (hard_profile.luminaire_lights).
+  - Reflectances: a dielectric's Base Color is its albedo in the units of the config
+    (the bare standard table is 0.305 linear), about 0.46 of physical. Every PHYSICAL
+    specular reflectance is multiplied by render.reflectance_scale to match: a
+    metal's f0_rgb, the dielectric specular (Specular IOR Level 0.5, F0 0.04) and a
+    clear coat's weight.
   - Cycles renders scene-linear EXR; sensor_model.apply_sensor then applies white
-    balance, gain, Poisson-Gaussian noise and the sRGB curve (Blender's "Standard"
-    view, no tone mapping) in numpy.
+    balance, the gain (sensor.gain times the scene's exposure gain), Poisson-Gaussian
+    noise and the sRGB curve (Blender's "Standard" view, no tone mapping) in numpy.
+    A spec without an exposure draw (spec_version < 3) is refused.
   - Meshes are placed so their bounding-box bottom rests at the spec height
     xyz_mm[2]: the table top, or the top of the part underneath for a stack (STL
     origins are arbitrary).
@@ -62,6 +71,9 @@ MM = 1e-3  # mm → m
 # Per-frame noise stream: drawn from (spec seed, scene index, this tag), so the
 # sensor noise of a frame is reproducible yet independent of the sampler's draws.
 NOISE_STREAM_TAG = 0x5E45
+# Specular IOR Level of a dielectric: 0.5 leaves the F0 of its IOR (1.5: 0.04),
+# before render.reflectance_scale.
+DIELECTRIC_SPECULAR_LEVEL = 0.5
 
 
 def _cv_to_blender_cam(T_cv_m: np.ndarray) -> np.ndarray:
@@ -190,10 +202,8 @@ def main() -> int:
     # view transform is set to Standard as well so that no tone curve hides anywhere.
     bproc.renderer.set_output_format(file_format="OPEN_EXR", color_depth=32,
                                      view_transform=rcfg["view_transform"])
-    # The room around the cell: what the mirror-finish box reflects, and the light
-    # the room's walls and ceiling send back onto the scene.
-    world = [float(v) for v in cfg["hard_profile"]["environment"]["world_radiance_rgb"]]
-    bproc.renderer.set_world_background(world, strength=1.0)
+    # Physical specular reflectances in the albedo units of the config (see __doc__).
+    reflectance_scale = float(rcfg["reflectance_scale"])
     render_settings = {
         "samples": samples,
         "denoiser": rcfg["denoiser"],
@@ -204,6 +214,7 @@ def main() -> int:
         "transmission_bounces": int(rcfg["transmission_bounces"]),
         "transparent_max_bounces": int(rcfg["transparent_max_bounces"]),
         "view_transform": rcfg["view_transform"],
+        "reflectance_scale": reflectance_scale,
         "output": "OPEN_EXR 32-bit scene-linear, then sensor_model.apply_sensor",
     }
     blender_version = str(bpy.app.version_string)
@@ -235,6 +246,12 @@ def main() -> int:
         new = [o for o in bpy.data.objects if o not in before]
         if not new:
             raise RuntimeError(f"STL import produced no object: {path}")
+        # Blender 4.2's STL importer shades every face smooth. A box of 12 triangles
+        # shares 8 vertices, so the interpolated normals bend each face like a pillow:
+        # the mirror top of the stainless case became a convex mirror that shrank a
+        # 600 mm luminaire to a dot. The parts are flat-faced boxes.
+        for poly in new[0].data.polygons:
+            poly.use_smooth = False
         return bproc.python.types.MeshObjectUtility.MeshObject(new[0])
 
     def place_on_surface(obj, z_support_m: float) -> None:
@@ -262,11 +279,40 @@ def main() -> int:
         mat.set_principled_shader_value("Specular IOR Level", 0.0)
         return mat
 
+    def product_material(name: str, ms: dict):
+        """Principled material of a workpiece: a metal's physical F0 (f0_rgb, linear)
+        or a dielectric's albedo (albedo_rgb, sRGB-encoded) as Base Color, the
+        dielectric specular and a clear coat, every physical reflectance times
+        render.reflectance_scale."""
+        mat = bproc.material.create(name)
+        if "f0_rgb" in ms:
+            base = [float(v) * reflectance_scale for v in ms["f0_rgb"]]
+        else:
+            base = [float(v) for v in sm.srgb_to_linear(ms["albedo_rgb"])]
+        mat.set_principled_shader_value("Base Color", base + [1.0])
+        mat.set_principled_shader_value("Roughness", float(ms["roughness"]))
+        mat.set_principled_shader_value("Metallic", float(ms["metallic"]))
+        mat.set_principled_shader_value("Specular IOR Level",
+                                        DIELECTRIC_SPECULAR_LEVEL * reflectance_scale)
+        if "coat_ior" in ms:
+            mat.set_principled_shader_value("Coat Weight", reflectance_scale)
+            mat.set_principled_shader_value("Coat Roughness", float(ms["coat_roughness"]))
+            mat.set_principled_shader_value("Coat IOR", float(ms["coat_ior"]))
+        return mat
+
     rendered: list[str] = []
     for spec_path in spec_files:
         with spec_path.open("r", encoding="utf-8") as f:
             spec = json.load(f)
         idx = int(spec["index"])
+        # Only the profile fit's reference render (mode "reference") goes without a
+        # session exposure and an overhead; a sampled spec without them predates
+        # spec_version 3 and would render at a fixed exposure in the old light.
+        exposure, environment = spec.get("exposure"), spec.get("environment")
+        if spec.get("mode") != "reference" and (exposure is None or environment is None):
+            raise ValueError(f"{spec_path.name}: no exposure draw or environment "
+                             f"(spec_version {spec.get('spec_version')}); regenerate the specs")
+        exposure_gain = 1.0 if exposure is None else float(exposure["gain"])
         bproc.utility.reset_keyframes()
         # Full scene rebuild per spec keeps specs independent (slower but simple;
         # optimise later by caching meshes if render throughput becomes the bottleneck).
@@ -311,12 +357,7 @@ def main() -> int:
             # sampler drew: an STL carries no material of its own.
             ms = obj_spec.get("material")
             if ms:
-                omat = bproc.material.create(f"mat_{idx}_{obj_spec['class_name']}")
-                omat.set_principled_shader_value(
-                    "Base Color", [float(v) for v in sm.srgb_to_linear(ms["albedo_rgb"])] + [1.0])
-                omat.set_principled_shader_value("Roughness", float(ms["roughness"]))
-                omat.set_principled_shader_value("Metallic", float(ms["metallic"]))
-                mesh.replace_materials(omat)
+                mesh.replace_materials(product_material(f"mat_{idx}_{obj_spec['class_name']}", ms))
 
         # ── Distractors (never labelled: class id stays -1) ──
         for d in spec.get("distractors", []):
@@ -329,16 +370,26 @@ def main() -> int:
             dmat = bproc.material.create(f"distractor_{idx}")
             dmat.set_principled_shader_value(
                 "Base Color", [float(v) for v in sm.srgb_to_linear(d["albedo_rgb"])] + [1.0])
+            dmat.set_principled_shader_value("Specular IOR Level",
+                                             DIELECTRIC_SPECULAR_LEVEL * reflectance_scale)
             prim.replace_materials(dmat)
             prim.set_cp("custom_class_id", -1)
 
-        # ── Lights ──
+        # ── Light: area luminaires (facing down, Blender's default) and the overhead ──
         for li in spec["lights"]:
+            if li.get("type") != "area":
+                raise ValueError(f"{spec_path.name}: light type {li.get('type')!r}; the hard "
+                                 "profile renders area luminaires only")
             light = bproc.types.Light()
-            light.set_type("POINT")
+            light.set_type("AREA")
+            light.blender_obj.data.shape = "RECTANGLE"
+            light.blender_obj.data.size = float(li["size_mm"][0]) * MM
+            light.blender_obj.data.size_y = float(li["size_mm"][1]) * MM
             light.set_location(np.asarray(li["position_mm"], dtype=float) * MM)
             light.set_energy(float(li["energy_w"]))
             light.set_color([float(v) for v in sm.light_rgb(li["color_temp_k"], cfg["white_k"])])
+        world = [0.0, 0.0, 0.0] if environment is None else environment["radiance_rgb"]
+        bproc.renderer.set_world_background([float(v) for v in world], strength=1.0)
 
         # ── Camera (OpenCV convention in spec → Blender) ──
         cam = spec["camera"]
@@ -370,7 +421,7 @@ def main() -> int:
             if cls >= 0:
                 instances[int(attr["idx"])] = cls
         noise_rng = np.random.default_rng([int(spec.get("seed", 0)), idx, NOISE_STREAM_TAG])
-        rgb = sm.apply_sensor(linear, cfg["sensor"], noise_rng)
+        rgb = sm.apply_sensor(linear, cfg["sensor"], noise_rng, exposure_gain=exposure_gain)
 
         stem = f"frame_{idx:06d}"
         Image.fromarray(rgb).save(out_dir / f"{stem}_rgb.png")
@@ -379,7 +430,7 @@ def main() -> int:
             np.save(out_dir / f"{stem}_linear.npy", linear)
         with (out_dir / f"{stem}_meta.json").open("w", encoding="utf-8") as f:
             json.dump({"instances": {str(k): v for k, v in instances.items()},
-                       "scene": spec_path.name}, f, indent=2)
+                       "scene": spec_path.name, "exposure_gain": exposure_gain}, f, indent=2)
         # A scene holding more lights or meshes than its spec asked for means the
         # per-scene reset leaked, and every later frame is lit by the frames before
         # it. That went unnoticed once already, so it stops the run now.

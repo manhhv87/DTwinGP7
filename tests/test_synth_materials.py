@@ -52,13 +52,19 @@ class TestShippedConfig:
         assert mats["inox_box"].metallic == 1.0
         assert mats["inox_box"].roughness == min(m.roughness for m in mats.values())
 
-    def test_measured_spread_is_widest_for_the_mirror_class(self, config):
-        # The mirror finish reflects its surroundings, so its measured colour varies
-        # far more between images than any matte class does.
+    def test_metals_carry_a_physical_reflectance(self, config):
+        # The image colour of a metal is its surroundings, not its reflectance: the
+        # two metal classes carry a physical F0 (the metal study's fit), the dielectric
+        # ones their measured colour.
         mats = config.objects.materials
-        widest = max(m.sigma_albedo_rel for m in mats.values())
-        assert mats["inox_box"].sigma_albedo_rel == widest
-        assert mats["inox_box"].sigma_albedo_rel > 3 * mats["carton"].sigma_albedo_rel
+        inox, metal = mats["inox_box"], mats["metal_box"]
+        assert inox.f0_rgb == [0.57] * 3 and inox.albedo_rgb is None and inox.coat_ior is None
+        assert inox.roughness == 0.05 and inox.roughness_range == [0.02, 0.10]
+        assert metal.f0_rgb == [0.34] * 3 and metal.roughness == 0.9 and metal.coat_ior == 1.5
+        assert metal.coat_roughness == 0.30 and metal.sigma_coat_roughness == 0.05
+        assert inox.sigma_f0_rel == pytest.approx(0.03 / 0.57, abs=1e-3) and metal.sigma_f0_rel == 0.15
+        for cls in ("carton", "plastic_box", "wood_box"):
+            assert mats[cls].albedo_rgb is not None and mats[cls].f0_rgb is None
 
     def test_carton_is_brown_and_plastic_is_blue(self, config):
         r, g, b = config.objects.materials["carton"].albedo_rgb
@@ -95,10 +101,39 @@ class TestAnchoredSampling:
     def test_brightness_spread_tracks_the_measurement(self, config):
         s = SceneSampler(config, T_BC, mode="anchored", kappa=1.0, seed=4)
         per: dict[str, list[float]] = {}
-        for cls, mat in materials_in(s, n=220):
-            per.setdefault(cls, []).append(float(np.mean(mat["albedo_rgb"])))
+        for cls, mat in materials_in(s, n=400):
+            if "albedo_rgb" in mat:
+                per.setdefault(cls, []).append(float(np.mean(mat["albedo_rgb"])))
         rel = {c: float(np.std(v) / np.mean(v)) for c, v in per.items() if len(v) > 20}
-        assert rel["inox_box"] > 2 * rel["carton"]
+        assert rel["plastic_box"] > 2 * rel["carton"]       # 0.33 against 0.10 measured
+
+    @pytest.mark.parametrize("kappa", [1.0, 4.0])
+    def test_metal_draws_spread_about_the_fit(self, config, kappa):
+        """F0 times exp(N(0, (kappa*sigma_f0_rel)^2)), roughness over kappa times the
+        roughness range about the fitted value, coat roughness N(0.30, (kappa*0.05)^2)."""
+        s = SceneSampler(config, T_BC, mode="anchored", kappa=kappa, seed=8)
+        got: dict[str, list[dict]] = {"inox_box": [], "metal_box": []}
+        for cls in got:
+            cond = {"class_name": cls, "region": None, "lighting": None}
+            got[cls] = [s.sample(i, condition=cond)["objects"][0]["material"] for i in range(400)]
+        for cls, mats in got.items():
+            m = config.objects.materials[cls]
+            f0 = np.array([g["f0_rgb"] for g in mats])
+            assert np.all(f0[:, 0] == f0[:, 2])                     # grey: one factor
+            log = np.log(f0[:, 1] / m.f0_rgb[1])
+            assert abs(float(np.median(log))) < 0.03 * kappa
+            assert float(log.std()) == pytest.approx(kappa * m.sigma_f0_rel, rel=0.15)
+            rough = np.array([g["roughness"] for g in mats])
+            lo, hi = m.roughness_range
+            assert rough.min() >= max(0.02, m.roughness + kappa * (lo - m.roughness)) - 1e-9
+            assert rough.max() <= min(1.0, m.roughness + kappa * (hi - m.roughness)) + 1e-9
+            assert all(g["metallic"] == 1.0 and "albedo_rgb" not in g for g in mats)
+        coat = np.array([g["coat_roughness"] for g in got["metal_box"]])
+        assert all(g["coat_ior"] == 1.5 for g in got["metal_box"])
+        assert not any("coat_ior" in g for g in got["inox_box"])
+        if kappa == 1.0:
+            assert float(coat.mean()) == pytest.approx(0.30, abs=0.01)
+            assert float(coat.std()) == pytest.approx(0.05, rel=0.15)
 
     def test_reflectance_follows_the_class(self, config):
         s = SceneSampler(config, T_BC, mode="anchored", kappa=2.0, seed=2)
@@ -111,7 +146,7 @@ class TestAnchoredSampling:
             s = SceneSampler(config, T_BC, mode="anchored", kappa=k, seed=3)
             per = {}
             for cls, mat in materials_in(s, n=80):
-                per.setdefault(cls, []).append(mat["albedo_rgb"])
+                per.setdefault(cls, []).append(mat.get("albedo_rgb", mat.get("f0_rgb")))
             return float(np.mean([np.std(np.asarray(v)) for v in per.values()]))
         assert spread(4.0) > spread(1.0)
 
@@ -127,6 +162,18 @@ class TestBlindSampling:
         s = SceneSampler(config, T_BC, mode="blind", seed=6)
         mats = materials_in(s, n=60)
         assert len({round(m["metallic"], 3) for _, m in mats}) > 5
+
+    def test_wider_than_the_anchored_metals(self, config):
+        # Roughness over 0.02-1 holds the inox (0.02-0.10 at kappa 1) and the rough
+        # steel (0.8-1.0); half the products get a clear coat, so the coated steel box
+        # is inside the wide range too.
+        s = SceneSampler(config, T_BC, mode="blind", seed=9)
+        mats = [m for _, m in materials_in(s, n=300)]
+        rough = np.array([m["roughness"] for m in mats])
+        assert rough.min() < 0.06 and rough.max() > 0.97
+        coated = [m for m in mats if "coat_ior" in m]
+        assert abs(len(coated) / len(mats) - config.objects.blind_coat_probability) < 0.08
+        assert all(m["coat_ior"] == 1.5 and 0.02 <= m["coat_roughness"] <= 1.0 for m in coated)
 
 
 class TestBackgroundColour:
@@ -178,6 +225,11 @@ class TestValidation:
         {"albedo_rgb": [0.4, 0.3, 0.2], "roughness": 1.5},
         {"albedo_rgb": [0.4, 0.3, 0.2], "metallic": -0.1},
         {"albedo_rgb": [0.4, 0.3, 0.2], "sigma_albedo_rel": -0.05},
+        {},
+        {"albedo_rgb": [0.4, 0.3, 0.2], "f0_rgb": [0.5, 0.5, 0.5], "metallic": 1.0},
+        {"f0_rgb": [0.5, 0.5, 0.5], "metallic": 0.5},
+        {"f0_rgb": [0.5, 0.5, 0.5], "metallic": 1.0, "roughness": 0.5, "roughness_range": [0.6, 0.9]},
+        {"f0_rgb": [0.5, 0.5, 0.5], "metallic": 1.0, "coat_ior": 0.9},
     ])
     def test_bad_material_rejected(self, bad):
         with pytest.raises(ValidationError):

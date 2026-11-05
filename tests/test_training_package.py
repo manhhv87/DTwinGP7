@@ -279,6 +279,49 @@ def test_e4_arms_are_checked_against_each_other(real: Path, runner: Path, tmp_pa
         build_package(real, [initial], tmp_path / "x", experiment="E3", version=1, arm="loop", inspect_only=True)
 
 
+RENDERED = {"manifest_version": 1, "blender_version": "4.2.1 LTS", "blenderproc_version": "2.8.0",
+            "device": "GPU:OPTIX", "render": {"samples": 24, "reflectance_scale": 0.46},
+            "profile_sha256": "a" * 64, "frames": ["frame_000000"]}
+
+
+def rendered(dataset: Path, **change: object) -> Path:
+    """The render manifest auto_label copies into a dataset, optionally changed."""
+    (dataset / "render_manifest.json").write_text(json.dumps({**RENDERED, **change}), encoding="utf-8")
+    return dataset
+
+
+def test_synthetic_sources_must_be_rendered_alike(real: Path, tmp_path: Path) -> None:
+    a = rendered(make_source(tmp_path / "anchored_k2", synthetic=True))
+    b = rendered(make_source(tmp_path / "blind", synthetic=True))
+    loose = make_source(tmp_path / "loose", synthetic=True)
+    other_samples = rendered(make_source(tmp_path / "samples64", synthetic=True),
+                             render={"samples": 64, "reflectance_scale": 0.46})
+    other_profile = rendered(make_source(tmp_path / "old_profile", synthetic=True),
+                             profile_sha256="b" * 64)
+    with pytest.raises(ValueError, match="synth02.*rendered differently.*render"):
+        inspect_sources(real, [a, other_samples])
+    with pytest.raises(ValueError, match="profile_sha256"):
+        inspect_sources(real, [a, other_profile])
+    inspected = inspect_sources(real, [a, b, loose])
+    check = inspected["render_check"]
+    assert check["checked"] == ["synth01", "synth02"] and check["unchecked"] == ["synth03"]
+    assert inspected["sources"][1]["render"]["device"] == "GPU:OPTIX"
+    assert inspected["sources"][3]["render"] is None
+
+
+def test_e4_arms_must_be_rendered_alike(real: Path, runner: Path, tmp_path: Path, f0) -> None:
+    parent_package, initial, parent = f0
+    loop1 = rendered(make_source(tmp_path / "loop1", synthetic=True))
+    control1 = rendered(make_source(tmp_path / "control1", synthetic=True), device="CPU")
+    loop_package = tmp_path / "loop_u1"
+    build_package(real, [initial, loop1], loop_package, experiment="E4", version=1, model=parent, epochs=30,
+                  parent_package=parent_package, arm="loop", runner_source=runner)
+    with pytest.raises(ValueError, match="rendered differently.*device"):
+        build_package(real, [initial, control1], tmp_path / "x", experiment="E4", version=1, model=parent,
+                      epochs=30, parent_package=parent_package, arm="control", paired_package=loop_package,
+                      inspect_only=True)
+
+
 def make_batch(tmp_path: Path, name: str, seed: int, indices: range, spec_version: int = 2) -> Path:
     """A generated batch as 20_generate_synth.py lays it out: specs/ beside dataset/."""
     dataset = tmp_path / name / "dataset"

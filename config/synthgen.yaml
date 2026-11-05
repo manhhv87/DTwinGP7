@@ -8,8 +8,13 @@
 #     độ rộng = κ·σ. σ ưu tiên lấy từ config/calibration/T_base_camera_sigma.json
 #     (bootstrap — scripts/02_run_calibration.py --bootstrap 200); các giá trị
 #     sigma_* dưới đây chỉ là FALLBACK khi chưa có file đó.
-#   - Factor "free" (biến nhiệm vụ: pose vật, số vật): randomize toàn dải
-#     ở CẢ hai chế độ anchored lẫn blind.
+#   - Factor "free": rút NHƯ NHAU ở CẢ hai chế độ anchored lẫn blind, ở mọi κ và mọi nhánh
+#     E5. Gồm biến nhiệm vụ (pose vật, số vật) và các factor mà hiệu chuẩn lẫn phép đo
+#     không chốt được, rút trong biên vật lý hoặc biên được bước kiểm chấp nhận: độ lợi phơi
+#     sáng (mục exposure), chỗ treo đèn, cách các đèn chia ánh sáng và phần ánh sáng của nền
+#     trên cao (mục lighting).
+#   - Hai recipe CHỈ khác nhau ở factor đo được: extrinsic (và nội tại) camera, mức sáng và màu
+#     đèn quanh profile khớp, màu bàn, diện mạo vật; wide-range rộng hơn anchored ở mọi κ.
 #   - Chế độ --mode blind: biên rộng cố định ở các khóa blind_* và recipe vật liệu
 #     khác; vẫn dùng CÙNG camera reference T_BC và intrinsics. Vì vậy đây không phải
 #     đối chứng độc lập với calibration hoặc chỉ khác một nguồn uncertainty.
@@ -38,48 +43,67 @@ camera:
   blind_intrinsics_px: 30.0
 
 lighting:
-  # VỊ TRÍ vẫn là [MEASURE]: proxy 2 nguồn sáng trần phía trên bàn, chưa đo thật.
-  anchor_positions_mm:
-    - [700.0, -300.0, 1800.0]
-    - [700.0, 300.0, 1800.0]
-  # CÔNG SUẤT mỗi đèn của ĐIỀU KIỆN KHÓ (đèn dịu, mọi lượt E3-E5), khớp ngày 05/11/2026
-  # bằng scripts/fit_hard_profile.py: ảnh render bàn trống (màu tuyến tính, view Standard)
-  # cho độ sáng thẻ của bước kiểm điều kiện (trung vị luma các ô 32 px vùng thẻ) bằng
-  # trung bình hai buổi e2kho-1 (90,4) và e2kho-2 (104,0) lấy trong ánh sáng tuyến tính,
-  # 97,5. Thẻ mang albedo nối với thang màu vật (background.standard_table_rgb). Cả hai
-  # recipe theo số này: anchored rút quanh nó, wide-range nhân nó với
-  # blind_intensity_rel_range (nhánh sampler).
-  # Số cũ 19 W khớp ngày 12/09/2026 với bàn xám trần ở điều kiện chuẩn, qua Filmic và màu
-  # sRGB đưa thẳng vào Base Color: không so được với số này.
-  # ⚠ Con số này gắn với VỊ TRÍ đèn giả định ở trên. Đo được vị trí đèn thật thì phải
-  #   suy lại công suất, vì độ rọi phụ thuộc khoảng cách.
-  # ⚠ D455 chụp dataset ở chế độ TỰ ĐỘNG phơi sáng (không chỗ nào trong repo đặt exposure).
-  #   Nên đây là khớp với thứ CAMERA XUẤT RA, không phải với độ rọi thật tính bằng lux.
-  #   Với dữ liệu huấn luyện thì khớp như vậy mới đúng, vì detector nhìn ảnh camera. Nhưng
-  #   nhớ rằng điều kiện thiếu sáng ngoài đời TỐI HƠN tỉ lệ 0,46 đo trên ảnh, do camera đã
-  #   tự bù một phần.
-  anchor_intensity_w: 11.15
+  # Ánh sáng của ĐIỀU KIỆN KHÓ (mọi lượt E3-E5): các đèn tấm 600 mm phía trên cell (đèn vùng của
+  # Blender, mặt gương thấy được) cộng một nền trên cao đồng đều có tông màu (world của Blender);
+  # hard_profile.luminaire_lights dựng chúng. Mô hình lấy từ mặt gương hộp inox trên ảnh train
+  # (118 lần xuất hiện, ánh sáng chuẩn): một đèn bão hòa có cỡ góc của tấm 600 x 630 mm ở 1850 mm
+  # trên bàn; phần trên cao ngoài đèn sáng 0,27 lần mặt bàn, tông (0,886, 1, 0,852). Ở điều kiện
+  # khó các đèn trên cell tắt: vạch đen không phản chiếu đèn nào, gương inox không bao giờ bão
+  # hòa, phần bàn xa sáng hơn vùng thẻ 1,5-1,8 lần (chuẩn 0,6-0,9), nên nguồn còn lại ở phía xa
+  # bàn. Vị trí của nó và phần ánh sáng của nền trên cao KHÔNG đo được từ ảnh có sẵn (báo cáo
+  # nghiên cứu kim loại 05/11/2026).
+  #
+  # Factor ĐO ĐƯỢC, anchored quanh profile và wide-range rộng hơn ở MỌI κ: mức sáng, màu đèn, tông
+  # nền trên cao. Factor TỰ DO, rút như nhau ở hai recipe, mọi κ và mọi nhánh E5 (kể cả nhánh
+  # illumination), vì không phép đo nào chốt được chúng: chỗ treo đèn, cách các đèn chia ánh
+  # sáng, phần ánh sáng của nền trên cao (cùng độ lợi phơi sáng, mục exposure). Nhánh E5
+  # illumination chỉ cố định mức sáng và màu ở profile.
+  #
+  # Điều kiện mà mức sáng được khớp: nhãn --lighting của lượt thử (mọi lượt E3-E5 ghi dim).
+  # Nhãn khác bị từ chối (anchored_config.LIGHTING_CONDITION_SCALE chỉ có dim).
+  anchor_condition: dim
+  # MỨC SÁNG: độ rọi (trọng số độ chói, đơn vị render) tại tâm khối thẻ reference_point_mm trên mặt
+  # bàn; nền trên cao mang một phần, các đèn phần còn lại. KHỚP ngày 05/11/2026 bằng scripts/
+  # fit_hard_profile.py ở bố trí danh định (một đèn ở giữa các khoảng dưới, x 1950, y -50, cao
+  # 1850 mm; phần trên cao 0,487, trung bình nhân của khoảng): ảnh render bàn trống cho độ sáng
+  # thẻ của bước kiểm điều kiện (trung vị luma các ô 32 px vùng thẻ) bằng trung bình hai buổi
+  # e2kho-1 (90,4) và e2kho-2 (104,0) lấy trong ánh sáng tuyến tính, 97,5. Thẻ mang albedo nối với
+  # thang màu vật (background.standard_table_rgb).
+  # Số cũ 11,15 W mỗi đèn điểm (hai đèn proxy ở 1800 mm): mô hình khác, không so được.
+  # ⚠ D455 chụp ở chế độ TỰ ĐỘNG phơi sáng: đây là khớp với thứ camera xuất ra ở trạng thái của
+  #   bước kiểm (sensor.gain = 1), không phải độ rọi thật tính bằng lux.
+  anchor_irradiance: 1.0707
+  reference_point_mm: [572.7, 20.0]
   anchor_color_temp_k: 5000.0
-  # Anchored: công suất = tham chiếu × exp(η), η ~ N(0, (κ·0,20)²), nên luôn dương, không
-  # dồn về một mức sàn (số cũ 1 + η cắt ở 1 W: 23% cảnh có đèn ở sàn khi κ = 4). Độ cao đèn
-  # trên mặt bàn h = h* × exp(δ/h*), δ ~ N(0, (κ·150)²): gần tâm vẫn lệch chuẩn κ·150 mm,
-  # nhưng không κ nào đưa đèn xuống bàn (số cũ: 2,2% đèn dưới mặt bàn khi κ = 4).
-  sigma_position_mm: 150.0
+  # Anchored: mức sáng = anchor_irradiance × exp(η), η ~ N(0, (κ·0,20)²), nên luôn dương; nhiệt độ
+  # màu mỗi đèn 5000 K + N(0, (κ·300)²); tông nền trên cao × exp(N(0, (κ·0,04)²)) từng kênh.
   sigma_intensity_frac: 0.20
   sigma_color_temp_k: 300.0
-  # Blind (wide-range)
-  blind_count_range: [1, 4]
-  blind_position_box_mm: [[200.0, 1200.0], [-600.0, 600.0], [800.0, 2000.0]]
-  # Công suất mỗi đèn = anchor_intensity_w × f, f log-uniform trong khoảng này, nên theo neo
-  # khi neo được khớp lại. Dải cũ 10-200 W tuyệt đối đặt khi neo còn 60 W; neo xuống 19 W thì
-  # dải nằm hết phía SÁNG: độ rọi tâm vùng gắp 1,6/11,5/38,8 lần neo (P5/P50/P95), không cảnh
-  # nào tối. Khoảng 0,3/9 đến 0,3×9 lần neo: tâm log 0,3 chọn để trung vị độ rọi tâm vùng gắp
-  # (575, 20) bằng neo, vì 1-4 đèn trong hộp trên, thấp hơn hai đèn neo ở 1800 mm, rọi mạnh
-  # hơn ở cùng công suất. Đo trên 3000 cảnh: độ rọi 0,062/1,00/5,5 lần neo (P5/P50/P95), 6,6%
-  # cảnh tới mức tối 0,08; anchored κ = 4 là 0,17/0,69/3,0. Đổi vị trí đèn neo hay hộp thì
-  # phải đo lại (test_scene_sampler.py kiểm trung vị).
-  blind_intensity_rel_range: [0.033, 2.7]
+  overhead_tint_rgb: [0.886, 1.0, 0.852]
+  sigma_overhead_tint: 0.04
+  # Tự do: tấm 600 x 600 mm, cao 1700-2000 mm trên mặt bàn (đều). Một đèn ở x 1100-2800, y -500..400
+  # mm (phía xa bàn: bản đồ độ rọi của ảnh 29/10 dưới đèn khó tăng về phía xa, không chốt được
+  # nguồn), thêm với xác suất 0,5 một đèn bất kỳ ở x 0-2800, y -1500..1500; các đèn chia phần ánh
+  # sáng không đến từ trên cao theo Dirichlet(1, ..., 1).
+  luminaire_size_mm: [600.0, 600.0]
+  luminaire_height_mm: [1700.0, 2000.0]
+  far_luminaire_x_mm: [1100.0, 2800.0]
+  far_luminaire_y_mm: [-500.0, 400.0]
+  extra_luminaire_probability: 0.5
+  extra_luminaire_x_mm: [0.0, 2800.0]
+  extra_luminaire_y_mm: [-1500.0, 1500.0]
+  # Phần độ rọi tại thẻ do nền trên cao mang, log-đều: 0,25 (phòng mờ cùng cell) đến 0,95 (chỉ tắt
+  # đèn cell, phòng giữ nguyên); điều kiện chuẩn đo được 0,33. Đây là biên VẬT LÝ; khoảng này và
+  # đèn thứ hai được chọn sau khi xem ứng viên trước đó trên tập kiểm chứng, không số nào khớp vào
+  # ảnh kiểm chứng (báo cáo kim loại, mục 7), nên bài không được nói khoảng đặt mù.
+  overhead_share_range: [0.25, 0.95]
+  # Wide-range: mức sáng = anchor_irradiance × f, f log-đều trong khoảng này. Tâm log là 1 vì mức
+  # sáng nay chính là độ rọi tại thẻ (khoảng cũ 0,033-2,7 có tâm 0,3 để bù 1-4 đèn điểm thấp hơn
+  # đèn neo); ln(P95/P5) 3,95 so với 2,63 của anchored κ = 4. Màu mỗi đèn đều trong khoảng nhiệt độ
+  # màu; tông nền trên cao exp(U(-0,5, 0,5)) từng kênh, không dùng số đo.
+  blind_intensity_rel_range: [0.111, 9.0]
   blind_color_temp_range_k: [2500.0, 9000.0]
+  blind_overhead_tint_log: 0.5
 
 background:
   # Mọi màu trong file này là giá trị sRGB 8 bit đo được chia 255 (mã hóa sRGB, KHÔNG tuyến
@@ -101,9 +125,11 @@ background:
   # (results/e2kho-1/do_sang_e2kho-1.png 02/11, results/e2kho-2/do_sang_e2kho-2.png 03/11):
   # ảnh render bàn trống cho trung vị màu các ô 32 px của nửa trên bằng trung bình hai buổi
   # lấy trong ánh sáng tuyến tính, sRGB (13,7, 23,9, 16,2) trên 255. Hai buổi cho tỉ lệ G
-  # 0,449 và 0,453, độ sáng 17,7 và 22,1; ảnh khớp cho 0,444 và 20,0.
+  # 0,449 và 0,453, độ sáng 17,7 và 22,1; ảnh khớp cho 0,444 và 20,0. Khớp dưới ánh sáng danh định
+  # của mục lighting (đèn tấm phía xa cộng nền trên cao); bản đèn điểm trước đó cho (0,1172, 0,1851,
+  # 0,1374).
   # Số cũ [0.590, 0.592, 0.588] là bàn trần chuẩn ở trên, đưa vào như thể tuyến tính.
-  anchor_albedo_rgb: [0.1172, 0.1851, 0.1374]
+  anchor_albedo_rgb: [0.1137, 0.1845, 0.1414]
   # Độ lệch giữa các ảnh, giữ TỈ LỆ của điều kiện chuẩn: 0,049 trên màu trung bình 0,59 là
   # 0,083 lần màu; sampler chia sigma_albedo cho trung bình anchor_albedo_rgb (0,1466), nên
   # 0,083 x 0,1466. Hai ảnh kiểm điều kiện khó chỉ là một cặp, không đủ ước độ lệch riêng.
@@ -203,40 +229,74 @@ objects:
   # Diện mạo từng lớp. KHÔNG có khối này thì mọi vật render ra màu xám trắng như
   # nhau, và dữ liệu tổng hợp không dạy detector được gì về màu sản phẩm.
   #
-  # albedo_rgb là số ĐO ngày 12/09/2026: màu trung vị của các pixel thuộc mặt nạ
-  # người vẽ, trên ảnh điều kiện chuẩn (60 ảnh 1-vật mỗi lớp), chia cho 255:
-  #   carton 101,81,56   plastic 8,38,57   wood 120,105,74
-  #   metal  54,56,56    inox    83,88,78
+  # Lớp ĐIỆN MÔI (carton, nhựa, gỗ): albedo_rgb là màu đo, trong thang albedo của file này (bàn
+  # chuẩn trần 0,305 tuyến tính), cộng lớp phản xạ gương điện môi F0 0,04 mà renderer nhân
+  # render.reflectance_scale. Carton và gỗ: số ĐO ngày 12/09/2026, màu trung vị của các pixel thuộc
+  # mặt nạ người vẽ trên ảnh điều kiện chuẩn (60 ảnh 1-vật mỗi lớp), chia 255: carton 101,81,56,
+  # gỗ 120,105,74.
+  # Nhựa: KHỚP LẠI ngày 05/11/2026 trên tập TRAIN để không còn chứa ánh sáng gương: 275 lần xuất
+  # hiện dưới ánh sáng medium (đèn A tắt; độ sáng không phụ thuộc góc tới hướng gương của đèn,
+  # 0,036-0,049 lần bàn), trung vị từng kênh của mặt nạ co 10 px, tuyến tính, chia độ chói bàn trần
+  # cùng ảnh, nhân độ chói bàn chuẩn 0,308: tuyến tính (0,0045, 0,0128, 0,0265) = sRGB (14, 30, 45).
+  # Số cũ (8, 38, 57) là trung vị ảnh dưới ánh sáng bright, có vệt đèn trên lớp màng bóng (bright:
+  # 0,103 lần bàn, 0,26 gần hướng gương của đèn), nên cộng thêm lớp gương thì sáng gấp đôi. Phần
+  # gương của nền trên cao còn trong số này (không đo được riêng). roughness 0,8 khớp trung vị ở 2
+  # vị trí train (tổng hợp/thật 1,10).
   #
   # sigma_albedo_rel là độ lệch TƯƠNG ĐỐI (phần của chính màu đó), vì độ lệch đo
   # được tỉ lệ thuận với từng kênh — carton lệch 9/101, 8/81, 6/56, đều quanh 0,10.
   # Tức là độ sáng thay đổi giữa các ảnh, KHÔNG phải sắc màu đổi, nên bộ sinh cảnh
-  # nhân chung cả ba kênh. Nhiễu ba kênh độc lập ở bề rộng này sẽ biến hộp thép xám
-  # thành hộp xanh lá.
-  #   carton 0,10   plastic 0,33   wood 0,10   metal 0,31   inox 0,55
-  # Inox lệch gấp năm lần carton vì mặt gương phản chiếu xung quanh — đúng thứ đóng
-  # góp C4 nói tới.
+  # nhân chung cả ba kênh: carton 0,10, nhựa 0,33, gỗ 0,10.
   # Anchored nhân màu với exp(η), η ~ N(0, (κ·s)²), và mỗi kênh với exp(ξ), ξ ~ N(0,
-  # (0,2·κ·s)²): luôn dương. Hệ số cũ max(0, 1 + η) cho inox đen hẳn ở 17,7% (κ = 2) và
-  # 31,8% (κ = 4) số vật.
+  # (0,2·κ·s)²): luôn dương. roughness + N(0, (κ·sigma_roughness)²), kẹp [0,02, 1].
   #
-  # roughness và metallic là ƯỚC LƯỢNG vật lý, không phải số đo: chúng quyết định
-  # bề mặt phản xạ thế nào. [MEASURE nếu có máy đo độ bóng]
+  # Lớp KIM LOẠI (metallic 1): f0_rgb là phản xạ pháp tuyến VẬT LÝ (tuyến tính); renderer nhân
+  # render.reflectance_scale vì albedo của file này thấp hơn vật lý chừng đó. Anchored: F0 ×
+  # exp(η), η ~ N(0, (κ·sigma_f0_rel)²); roughness = r + κ·U(thấp - r, cao - r) với
+  # roughness_range là khoảng ở κ = 1, kẹp [0,02, 1]; lớp phủ roughness N(0,30, (κ·0,05)²).
+  #   inox: thép 304 đánh bóng, F0 0,57 (tài liệu), lệch 0,03; roughness 0,05 trong 0,02-0,10
+  #     (mép đèn sắc trên gương inox train, độ chính xác cân bằng 0,98); không lớp phủ.
+  #   metal (hộp thép sơn): kim loại nhám F0 0,34, roughness 0,9 (0,8-1,0) dưới lớp phủ bóng IOR
+  #     1,5, roughness 0,30. Hai thùy khớp độ sáng hộp theo góc tới đèn ở 8 vị trí train (tổng hợp/
+  #     thật 1,03, rms log 0,12); một thùy GGX không khớp (sáng gấp 4,1 lần gần đèn). Lớp phủ khớp
+  #     ra phản xạ 0,016-0,020 = 0,04 × 0,46: kiểm độc lập của reflectance_scale.
+  # Màu đo cũ của hai lớp kim loại (metal 54,56,56, inox 83,88,78) là màu ảnh, không phải phản xạ:
+  # render ra hộp inox và metal tối gấp 4-6 lần ảnh thật.
   materials:
     carton:      {albedo_rgb: [0.396, 0.318, 0.220], sigma_albedo_rel: 0.10, roughness: 0.85, metallic: 0.0}
-    plastic_box: {albedo_rgb: [0.031, 0.149, 0.224], sigma_albedo_rel: 0.33, roughness: 0.35, metallic: 0.0}
+    plastic_box: {albedo_rgb: [0.0559, 0.1165, 0.1774], sigma_albedo_rel: 0.33, roughness: 0.80, metallic: 0.0}
     wood_box:    {albedo_rgb: [0.471, 0.412, 0.290], sigma_albedo_rel: 0.10, roughness: 0.80, metallic: 0.0}
-    metal_box:   {albedo_rgb: [0.212, 0.220, 0.220], sigma_albedo_rel: 0.31, roughness: 0.55, metallic: 0.7}
-    inox_box:    {albedo_rgb: [0.325, 0.345, 0.306], sigma_albedo_rel: 0.55, roughness: 0.10, metallic: 1.0}
+    metal_box:   {f0_rgb: [0.34, 0.34, 0.34], sigma_f0_rel: 0.15, roughness: 0.90, roughness_range: [0.80, 1.0],
+                  metallic: 1.0, coat_ior: 1.5, coat_roughness: 0.30, sigma_coat_roughness: 0.05}
+    inox_box:    {f0_rgb: [0.57, 0.57, 0.57], sigma_f0_rel: 0.053, roughness: 0.05,
+                  roughness_range: [0.02, 0.10], metallic: 1.0}
   sigma_roughness: 0.08
-  # Blind: dải rộng cố định, KHÔNG dùng bất kỳ số đo nào ở trên.
+  # Blind: dải rộng cố định, KHÔNG dùng bất kỳ số đo nào ở trên: albedo (cũng là F0 của phần kim
+  # loại) đều từng kênh, metallic đều 0-1, roughness đều 0,02-1 (bao inox 0,02 và metal 1,0), và
+  # một nửa số vật có lớp phủ bóng IOR 1,5 với roughness đều trong cùng khoảng.
   blind_albedo_range: [0.05, 0.95]
-  blind_roughness_range: [0.05, 1.0]
+  blind_roughness_range: [0.02, 1.0]
+  blind_coat_probability: 0.5
 
 distractors:
   count_range: [0, 3]            # anchored: ít distractor (cell thật gọn)
   blind_count_range: [0, 5]
   size_range_mm: [20.0, 80.0]
+
+exposure:
+  # Phơi sáng của buổi: mỗi cảnh một độ lợi g log-đều trong gain_range, nhân sensor.gain. Factor
+  # TỰ DO: rút như nhau ở hai recipe, mọi κ, mọi nhánh E5 (κ chỉ mở rộng đèn/màu quanh profile),
+  # từ luồng riêng SeedSequence([seed, index, 2]).
+  # Vì sao độ lợi: ba lần kiểm bàn trống cho trung bình ảnh tuyến tính 0,016/0,022/0,033 (AE không giữ
+  # mức ảnh), còn nhiễu đi theo mức như độ lợi: 2,03 ở luma 21,5 và 2,54 ở 30,3 (tỉ số 1,25; mô hình độ
+  # lợi 1,26, đổi ánh sáng 0,93). Không mô phỏng AE theo nội dung: giữ trung bình ảnh thì ảnh có vật (vật
+  # che thẻ trắng) ra sáng hơn ảnh kiểm. Khoảng: bước kiểm nhận mỗi nửa bàn 10-45 (lấy từ 110 ảnh CÓ vật);
+  # với màu hai nửa bàn của profile ở g = 1, nửa trên chạm 10 ở 0,43, nửa dưới chạm 45 ở 2,90
+  # (hard_profile.admitted_gain_range; test kiểm khớp lại sau mỗi lần khớp profile).
+  gain_range: [0.43, 2.90]
+  check_luminance: [10.0, 45.0]
+  reference_upper_rgb: [0.0537, 0.0937, 0.0635]   # (13,7, 23,9, 16,2)/255, profile ở g = 1
+  reference_lower_rgb: [0.0773, 0.1059, 0.0816]   # (19,7, 27,0, 20,8)/255
 
 # =============================================================================
 # Phần do renderer đọc (src/synthgen/render_blenderproc.py qua hard_profile.py).
@@ -261,20 +321,26 @@ render:
   # Không tone-map: sensor_model áp đường cong sRGB chuẩn lên ảnh tuyến tính (EXR). Trước
   # 11/2026 ảnh ra qua Filmic của BlenderProc (chú thích cũ ghi nhầm là AgX).
   view_transform: Standard
+  # Đổi phản xạ gương VẬT LÝ sang thang albedo của file này: F0 kim loại, lớp gương điện môi (F0
+  # 0,04) và trọng số lớp phủ đều nhân số này. Thang albedo lấy bàn chuẩn trần làm gốc (0,305 tuyến
+  # tính); bàn vật lý là 0,66 NẾU thẻ trắng là giấy phản xạ 0,85 (giả định, chưa đo): thẻ/bàn trần
+  # 1,29 (ảnh kiểm chuẩn e2chuan-2, đã sửa đảo R/B), 0,85 / 1,29 = 0,66, và 0,305 / 0,66 = 0,46.
+  # Giấy 0,80-0,90 cho 0,44-0,49. Kiểm độc lập: lớp phủ hộp metal khớp ra 0,016-0,020 = 0,04 × 0,46.
+  reflectance_scale: 0.46
 
 sensor:
   # Mô hình cảm biến (src/synthgen/sensor_model.py): y = gain * white_balance * x, nhiễu
   # phương sai gain*shot_noise*y + gain^2*read_noise trong miền tuyến tính, hạt nhiễu làm mờ
   # Gauss grain_sigma_px rồi chuẩn hóa, rồi đường cong sRGB và làm tròn 8 bit.
-  # gain 1 = trạng thái tự phơi sáng của bước kiểm điều kiện, nơi mọi số ở đây được khớp.
-  # Lượt thử thật chạy ở độ lợi THẤP hơn: tấm nền tối hơn (luma 12,9-15,6 so với 20-27) và ít
-  # nhiễu hơn (1,63 so với 2,13). Mô hình này với gain ~0,6 cho đúng cả hai (kiểm, không khớp;
-  # xem báo cáo synthfix/render). Đổi gain là quyết định riêng, chưa làm.
+  # gain 1 = trạng thái tự phơi sáng của bước kiểm điều kiện, nơi mọi số ở đây được khớp; mỗi
+  # cảnh nhân nó với độ lợi phơi sáng exposure.gain của spec (mục exposure).
   gain: 1.0
   # Cân bằng trắng của camera ở điều kiện khó, so với thang điều kiện chuẩn: khớp để thẻ
   # trắng render ra đúng màu thẻ đo trên hai ảnh kiểm điều kiện, sRGB (96,9, 98,8, 92,5)
-  # trên 255 (trung vị các ô vùng thẻ). Kênh G giữ 1; độ sáng chung nằm ở công suất đèn.
-  white_balance_rgb: [1.0479, 1.0, 1.008]
+  # trên 255 (trung vị các ô vùng thẻ), dưới ánh sáng danh định (nền trên cao tông lục mang
+  # 0,487 độ rọi). Kênh G giữ 1; độ sáng chung nằm ở lighting.anchor_irradiance. Bản trước
+  # (1,048, 1, 1,008) dùng tỉ số thẻ/bàn với R và B tráo nhau và không có tông của nền trên cao.
+  white_balance_rgb: [1.1644, 1.0, 1.0169]
   # Nhiễu MỘT khung, đo trên ảnh kiểm điều kiện e2kho-2: mỗi ảnh kiểm là trung bình 10 khung,
   # nên hiệu hai lần kiểm cách nhau 10 s (dieu_kien/lan_1, lan_2 so với lan_3, chỉ các điểm
   # ảnh phẳng mà lớp phủ để nguyên) khử vân của tấm nền; nửa phương sai của hiệu, trừ phần
@@ -284,7 +350,7 @@ sensor:
   # shot_noise khớp để tấm nền của profile ra đúng 2,13 (luma 19,9 trên ảnh khớp). Khớp
   # chung cả hai mức thì read_noise về 0: nhiễu thật không giảm về phía tối, còn nhiễu
   # photon qua đường cong sRGB gần như phẳng, nên mức thẻ ra 1,62 thay vì 2,37 (thấp 32%).
-  shot_noise: 0.000461
+  shot_noise: 0.000462
   read_noise: 0.0
   # Hạt nhiễu: phần dư của hiệu hai lần kiểm tương quan 0,644 với điểm ảnh bên cạnh (đã bù
   # phần làm tròn); làm mờ Gauss 0,924 px cho đúng tương quan đó.
@@ -307,9 +373,10 @@ hard_profile:
     # kênh, trong ánh sáng tuyến tính. Cùng một loại tấm nền nhưng phía dưới vạch ra ảnh kém
     # xanh và sáng hơn (tỉ lệ G 0,398 và 0,398 so với 0,449 và 0,453; độ sáng 22,1 và 26,1 so
     # với 17,7 và 22,1). Khớp như anchor_albedo_rgb trên các ô của nửa dưới: sRGB (19,7, 27,0,
-    # 20,8) trên 255, ảnh khớp cho tỉ lệ G 0,400 và độ sáng 24,1. Tỉ số gộp cả khác biệt của
-    # ánh sáng hai nửa bàn, vì vị trí đèn còn là proxy.
-    lower_sheet_ratio: [1.5281, 1.1519, 1.3387]
+    # 20,8) trên 255, ảnh khớp cho tỉ lệ G 0,400 và độ sáng 24,1. Ở ánh sáng danh định đèn tấm
+    # phía xa đã rọi nửa dưới mạnh hơn, nên tỉ số nhỏ lại (bản đèn điểm: 1,53, 1,15, 1,34); phần
+    # còn lại của khác biệt ánh sáng hai nửa bàn vẫn gộp vào đây, vì chỗ treo đèn không đo được.
+    lower_sheet_ratio: [1.259, 0.9616, 1.0992]
   strip:
     # Vạch đen (băng dính đen) ngang bàn: đường tâm qua hai điểm, rộng 12,1 mm (bề rộng ở
     # nửa độ sâu của profile cột ảnh, 11 px).
@@ -318,7 +385,7 @@ hard_profile:
     # Khớp trên lõi vạch (±2 px quanh đường tâm trên ảnh, u 240-1040): trung vị sRGB (8,0,
     # 12,0, 6,5) trên 255, trung bình hai buổi. Là albedo HIỆU DỤNG: vạch rộng 11 px nên quang
     # học làm nhòe nó vào tấm nền hai bên, và băng dính có độ bóng.
-    albedo_rgb: [0.0763, 0.1041, 0.0682]
+    albedo_rgb: [0.0686, 0.0982, 0.0658]
   cards:
     # Ở điều kiện khó thẻ nằm thành 7 CỘT giấy trắng liền (mỗi cột 3 thẻ), không phải 21 ô
     # 48 mm rời như ở điều kiện chuẩn: đo trên hai ảnh, mỗi cột 159,8 mm (theo x) x 56,8 mm
@@ -329,11 +396,13 @@ hard_profile:
     centres_mm: [[572.7, -160.0], [572.7, -100.0], [572.7, -40.0], [572.7, 20.0],
                  [572.7, 80.0], [572.7, 140.0], [572.7, 200.0]]
     # Albedo nối thang: ảnh kiểm điều kiện CHUẨN results/e2chuan-2/do_sang_e2chuan-2.png
-    # (28/10/2026, bàn trần, 21 thẻ 48 mm rời) cho thẻ / bàn trần = (1,259, 1,324, 1,199) theo
+    # (28/10/2026, bàn trần, 21 thẻ 48 mm rời) cho thẻ / bàn trần = (1,199, 1,324, 1,259) theo
     # kênh, tuyến tính (ô 36 mm giữa mỗi thẻ, gồm cả nét in, so với bàn trần quanh khối thẻ);
     # nhân với bàn trần chuẩn (background.standard_table_rgb) rồi mã hóa sRGB. Ảnh đó chỉ dùng
-    # cho tỉ số này. Ánh sáng khớp để ảnh render cho độ sáng thẻ 97,5 (xem lighting).
-    albedo_rgb: [0.6531, 0.6723, 0.6387]
+    # cho tỉ số này, và được lưu với kênh R và B tráo nhau (vỏ nút dừng khẩn màu vàng ra xanh
+    # dương); fit_hard_profile.read_rgb đổi lại. Bản trước dùng (1,259, 1,324, 1,199), tráo.
+    # Ánh sáng khớp để ảnh render cho độ sáng thẻ 97,5 (xem lighting).
+    albedo_rgb: [0.6385, 0.6721, 0.6528]
   surround:
     # Ngoài mép bàn KHÔNG tối: trên ảnh bàn trống, bên trái 30-55 phía trên và 6-25 phía
     # dưới (cáp, khung nhôm, nút dừng khẩn), bên phải là tường sáng 24-73, phía robot 23-37,
@@ -343,14 +412,8 @@ hard_profile:
     # Khớp trên trung vị màu từng phía (cách mép bàn 8 px; phía robot: các hàng trên mép
     # gần), trung bình hai buổi: trái (17,4, 11,2, 12,1), phải (42,7, 47,2, 41,7), phía robot
     # (25,2, 23,6, 15,6) trên 255.
-    left_albedo_rgb: [0.1524, 0.1148, 0.122]
-    right_albedo_rgb: [0.3259, 0.364, 0.3287]
-    near_albedo_rgb: [0.1987, 0.1933, 0.1411]
-  environment:
-    # Căn phòng quanh cell (world của Blender, đồng đều): thứ hộp inox soi, và ánh sáng tường
-    # với trần hắt lại lên cảnh. Bức xạ TUYẾN TÍNH theo đơn vị render (không phải màu): đặt
-    # bằng trung vị màu của toàn bộ phần ngoài bàn trên hai ảnh, sRGB (34,7, 34,2, 26,2) trên
-    # 255, đổi sang tuyến tính rồi chia cân bằng trắng. Tức là coi căn phòng mà hộp inox soi
-    # sáng như phần cell camera thấy quanh bàn; trần phía trên chưa ai đo [MEASURE: ảnh một
-    # quả cầu inox hoặc tấm gương đặt trên bàn ở điều kiện khó].
-    world_radiance_rgb: [0.01579, 0.01618, 0.01034]
+    left_albedo_rgb: [0.1308, 0.1002, 0.11]
+    right_albedo_rgb: [0.2865, 0.3278, 0.3028]
+    near_albedo_rgb: [0.1925, 0.1911, 0.1445]
+  # Không còn mục environment: nền trên cao (world) nay đi theo từng spec (lighting, spec
+  # environment.radiance_rgb), không còn một bức xạ phòng cố định 0,016.

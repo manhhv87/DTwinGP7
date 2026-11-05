@@ -5,9 +5,12 @@ Unit tests for the anchored/blind scene sampler (C2, paper Eq. (1)).
 
 Verifies: determinism per (seed, index), and no shared scenes between seeds;
 anchored distributions centred on the calibrated anchor with width kappa*sigma,
-and positive quantities (albedo, light power, light height) kept positive at
-every kappa; blind sampling confined to the blind ranges, with light power a
-multiple of the anchor; task variables inside the pick region under BOTH modes,
+and positive quantities (albedo, light level, metal reflectance) kept positive at
+every kappa; blind sampling confined to the blind ranges, with the light level a
+multiple of the anchor; the free light factors (luminaire layout, overhead share)
+and the session exposure drawn alike in both recipes and every arm, the exposure
+from its own stream; the lighting label of a condition mapped to the profile, an
+unknown one refused; task variables inside the pick region under BOTH modes,
 with no overlapping footprints and distractors off the products; the first
 product's class and stacking as in the physical pose lists; C3 condition
 constraints (class / region / lighting) honoured; spec files + manifest written
@@ -28,8 +31,10 @@ import pytest
 from pydantic import ValidationError
 
 from src.cell.pose_utils import make_homogeneous
-from src.synthgen import LIGHTING_CONDITION_SCALE, SceneSampler, SynthgenConfig
+from src.synthgen import SceneSampler, SynthgenConfig
+from src.synthgen.hard_profile import panel_irradiance_factor
 from src.synthgen.scene_sampler import SPEC_VERSION, footprint, footprints_overlap
+from src.synthgen.sensor_model import LUMINANCE_709
 from src.synthgen.seed_ranges import scene_streams
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -62,24 +67,19 @@ def footprint_of(config, obj) -> np.ndarray:
     return footprint(obj["xyz_mm"][:2], length, width, obj["yaw_deg"])
 
 
-def irradiance_ratio(config, lights) -> float:
-    """Irradiance at the centre of the placement envelope, relative to the anchored
-    reference lights (point sources, cosine law)."""
-    o = config.objects
-    centre = np.array([np.mean(o.region_x_mm), np.mean(o.region_y_mm), o.table_z_mm])
-
-    def irradiance(ls):
-        e = 0.0
-        for li in ls:
-            d = np.asarray(li["position_mm"], dtype=float) - centre
-            r = float(np.linalg.norm(d))
-            e += max(0.0, d[2] / r) * li["energy_w"] / (4.0 * np.pi * r * r)
-        return e
-
+def card_irradiance(config, spec) -> float:
+    """Irradiance at the card block's centre that a spec's lights and overhead give,
+    relative to the fitted level, recomputed from what the renderer receives: each
+    luminaire's radiance from its Blender power (power / (pi * area)) times its panel
+    factor, plus pi times the overhead's luminance."""
     lit = config.lighting
-    ref = [{"position_mm": p, "energy_w": lit.anchor_intensity_w}
-           for p in lit.anchor_positions_mm]
-    return irradiance(lights) / irradiance(ref)
+    ref = [*lit.reference_point_mm, config.objects.table_z_mm]
+    e = np.pi * float(LUMINANCE_709 @ np.asarray(spec["environment"]["radiance_rgb"]))
+    for li in spec["lights"]:
+        area = li["size_mm"][0] * li["size_mm"][1] * 1e-6
+        e += li["energy_w"] / (np.pi * area) * panel_irradiance_factor(
+            li["position_mm"], li["size_mm"], ref)
+    return e / lit.anchor_irradiance
 
 
 def pose_list_rows(name: str) -> list[dict]:
@@ -177,16 +177,48 @@ class TestAnchoredSampling:
         ])
         assert np.all(trans.std(axis=0) > 4.5)   # ~9mm sigma, not the 2mm fallback
 
-    def test_light_count_matches_anchor(self, config):
-        spec = make_sampler(config).sample(0)
-        assert len(spec["lights"]) == len(config.lighting.anchor_positions_mm)
+    def test_luminaires_hang_where_the_bounds_say(self, config, scenes):
+        # One luminaire beyond the far edge of the table, a second anywhere in half of
+        # the scenes, all 600 mm panels 1.7-2.0 m above the table, in both recipes.
+        lit, z = config.lighting, config.objects.table_z_mm
+        for name in ("k1", "blind"):
+            counts = Counter(len(s["lights"]) for s in scenes[name])
+            assert set(counts) == {1, 2}
+            assert abs(counts[2] / N_SCENES - lit.extra_luminaire_probability) < 0.07
+            for s in scenes[name]:
+                far = s["lights"][0]["position_mm"]
+                assert lit.far_luminaire_x_mm[0] <= far[0] <= lit.far_luminaire_x_mm[1]
+                assert lit.far_luminaire_y_mm[0] <= far[1] <= lit.far_luminaire_y_mm[1]
+                for li in s["lights"]:
+                    assert li["type"] == "area" and li["size_mm"] == lit.luminaire_size_mm
+                    h = li["position_mm"][2] - z
+                    assert lit.luminaire_height_mm[0] <= h <= lit.luminaire_height_mm[1]
+                assert sum(li["irradiance_share"] for li in s["lights"]) == pytest.approx(1.0)
+            share = np.array([s["environment"]["overhead_share"] for s in scenes[name]])
+            lo, hi = lit.overhead_share_range
+            assert share.min() >= lo and share.max() <= hi
+            assert abs(np.log(np.median(share)) - np.log(lo * hi) / 2) < 0.1   # log-uniform
+
+    def test_light_level_is_the_fitted_irradiance_at_the_cards(self, config, scenes):
+        # The level, recomputed from the powers and the overhead the renderer gets, is
+        # the fitted one times exp(eta): median 1, log spread kappa * sigma.
+        for name, kappa in (("k1", 1.0), ("k4", 4.0)):
+            rel = np.log([card_irradiance(config, s) for s in scenes[name]])
+            assert abs(float(np.median(rel))) < 0.05 * kappa
+            assert float(rel.std()) == pytest.approx(kappa * config.lighting.sigma_intensity_frac,
+                                                     rel=0.1)
+        s = scenes["k1"][0]
+        share = np.pi * float(LUMINANCE_709 @ np.asarray(s["environment"]["radiance_rgb"]))
+        assert share / (card_irradiance(config, s) * config.lighting.anchor_irradiance) == \
+            pytest.approx(s["environment"]["overhead_share"])
 
     def test_positive_factors_stay_positive_at_kappa_4(self, config, scenes):
         # max(0, 1 + eta) rendered 32% of inox boxes black at kappa 4, left a light
         # at the 1 W floor in 23% of scenes and put 2% of lights under the table.
         z_table = config.objects.table_z_mm
         specs = scenes["k4"]
-        albedo = np.array([o["material"]["albedo_rgb"] for s in specs for o in s["objects"]])
+        albedo = np.array([o["material"].get("albedo_rgb", o["material"].get("f0_rgb"))
+                           for s in specs for o in s["objects"]])
         assert albedo.min() > 0.0
         assert min(min(s["background"]["albedo_rgb"]) for s in specs) > 0.0
         lights = [li for s in specs for li in s["lights"]]
@@ -195,20 +227,40 @@ class TestAnchoredSampling:
         assert energy.min() > 0.0
         assert np.unique(energy).size == energy.size        # no floor value repeats
 
-    def test_light_height_spread_near_the_anchor(self, config, scenes):
-        # At kappa 1 the log-scale height moves like the configured Gaussian.
-        z = np.array([li["position_mm"][2] for s in scenes["k1"] for li in s["lights"]])
-        z_anchor = config.lighting.anchor_positions_mm[0][2]
-        sd = config.lighting.sigma_position_mm
-        assert abs(float(np.median(z)) - z_anchor) < 0.15 * sd
-        assert 0.85 * sd < float(z.std()) < 1.15 * sd
+    def test_free_light_factors_are_shared_by_the_arms(self, config):
+        # The kappa arms and the E5 arms of a seed hang the same luminaires, share the
+        # light the same way and draw the same exposure; kappa moves only the measured
+        # factors. The blind recipe draws the exposure of the same scene too.
+        arms = [make_sampler(config, kappa=1.0), make_sampler(config, kappa=4.0)] + [
+            SceneSampler(config, T_BC, kappa=1.0, seed=0, ablation=f)
+            for f in ("illumination", "background", "camera", "pose")]
+        blind = make_sampler(config, mode="blind")
+        for i in range(20):
+            specs = [a.sample(i) for a in arms]
+            layout = {json.dumps([[(li["position_mm"], li["irradiance_share"]) for li in s["lights"]],
+                                  s["environment"]["overhead_share"]]) for s in specs}
+            assert len(layout) == 1
+            gains = {s["exposure"]["gain"] for s in specs} | {blind.sample(i)["exposure"]["gain"]}
+            assert len(gains) == 1
+
+    def test_exposure_gain_is_log_uniform_and_per_seed(self, config):
+        lo, hi = config.exposure.gain_range
+        s, other = make_sampler(config, seed=0), make_sampler(config, seed=1)
+        g = np.array([s._sample_exposure(i)["gain"] for i in range(4000)])
+        assert g.min() >= lo and g.max() <= hi
+        assert float(np.median(g)) == pytest.approx(np.sqrt(lo * hi), rel=0.05)
+        assert s.sample(5)["exposure"] == {"gain": float(g[5])}
+        assert other._sample_exposure(5)["gain"] != g[5]
+        # Its own stream: the scene's other draws are those of SeedSequence([seed, i]).
+        assert np.random.default_rng(np.random.SeedSequence([0, 5, 2])).uniform(
+            np.log(lo), np.log(hi)) == pytest.approx(np.log(g[5]))
 
     def test_median_colour_stays_at_the_measurement(self, config):
         # exp(eta) has median 1: the brightest draws clip at 1, but the median colour
         # stays the measured one, with no draw at zero.
         s = make_sampler(config, kappa=2.0)
-        cond = {"class_name": "inox_box", "region": None, "lighting": None}
-        anchor = np.asarray(config.objects.materials["inox_box"].albedo_rgb)
+        cond = {"class_name": "plastic_box", "region": None, "lighting": None}
+        anchor = np.asarray(config.objects.materials["plastic_box"].albedo_rgb)
         factors = np.array([s.sample(i, condition=cond)["objects"][0]["material"]["albedo_rgb"]
                             for i in range(300)]) / anchor
         assert factors.min() > 0.0
@@ -229,31 +281,36 @@ class TestBlindSampling:
         assert a["camera"] == b["camera"]
         assert a["kappa"] is None
 
-    def test_light_power_is_a_multiple_of_the_anchor(self, config, scenes):
-        lit = config.lighting
-        lo, hi = lit.blind_intensity_rel_range
-        rel = np.array([li["energy_w"] for s in scenes["blind"] for li in s["lights"]])
-        rel /= lit.anchor_intensity_w
-        assert rel.min() >= lo - 1e-12 and rel.max() <= hi + 1e-12
+    def test_light_level_is_a_multiple_of_the_anchor(self, config, scenes):
+        lo, hi = config.lighting.blind_intensity_rel_range
+        rel = np.array([card_irradiance(config, s) for s in scenes["blind"]])
+        assert rel.min() >= lo * (1 - 1e-9) and rel.max() <= hi * (1 + 1e-9)
         # Log-uniform: the log of the factor is uniform, so its median sits midway.
         assert abs(float(np.median(np.log(rel))) - np.log(lo * hi) / 2) < 0.25
 
-    def test_refitted_anchor_moves_the_wide_range_power(self, config):
+    def test_refitted_anchor_moves_the_wide_range_level(self, config):
         refit = config.model_copy(deep=True)
-        refit.lighting.anchor_intensity_w *= 3.0
-        a = make_sampler(config, mode="blind").sample(7)["lights"]
-        b = make_sampler(refit, mode="blind").sample(7)["lights"]
-        assert [li["energy_w"] * 3.0 for li in a] == pytest.approx([li["energy_w"] for li in b])
+        refit.lighting.anchor_irradiance *= 3.0
+        a = make_sampler(config, mode="blind").sample(7)
+        b = make_sampler(refit, mode="blind").sample(7)
+        assert [li["energy_w"] * 3.0 for li in a["lights"]] == \
+            pytest.approx([li["energy_w"] for li in b["lights"]])
+        assert np.asarray(a["environment"]["radiance_rgb"]) * 3.0 == \
+            pytest.approx(b["environment"]["radiance_rgb"])
 
-    def test_light_level_centred_on_the_anchor_and_wider(self, config, scenes):
-        # The 10-200 W range, set for a 60 W anchor, lit the pick region at 1.6x,
-        # 11.5x and 38.8x the 19 W anchor (P5/P50/P95): brighter, not wider.
-        blind = np.array([irradiance_ratio(config, s["lights"]) for s in scenes["blind"]])
-        k4 = np.array([irradiance_ratio(config, s["lights"]) for s in scenes["k4"]])
-        p5, p50, p95 = np.percentile(blind, [5, 50, 95])
-        assert 0.7 < p50 < 1.4
-        assert p5 < np.percentile(k4, 5) and p95 > np.percentile(k4, 95)
-        assert (blind <= LIGHTING_CONDITION_SCALE["dim"]).mean() > 0.02
+    def test_measured_light_factors_wider_than_anchored(self, config, scenes):
+        # Level, lamp colour and overhead tint: the wide range holds kappa 4.
+        def spread(name):
+            lv = np.log([card_irradiance(config, s) for s in scenes[name]])
+            temps = [li["color_temp_k"] for s in scenes[name] for li in s["lights"]]
+            tint = np.log([np.asarray(s["environment"]["radiance_rgb"]) for s in scenes[name]])
+            tint = tint - tint[:, 1:2]
+            return (np.percentile(lv, [5, 95]), np.percentile(temps, [5, 95]),
+                    np.percentile(tint[:, 0], [5, 95]))
+        for (b_lo, b_hi), (k_lo, k_hi) in zip(spread("blind"), spread("k4")):
+            assert b_lo < k_lo and b_hi > k_hi
+        lv = np.array([card_irradiance(config, s) for s in scenes["blind"]])
+        assert 0.7 < float(np.median(lv)) < 1.4
 
 
 class TestTaskVariables:
@@ -432,7 +489,7 @@ class TestPoseListMix:
         s = make_sampler(config)
         meshes = config.objects.meshes_of("carton")
         roles = {"alone": Counter(), "top": Counter(), "support": Counter()}
-        for cls, n in (("carton", 400), ("inox_box", 600)):
+        for cls, n in (("carton", 400), ("inox_box", 1500)):
             cond = {"class_name": cls, "region": None, "lighting": None}
             for i in range(n):
                 objs = s.sample(i, condition=cond)["objects"]
@@ -465,17 +522,23 @@ class TestConditions:
             s.sample(0, condition={"class_name": "widget", "region": None,
                                    "lighting": None})
 
-    def test_dim_lighting_scales_energy(self, config):
+    def test_dim_is_the_profile_and_other_labels_are_refused(self, config, tmp_path):
+        # Every E3-E5 trial logs "dim", the condition the profile was fitted in: the
+        # label renders the profile itself (it once scaled the lamps by 0.08 on top of
+        # a profile fitted in that very light), and a label it does not hold raises
+        # instead of rendering at 1.0.
         s = make_sampler(config)
-        e_none = np.mean([
-            li["energy_w"] for i in range(100) for li in s.sample(i)["lights"]
-        ])
-        e_dim = np.mean([
-            li["energy_w"] for i in range(100)
-            for li in s.sample(i, condition={"class_name": None, "region": None,
-                                             "lighting": "dim"})["lights"]
-        ])
-        assert e_dim < 0.6 * e_none
+        dim = {"class_name": None, "region": None, "lighting": "dim"}
+        for i in range(10):
+            a, b = s.sample(i), s.sample(i, condition=dim)
+            assert a["lights"] == b["lights"] and a["environment"] == b["environment"]
+            assert a["exposure"] == b["exposure"]
+        bright = {"class_name": None, "region": None, "lighting": "bright"}
+        with pytest.raises(ValueError, match="not rendered by the hard-condition profile"):
+            s.sample(0, condition=bright)
+        with pytest.raises(ValueError, match="not rendered"):
+            s.write_specs(tmp_path / "x", 2, condition=bright)
+        assert not (tmp_path / "x").exists()
 
 
 class TestWriteSpecs:
@@ -511,7 +574,10 @@ class TestValidation:
     @pytest.mark.parametrize("section, key, value, message", [
         ("lighting", "blind_intensity_rel_range", [1.5, 3.0], "bracket the anchor"),
         ("lighting", "blind_intensity_rel_range", [0.0, 3.0], "bracket the anchor"),
-        ("lighting", "anchor_positions_mm", [[700.0, 0.0, 500.0]], "above"),
+        ("lighting", "luminaire_height_mm", [0.0, 2000.0], "low >= 1"),
+        ("lighting", "anchor_condition", "bright", "anchor_condition"),
+        ("lighting", "overhead_share_range", [0.0, 0.9], "overhead_share_range"),
+        ("exposure", "gain_range", [2.0, 1.0], "gain_range"),
         ("objects", "count_range", [0, 2], "count_range"),
         ("objects", "stack_offset_mm", 40.0, "overhang"),
         ("objects", "first_object_mix", {"widget": {"single": 1}}, "unknown classes"),

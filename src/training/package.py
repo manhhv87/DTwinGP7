@@ -5,7 +5,11 @@ content hashes. Hash checks detect exact duplicates; they cannot establish
 independence of capture sessions or detect visually similar frames. Synthetic
 sources whose scene manifest sits beside them (<batch>/specs/manifest.json next
 to <batch>/dataset) must not share generation streams (the seed/index rule of
-their spec version, src/synthgen/seed_ranges.py).
+their spec version, src/synthgen/seed_ranges.py). Synthetic sources that carry the
+render manifest of their batch (render_manifest.json, copied by auto_label) must have
+been rendered the same way: settings, device, Blender and BlenderProc versions and
+scene profile (src/synthgen/hard_profile.check_arms_match), within a package and
+against the other arm's package of an E4 update.
 
 An E4 package names the package that trained its parent checkpoint. It must keep
 that package's real training and validation images and all of its synthetic
@@ -26,6 +30,9 @@ from typing import Any
 
 import yaml
 
+from src.synthgen.hard_profile import MANIFEST_NAME as RENDER_MANIFEST
+from src.synthgen.hard_profile import MATCH_KEYS as RENDER_MATCH_KEYS
+from src.synthgen.hard_profile import check_arms_match
 from src.synthgen.seed_ranges import STREAM_RULE, manifest_streams, overlaps
 from src.utils.dataset_check import EXPECTED_NAMES, IMAGE_EXTS
 
@@ -221,6 +228,12 @@ def inspect_sources(
             if specs.is_file():
                 source["generation"] = manifest_streams(specs)
                 source["generation"]["sha256"] = sha256(specs)
+            rendered = root / RENDER_MANIFEST
+            source["render"] = None
+            if rendered.is_file():
+                record = _read_json(rendered)
+                source["render"] = {**{key: record.get(key) for key in RENDER_MATCH_KEYS},
+                                    "sha256": sha256(rendered)}
         sources.append(source)
     streams = {source["name"]: source["generation"]["streams"] for source in sources[1:]
                if source["generation"] and source["generation"]["streams"] is not None}
@@ -228,6 +241,8 @@ def inspect_sources(
     if clashes:
         raise ValueError("Synthetic sources share generation streams: " + "; ".join(
             f"{first} and {second}, {count} scene(s)" for first, second, count in clashes))
+    renders = {source["name"]: source["render"] for source in sources[1:] if source["render"]}
+    check_arms_match(renders)
     for key, expected in (("real_train", expected_real_train), ("synthetic_train", expected_synth_train)):
         if expected is not None and counts[key] != expected:
             raise ValueError(f"Expected {expected} {key} images, found {counts[key]}; reconcile the source manifest before packaging")
@@ -245,6 +260,11 @@ def inspect_sources(
                       for source in sources[1:] if source["name"] in streams},
             "checked": sorted(streams),
             "unchecked": [source["name"] for source in sources[1:] if source["name"] not in streams],
+        },
+        "render_check": {
+            "match_keys": list(RENDER_MATCH_KEYS),
+            "checked": sorted(renders),
+            "unchecked": [source["name"] for source in sources[1:] if source["name"] not in renders],
         },
         "validation_role": "model_selection_only; not an independent final test set",
         "independence_check": "Exact image-content duplicates rejected; session separation and near-duplicate checks still require a frozen capture manifest.",
@@ -340,6 +360,11 @@ def _check_e4_pair(paired: Path, training: dict[str, Any], manifest: dict[str, A
             raise ValueError(f"Both arms use the same real {split} images")
     if other_manifest["counts"]["synthetic_train"] != manifest["counts"]["synthetic_train"]:
         raise ValueError("Both arms hold the same number of synthetic images")
+    renders = {source["name"]: source["render"] for source in manifest["sources"][1:]
+               if source.get("render")}
+    renders.update({f"{paired.name}/{source['name']}": source["render"]
+                    for source in other_manifest["sources"][1:] if source.get("render")})
+    check_arms_match(renders)
     if mine["update"] == 1 and (other.get("initialization") or {}).get("sha256") != training["initialization"]["sha256"]:
         raise ValueError("Both arms of update 1 start from the same f0 checkpoint")
     return {"package": str(paired), "training_sha256": sha256(paired / "training.json"),

@@ -229,6 +229,12 @@ guided seed, `--control-for` lấy control seed, cả hai lấy số ảnh; chú
 `--n` khác giá trị đã kiểm, báo cáo không có seed của nhánh đó, và báo cáo lập cho phiên bản
 sampler khác.
 
+Hai nhánh render cùng một điều kiện: mọi lượt E3-E5 chạy điều kiện khó và ghi `--lighting dim`,
+nhãn đó ánh xạ đúng vào profile (`LIGHTING_CONDITION_SCALE` chỉ có `dim`), và nhánh control nhận
+nhãn ánh sáng của báo cáo làm điều kiện duy nhất, không ràng buộc lớp hay vùng. Hai nhánh vì vậy rút
+cùng phân bố ánh sáng và độ lợi phơi sáng (`SeedSequence([s, i, 2])`), chỉ khác ràng buộc lớp và
+vùng. Báo cáo có nhãn khác (`bright`, `medium`) bị cả hai lệnh từ chối.
+
 Đóng gói E4 bắt buộc truyền `--model` (checkpoint cha), `--parent-package` (gói đã huấn luyện ra
 checkpoint đó, còn `runs/seed<n>/run_record.json`), `--arm loop` hoặc `--arm control` và `--epochs`
 (đã khóa). Gói kiểm: checkpoint cha đúng là `best.pt` của một run hoàn tất trong gói cha; ảnh thật

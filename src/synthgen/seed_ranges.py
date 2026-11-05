@@ -16,6 +16,9 @@ its entropy with zero words, so default_rng(k) is the stream of SeedSequence([k,
                   seed share the indices they have in common. Index 0 of seed k is
                   the version 1 stream k. The E5 pose arm also draws from
                   SeedSequence([seed, index, 1]), which no two-word stream equals.
+  spec_version 3  as version 2, words (seed, index), and each scene's session exposure
+                  gain from SeedSequence([seed, index, 2]): a third word other than 0
+                  never equals a two-word stream, so the overlap rule is version 2's.
 
 A sampler RNG change needs a SPEC_VERSION bump and its rule here; a spec version
 without one is reported as unchecked. A seed or index of 2**32 or more is refused,
@@ -33,7 +36,8 @@ from pathlib import Path
 from typing import Any, Iterable
 
 STREAM_RULE = {1: "default_rng(seed + index)",                  # spec_version → rule
-               2: "default_rng(SeedSequence([seed, index]))"}
+               2: "default_rng(SeedSequence([seed, index]))",
+               3: "default_rng(SeedSequence([seed, index])); exposure SeedSequence([seed, index, 2])"}
 WORD = 2 ** 32
 _SCENE = re.compile(r"scene_(\d+)\.json$")
 

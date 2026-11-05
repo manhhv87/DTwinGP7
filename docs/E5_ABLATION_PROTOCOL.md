@@ -14,7 +14,7 @@ trước từ E3, cùng calibration, cấu hình và ngân sách. Không kết h
 | Giá trị `--ablation` | Thay đổi sau khi đã lấy mẫu toàn bộ scene |
 |---|---|
 | `none` | Giữ nguyên full recipe. Không đổi trình tự hoặc giá trị các draw cũ. |
-| `illumination` | Giữ số đèn và vị trí tại `lighting.anchor_positions_mm`; mỗi đèn dùng `anchor_intensity_w`, `anchor_color_temp_k`. Bỏ jitter vị trí, công suất và nhiệt độ màu. |
+| `illumination` | Đưa các factor ánh sáng ĐO ĐƯỢC về profile: mức sáng tại tâm khối thẻ bằng `lighting.anchor_irradiance`, mọi đèn ở `anchor_color_temp_k`, nền trên cao đúng tông `overhead_tint_rgb`. Giữ các factor TỰ DO như đã rút: chỗ treo đèn, cách các đèn chia ánh sáng, phần của nền trên cao, và độ lợi phơi sáng. Nhánh này không bỏ biến thiên hình học đèn hay phơi sáng. |
 | `background` | Mặt bàn dùng `background.anchor_albedo_rgb` và `anchor_roughness`, tại `objects.table_z_mm`. Trong recipe hiện tại chỉ albedo được randomize; roughness vốn đã cố định. |
 | `distractors` | Thay danh sách distractor bằng `[]`. Không loại vật cần nhận diện. |
 | `camera` | Cố định toàn bộ `T_BC_mm` tại file calibration đã cung cấp và nội tại tại `camera.intrinsics`; bỏ cả extrinsic và intrinsic jitter. |
@@ -62,8 +62,10 @@ giống bit hoặc triệt tiêu mọi tương tác thị giác giữa các yế
 Mỗi `scene_*.json` lưu `ablation.protocol_version`, `factor` và `reference` đã giải
 quyết thành giá trị cụ thể. `specs/manifest.json` lưu thêm toàn bộ cấu hình generator,
 `T_BC_mm`, sigma extrinsic hiệu lực, nguồn sigma, `kappa`, seed và danh sách scene.
-Các trường `camera/lights/background/objects/distractors` của scene là dữ liệu
-thực tế renderer sử dụng. Manifest từ chối trộn nhánh, cấu hình, calibration,
+Các trường `camera/lights/environment/exposure/background/objects/distractors` của
+scene là dữ liệu thực tế renderer sử dụng. Bố trí đèn, phần ánh sáng của nền trên cao
+và độ lợi phơi sáng (`exposure.gain`, luồng riêng `SeedSequence([seed, index, 2])`) là
+factor tự do: giống nhau ở mọi nhánh của cùng seed và index. Manifest từ chối trộn nhánh, cấu hình, calibration,
 sigma, seed hoặc ghi đè scene index đã có. Các manifest cũ thiếu provenance này
 phải dùng thư mục chạy mới; không suy đoán cấu hình của một bộ ảnh lịch sử.
 

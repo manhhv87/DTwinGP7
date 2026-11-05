@@ -14,8 +14,14 @@ cell's own condition check passes (0 of 200+ renders).
 This module reads the render-side sections of config/synthgen.yaml (render, sensor,
 hard_profile), turns the profile into the flat scene elements the renderer builds,
 and writes and compares the render manifest. Both recipes use the profile: the
-sampler draws the upper sheet's colour (spec background.albedo_rgb) and the lamps
-around the profile's anchors, and the static elements stay as measured.
+sampler draws the upper sheet's colour (spec background.albedo_rgb) and the light
+around the profile's level, and the static elements stay as measured.
+
+The light is a set of 600 mm area luminaires above the cell plus a uniform overhead
+(the world), as the mirror top of the stainless case shows them in the training
+images; luminaire_lights() turns a drawn layout and level into the spec's lights and
+environment, so the sampler and the profile fit (scripts/fit_hard_profile.py) share
+one definition of the level: the irradiance at the card block's centre.
 
 Every number of the profile is fitted on the empty-table frames of the condition
 check (scripts/fit_hard_profile.py); the config comments say which.
@@ -34,14 +40,15 @@ from typing import Any
 import numpy as np
 
 try:
-    from .sensor_model import linear_to_srgb, srgb_to_linear
+    from .sensor_model import LUMINANCE_709, apply_sensor, linear_to_srgb, luma601, srgb_to_linear
 except ImportError:  # loaded as a top-level module by render_blenderproc.py
-    from sensor_model import linear_to_srgb, srgb_to_linear  # type: ignore[no-redef]
+    from sensor_model import (  # type: ignore[no-redef]
+        LUMINANCE_709, apply_sensor, linear_to_srgb, luma601, srgb_to_linear)
 
 RENDER_SECTIONS = ("render", "sensor", "hard_profile")
 RENDER_KEYS = ("samples", "denoiser", "diffuse_bounces", "glossy_bounces", "max_bounces",
                "transmission_bounces", "transparent_max_bounces", "view_transform",
-               "noise_threshold")
+               "noise_threshold", "reflectance_scale")
 MANIFEST_NAME = "render_manifest.json"
 MANIFEST_VERSION = 1
 # What has to be equal for two batches to count as rendered the same way. Two arms
@@ -81,8 +88,11 @@ def check_render_config(cfg: dict[str, Any]) -> None:
     if render["view_transform"] != "Standard":
         raise ValueError("render.view_transform must be Standard: the sensor model applies "
                          "the plain sRGB curve, and Filmic/AgX would tone-map twice")
+    if not 0.0 < float(render["reflectance_scale"]) <= 1.0:
+        raise ValueError("render.reflectance_scale must lie in (0, 1]: it converts physical "
+                         "specular reflectances into the albedo units of the config")
     prof = cfg["hard_profile"]
-    for key in ("table", "strip", "cards", "surround", "environment"):
+    for key in ("table", "strip", "cards", "surround"):
         if key not in prof:
             raise ValueError(f"hard_profile misses '{key}'")
     corners = prof["table"]["corners_mm"]
@@ -103,9 +113,6 @@ def check_render_config(cfg: dict[str, Any]) -> None:
     _rgb(cards["albedo_rgb"], "hard_profile.cards.albedo_rgb")
     for side in ("left", "right", "near"):
         _rgb(prof["surround"][f"{side}_albedo_rgb"], f"hard_profile.surround.{side}_albedo_rgb")
-    world = [float(v) for v in prof["environment"]["world_radiance_rgb"]]
-    if len(world) != 3 or any(v < 0.0 for v in world):
-        raise ValueError("hard_profile.environment.world_radiance_rgb must be 3 values >= 0")
 
 
 def load_render_config(path: str | Path) -> dict[str, Any]:
@@ -257,6 +264,95 @@ def read_cards(path: str | Path) -> list[tuple[int, float, float]]:
         if m:
             out.append((int(m.group(1)), float(m.group(2)), float(m.group(3))))
     return out
+
+
+# ────────────────────────────────────────────────────────────
+# Light: area luminaires and the uniform overhead
+# ────────────────────────────────────────────────────────────
+
+def panel_irradiance_factor(centre_mm: Any, size_mm: Any, point_mm: Any, n: int = 20) -> float:
+    """Irradiance at an upward-facing point per unit radiance of a horizontal,
+    downward-facing rectangular Lambertian panel: the integral of cos * cos / d^2
+    over the panel (midpoint rule on n x n cells), dimensionless. A panel covering
+    the whole sky gives pi, the irradiance of a uniform hemisphere of radiance 1."""
+    c = np.asarray(centre_mm, dtype=float)
+    p = np.asarray(point_mm, dtype=float)
+    dz = float(c[2] - p[2])
+    if dz <= 0.0:
+        raise ValueError("a luminaire must hang above the point it lights")
+    sx, sy = (float(v) for v in size_mm)
+    g = (np.arange(n) + 0.5) / n - 0.5
+    qx = c[0] + g[:, None] * sx - p[0]
+    qy = c[1] + g[None, :] * sy - p[1]
+    d2 = qx ** 2 + qy ** 2 + dz ** 2
+    return float((dz ** 2 / d2 ** 2).sum() * sx * sy / n ** 2)
+
+
+def area_light_power(radiance: float, size_mm: Any) -> float:
+    """Blender power (W) of an area light of the given size whose face has the given
+    radiance (render units, luminance): a Lambertian face emits pi * area * radiance.
+    scripts/fit_hard_profile.py checks this on its reference render (the cards of an
+    albedo-1 table lit to irradiance 1 must render at 1 / pi)."""
+    sx, sy = (float(v) * 1e-3 for v in size_mm)
+    return float(np.pi * float(radiance) * sx * sy)
+
+
+def luminaire_lights(centres_mm: list, weights: Any, overhead_share: float, irradiance: float,
+                     temps_k: list, tint_rgb: Any, size_mm: Any,
+                     reference_mm: Any) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Spec lights and environment for a luminaire layout and a light level.
+
+    irradiance is the luminance-weighted irradiance at reference_mm (the centre of the
+    card block on the table) in render units; the uniform overhead carries
+    overhead_share of it, each luminaire weights[i] of the rest. A luminaire's colour
+    (color_temp_k, as sensor_model.light_rgb renders it) has unit luminance, and so has
+    the overhead's tint, so these shares hold at the reference point whatever the colours.
+    """
+    share = float(overhead_share)
+    if not 0.0 <= share <= 1.0:
+        raise ValueError("overhead_share must lie in [0, 1]")
+    tint = np.asarray(tint_rgb, dtype=float)
+    tint = tint / float(LUMINANCE_709 @ tint)
+    lights = []
+    for centre, w, temp in zip(centres_mm, weights, temps_k):
+        g = panel_irradiance_factor(centre, size_mm, reference_mm)
+        radiance = float(w) * (1.0 - share) * float(irradiance) / g
+        lights.append({"type": "area", "position_mm": [float(v) for v in centre],
+                       "size_mm": [float(v) for v in size_mm],
+                       "energy_w": area_light_power(radiance, size_mm),
+                       "color_temp_k": float(temp), "irradiance_share": float(w)})
+    environment = {"overhead_share": share,
+                   "radiance_rgb": (share * float(irradiance) / np.pi * tint).tolist()}
+    return lights, environment
+
+
+# ────────────────────────────────────────────────────────────
+# Session exposure
+# ────────────────────────────────────────────────────────────
+
+def admitted_gain_range(sensor: dict[str, Any], upper_srgb: Any, lower_srgb: Any,
+                        luminance: Any = (10.0, 45.0), seed: int = 0) -> tuple[float, float]:
+    """Gains over which both table parts meet the check's luminance bounds.
+
+    Each part's colour at the fit gain is put through the sensor model as a flat
+    192 x 256 patch, noise on; the statistic is the median of 32 px block means of
+    Rec. 601 luma, as the condition check takes it. The upper (darker) part sets the
+    low end, the lower part the high end.
+    """
+    wb = np.asarray(sensor["white_balance_rgb"], dtype=float)
+    gains = np.exp(np.linspace(np.log(0.05), np.log(20.0), 241))
+
+    def level(srgb: Any, g: float) -> float:
+        x = np.broadcast_to(srgb_to_linear(np.asarray(srgb, dtype=float)) / wb / float(sensor["gain"]),
+                            (192, 256, 3)).astype(np.float32)
+        y = luma601(apply_sensor(x, sensor, np.random.default_rng(seed), exposure_gain=g).astype(float))
+        return float(np.median(y.reshape(6, 32, 8, 32).mean(axis=(1, 3))))
+
+    def gain_at(srgb: Any, target: float) -> float:
+        lv = np.array([level(srgb, g) for g in gains])
+        return float(np.exp(np.interp(np.log(target), np.log(lv), np.log(gains))))
+
+    return gain_at(upper_srgb, float(luminance[0])), gain_at(lower_srgb, float(luminance[1]))
 
 
 # ────────────────────────────────────────────────────────────

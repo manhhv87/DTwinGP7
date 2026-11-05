@@ -127,18 +127,27 @@ def unit_grain(shape: tuple[int, ...], sigma_px: float, rng: np.random.Generator
 
 
 def apply_sensor(linear_rgb: np.ndarray, sensor: dict[str, Any],
-                 rng: np.random.Generator | None) -> np.ndarray:
+                 rng: np.random.Generator | None, exposure_gain: float = 1.0) -> np.ndarray:
     """Scene-linear render (H, W, 3) to the 8-bit sRGB frame the camera would give.
 
     y = gain * white_balance * x, then noise of variance
         gain * shot_noise * y + gain**2 * read_noise
     (Poisson photon noise, whose variance grows with the signal, plus read noise,
-    both amplified by the analogue gain; gain 1 is the state the profile was fitted
-    in), with the grain of unit_grain, then the sRGB curve and rounding to 8 bits.
+    both amplified by the analogue gain), with the grain of unit_grain, then the sRGB
+    curve and rounding to 8 bits. gain = sensor["gain"] * exposure_gain:
+    sensor["gain"] is the gain at which the profile was fitted (the auto-exposure
+    state of the condition check), exposure_gain the scene's session exposure that
+    the sampler draws (spec["exposure"]["gain"]). In the dim light of the hard
+    condition the camera's automatic exposure does not hold the image level, and the
+    noise rises with the level as a gain change predicts: 2.03 at luma 21.5 and 2.54
+    at 30.3 on two condition checks, a ratio of 1.25, against 1.26 for a gain change
+    and 0.93 for a change of light at fixed gain.
     rng None leaves the noise out: the noise-free expectation, used to fit the profile.
     """
     check_sensor(sensor)
-    gain = float(sensor["gain"])
+    if not float(exposure_gain) > 0.0:
+        raise ValueError(f"exposure_gain must be positive, got {exposure_gain}")
+    gain = float(sensor["gain"]) * float(exposure_gain)
     y = np.asarray(linear_rgb, dtype=np.float32) * (
         gain * np.asarray(sensor["white_balance_rgb"], dtype=np.float32))
     if rng is not None:

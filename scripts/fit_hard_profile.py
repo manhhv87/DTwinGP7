@@ -3,9 +3,9 @@
 fit_hard_profile.py
 ───────────────────
 Fit the hard-condition scene profile of the synthetic generator (hard_profile,
-sensor and background sections of config/synthgen.yaml, lighting.anchor_intensity_w)
+sensor and background sections of config/synthgen.yaml, lighting.anchor_irradiance)
 to the empty-table frames of the cell's condition check, and score rendered frames
-with the same check.
+with the same check and with the box measure of the parts.
 
 Only the frames taken for the condition check are used, never a trial frame or a
 test image: results/e2kho-1/do_sang_e2kho-1.png and results/e2kho-2/do_sang_e2kho-2.png
@@ -15,12 +15,20 @@ e2kho-2; their untinted parts are camera values, and the difference of two
 checks isolates the sensor noise), and, for one ratio only, the standard-condition
 check results/e2chuan-2/do_sang_e2chuan-2.png, which shows the white cards on the
 bare table whose colour the object colours of the config are measured against.
+That frame, like the do_sang frame of 29/10, is stored with red and blue swapped
+(the yellow housing of the emergency stop is blue in it); SWAPPED_RB lists them and
+read_rgb() swaps them back.
 
 The fit needs one reference render, because every element of the static scene is a
 flat Lambertian surface on (or just below) the table plane: none lights another, so
-the scene-linear image is exactly albedo times irradiance, and the irradiance of
-the lamps comes from one render with all albedos 1. The room (a uniform world)
-adds its radiance times the albedo on top.
+the scene-linear image is exactly albedo times irradiance. The light is fitted in
+the nominal layout of the hard condition (nominal_light: one luminaire at the middle
+of the far ranges, the overhead share at the geometric middle of its range): the
+luminaire's irradiance comes from one render with all albedos 1, lit to irradiance
+REF_IRRADIANCE at the card block's centre, and the uniform overhead adds its
+radiance times the albedo on top. The fitted level, lighting.anchor_irradiance, is
+the irradiance at that centre; the sampler spreads it over its layouts with
+hard_profile.luminaire_lights, which keeps it there.
 
 Steps (paths of the paper folder and of the cell branch's condition_check.yaml):
     python scripts/fit_hard_profile.py measure --results <paper folder>/results \\
@@ -53,13 +61,37 @@ import numpy as np
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.synthgen.hard_profile import load_render_config, static_elements  # noqa: E402
+from src.synthgen.hard_profile import (  # noqa: E402
+    load_render_config, luminaire_lights, static_elements)
 from src.synthgen.sensor_model import (  # noqa: E402
-    apply_sensor, highpass_noise_std, linear_to_srgb, luma601, srgb_to_linear)
+    LUMINANCE_709, apply_sensor, highpass_noise_std, linear_to_srgb, luma601, srgb_to_linear)
 
-REF_LAMP_W = 10.0          # lamp power of the reference render
+REF_IRRADIANCE = 1.0       # luminaire irradiance at the card block's centre in the reference render
 CARD_MM = 48.0             # card side of the standard-condition frame (27_make_position_cards.py)
 FRAMES = {"e2kho-1": "e2kho-1/do_sang_e2kho-1.png", "e2kho-2": "e2kho-2/do_sang_e2kho-2.png"}
+# Frames of the results folder stored with red and blue swapped: the yellow housing of
+# the emergency stop shows blue in them. Only the first one enters the fit.
+SWAPPED_RB = ("e2chuan-2/do_sang_e2chuan-2.png",
+              "khong_dung/e2kho-1_doichung_thu_20261029/do_sang_e2kho-1.png")
+
+
+def read_rgb(results: Path, rel: str) -> np.ndarray:
+    """RGB frame (0-255) of the results folder, with the stored R/B swap undone."""
+    import cv2
+
+    bgr = cv2.imread(str(results / rel))
+    if bgr is None:
+        raise FileNotFoundError(results / rel)
+    # cv2 reads BGR; a frame written with R and B swapped is RGB in that order.
+    return (bgr if rel in SWAPPED_RB else bgr[..., ::-1]).copy()
+
+
+def nominal_light(lit: dict, z_table: float) -> tuple[list[float], float]:
+    """Nominal layout of the hard light: one luminaire at the middle of the far ranges
+    and of the height range, and the overhead share at the geometric middle of its range."""
+    centre = [float(np.mean(lit["far_luminaire_x_mm"])), float(np.mean(lit["far_luminaire_y_mm"])),
+              float(z_table) + float(np.mean(lit["luminaire_height_mm"]))]
+    return centre, float(np.sqrt(np.prod(lit["overhead_share_range"])))
 
 
 # ────────────────────────────────────────────────────────────
@@ -337,7 +369,6 @@ def noise_targets(results: Path, crit: dict) -> dict:
 
 
 def cmd_measure(args) -> int:
-    import cv2
     import yaml
 
     results = Path(args.results)
@@ -345,14 +376,14 @@ def cmd_measure(args) -> int:
     T_BC = np.load(PROJECT_ROOT / "config/calibration/T_base_camera.npy")
     syn = yaml.safe_load(open(PROJECT_ROOT / "config/synthgen.yaml", encoding="utf-8"))
     cam = Camera(T_BC, syn["camera"]["intrinsics"], syn["objects"]["table_z_mm"])
-    frames = {k: cv2.imread(str(results / p))[..., ::-1].copy() for k, p in FRAMES.items()}
+    frames = {k: read_rgb(results, p) for k, p in FRAMES.items()}
     geo = {k: measure_geometry(f, cam) for k, f in frames.items()}
     g = geo["e2kho-2"]
     masks = region_masks(frames["e2kho-2"].shape, g)
     app = {k: appearance(f, crit, masks) for k, f in frames.items()}
     from src.synthgen.hard_profile import read_cards
     cards = read_cards(PROJECT_ROOT / "config/pose_lists/hard_v2.csv.cards.txt")
-    std = cv2.imread(str(results / "e2chuan-2/do_sang_e2chuan-2.png"))[..., ::-1].copy()
+    std = read_rgb(results, "e2chuan-2/do_sang_e2chuan-2.png")
     ratio, card_std = card_ratio_standard(std, cam, cards)
     out = {"geometry": geo, "appearance": app, "card_over_table_standard": ratio,
            "card_standard_srgb": card_std, "noise": noise_targets(results, crit)}
@@ -375,8 +406,8 @@ def cmd_measure(args) -> int:
 
 
 def cmd_reference(args) -> int:
-    """Spec and config of the reference render: every albedo 1, the anchor lamps at
-    REF_LAMP_W each, no room light, no sensor effects."""
+    """Spec and config of the reference render: every albedo 1, the nominal luminaire
+    lighting the card block's centre to REF_IRRADIANCE, no overhead, no sensor effects."""
     import yaml
 
     out = Path(args.out)
@@ -388,16 +419,20 @@ def cmd_reference(args) -> int:
     prof["cards"]["albedo_rgb"] = [1.0, 1.0, 1.0]
     for side in ("left", "right", "near"):
         prof["surround"][f"{side}_albedo_rgb"] = [1.0, 1.0, 1.0]
-    prof["environment"]["world_radiance_rgb"] = [0.0, 0.0, 0.0]
     syn["sensor"].update({"gain": 1.0, "white_balance_rgb": [1.0, 1.0, 1.0],
                           "shot_noise": 0.0, "read_noise": 0.0})
     (out / "reference.yaml").write_text(yaml.safe_dump(syn, sort_keys=False), encoding="utf-8")
     T_BC = np.load(PROJECT_ROOT / "config/calibration/T_base_camera.npy")
     lit = syn["lighting"]
-    spec = {"spec_version": 1, "index": 0, "seed": 0, "mode": "reference",
+    z = float(syn["objects"]["table_z_mm"])
+    centre, _ = nominal_light(lit, z)
+    lights, _ = luminaire_lights([centre], [1.0], 0.0, REF_IRRADIANCE, [lit["anchor_color_temp_k"]],
+                                 lit["overhead_tint_rgb"], lit["luminaire_size_mm"],
+                                 [*lit["reference_point_mm"], z])
+    spec = {"spec_version": 3, "index": 0, "seed": 0, "mode": "reference",
             "camera": {"T_BC_mm": T_BC.tolist(), "intrinsics": syn["camera"]["intrinsics"]},
-            "lights": [{"type": "point", "position_mm": p, "energy_w": REF_LAMP_W,
-                        "color_temp_k": lit["anchor_color_temp_k"]} for p in lit["anchor_positions_mm"]],
+            "lights": lights,
+            "environment": {"overhead_share": 0.0, "radiance_rgb": [0.0, 0.0, 0.0]},
             "background": {"kind": "plane", "z_mm": syn["objects"]["table_z_mm"],
                            "albedo_rgb": [1.0, 1.0, 1.0], "roughness": 1.0},
             "objects": [], "distractors": []}
@@ -459,14 +494,28 @@ def cmd_fit(args) -> int:
     for n in names:
         if n.startswith("card_"):
             rho[n] = rho_card.copy()
-    scale, wb, world = 1.0, np.ones(3), np.zeros(3)
+    # The nominal light: the luminaire carries 1 - share of the level at the card
+    # block's centre, the uniform overhead the share, as radiance level * share / pi
+    # in its tint of unit luminance.
+    lit = syn["lighting"]
+    _, share = nominal_light(lit, cfg["table_z_mm"])
+    tint = np.asarray(lit["overhead_tint_rgb"], dtype=float)
+    tint = tint / float(LUMINANCE_709 @ tint)
+    # Check of the area-light convention (hard_profile.area_light_power): the card at
+    # the reference point is lit to REF_IRRADIANCE, so an albedo of 1 renders at 1 / pi.
+    at_ref = float(np.median(I_l[owner["card_04"]] @ LUMINANCE_709))
+    print(f"reference render: card_04 at {at_ref:.4f}, {at_ref * np.pi / REF_IRRADIANCE:.3f} x the "
+          f"irradiance it was lit to (over 1/pi)")
+    level, wb = 1.0, np.ones(3)
 
-    def image(sc, wbg, wrl, albedo):
+    def light(lv):
+        return lv * ((1.0 - share) * I_l / REF_IRRADIANCE + share / np.pi * tint)
+
+    def image(lv, wbg, albedo):
         alb = np.zeros(I_l.shape)
         for n in names:
             alb[owner[n]] = albedo[n]
-        lin = alb * (sc * I_l + wrl)
-        return linear_to_srgb(lin * wbg) * 255.0
+        return linear_to_srgb(alb * light(lv) * wbg) * 255.0
 
     def set_part(prefix, rgb):
         for n in names:
@@ -475,13 +524,10 @@ def cmd_fit(args) -> int:
 
     sides = {"left": "surround_left", "right": "surround_right", "near": "surround_near"}
     for it in range(4):
-        # Room radiance: the median off-table colour, in the units the render produces
-        # before the white balance.
-        world = srgb_to_linear(np.asarray(tgt["surround_all"]) / 255.0) / wb
         # Light level from the card brightness of the check, white balance from the card colour.
-        f = lambda s: condition_measure(image(s, wb, world, rho), crit)["card_brightness"] - tgt_card_l  # noqa: E731
-        scale = brentq(f, 1e-4, 1e3, xtol=1e-6)
-        m = condition_measure(image(scale, wb, world, rho), crit)
+        f = lambda v: condition_measure(image(v, wb, rho), crit)["card_brightness"] - tgt_card_l  # noqa: E731
+        level = brentq(f, 1e-4, 1e3, xtol=1e-7)
+        m = condition_measure(image(level, wb, rho), crit)
         got = srgb_to_linear(np.asarray(m["card_rgb"]) / 255.0)
         want = srgb_to_linear(np.asarray(tgt["card_rgb"]) / 255.0)
         wb = wb * (want / got) / (want / got)[1]
@@ -493,7 +539,7 @@ def cmd_fit(args) -> int:
                     r[c] = a
                     alb = dict(rho)
                     alb[part] = r
-                    return condition_measure(image(scale, wb, world, alb), crit)[area]["rgb"][c] - tgt[key][c]
+                    return condition_measure(image(level, wb, alb), crit)[area]["rgb"][c] - tgt[key][c]
                 rho[part][c] = brentq(g, 1e-5, 1.0, xtol=1e-7)
         for part, key, mask in [("strip", "strip", masks["strip"])] + \
                 [(f"surround_{s}", s, masks[v]) for s, v in sides.items()]:
@@ -503,22 +549,21 @@ def cmd_fit(args) -> int:
                     r = rho[part].copy()
                     r[c] = a
                     alb[part] = r
-                    return float(np.median(image(scale, wb, world, alb)[..., c][mask])) - tgt[key][c]
+                    return float(np.median(image(level, wb, alb)[..., c][mask])) - tgt[key][c]
                 lo, hi = h(1e-5), h(1.0)
                 rho[part][c] = 1e-5 if lo > 0 else (1.0 if hi < 0 else brentq(h, 1e-5, 1.0, xtol=1e-7))
-        print(f"iteration {it}: lamp scale {scale:.4f}, wb {np.round(wb, 4)}, world {np.round(world, 5)}")
+        print(f"iteration {it}: level {level:.4f}, wb {np.round(wb, 4)}")
 
-    final = image(scale, wb, world, rho)
+    final = image(level, wb, rho)
     m = condition_measure(final, crit)
     to_srgb = lambda r: [round(float(v), 4) for v in linear_to_srgb(r)]   # noqa: E731
     fitted = {
-        "lighting.anchor_intensity_w": round(REF_LAMP_W * scale, 3),
+        "lighting.anchor_irradiance": round(level, 4),
         "background.anchor_albedo_rgb": to_srgb(rho["sheet_upper"]),
         "hard_profile.table.lower_sheet_ratio": [round(float(v), 4) for v in rho["sheet_lower"] / rho["sheet_upper"]],
         "hard_profile.strip.albedo_rgb": to_srgb(rho["strip"]),
         "hard_profile.cards.albedo_rgb": to_srgb(rho_card),
         **{f"hard_profile.surround.{s}_albedo_rgb": to_srgb(rho[f"surround_{s}"]) for s in sides},
-        "hard_profile.environment.world_radiance_rgb": [round(float(v), 5) for v in world],
         "sensor.white_balance_rgb": [round(float(v), 4) for v in wb],
     }
     print(json.dumps(fitted, indent=1))
@@ -526,7 +571,7 @@ def cmd_fit(args) -> int:
     print("targets: cards %.1f, upper %s, lower %s" % (tgt_card_l, np.round(tgt["upper"], 1), np.round(tgt["lower"], 1)))
     # Linear colour (before the white balance) of the two noise levels: the upper sheet
     # and a card, as the fitted profile renders them.
-    lin_of = lambda part: np.median((rho[part] * (scale * I_l + world))[owner[part]], axis=0)  # noqa: E731
+    lin_of = lambda part: np.median((rho[part] * light(level))[owner[part]], axis=0)  # noqa: E731
     levels = {"sheet": lin_of("sheet_upper").tolist(), "cards": lin_of("card_04").tolist()}
     Path(args.out).write_text(json.dumps({"fitted": fitted, "targets": tgt, "noise_levels_linear": levels},
                                          indent=1), encoding="utf-8")
@@ -591,13 +636,58 @@ def class_brightness(rgb: np.ndarray, inst: np.ndarray, meta: dict) -> dict[str,
     return out
 
 
+def top_box_ratios(rgb: np.ndarray, inst: np.ndarray, meta: dict, spec: dict,
+                   sizes: dict) -> list[tuple[str, float]]:
+    """Box measure of the parts, as the real validation frames are measured.
+
+    Linear luminance (Rec. 709 of the linearised frame), median of the 16 px box at the
+    projected centre of each part's top face, over the median of the bare upper sheet
+    (rows 30-455, columns 230-1080, without the card block and without the parts
+    dilated 25 px). A support with a part on it, or a box that the part's own
+    instance does not fill to 80%, is not measured.
+    """
+    import cv2
+
+    lum = srgb_to_linear(rgb.astype(float) / 255.0) @ LUMINANCE_709
+    labelled = [int(k) for k in meta["instances"]]
+    parts = cv2.dilate(np.isin(inst, labelled).astype(np.uint8), np.ones((51, 51), np.uint8)).astype(bool)
+    upper = np.zeros(lum.shape, bool)
+    upper[30:455, 230:1080] = True
+    upper[220:400, 430:845] = False
+    ref = float(np.median(lum[upper & ~parts]))
+    cam = spec["camera"]
+    T = np.asarray(cam["T_BC_mm"], dtype=float)
+    intr = cam["intrinsics"]
+    supports = {o["stack_on_index"] for o in spec["objects"] if "stack_on_index" in o}
+    out = []
+    for k, o in enumerate(spec["objects"]):
+        if k in supports:
+            continue
+        top = np.array([o["xyz_mm"][0], o["xyz_mm"][1], o["xyz_mm"][2] + sizes[o["mesh"]][2]])
+        pc = T[:3, :3].T @ (top - T[:3, 3])
+        u = intr["fx"] * pc[0] / pc[2] + intr["ppx"]
+        v = intr["fy"] * pc[1] / pc[2] + intr["ppy"]
+        u0, v0 = int(round(u)) - 8, int(round(v)) - 8
+        if u0 < 0 or v0 < 0 or u0 + 17 > lum.shape[1] or v0 + 17 > lum.shape[0]:
+            continue
+        ids = inst[v0:v0 + 17, u0:u0 + 17].ravel()
+        vals, counts = np.unique(ids, return_counts=True)
+        own = int(vals[np.argmax(counts)])
+        if counts.max() < 0.8 * ids.size or meta["instances"].get(str(own)) != int(o["class_id"]):
+            continue
+        out.append((o["class_name"], float(np.median(lum[v0:v0 + 17, u0:u0 + 17])) / ref))
+    return out
+
+
 def cmd_score(args) -> int:
-    """Condition check, noise and class brightness of every rendered frame of a dir."""
+    """Condition check, noise, class brightness and the box measure of every rendered
+    frame of a dir (the box measure needs the specs, --scenes)."""
     import cv2
     import yaml
 
     crit = yaml.safe_load(open(args.criteria, encoding="utf-8"))
-    rows, classes = [], {}
+    sizes = yaml.safe_load(open(PROJECT_ROOT / "config/synthgen.yaml", encoding="utf-8"))["objects"]["mesh_sizes_mm"]
+    rows, classes, boxes = [], {}, {}
     for p in sorted(Path(args.renders).glob("frame_*_rgb.png")):
         rgb = cv2.imread(str(p))[..., ::-1].copy()
         m = condition_measure(rgb, crit)
@@ -618,10 +708,20 @@ def cmd_score(args) -> int:
             row["class_luma"] = {k: [round(v, 1) for v in vs] for k, vs in cb.items()}
             for k, vs in cb.items():
                 classes.setdefault(k, []).extend(v / m["upper_area"]["brightness"] for v in vs)
+            if args.scenes:
+                spec = json.loads((Path(args.scenes) / meta["scene"]).read_text(encoding="utf-8"))
+                row["exposure_gain"] = meta.get("exposure_gain")
+                row["box_over_upper_sheet"] = [[c, round(r, 2)] for c, r in
+                                               top_box_ratios(rgb, inst, meta, spec, sizes)]
+                for c, r in row["box_over_upper_sheet"]:
+                    boxes.setdefault(c, []).append(r)
         rows.append(row)
         print(json.dumps(row))
     summary = {"frames": len(rows), "pass": sum(r["pass"] for r in rows),
-               "class_over_upper_sheet": {k: round(float(np.median(v)), 2) for k, v in sorted(classes.items())}}
+               "class_over_upper_sheet": {k: round(float(np.median(v)), 2) for k, v in sorted(classes.items())},
+               "box_over_upper_sheet": {k: {"median": round(float(np.median(v)), 2), "n": len(v),
+                                            "range": [round(min(v), 2), round(max(v), 2)]}
+                                        for k, v in sorted(boxes.items())}}
     print(json.dumps(summary))
     if args.out:
         Path(args.out).write_text(json.dumps({"rows": rows, "summary": summary}, indent=1), encoding="utf-8")
@@ -649,6 +749,7 @@ def main(argv: list[str] | None = None) -> int:
     s = sub.add_parser("score")
     s.add_argument("--renders", required=True)
     s.add_argument("--criteria", required=True)
+    s.add_argument("--scenes", default=None, help="spec dir of the renders, for the box measure")
     s.add_argument("--out", default=None)
     args = ap.parse_args(argv)
     return {"measure": cmd_measure, "reference": cmd_reference, "fit": cmd_fit, "noise": cmd_noise,

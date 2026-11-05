@@ -13,7 +13,9 @@ Three-step flow (rendering runs in the blenderproc env, NOT the repo venv):
        python scripts/20_generate_synth.py --mode blind --n 3000 \
            --seed 0 --out data/synth/blind
      C3 loop iteration (budget and seed from 21_mine_failures.py) and its E4 control
-     (as many unconditioned anchored scenes, with the control seed the report checked):
+     (as many anchored scenes, with the control seed the report checked, unconditioned
+     but for the session lighting the report's allocation names, so that both arms
+     render the same light and exposure distributions):
        python scripts/20_generate_synth.py --from-failures results/failure_modes.json \
            --out data/synth/loop_k1 --seed 10000
        python scripts/20_generate_synth.py --control-for results/failure_modes.json \
@@ -36,7 +38,10 @@ another seed shares no scene with this one, whatever its index range, while one
 seed reused must not reuse an index range. Give every batch its own seed.
 --from-failures and --control-for take the seed and scene count that the report's
 generation plan checked (21_mine_failures.py --guided-seed/--control-seed) and
-refuse a --seed or --n that differs, or a report without a checked seed.
+refuse a --seed or --n that differs, or a report without a checked seed. Both refuse
+a report whose allocation names a lighting label the hard profile does not render
+(anchored_config.LIGHTING_CONDITION_SCALE), and the control refuses one that names
+more than one.
 
 Anchored sampling needs config/calibration/T_base_camera_sigma.json (02_run_
 calibration.py --bootstrap 200). Without it the run stops; --allow-sigma-fallback
@@ -52,7 +57,8 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.synthgen import SceneSampler, SynthgenConfig, load_sigma_json  # noqa: E402
+from src.synthgen import (  # noqa: E402
+    LIGHTING_CONDITION_SCALE, SceneSampler, SynthgenConfig, load_sigma_json)
 from src.synthgen.scene_sampler import ABLATION_FACTORS, SPEC_VERSION  # noqa: E402
 from src.utils import setup_logging  # noqa: E402
 
@@ -212,6 +218,18 @@ def main(argv: list[str] | None = None) -> int:
         except ValueError as exc:
             log.error("Refused: %s", exc)
             return 1
+        # Every bin of a hard-condition session carries its lighting label; the profile
+        # renders only the labels it was fitted for, and refuses the rest up front.
+        labels = {(e.get("condition") or {}).get("lighting") for e in allocation} - {None}
+        unknown = sorted(labels - set(LIGHTING_CONDITION_SCALE))
+        if unknown:
+            log.error("%s holds lighting labels %s the hard profile does not render (%s)",
+                      report_path, unknown, sorted(LIGHTING_CONDITION_SCALE))
+            return 1
+        if args.control_for and len(labels) > 1:
+            log.error("%s mixes lighting labels %s; the control batch renders one session "
+                      "condition", report_path, sorted(labels))
+            return 1
 
     if args.from_failures:
         sampler = SceneSampler(config, T_BC, mode="anchored", kappa=args.kappa,
@@ -230,11 +248,17 @@ def main(argv: list[str] | None = None) -> int:
     else:
         sampler = SceneSampler(config, T_BC, mode=args.mode, kappa=args.kappa,
                                sigma=sigma, seed=seed, ablation=args.ablation)
-        sampler.write_specs(specs_dir, n)
+        # The control batch renders the session's lighting, as the guided arm does,
+        # and nothing else of the failure bins.
+        condition = None
+        if args.control_for and labels:
+            condition = {"class_name": None, "region": None, "lighting": sorted(labels)[0]}
+        sampler.write_specs(specs_dir, n, condition=condition)
         total = n
 
-    log.info("Wrote %d scene specs → %s (seed %d; sigma source: %s; ablation: %s)",
-             total, specs_dir, seed, sampler.sigma_source, sampler.ablation)
+    log.info("Wrote %d scene specs → %s (seed %d; sigma source: %s; ablation: %s; "
+             "exposure gain log-uniform in %s)", total, specs_dir, seed, sampler.sigma_source,
+             sampler.ablation, config.exposure.gain_range)
     log.info("Next step — render in the blenderproc env:")
     log.info("  blenderproc run src/synthgen/render_blenderproc.py -- "
              "--scenes %s --out %s", specs_dir, out / "render")

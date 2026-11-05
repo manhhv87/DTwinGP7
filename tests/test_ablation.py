@@ -11,6 +11,7 @@ import numpy as np
 import pytest
 
 from src.synthgen import SceneSampler, SynthgenConfig
+from src.synthgen.hard_profile import luminaire_lights
 from src.synthgen.scene_sampler import footprint, footprints_overlap
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -68,9 +69,18 @@ def test_only_selected_factor_changes(config, factor):
                      for d in after.pop("distractors")]
             rest = iter(looks)
             assert all(any(m == d for d in rest) for m in moved)
+        elif factor == "illumination":
+            # The measured light factors move to the profile; the free ones (where the
+            # luminaires hang, how they share the light, the overhead share and the
+            # exposure) stay as drawn.
+            lb, la = before.pop("lights"), after.pop("lights")
+            eb, ea = before.pop("environment"), after.pop("environment")
+            assert [(li["position_mm"], li["irradiance_share"]) for li in lb] == \
+                [(li["position_mm"], li["irradiance_share"]) for li in la]
+            assert eb["overhead_share"] == ea["overhead_share"]
+            changed |= lb != la or eb != ea
         else:
-            key = "lights" if factor == "illumination" else factor
-            changed |= before.pop(key) != after.pop(key)
+            changed |= before.pop(factor) != after.pop(factor)
         assert before == after, "an unrelated factor changed in the paired scene"
     assert changed, "intervention made no change across the sampled scenes"
 
@@ -87,11 +97,16 @@ def test_fixed_settings_use_supplied_anchors(config):
     camera = SceneSampler(config, T_BC, ablation="camera").sample(0)["camera"]
     assert camera == {"T_BC_mm": T_BC.tolist(),
                       "intrinsics": config.camera.intrinsics}
-    lights = SceneSampler(config, T_BC, ablation="illumination").sample(0)["lights"]
-    assert lights == [{"type": "point", "position_mm": pos,
-                       "energy_w": config.lighting.anchor_intensity_w,
-                       "color_temp_k": config.lighting.anchor_color_temp_k}
-                      for pos in config.lighting.anchor_positions_mm]
+    lit = config.lighting
+    full = SceneSampler(config, T_BC).sample(0)
+    fixed = SceneSampler(config, T_BC, ablation="illumination").sample(0)
+    lights, environment = luminaire_lights(
+        [li["position_mm"] for li in full["lights"]], [li["irradiance_share"] for li in full["lights"]],
+        full["environment"]["overhead_share"], lit.anchor_irradiance,
+        [lit.anchor_color_temp_k] * len(full["lights"]), lit.overhead_tint_rgb, lit.luminaire_size_mm,
+        [*lit.reference_point_mm, config.objects.table_z_mm])
+    assert fixed["lights"] == lights and fixed["environment"] == environment
+    assert fixed["exposure"] == full["exposure"]
     bg = SceneSampler(config, T_BC, ablation="background").sample(0)["background"]
     assert bg == {"kind": "plane", "z_mm": config.objects.table_z_mm,
                   "albedo_rgb": config.background.anchor_albedo_rgb,
@@ -228,7 +243,7 @@ def test_manifest_rejects_mixing_treatments_before_writing(config, tmp_path, cha
     if change == "factor":
         kwargs["ablation"] = "background"
     elif change == "configuration":
-        config.lighting.anchor_intensity_w += 1
+        config.lighting.anchor_irradiance += 1
     elif change == "seed":
         kwargs["seed"] = 20
     else:
