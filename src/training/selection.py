@@ -5,8 +5,10 @@ mask mAP@0.5:0.95 on real validation, the latest epoch on ties (Ultralytics
 rewrites best.pt when a later epoch equals the best score). kappa is chosen by
 the highest mean of that score over the declared seeds, ties to the smaller
 kappa; within a configuration the deployed seed is the run with the highest
-score, ties to the lowest seed. Scores are compared unrounded, and means as
-exact fractions of the recorded floats, so no rounding can create or break a tie.
+score, ties to the lowest seed. Scores are the trainer's fitness as Ultralytics holds
+it while training (box plus mask mAP, rounded once to 5 decimals; best.pt is kept by
+it), compared as recorded, and means are exact fractions of the recorded floats, so no
+further rounding can create or break a tie.
 
 Each run is re-checked against its own record before it is used: complete, the
 selected epoch equal to the best of its validation history, that history holding
@@ -25,10 +27,12 @@ import json
 from pathlib import Path
 from typing import Any
 
-# results.csv stores scores with six significant digits (Ultralytics "%.6g").
-CSV_TOLERANCE = 1e-5
+# results.csv stores the 5-decimal metrics with six significant digits (Ultralytics
+# "%.6g"); the score is the fitness rounded once, so box + mask of the CSV may differ
+# from it by one unit in the 5th decimal.
+CSV_TOLERANCE = 1e-5 + 1e-9
 RULES = {
-    "score": "box mAP50-95 + mask mAP50-95 on real validation, unrounded",
+    "score": "box mAP50-95 + mask mAP50-95 on real validation, the trainer's fitness (5 decimals)",
     "checkpoint": "highest score within the run; latest epoch on ties",
     "kappa": "highest mean score over the declared seeds, exact; smaller kappa on ties",
     "deployed_seed": "highest score within the configuration; lowest seed on ties",
@@ -81,10 +85,12 @@ def load_run(package: Path, seed: int, epochs: int | None = None) -> dict[str, A
     for row, entry in zip(rows, history):
         try:
             epoch = int(float(row["epoch"]))
-            score = float(row["metrics/mAP50-95(B)"]) + float(row["metrics/mAP50-95(M)"])
+            box, mask = float(row["metrics/mAP50-95(B)"]), float(row["metrics/mAP50-95(M)"])
         except (KeyError, ValueError) as exc:
             raise ValueError(f"{where}: unreadable results.csv row: {exc}") from exc
-        if epoch != entry["epoch"] or abs(score - entry["score"]) > CSV_TOLERANCE:
+        if (epoch != entry["epoch"] or abs(box - entry["box_map50_95"]) > CSV_TOLERANCE
+                or abs(mask - entry["mask_map50_95"]) > CSV_TOLERANCE
+                or abs(box + mask - entry["score"]) > 2 * CSV_TOLERANCE):
             raise ValueError(f"{where}: results.csv epoch {epoch} disagrees with the run record")
     return {
         "package": str(Path(package).resolve()), "seed": seed,

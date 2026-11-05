@@ -135,6 +135,24 @@ def test_each_run_is_rechecked_against_its_history_and_csv(tmp_path, real, runne
         load_run(package, 0)
 
 
+def test_score_is_the_trainers_rounded_fitness(tmp_path, real, runner):
+    """While training, Ultralytics holds box, mask and fitness rounded to 5 decimals, so
+    the recorded score may differ from box + mask of results.csv by 1e-5; more is refused."""
+    package = e3_package(tmp_path, real, runner, "k2", seeds=[0], epochs=2)
+    finish(package, {0: [(0.77124, 0.77346), (0.70000, 0.70000)]})
+    run = package / "runs/seed0"
+    record = json.loads((run / "run_record.json").read_text())
+    record["validation_history"][0]["score"] = 1.54469          # round(0.771236 + 0.773456, 5)
+    record["selected_validation"] = record["validation_history"][0]
+    (run / "run_record.json").write_text(json.dumps(record))
+    assert load_run(package, 0, 2)["score"] == 1.54469
+    record["validation_history"][0]["score"] = 1.54467
+    record["selected_validation"] = record["validation_history"][0]
+    (run / "run_record.json").write_text(json.dumps(record))
+    with pytest.raises(ValueError, match="disagrees"):
+        load_run(package, 0, 2)
+
+
 def test_a_run_shorter_than_the_recipe_is_refused(tmp_path, real, runner):
     """A complete-looking record of 3 epochs in a 130-epoch package does not compete."""
     package = e3_package(tmp_path, real, runner, "k2", seeds=[0])

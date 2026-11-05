@@ -20,6 +20,14 @@ def test_validation_uses_unrounded_composite_and_epoch():
     result = runner.validation_record(trainer)
     assert result["epoch"] == 8
     assert result["score"] == 1.700000010
+    # Ultralytics 8.4.66 rounds the metrics and the fitness to 5 decimals while training:
+    # box 0.771234 and mask 0.773456 are held as 0.77123 and 0.77346, their sum 1.54469 as
+    # 1.54469, but 0.771236 + 0.773456 = 1.544692 is held as 1.54469 against 0.77124 + 0.77346.
+    rounded = SimpleNamespace(metrics={"metrics/mAP50-95(B)": round(0.771236, 5),
+                                       "metrics/mAP50-95(M)": round(0.773456, 5)},
+                              fitness=round(0.771236 + 0.773456, 5), epoch=0)
+    assert abs(rounded.fitness - sum(rounded.metrics.values())) > 9e-6     # the case that failed
+    assert runner.validation_record(rounded)["score"] == rounded.fitness   # the trainer's fitness
     trainer.fitness = 0.8
     with pytest.raises(ValueError, match="criterion"):
         runner.validation_record(trainer)

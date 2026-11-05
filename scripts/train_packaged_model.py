@@ -93,15 +93,26 @@ def check_coco_initializer(root: Path, initial: dict) -> None:
                          "of the E2 initializer; replace it with that file")
 
 
+# Ultralytics 8.4.66 rounds every validation metric, and the fitness, to 5 decimals
+# while training (engine/validator.py: "return results as 5 decimal place floats").
+# The fitness is the sum of the two unrounded mAPs, rounded once; the sum of the two
+# rounded mAPs can differ from it by one unit in the 5th decimal.
+METRIC_DECIMALS = 5
+ROUNDING_TOLERANCE = 10.0 ** -METRIC_DECIMALS + 1e-9
+
+
 def validation_record(trainer) -> dict:
-    """Capture unrounded scores at checkpoint-save time, before final re-validation."""
+    """Scores at checkpoint-save time, before final re-validation, as Ultralytics holds
+    them while training (5 decimals). The score is the trainer's fitness, the number
+    Ultralytics keeps best.pt by; it must equal box + mask mAP50-95 up to that rounding."""
     box = float(trainer.metrics["metrics/mAP50-95(B)"])
     mask = float(trainer.metrics["metrics/mAP50-95(M)"])
     fitness = float(trainer.fitness)
     if not all(math.isfinite(x) for x in (box, mask, fitness)):
         raise ValueError("Non-finite validation score")
-    if not (0 <= box <= 1 and 0 <= mask <= 1) or not math.isclose(fitness, box + mask, abs_tol=1e-12):
-        raise ValueError("Trainer fitness differs from the declared box-plus-mask criterion")
+    if not (0 <= box <= 1 and 0 <= mask <= 1) or abs(fitness - (box + mask)) > ROUNDING_TOLERANCE:
+        raise ValueError(f"Trainer fitness {fitness} differs from the declared box-plus-mask criterion "
+                         f"{box} + {mask} by more than the 5-decimal rounding")
     return {"epoch": int(trainer.epoch) + 1, "box_map50_95": box,
             "mask_map50_95": mask, "score": fitness}
 
@@ -221,7 +232,7 @@ def run_training(root: Path, config: dict, manifest: dict, seeds: list[int], dev
             best = output / "weights" / "best.pt"
             record["checkpoint"] = best.relative_to(root).as_posix()
             record["checkpoint_sha256"] = sha256(best)
-            # Model.train reloads best.pt; compare its unrounded saved fitness to the callback.
+            # Model.train reloads best.pt; compare its saved fitness to the callback's.
             saved_fitness = float(model.ckpt["train_metrics"]["fitness"])
             if not math.isclose(saved_fitness, record["selected_validation"]["score"], abs_tol=1e-12):
                 raise ValueError("Saved best checkpoint does not match the recorded selection score")
