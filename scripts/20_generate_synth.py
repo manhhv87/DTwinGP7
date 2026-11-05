@@ -28,8 +28,13 @@ Three-step flow (rendering runs in the blenderproc env, NOT the repo venv):
            --val-frac 0
 
 For paper training budgets use --val-frac 0 and the separately locked real
-validation set. Generation draws use seed + index: additional batches must use
-non-overlapping ranges, not merely different seed values.
+validation set. Scene i of a run draws from SeedSequence([seed, i]): a batch with
+another seed shares no scene with this one, whatever its index range, while one
+seed reused must not reuse an index range. Give every batch its own seed.
+
+Anchored sampling needs config/calibration/T_base_camera_sigma.json (02_run_
+calibration.py --bootstrap 200). Without it the run stops; --allow-sigma-fallback
+runs on the YAML fallback widths instead, for development only.
 """
 from __future__ import annotations
 
@@ -64,7 +69,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--calib", default="config/calibration/T_base_camera.npy")
     parser.add_argument("--sigma", default="config/calibration/T_base_camera_sigma.json",
                         help="Bootstrap sigma JSON (02_run_calibration.py --bootstrap). "
-                             "Missing file → YAML fallback sigmas (warned).")
+                             "Anchored sampling stops when it is missing, unless "
+                             "--allow-sigma-fallback is given.")
+    parser.add_argument("--allow-sigma-fallback", action="store_true",
+                        help="Development only: sample anchored scenes on the YAML "
+                             "fallback widths when the bootstrap sigma file is missing. "
+                             "The manifest then records sigma_source yaml_fallback; "
+                             "paper runs must not use it.")
     parser.add_argument("--from-failures", default=None,
                         help="failure_modes.json from 21_mine_failures.py — generates "
                              "per-mode batches per its 'allocation' (C3 loop)")
@@ -120,10 +131,18 @@ def main() -> int:
     T_BC = np.load(calib_path)
 
     sigma = load_sigma_json(PROJECT_ROOT / args.sigma)
-    if args.mode == "anchored" and sigma is None:
+    # --from-failures always samples anchored scenes, whatever --mode says.
+    if (args.mode == "anchored" or args.from_failures) and sigma is None:
+        if not args.allow_sigma_fallback:
+            log.error(
+                "No bootstrap sigma at %s: anchored widths would come from the YAML "
+                "fallback, not from the calibration. Run 02_run_calibration.py "
+                "--bootstrap 200 first, or pass --allow-sigma-fallback for a "
+                "development run.", args.sigma)
+            return 1
         log.warning(
-            "No bootstrap sigma at %s → using YAML fallback sigmas. For the "
-            "paper run 02_run_calibration.py --bootstrap 200 first.", args.sigma)
+            "No bootstrap sigma at %s → using YAML fallback sigmas "
+            "(--allow-sigma-fallback). Not for paper runs.", args.sigma)
 
     specs_dir = out / "specs"
 
