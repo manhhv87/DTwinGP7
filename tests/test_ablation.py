@@ -219,6 +219,34 @@ def test_unknown_factor_rejected(config):
         SceneSampler(config, T_BC, ablation="failure_conditioning")
 
 
+def test_generator_digests_see_textures_face_pattern_meshes_and_overhead(config):
+    """What the merged generator added (textures, lid pattern, rounded mesh, shaped overhead)
+    changes the digests the arms are compared on (generator_sha256, profile_sha256)."""
+    import hashlib
+    from src.synthgen import hard_profile as hp
+    sampler = SceneSampler(config, T_BC, seed=0)
+    base = sampler._generator_profile()
+    digest = lambda prof: hp.generator_sha256({"generator_profile": prof})
+    assert base["mesh_sha256"]["models/objects/metal_box.stl"] == hashlib.sha256(
+        (ROOT / "models/objects/metal_box.stl").read_bytes()).hexdigest()
+    assert set(base["mesh_sha256"]) == {m for c in config.objects.classes for m in config.objects.meshes_of(c)}
+    assert base["config"]["objects"]["materials"]["metal_box"]["face_pattern"] == {
+        "floor": 0.0, "sigma_mm": [77.0, 42.4]}
+    for change in ("mesh", "texture", "face_pattern"):
+        prof = deepcopy(base)
+        if change == "mesh":
+            prof["mesh_sha256"]["models/objects/metal_box.stl"] = "0" * 64
+        elif change == "texture":
+            next(iter(prof["top_textures"].values()))[0]["sha256"] = "0" * 64
+        else:
+            prof["config"]["objects"]["materials"]["metal_box"]["face_pattern"]["sigma_mm"][0] = 70.0
+        assert digest(prof) != digest(base), change
+    cfg = hp.load_render_config(ROOT / "config/synthgen.yaml")
+    flat = deepcopy(cfg)
+    flat["hard_profile"]["overhead"]["gradient_x"] = 0.0
+    assert hp.profile_sha256(flat) != hp.profile_sha256(cfg)
+
+
 def test_manifest_stores_effective_profile_and_independent_scene_metadata(config, tmp_path):
     sigma = {"sigma_trans_mm": [1., 3., 5.], "sigma_rot_deg": [.2, .3, .4],
              "source": "bootstrap"}
@@ -228,7 +256,7 @@ def test_manifest_stores_effective_profile_and_independent_scene_metadata(config
     assert manifest["generator_profile"] == {
         "config": config.model_dump(mode="json"), "T_BC_mm": T_BC.tolist(),
         "sigma_trans_mm": sigma["sigma_trans_mm"], "sigma_rot_deg": sigma["sigma_rot_deg"],
-        "top_textures": sampler.top_textures}
+        "top_textures": sampler.top_textures, "mesh_sha256": sampler.mesh_sha256}
     # The texture list (files with their SHA-256) is part of the profile, hence of its digest.
     assert sampler.top_textures and all(e["sha256"] for es in sampler.top_textures.values() for e in es)
     scene = json.loads((tmp_path / manifest["files"][0]).read_text())

@@ -34,6 +34,7 @@ without Blender.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import time
 from copy import deepcopy
@@ -208,6 +209,16 @@ class SceneSampler:
             self.sigma_rot = np.asarray(cam.sigma_rot_deg, dtype=float)
             self.sigma_source = "yaml_fallback"
 
+        # SHA-256 of every product mesh file: the renderer imports these STLs, and their
+        # shape (the steel box's rounded corners) is not in the config, so the generator
+        # profile, hence generator_sha256, carries them. A missing file stays None here and
+        # fails at render.
+        self.mesh_sha256: dict[str, str | None] = {}
+        for mesh in sorted({m for cls in config.objects.classes for m in config.objects.meshes_of(cls)}):
+            path = REPO_ROOT / mesh
+            self.mesh_sha256[mesh] = (hashlib.sha256(path.read_bytes()).hexdigest()
+                                      if path.is_file() else None)
+
         # Measured top-face textures per mesh (anchored only); every file is checked
         # against its SHA-256 here, and the list enters the generator profile.
         self.top_textures: dict[str, list[dict[str, Any]]] = {}
@@ -295,7 +306,8 @@ class SceneSampler:
                 "T_BC_mm": self.T_BC.tolist(),
                 "sigma_trans_mm": self.sigma_trans.tolist(),
                 "sigma_rot_deg": self.sigma_rot.tolist(),
-                "top_textures": self.top_textures}
+                "top_textures": self.top_textures,
+                "mesh_sha256": self.mesh_sha256}
 
     def _check_condition(self, condition: dict[str, Any] | None) -> None:
         if self.ablation != "none" and condition:
