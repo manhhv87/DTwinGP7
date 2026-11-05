@@ -43,6 +43,9 @@ Steps (paths of the paper folder and of the cell branch's condition_check.yaml):
         --out fit/noise.json
     # copy the fitted numbers into config/synthgen.yaml, render, then:
     python scripts/fit_hard_profile.py score --renders <render dir> --criteria ...
+    # or, on a whole rendered set (no linear arrays needed; writes score.json, score.txt):
+    python scripts/fit_hard_profile.py score --run data/synth/anchored_k1 \\
+        --criteria <cell repo>/config/condition_check.yaml --quiet
 
 The fitted profile lives in config/synthgen.yaml; rendering needs none of this
 script's inputs. Run on 05/11/2026 (Blender 4.2.1, BlenderProc 2.8.0): the fit
@@ -54,6 +57,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from collections import Counter
 from pathlib import Path
 
 import numpy as np
@@ -679,17 +683,120 @@ def top_box_ratios(rgb: np.ndarray, inst: np.ndarray, meta: dict, spec: dict,
     return out
 
 
+# Sheet patches of the noise measure (rows, columns), clear of the cards and the strip.
+NOISE_PATCHES = {"upper": (slice(60, 160), slice(300, 400)), "lower": (slice(560, 660), slice(600, 700))}
+# Percentiles of the score summary (real references are quoted as medians, p10-p90 or p5-p95).
+QUANTILES = (5, 10, 25, 50, 75, 90, 95)
+SUMMARY_ROWS = (("card brightness (luma)", "card_brightness"), ("upper sheet luma", "upper_luma"),
+                ("upper sheet green share", "upper_green_share"), ("lower sheet luma", "lower_luma"),
+                ("lower sheet green share", "lower_green_share"), ("noise upper sheet", "noise_upper_sheet"),
+                ("noise lower sheet", "noise_lower_sheet"), ("exposure gain", "exposure_gain"))
+
+
+def quantiles(values) -> dict:
+    """n and the QUANTILES percentiles of the values that are not None."""
+    v = np.asarray([x for x in values if x is not None], dtype=float)
+    out: dict = {"n": int(v.size)}
+    if v.size:
+        out.update({f"p{q}": round(float(np.percentile(v, q)), 3) for q in QUANTILES})
+    return out
+
+
+def rule_of(problem: str) -> str:
+    """The rule a judge_hard problem names: 'upper_area: brightness 54.6' -> 'upper_area: brightness'."""
+    area, _, what = problem.partition(": ")
+    return f"{area}: {'bare table' if what.startswith('bare') else what.rsplit(' ', 1)[0]}"
+
+
+def score_summary(rows: list[dict]) -> dict:
+    """Set-level summary of the score rows, in the units of the real references: the pass
+    fraction of the condition check (and without its bare-table rule, which parts in
+    view trip), percentiles of the check's measures, of the sheet noise (only patches
+    the instance map shows bare) and of the exposure gain, and per class the box measure
+    (part top over bare upper sheet, linear) and the sRGB class luma over the upper sheet."""
+    n = len(rows)
+    passed = sum(bool(r["pass"]) for r in rows)
+    bare_only = sum(all(rule_of(p).endswith("bare table") for p in r["problems"]) for r in rows)
+    classes: dict[str, list[float]] = {}
+    boxes: dict[str, list[float]] = {}
+    for r in rows:
+        for k, vs in (r.get("class_luma") or {}).items():
+            classes.setdefault(k, []).extend(v / r["upper"][1] for v in vs if r["upper"][1] > 0)
+        for c, ratio in r.get("box_over_upper_sheet") or []:
+            boxes.setdefault(c, []).append(ratio)
+
+    def clean(r: dict, side: str) -> bool:
+        return (r.get("noise_clean") or {}).get(side, True)
+
+    return {
+        "frames": n, "pass": passed, "pass_fraction": round(passed / n, 3) if n else None,
+        "pass_without_bare_rule": bare_only,
+        "pass_without_bare_rule_fraction": round(bare_only / n, 3) if n else None,
+        "fails_by_rule": dict(sorted(Counter(rule_of(p) for r in rows for p in r["problems"]).items())),
+        "card_brightness": quantiles(r["card_brightness"] for r in rows),
+        "upper_luma": quantiles(r["upper"][1] for r in rows),
+        "upper_green_share": quantiles(r["upper"][0] for r in rows),
+        "lower_luma": quantiles(r["lower"][1] for r in rows),
+        "lower_green_share": quantiles(r["lower"][0] for r in rows),
+        "noise_upper_sheet": quantiles(r["noise_upper_sheet"] for r in rows if clean(r, "upper")),
+        "noise_lower_sheet": quantiles(r["noise_lower_sheet"] for r in rows if clean(r, "lower")),
+        "exposure_gain": quantiles(r.get("exposure_gain") for r in rows),
+        "class_over_upper_sheet": {k: round(float(np.median(v)), 2) for k, v in sorted(classes.items()) if v},
+        "box_over_upper_sheet": {k: {"median": round(float(np.median(v)), 2), "n": len(v),
+                                     "range": [round(min(v), 2), round(max(v), 2)], **quantiles(v)}
+                                 for k, v in sorted(boxes.items())},
+    }
+
+
+def format_summary(summary: dict, source: str) -> str:
+    """The summary as a small text table, one line per measure, percentiles across."""
+    def line(label: str, q: dict) -> str:
+        cells = "".join(f"{q[f'p{p}']:>8.3g}" if f"p{p}" in q else f"{'-':>8}" for p in QUANTILES)
+        return f"{label:<28}{q['n']:>6}{cells}"
+
+    n = summary["frames"]
+    header = f"{'measure':<28}{'n':>6}" + "".join(f"{f'p{p}':>8}" for p in QUANTILES)
+    lines = [f"Rendered set: {source} ({n} frames)",
+             f"Condition check: {summary['pass']}/{n} pass ({summary['pass_fraction']}); "
+             f"{summary['pass_without_bare_rule']}/{n} without the bare-table rule "
+             f"({summary['pass_without_bare_rule_fraction']})"]
+    if summary["fails_by_rule"]:
+        lines.append("Fails by rule: " + "; ".join(f"{k} {v}" for k, v in summary["fails_by_rule"].items()))
+    lines += ["", header] + [line(label, summary[key]) for label, key in SUMMARY_ROWS]
+    lines += ["", "Box measure, part top over bare upper sheet (linear luminance)", header]
+    lines += [line(cls, q) for cls, q in summary["box_over_upper_sheet"].items()] or ["(none: give --scenes)"]
+    return "\n".join(lines) + "\n"
+
+
 def cmd_score(args) -> int:
     """Condition check, noise, class brightness and the box measure of every rendered
-    frame of a dir (the box measure needs the specs, --scenes)."""
+    frame of a dir (the box measure needs the specs, --scenes), then the set's summary.
+
+    Works on what production renders write (frame_*_rgb.png, _inst.png, _meta.json and
+    the scene specs), no linear arrays: the box measure linearises the 8-bit frame, as
+    the real frames are measured. --run data/synth/<arm> scores its render/ with its
+    specs/ and writes score.json and score.txt beside them."""
     import cv2
     import yaml
 
+    if args.run:
+        run = Path(args.run)
+        renders = Path(args.renders) if args.renders else run / "render"
+        scenes = args.scenes or str(run / "specs")
+        out = args.out or str(run / "score.json")
+        summary_path = args.summary or str(run / "score.txt")
+    elif args.renders:
+        renders, scenes, out, summary_path = Path(args.renders), args.scenes, args.out, args.summary
+    else:
+        raise SystemExit("score: give --run <set folder> or --renders <render dir>")
     crit = yaml.safe_load(open(args.criteria, encoding="utf-8"))
     sizes = yaml.safe_load(open(PROJECT_ROOT / "config/synthgen.yaml", encoding="utf-8"))["objects"]["mesh_sizes_mm"]
-    rows, classes, boxes = [], {}, {}
-    for p in sorted(Path(args.renders).glob("frame_*_rgb.png")):
-        rgb = cv2.imread(str(p))[..., ::-1].copy()
+    rows = []
+    for p in sorted(renders.glob("frame_*_rgb.png")):
+        bgr = cv2.imread(str(p))
+        if bgr is None:
+            raise SystemExit(f"score: unreadable frame {p}")
+        rgb = bgr[..., ::-1].copy()
         m = condition_measure(rgb, crit)
         problems = judge_hard(m, crit)
         lum = luma601(rgb.astype(np.float32)).astype(np.float32)
@@ -697,34 +804,34 @@ def cmd_score(args) -> int:
                "card_brightness": round(m["card_brightness"], 1),
                "upper": [round(m["upper_area"]["green_share"], 3), round(m["upper_area"]["brightness"], 1)],
                "lower": [round(m["lower_area"]["green_share"], 3), round(m["lower_area"]["brightness"], 1)],
-               "noise_lower_sheet": round(highpass_noise_std(lum[560:660, 600:700]), 2),
-               "noise_upper_sheet": round(highpass_noise_std(lum[60:160, 300:400]), 2)}
+               "noise_lower_sheet": round(highpass_noise_std(lum[NOISE_PATCHES["lower"]]), 2),
+               "noise_upper_sheet": round(highpass_noise_std(lum[NOISE_PATCHES["upper"]]), 2)}
         inst_path = p.with_name(p.name.replace("_rgb.png", "_inst.png"))
         meta_path = p.with_name(p.name.replace("_rgb.png", "_meta.json"))
         if inst_path.exists() and meta_path.exists():
             meta = json.loads(meta_path.read_text(encoding="utf-8"))
             inst = cv2.imread(str(inst_path), cv2.IMREAD_UNCHANGED)
+            # A noise patch counts only when one surface fills it: a part or a
+            # distractor in it adds edges that are not sensor noise.
+            row["noise_clean"] = {side: bool(np.unique(inst[sl]).size == 1)
+                                  for side, sl in NOISE_PATCHES.items()}
             cb = class_brightness(rgb, inst, meta)
             row["class_luma"] = {k: [round(v, 1) for v in vs] for k, vs in cb.items()}
-            for k, vs in cb.items():
-                classes.setdefault(k, []).extend(v / m["upper_area"]["brightness"] for v in vs)
-            if args.scenes:
-                spec = json.loads((Path(args.scenes) / meta["scene"]).read_text(encoding="utf-8"))
+            if scenes:
+                spec = json.loads((Path(scenes) / meta["scene"]).read_text(encoding="utf-8"))
                 row["exposure_gain"] = meta.get("exposure_gain")
                 row["box_over_upper_sheet"] = [[c, round(r, 2)] for c, r in
                                                top_box_ratios(rgb, inst, meta, spec, sizes)]
-                for c, r in row["box_over_upper_sheet"]:
-                    boxes.setdefault(c, []).append(r)
         rows.append(row)
-        print(json.dumps(row))
-    summary = {"frames": len(rows), "pass": sum(r["pass"] for r in rows),
-               "class_over_upper_sheet": {k: round(float(np.median(v)), 2) for k, v in sorted(classes.items())},
-               "box_over_upper_sheet": {k: {"median": round(float(np.median(v)), 2), "n": len(v),
-                                            "range": [round(min(v), 2), round(max(v), 2)]}
-                                        for k, v in sorted(boxes.items())}}
-    print(json.dumps(summary))
-    if args.out:
-        Path(args.out).write_text(json.dumps({"rows": rows, "summary": summary}, indent=1), encoding="utf-8")
+        if not args.quiet:
+            print(json.dumps(row))
+    summary = score_summary(rows)
+    text = format_summary(summary, str(renders))
+    print(text, end="")
+    if out:
+        Path(out).write_text(json.dumps({"rows": rows, "summary": summary}, indent=1), encoding="utf-8")
+    if summary_path:
+        Path(summary_path).write_text(text, encoding="utf-8")
     return 0
 
 
@@ -747,10 +854,15 @@ def main(argv: list[str] | None = None) -> int:
     nz.add_argument("--fitted", required=True, help="output of the fit step")
     nz.add_argument("--out", required=True)
     s = sub.add_parser("score")
-    s.add_argument("--renders", required=True)
-    s.add_argument("--criteria", required=True)
+    s.add_argument("--run", default=None,
+                   help="rendered set folder (data/synth/<arm>): scores its render/ with its specs/ and "
+                        "writes score.json and score.txt there unless --out/--summary say otherwise")
+    s.add_argument("--renders", default=None, help="render dir (instead of --run)")
+    s.add_argument("--criteria", required=True, help="condition_check.yaml of the cell branch")
     s.add_argument("--scenes", default=None, help="spec dir of the renders, for the box measure")
-    s.add_argument("--out", default=None)
+    s.add_argument("--out", default=None, help="JSON of every frame's row and the summary")
+    s.add_argument("--summary", default=None, help="text summary")
+    s.add_argument("--quiet", action="store_true", help="no JSON line per frame on stdout")
     args = ap.parse_args(argv)
     return {"measure": cmd_measure, "reference": cmd_reference, "fit": cmd_fit, "noise": cmd_noise,
             "score": cmd_score}[args.cmd](args)
