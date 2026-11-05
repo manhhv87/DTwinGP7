@@ -18,29 +18,33 @@ trước từ E3, cùng calibration, cấu hình và ngân sách. Không kết h
 | `background` | Mặt bàn dùng `background.anchor_albedo_rgb` và `anchor_roughness`, tại `objects.table_z_mm`. Trong recipe hiện tại chỉ albedo được randomize; roughness vốn đã cố định. |
 | `distractors` | Thay danh sách distractor bằng `[]`. Không loại vật cần nhận diện. |
 | `camera` | Cố định toàn bộ `T_BC_mm` tại file calibration đã cung cấp và nội tại tại `camera.intrinsics`; bỏ cả extrinsic và intrinsic jitter. |
-| `pose` | Cố định vị trí và yaw theo số vật như mô tả bên dưới. Giữ nguyên draw về số vật, lớp, mesh/kích thước và vật liệu từng vật. |
+| `pose` | Cố định vị trí và yaw theo số chỗ đặt trên bàn như mô tả bên dưới; vật xếp chồng theo vật đỡ, distractor chồng lên footprint vật tại các ô được dời. Giữ nguyên draw về số vật, lớp, xếp chồng, mesh/kích thước và vật liệu từng vật. |
 
-Với `pose`, gọi `n` là số vật đã được lấy mẫu. Chọn trục X hoặc Y có khoảng tọa độ
-rộng hơn; nếu bằng nhau chọn X. Chia khoảng đó thành `n` ô bằng nhau, đặt vật thứ
-`i` tại tâm ô thứ `i`. Tọa độ trục còn lại là trung điểm của khoảng cấu hình;
-`z = table_z_mm`; yaw là trung điểm `yaw_range_deg`. Thứ tự vật được giữ nguyên.
-Đây là **một bố trí xác định có điều kiện theo số vật**, không phải tất cả ảnh có
-một vị trí duy nhất khi số vật thay đổi.
+Với `pose`, gọi `n` là số chỗ đặt trên bàn đã được lấy mẫu (`objects.count_range` = [1, 2];
+một vật đỡ cùng vật nằm trên nó chiếm một chỗ). Chọn trục X hoặc Y có khoảng tọa độ rộng
+hơn; nếu bằng nhau chọn X. Chia khoảng đó thành `n` ô bằng nhau, đặt vật thứ `i` trên bàn
+tại tâm ô thứ `i`. Tọa độ trục còn lại là trung điểm của khoảng cấu hình;
+`z = table_z_mm`; yaw là trung điểm `yaw_range_deg`. Thứ tự vật được giữ nguyên. Vật xếp
+chồng nằm ở tâm ô của vật đỡ, cùng yaw, đáy tại mặt trên vật đỡ. Distractor nào chồng lên
+footprint của vật tại các ô được dời tới một chỗ trống lấy từ luồng riêng
+`SeedSequence([seed, index, 1])`, giữ hình, cỡ, yaw và màu; không còn chỗ trống thì bị
+bỏ. Đây là **một bố trí xác định có điều kiện theo số chỗ đặt**, không phải tất cả ảnh
+có một vị trí duy nhất khi số vật thay đổi.
 
 Ví dụ với cấu hình hiện tại X = [510, 640] mm, Y = [-175, 215] mm (vùng đặt vật tính từ hiệu
 chuẩn 18/09/2026, xem `config/synthgen.yaml`) và yaw = [-90, 90]°. Trục Y rộng hơn nên các ô
 chia theo Y, X giữ ở trung điểm 575:
 
-| Số vật | Tâm XY (mm) | Yaw |
+| Số chỗ đặt | Tâm XY (mm) | Yaw |
 |---|---|---|
 | 1 | (575, 20) | 0° |
 | 2 | (575, -77.5), (575, 117.5) | 0° cho mỗi vật |
-| 3 | (575, -110), (575, 20), (575, 150) | 0° cho mỗi vật |
 
 Đây là vị trí tham chiếu đề xuất trong bao lấy mẫu, **không phải vị trí đã đo hoặc
-đã xác nhận khả thi tại robot**. Sampler từ chối nếu khoảng cách các ô không đạt
-`min_separation_mm` ở số vật lớn nhất. Kiểm tra đó chỉ xét khoảng cách tâm; không
-thay thế kiểm tra kích thước mesh, che khuất, ảnh nhìn thấy được hay an toàn robot.
+đã xác nhận khả thi tại robot**. Sampler từ chối nếu ở số chỗ đặt lớn nhất, bề rộng một ô
+theo trục chia nhỏ hơn footprint lớn nhất trong `objects.mesh_sizes_mm` ở yaw cố định. Kiểm
+tra đó chỉ xét kích thước footprint; không thay thế kiểm tra che khuất, ảnh nhìn thấy được
+hay an toàn robot.
 
 Màu và độ nhám **vật thể** vẫn được randomize ở mọi nhánh. `background` không có
 nghĩa là bỏ vật liệu vật thể. Tên cũ như “texture ablation” không diễn tả chính xác
@@ -48,10 +52,11 @@ can thiệp này và không nên dùng trong bảng kết quả.
 
 ## Ghép cặp và provenance
 
-Sampler dùng `default_rng(seed + index)`. Mỗi nhánh lấy đầy đủ các draw theo đúng
-thứ tự full recipe, rồi mới thay trường tương ứng với can thiệp. Vì vậy với cùng
+Sampler dùng `default_rng(SeedSequence([seed, index]))`. Mỗi nhánh lấy đầy đủ các draw
+theo đúng thứ tự full recipe, rồi mới thay trường tương ứng với can thiệp. Vì vậy với cùng
 `seed/index`, các yếu tố còn lại của scene giống nhau, kể cả lớp và vật liệu sau
-yếu tố bị bỏ. Điều này ghép cặp **scene specification**; không bảo đảm ảnh render
+yếu tố bị bỏ (ở nhánh `pose`, trừ vị trí các distractor phải dời). Điều này ghép cặp
+**scene specification**; không bảo đảm ảnh render
 giống bit hoặc triệt tiêu mọi tương tác thị giác giữa các yếu tố.
 
 Mỗi `scene_*.json` lưu `ablation.protocol_version`, `factor` và `reference` đã giải
@@ -63,9 +68,10 @@ sigma, seed hoặc ghi đè scene index đã có. Các manifest cũ thiếu prov
 phải dùng thư mục chạy mới; không suy đoán cấu hình của một bộ ảnh lịch sử.
 
 Sử dụng **một scene seed chung** cho cả sáu nhánh; ba training seed 0/1/2 dùng trên
-cùng các bộ ảnh này. Không coi generation seed 0/1/2 là ba bộ ảnh độc lập: do quy
-tắc `seed + index`, chúng có nhiều draw trùng nhau. Nếu cần chiến dịch scene độc
-lập, phải định trước các dải seed/index không chồng nhau và ghi rõ estimand khác.
+cùng các bộ ảnh này. Các generation seed khác nhau cho các bộ scene không chung draw
+nào (`SeedSequence([seed, index])`), nên đổi generation seed giữa các nhánh là bỏ ghép
+cặp. Nếu cần chiến dịch scene độc lập, định trước một seed mới cho mỗi bộ và ghi rõ
+estimand khác.
 
 Giữ phiên bản Blender/BlenderProc, số samples/px, render device và cài đặt renderer
 giống nhau; lưu thông tin này cùng manifest. Chọn `kappa`, anchor và protocol pose

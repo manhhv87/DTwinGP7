@@ -86,11 +86,13 @@ của chính nó. Package nhận một parent nên update 2 cần package riêng
 với `--seeds <seed> --model <parent_cua_seed> --epochs <so_da_khoa>`; không tái chọn một
 parent chung bằng điểm update 1.
 
-Vì RNG của scene là `seed + index`, các đợt bổ sung và synthetic evaluation phải dùng
-dải không giao các dải training đã dùng. Ví dụ E3 là 0–2999; hai update E4 có thể dùng
-guided/control lần lượt 10000/20000 rồi 30000/40000, mỗi dải dài 1000. Đổi seed từ 0
-sang 1 hoặc dùng control seed 2000 vẫn trùng các draw E3. Manifest cần lưu seed cùng
-start index và số scene; chỉ ghi seed là chưa đủ để kiểm tra trùng dải.
+Scene `index` của seed `seed` lấy draw từ `SeedSequence([seed, index])`: hai đợt khác seed
+không chung scene nào, dù dải index thế nào; hai đợt cùng seed chung đúng các index giao
+nhau. Vì vậy mỗi đợt bổ sung và synthetic evaluation dùng một seed chưa dùng. E3 và E5 dùng
+seed 0, index 0–2999; hai update E4 dùng guided/control lần lượt 10000/20000 rồi
+30000/40000, mỗi đợt 1000 scene. Manifest cần lưu seed cùng start index và số scene; chỉ
+ghi seed là chưa đủ để kiểm tra trùng khi một seed được dùng lại. Bộ kiểm
+(`src/synthgen/seed_ranges.py`) đọc cả manifest spec_version 1 cũ, vốn dùng `seed + index`.
 
 E3 gắp thật chỉ ở κ chọn bằng validation; hai κ còn lại chỉ so bằng mAP validation, và κ đã
 chọn cũng quyết định khởi tạo E4/full E5. E5 đo mask mAP cho đủ năm yếu tố, task success cho ba

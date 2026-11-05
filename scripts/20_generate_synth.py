@@ -12,9 +12,12 @@ Three-step flow (rendering runs in the blenderproc env, NOT the repo venv):
            --seed 0 --out data/synth/anchored_k2
        python scripts/20_generate_synth.py --mode blind --n 3000 \
            --seed 0 --out data/synth/blind
-     C3 loop iteration (budget from 21_mine_failures.py):
+     C3 loop iteration (budget and seed from 21_mine_failures.py) and its E4 control
+     (as many unconditioned anchored scenes, with the control seed the report checked):
        python scripts/20_generate_synth.py --from-failures results/failure_modes.json \
            --out data/synth/loop_k1 --seed 10000
+       python scripts/20_generate_synth.py --control-for results/failure_modes.json \
+           --out data/synth/control_k1 --seed 20000
      E5 single-factor intervention (same seed/index as the full anchored recipe):
        python scripts/20_generate_synth.py --mode anchored --ablation camera \
            --kappa 2 --n 3000 --seed 0 --out data/synth/e5_camera
@@ -31,6 +34,9 @@ For paper training budgets use --val-frac 0 and the separately locked real
 validation set. Scene i of a run draws from SeedSequence([seed, i]): a batch with
 another seed shares no scene with this one, whatever its index range, while one
 seed reused must not reuse an index range. Give every batch its own seed.
+--from-failures and --control-for take the seed and scene count that the report's
+generation plan checked (21_mine_failures.py --guided-seed/--control-seed) and
+refuse a --seed or --n that differs, or a report without a checked seed.
 
 Anchored sampling needs config/calibration/T_base_camera_sigma.json (02_run_
 calibration.py --bootstrap 200). Without it the run stops; --allow-sigma-fallback
@@ -47,7 +53,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.synthgen import SceneSampler, SynthgenConfig, load_sigma_json  # noqa: E402
-from src.synthgen.scene_sampler import ABLATION_FACTORS  # noqa: E402
+from src.synthgen.scene_sampler import ABLATION_FACTORS, SPEC_VERSION  # noqa: E402
 from src.utils import setup_logging  # noqa: E402
 
 
@@ -60,8 +66,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                              "recipe; see docs/E5_ABLATION_PROTOCOL.md")
     parser.add_argument("--kappa", type=float, default=2.0,
                         help="Width multiplier of Eq. (1); E3 selects among {1,2,4}")
-    parser.add_argument("--n", type=int, default=3000, help="Number of scenes")
-    parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--n", type=int, default=None,
+                        help="Number of scenes (default 3000; with a failure report, "
+                             "the count its plan checked)")
+    parser.add_argument("--seed", type=int, default=None,
+                        help="Run seed (default 0; with a failure report, the seed its "
+                             "plan checked, and no other)")
     parser.add_argument("--out", required=True,
                         help="Run dir; specs → <out>/specs, render → <out>/render, "
                              "dataset → <out>/dataset")
@@ -79,6 +89,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--from-failures", default=None,
                         help="failure_modes.json from 21_mine_failures.py — generates "
                              "per-mode batches per its 'allocation' (C3 loop)")
+    parser.add_argument("--control-for", default=None,
+                        help="failure_modes.json from 21_mine_failures.py — generates the "
+                             "equal-budget E4 control batch: unconditioned anchored scenes "
+                             "with the control seed its plan checked")
     parser.add_argument("--make-labels", action="store_true",
                         help="Convert <out>/render → <out>/dataset (after step 2)")
     parser.add_argument("--val-frac", type=float, default=0.1,
@@ -88,17 +102,50 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     if args.ablation != "none":
         if args.mode != "anchored":
             parser.error("--ablation requires --mode anchored")
-        if args.from_failures:
-            parser.error("--ablation cannot be combined with --from-failures")
+        if args.from_failures or args.control_for:
+            parser.error("--ablation cannot be combined with --from-failures or --control-for")
         if args.make_labels:
             parser.error("--ablation applies when sampling; omit it for --make-labels")
+    if args.from_failures and args.control_for:
+        parser.error("--from-failures and --control-for generate different E4 arms; give one")
+    if args.control_for and args.mode != "anchored":
+        parser.error("--control-for samples anchored scenes")
     if not 0.0 <= args.val_frac < 1.0:
         parser.error("--val-frac must be in [0, 1)")
     return args
 
 
-def main() -> int:
-    args = parse_args()
+def planned_batch(report: dict, arm: str, seed: int | None, n: int | None) -> tuple[int, int]:
+    """Seed and scene count of an E4 arm's batch as the miner's report planned them.
+
+    21_mine_failures.py checked scenes 0..n_images-1 of the guided and control
+    seeds against the batches already written, for the sampler's spec version.
+    The guided arm writes the allocation, the control arm as many unconditioned
+    scenes. A --seed or --n other than the plan's, a plan without this arm's seed,
+    or one made for another spec version is refused: the streams written are the
+    streams checked.
+    """
+    plan = report.get("generation_plan") or {}
+    checked = plan.get(f"{arm}_seed")
+    if checked is None:
+        raise ValueError(f"the report records no checked {arm} seed; re-run "
+                         f"21_mine_failures.py with --{arm}-seed")
+    if plan.get("spec_version") != SPEC_VERSION:
+        raise ValueError(f"the plan was checked for spec_version {plan.get('spec_version')!r}, "
+                         f"but the sampler writes {SPEC_VERSION}; re-run 21_mine_failures.py")
+    if seed is not None and seed != checked:
+        raise ValueError(f"--seed {seed} is not the {arm} seed {checked} the report checked")
+    planned = int(plan["n_images"])
+    if n is not None and n != planned:
+        raise ValueError(f"--n {n} is not the {planned} scenes the report checked")
+    allocated = sum(max(0, int(entry["n_images"])) for entry in report["allocation"])
+    if allocated != planned:
+        raise ValueError(f"the allocation holds {allocated} scenes, the plan checked {planned}")
+    return int(checked), planned
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = parse_args(argv)
     log = setup_logging("synthgen")
     out = Path(args.out)
     if not out.is_absolute():
@@ -109,7 +156,8 @@ def main() -> int:
         from src.synthgen import convert_render_output
 
         stats = convert_render_output(
-            out / "render", out / "dataset", val_frac=args.val_frac, seed=args.seed)
+            out / "render", out / "dataset", val_frac=args.val_frac,
+            seed=0 if args.seed is None else args.seed)
         log.info("Dataset: %s", stats)
         log.info("Train on the GPU machine: see scripts/23_launch_retrain.py")
         return 0
@@ -131,7 +179,8 @@ def main() -> int:
     T_BC = np.load(calib_path)
 
     sigma = load_sigma_json(PROJECT_ROOT / args.sigma)
-    # --from-failures always samples anchored scenes, whatever --mode says.
+    # --from-failures always samples anchored scenes, whatever --mode says; the
+    # control arm (--control-for) needs --mode anchored, the default.
     if (args.mode == "anchored" or args.from_failures) and sigma is None:
         if not args.allow_sigma_fallback:
             log.error(
@@ -145,17 +194,28 @@ def main() -> int:
             "(--allow-sigma-fallback). Not for paper runs.", args.sigma)
 
     specs_dir = out / "specs"
+    seed = 0 if args.seed is None else args.seed
+    n = 3000 if args.n is None else args.n
 
-    if args.from_failures:
-        with (PROJECT_ROOT / args.from_failures).open("r", encoding="utf-8") as f:
+    report_path = args.from_failures or args.control_for
+    if report_path:
+        with (PROJECT_ROOT / report_path).open("r", encoding="utf-8") as f:
             report = json.load(f)
         allocation = report.get("allocation")
         if not allocation:
             log.error("%s has no 'allocation' — run 21_mine_failures.py with "
-                      "--n-budget", args.from_failures)
+                      "--n-budget", report_path)
             return 1
+        try:
+            seed, n = planned_batch(report, "guided" if args.from_failures else "control",
+                                    args.seed, args.n)
+        except ValueError as exc:
+            log.error("Refused: %s", exc)
+            return 1
+
+    if args.from_failures:
         sampler = SceneSampler(config, T_BC, mode="anchored", kappa=args.kappa,
-                               sigma=sigma, seed=args.seed)
+                               sigma=sigma, seed=seed)
         start = 0
         for entry in allocation:
             n_img = int(entry["n_images"])
@@ -169,12 +229,12 @@ def main() -> int:
         total = start
     else:
         sampler = SceneSampler(config, T_BC, mode=args.mode, kappa=args.kappa,
-                               sigma=sigma, seed=args.seed, ablation=args.ablation)
-        sampler.write_specs(specs_dir, args.n)
-        total = args.n
+                               sigma=sigma, seed=seed, ablation=args.ablation)
+        sampler.write_specs(specs_dir, n)
+        total = n
 
-    log.info("Wrote %d scene specs → %s (sigma source: %s; ablation: %s)",
-             total, specs_dir, sampler.sigma_source, sampler.ablation)
+    log.info("Wrote %d scene specs → %s (seed %d; sigma source: %s; ablation: %s)",
+             total, specs_dir, seed, sampler.sigma_source, sampler.ablation)
     log.info("Next step — render in the blenderproc env:")
     log.info("  blenderproc run src/synthgen/render_blenderproc.py -- "
              "--scenes %s --out %s", specs_dir, out / "render")

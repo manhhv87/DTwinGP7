@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import csv
 import importlib.util
+import itertools
 import json
 from pathlib import Path
 
@@ -31,7 +32,15 @@ from src.synthgen.failure_miner import (
     stage_trials,
     trial_outcome,
 )
-from src.synthgen.seed_ranges import manifest_streams, overlaps, planned_streams, shared_streams
+from src.synthgen.scene_sampler import SPEC_VERSION
+from src.synthgen.seed_ranges import (
+    STREAM_RULE,
+    manifest_streams,
+    overlaps,
+    planned_streams,
+    scene_streams,
+    shared_streams,
+)
 
 REGION = (400.0, 1000.0, -200.0, 200.0)
 
@@ -310,24 +319,67 @@ class TestIO:
             load_trials([tmp_path / "nope.csv"])
 
 
-class TestSeedRanges:
-    def test_streams_are_seed_plus_index(self, tmp_path):
-        manifest = tmp_path / "manifest.json"
-        manifest.write_text(json.dumps({"spec_version": 1, "seed": 0, "mode": "anchored", "kappa": 2.0,
-                                        "files": [f"scene_{i:06d}.json" for i in range(3000)]}))
-        e3 = manifest_streams(manifest)
-        assert e3["streams"] == [[0, 3000]] and e3["kappa"] == 2.0
-        # Seed 2000 reuses E3 scenes 2000..2999; the guide's 20000 does not.
-        assert shared_streams(planned_streams(2000, 1000), e3["streams"]) == 1000
-        assert shared_streams(planned_streams(20000, 1000), e3["streams"]) == 0
-        assert overlaps({"e3": e3["streams"], "guided": planned_streams(1000, 1000),
-                         "control": planned_streams(20000, 1000)}) == [("e3", "guided", 1000)]
+def _specs(path: Path, spec_version: int, seed: int, indices) -> Path:
+    """specs/manifest.json of a written batch, as SceneSampler.write_specs lays it out."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"spec_version": spec_version, "seed": seed, "mode": "anchored",
+                                "kappa": 2.0, "files": [f"scene_{i:06d}.json" for i in indices]}))
+    return path
 
-    def test_unknown_spec_version_is_reported_unchecked(self, tmp_path):
-        manifest = tmp_path / "manifest.json"
-        manifest.write_text(json.dumps({"spec_version": 99, "seed": 0, "files": ["scene_000000.json"]}))
-        info = manifest_streams(manifest)
+
+class TestSeedRanges:
+    def test_version_1_streams_are_seed_plus_index(self, tmp_path):
+        e3 = manifest_streams(_specs(tmp_path / "manifest.json", 1, 0, range(3000)))
+        assert e3["streams"] == [[[0, 3000], [0, 1]]] and e3["kappa"] == 2.0
+        # Seed 2000 reused E3 scenes 2000..2999; 20000 did not.
+        assert shared_streams(planned_streams(2000, 1000, spec_version=1), e3["streams"]) == 1000
+        assert shared_streams(planned_streams(20000, 1000, spec_version=1), e3["streams"]) == 0
+        assert overlaps({"e3": e3["streams"], "guided": planned_streams(1000, 1000, spec_version=1),
+                         "control": planned_streams(20000, 1000, spec_version=1)}) == [("e3", "guided", 1000)]
+
+    def test_version_2_streams_are_seed_and_index(self, tmp_path):
+        e3 = manifest_streams(_specs(tmp_path / "manifest.json", 2, 0, range(3000)))
+        assert e3["streams"] == [[[0, 1], [0, 3000]]]
+        # Another seed shares nothing whatever its indices; one seed shares the
+        # indices its batches have in common.
+        assert shared_streams(planned_streams(2000, 1000, spec_version=2), e3["streams"]) == 0
+        assert shared_streams(planned_streams(1, 3000, spec_version=2), e3["streams"]) == 0
+        assert shared_streams(planned_streams(0, 1000, 2500, spec_version=2), e3["streams"]) == 500
+        assert overlaps({"e3": e3["streams"], "guided": planned_streams(10000, 1000, spec_version=2),
+                         "control": planned_streams(10000, 1000, spec_version=2)}) \
+            == [("guided", "control", 1000)]
+
+    def test_index_0_of_a_version_2_seed_is_a_version_1_stream(self, tmp_path):
+        old = manifest_streams(_specs(tmp_path / "manifest.json", 1, 0, range(3000)))
+        assert shared_streams(planned_streams(1000, 1000, spec_version=2), old["streams"]) == 1
+        assert shared_streams(planned_streams(1000, 999, 1, spec_version=2), old["streams"]) == 0
+        assert shared_streams(planned_streams(10000, 1000, spec_version=2), old["streams"]) == 0
+
+    def test_rules_share_a_stream_exactly_when_numpy_seeds_alike(self):
+        seeded = {1: lambda seed, i: np.random.SeedSequence(seed + i),
+                  2: lambda seed, i: np.random.SeedSequence([seed, i])}
+        scenes = [(1, 0, 1000), (1, 1, 999), (1, 5, 0), (1, 0, 0), (2, 1000, 0), (2, 0, 1000),
+                  (2, 1, 999), (2, 5, 0), (2, 4, 1), (2, 0, 5), (2, 0, 0)]
+        alike = 0
+        for a, b in itertools.combinations(scenes, 2):
+            same = np.array_equal(seeded[a[0]](*a[1:]).generate_state(4),
+                                  seeded[b[0]](*b[1:]).generate_state(4))
+            shared = shared_streams(scene_streams(a[0], a[1], [a[2]]),
+                                    scene_streams(b[0], b[1], [b[2]]))
+            assert shared == int(same), (a, b)
+            alike += same
+        assert alike == 5   # stream 1000 three ways (3 pairs); 5 and 0 across versions
+
+    def test_unknown_spec_version_or_split_seed_is_reported_unchecked(self, tmp_path):
+        info = manifest_streams(_specs(tmp_path / "a.json", 99, 0, [0]))
         assert info["streams"] is None and "spec_version 99" in info["unchecked"]
+        info = manifest_streams(_specs(tmp_path / "b.json", 2, 2 ** 32 + 5, [0]))
+        assert info["streams"] is None and "32-bit" in info["unchecked"]
+        with pytest.raises(ValueError, match="32-bit"):
+            planned_streams(2 ** 32, 10, spec_version=2)
+
+    def test_the_sampler_spec_version_has_a_rule(self):
+        assert SPEC_VERSION in STREAM_RULE
 
 
 def _load_cli():
@@ -365,23 +417,105 @@ class TestCli:
     def test_planned_seed_ranges_are_checked_against_written_batches(self, tmp_path):
         _pose_list(tmp_path / "root/config/pose_lists/hard_test.csv")
         csv_path = _session(tmp_path / "session", [221, 223])
-        specs = tmp_path / "synth/anchored_k2/specs"
-        specs.mkdir(parents=True)
-        (specs / "manifest.json").write_text(json.dumps(
-            {"spec_version": 1, "seed": 0, "files": [f"scene_{i:06d}.json" for i in range(3000)]}))
+        _specs(tmp_path / "synth/anchored_k2/specs/manifest.json", SPEC_VERSION, 0, range(3000))
+        _specs(tmp_path / "synth/loop_k1/specs/manifest.json", SPEC_VERSION, 10000, range(1000))
         cli = _load_cli()
-        for seeds in (["--guided-seed", "1000", "--control-seed", "20000"],
-                      ["--guided-seed", "10000", "--control-seed", "10500"]):
+        # Update 1's guided seed again, then one seed for both arms.
+        for seeds in (["--guided-seed", "10000", "--control-seed", "40000"],
+                      ["--guided-seed", "30000", "--control-seed", "30000"]):
             assert cli.main(self._args(tmp_path, csv_path, *seeds)) == 2
         assert not (tmp_path / "out").exists()
-        assert cli.main(self._args(tmp_path, csv_path, "--guided-seed", "10000",
-                                   "--control-seed", "20000")) == 0
+        assert cli.main(self._args(tmp_path, csv_path, "--guided-seed", "30000",
+                                   "--control-seed", "40000")) == 0
         report = load_report(tmp_path / "out/failure_modes.json")
         plan = report["generation_plan"]
-        assert plan["planned_streams"] == {"guided": [[10000, 11000]], "control": [[20000, 21000]]}
-        assert plan["checked_against"][0]["streams"] == [[0, 3000]]
+        assert plan["spec_version"] == SPEC_VERSION and plan["rule"] == STREAM_RULE[SPEC_VERSION]
+        assert plan["planned_streams"] == {"guided": [[[30000, 30001], [0, 1000]]],
+                                           "control": [[[40000, 40001], [0, 1000]]]}
+        assert [c["streams"] for c in plan["checked_against"]] == [
+            [[[0, 1], [0, 3000]]], [[[10000, 10001], [0, 1000]]]]
         assert sum(e["n_images"] for e in report["allocation"]) == 1000
         assert {e["condition"]["class_name"] for e in report["allocation"]} == {"inox_box"}
+
+
+def _load_generator():
+    path = Path(__file__).resolve().parents[1] / "scripts/20_generate_synth.py"
+    spec = importlib.util.spec_from_file_location("generate_synth_cli", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+class TestGeneratorUsesTheCheckedPlan:
+    """20_generate_synth.py writes, for each E4 arm, the streams the miner checked."""
+
+    def _report(self, tmp_path, *seeds) -> Path:
+        _pose_list(tmp_path / "root/config/pose_lists/hard_test.csv")
+        csv_path = _session(tmp_path / "session", [221, 223])
+        report = tmp_path / "failure_modes.json"
+        assert _load_cli().main(["--runs", str(csv_path), "--pose-root", str(tmp_path / "root"),
+                                 "--used-specs", str(tmp_path / "synth/*/specs/manifest.json"),
+                                 "--n-budget", "4", "--out", str(report), *seeds]) == 0
+        return report
+
+    def _generate(self, tmp_path, flag, report, name, *extra):
+        calib = tmp_path / "T_BC.npy"
+        np.save(calib, np.array([[1., 0., 0., 419.5], [0., -1., 0., 0.],
+                                 [0., 0., -1., 1200.], [0., 0., 0., 1.]]))
+        out = tmp_path / "synth" / name
+        code = _load_generator().main([
+            flag, str(report), "--out", str(out),
+            "--config", str(Path(__file__).resolve().parents[1] / "config/synthgen.yaml"),
+            "--calib", str(calib), "--sigma", str(tmp_path / "absent.json"),
+            "--allow-sigma-fallback", *extra])
+        manifest = out / "specs/manifest.json"
+        return code, manifest if manifest.exists() else None
+
+    def test_each_arm_writes_the_streams_the_miner_checked(self, tmp_path):
+        report = self._report(tmp_path, "--guided-seed", "10000", "--control-seed", "20000")
+        plan = load_report(report)["generation_plan"]
+        code, loop = self._generate(tmp_path, "--from-failures", report, "loop_k1")
+        assert code == 0
+        code, control = self._generate(tmp_path, "--control-for", report, "control_k1",
+                                       "--seed", "20000", "--n", "4")
+        assert code == 0
+        for arm, manifest in (("guided", loop), ("control", control)):
+            assert manifest_streams(manifest)["streams"] == plan["planned_streams"][arm]
+        written = json.loads(control.read_text())
+        assert written["mode"] == "anchored" and written["condition"] is None
+        assert json.loads(loop.read_text())["condition"]["class_name"] == "inox_box"
+
+    @pytest.mark.parametrize("flag, extra", [
+        ("--from-failures", ["--seed", "10001"]),
+        ("--from-failures", ["--n", "5"]),
+        ("--control-for", ["--seed", "10000"]),
+        ("--control-for", ["--n", "1000"]),
+    ])
+    def test_a_seed_or_count_the_miner_did_not_check_is_refused(self, tmp_path, flag, extra):
+        report = self._report(tmp_path, "--guided-seed", "10000", "--control-seed", "20000")
+        assert self._generate(tmp_path, flag, report, "refused", *extra) == (1, None)
+
+    def test_a_report_without_the_arms_checked_seed_is_refused(self, tmp_path):
+        report = self._report(tmp_path, "--guided-seed", "10000")
+        assert self._generate(tmp_path, "--control-for", report, "control_k1") == (1, None)
+        unchecked = self._report(tmp_path)
+        assert load_report(unchecked)["generation_plan"] is None
+        assert self._generate(tmp_path, "--from-failures", unchecked, "loop_k1") == (1, None)
+
+    def test_a_plan_checked_under_another_spec_version_is_refused(self, tmp_path):
+        report = self._report(tmp_path, "--guided-seed", "10000", "--control-seed", "20000")
+        data = load_report(report)
+        data["generation_plan"]["spec_version"] = 1
+        report.write_text(json.dumps(data))
+        for flag in ("--from-failures", "--control-for"):
+            assert self._generate(tmp_path, flag, report, "old") == (1, None)
+
+    def test_the_control_arm_is_one_unablated_anchored_batch(self):
+        cli = _load_generator()
+        for extra in (["--from-failures", "f.json"], ["--mode", "blind"], ["--ablation", "camera"]):
+            with pytest.raises(SystemExit) as exc:
+                cli.parse_args(["--out", "unused", "--control-for", "f.json", *extra])
+            assert exc.value.code == 2
 
 
 if __name__ == "__main__":

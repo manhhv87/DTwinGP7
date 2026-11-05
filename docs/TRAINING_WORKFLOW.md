@@ -50,13 +50,16 @@ scene và các lệnh render. Chỉ render chiến dịch sau khi calibration, k
 mesh, camera, vị trí vật và mẫu ảnh thử đã được kiểm tra. Calibration placeholder
 không phải phép đo thật.
 
-Sampler dùng `seed + index`. E3/full E5 có thể dùng chung dải 0..2999 để ghép cặp
-recipe. E4 phải dùng dải mới: ví dụ update 1 dùng guided seed 10000 và control
-20000; update 2 dùng 30000 và 40000, mỗi đợt 1000 ảnh. Lưu cả seed, start index,
-số ảnh và scene manifest. Không dùng seed 1000/2000 với E3 seed 0 vì các dải giao nhau.
-`21_mine_failures.py --guided-seed --control-seed` kiểm dải dự định với các scene
-manifest đã có; khi đóng gói, hai nguồn synthetic có `specs/manifest.json` cạnh
-`dataset/` mà dùng chung `seed + index` thì package bị từ chối.
+Scene `index` của seed `seed` lấy draw từ `SeedSequence([seed, index])`: khác seed thì
+không chung scene, cùng seed thì chung các index giao nhau. E3/full E5 dùng chung seed 0,
+index 0..2999 để ghép cặp recipe. Mỗi đợt E4 dùng một seed mới: update 1 dùng guided seed
+10000 và control 20000; update 2 dùng 30000 và 40000, mỗi đợt 1000 ảnh. Lưu cả seed, start
+index, số ảnh và scene manifest. `21_mine_failures.py --guided-seed --control-seed` kiểm
+hai đợt dự định với các scene manifest đã có và với nhau, rồi ghi vào báo cáo;
+`20_generate_synth.py --from-failures` (guided) và `--control-for` (control) lấy đúng seed
+và số ảnh đã kiểm từ báo cáo, từ chối giá trị khác. Khi đóng gói, hai nguồn synthetic có
+`specs/manifest.json` cạnh `dataset/` mà dùng chung scene (cùng seed, chung index) thì
+package bị từ chối.
 
 ## 3. Tạo package chuyển máy
 

@@ -39,10 +39,13 @@ from typing import Any
 import numpy as np
 
 from .anchored_config import LIGHTING_CONDITION_SCALE, SynthgenConfig
+from .seed_ranges import WORD
 
 # Schema version of the scene-spec JSON contract with render_blenderproc.py.
 # 2: an object's xyz_mm z is the height of its base, which is the top face of its
-# support for a stacked product (stack_on_index names the support).
+# support for a stacked product (stack_on_index names the support); scene i draws
+# from SeedSequence([seed, i]), where version 1 drew from default_rng(seed + i).
+# A change of the RNG scheme needs a bump and its rule in seed_ranges.STREAM_RULE.
 SPEC_VERSION = 2
 ABLATION_FACTORS = ("none", "illumination", "background", "distractors", "camera", "pose")
 # Draws of position and yaw for one product or distractor before it is left out.
@@ -115,7 +118,7 @@ class SceneSampler:
         kappa: Width multiplier for anchored sampling (Eq. 1). Ignored in blind.
         sigma: Optional dict from T_base_camera_sigma.json with keys
             sigma_trans_mm [3] and sigma_rot_deg [3]; overrides YAML fallbacks.
-        seed: Run seed, a non-negative integer. Scene i draws from
+        seed: Run seed, an integer in [0, 2**32). Scene i draws from
             default_rng(SeedSequence([seed, i])): any subset of a run regenerates
             exactly, and runs with different seeds share no scenes, whatever their
             index ranges. Within one seed, an index range must not be reused.
@@ -140,8 +143,10 @@ class SceneSampler:
             raise ValueError(f"ablation must be one of {ABLATION_FACTORS}, got '{ablation}'")
         if ablation != "none" and mode != "anchored":
             raise ValueError("E5 ablation requires mode='anchored'")
-        if int(seed) < 0:
-            raise ValueError(f"seed must be a non-negative integer, got {seed}")
+        if not 0 <= int(seed) < WORD:
+            # numpy splits a larger seed into two words: SeedSequence([2**32 + 5, 0])
+            # is SeedSequence([5, 1]), so its scenes could be another seed's.
+            raise ValueError(f"seed must be an integer in [0, 2**32), got {seed}")
         T = np.asarray(T_BC_mm, dtype=float)
         if T.shape != (4, 4):
             raise ValueError(f"T_BC_mm must be 4x4, got {T.shape}")
@@ -604,7 +609,7 @@ class SceneSampler:
         """Draw one scene spec. Deterministic in (seed, index, condition).
 
         Args:
-            index: Scene index within the run, a non-negative integer. With the run
+            index: Scene index within the run, an integer in [0, 2**32). With the run
                 seed it seeds the scene's generator, SeedSequence([seed, index]).
             condition: Optional C3 failure-mode constraint:
                 {"class_name": str|None, "region": [x0,x1,y0,y1]|None,
@@ -613,8 +618,8 @@ class SceneSampler:
                 region of its placement, and scales lighting to the named regime.
         """
         self._check_condition(condition)
-        if int(index) < 0:
-            raise ValueError(f"index must be non-negative, got {index}")
+        if not 0 <= int(index) < WORD:
+            raise ValueError(f"index must be an integer in [0, 2**32), got {index}")
         # SeedSequence mixes both words, so the stream of (seed, index) is not the
         # stream of (seed + 1, index - 1), as it was when seeded with seed + index.
         rng = np.random.default_rng(np.random.SeedSequence([self.seed, int(index)]))

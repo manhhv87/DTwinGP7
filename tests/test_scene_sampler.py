@@ -29,7 +29,8 @@ from pydantic import ValidationError
 
 from src.cell.pose_utils import make_homogeneous
 from src.synthgen import LIGHTING_CONDITION_SCALE, SceneSampler, SynthgenConfig
-from src.synthgen.scene_sampler import footprint, footprints_overlap
+from src.synthgen.scene_sampler import SPEC_VERSION, footprint, footprints_overlap
+from src.synthgen.seed_ranges import scene_streams
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
@@ -121,11 +122,25 @@ class TestDeterminism:
                    [[o.get(k) for k in keys] for o in b["objects"]]
             assert a["distractors"] == b["distractors"]
 
-    def test_negative_seed_or_index_rejected(self, config):
+    @pytest.mark.parametrize("value", [-1, 2 ** 32])
+    def test_seed_or_index_outside_one_word_rejected(self, config, value):
+        # numpy splits a value of 2**32 or more into two words, and the scene's
+        # stream could then be another seed's.
         with pytest.raises(ValueError, match="seed"):
-            make_sampler(config, seed=-1)
+            make_sampler(config, seed=value)
         with pytest.raises(ValueError, match="index"):
-            make_sampler(config).sample(-1)
+            make_sampler(config).sample(value)
+
+    def test_scene_stream_is_the_one_the_overlap_checker_names(self, config, monkeypatch):
+        # seed_ranges names a scene's stream by its spec version's rule; seeding
+        # it otherwise needs a SPEC_VERSION bump and the new rule there.
+        seen = []
+        default_rng = np.random.default_rng
+        monkeypatch.setattr(np.random, "default_rng", lambda s: seen.append(s) or default_rng(s))
+        make_sampler(config, seed=7).sample(16)
+        [(first, second)] = scene_streams(SPEC_VERSION, 7, [16])
+        named = np.random.SeedSequence([first[0], second[0]])
+        assert np.array_equal(seen[0].generate_state(4), named.generate_state(4))
 
 
 class TestAnchoredSampling:

@@ -127,7 +127,7 @@ Tập ảnh thật training phải được khai rõ: thiếu cả `--real-train
 thì công cụ từ chối, vì riêng thư mục không cho biết 62 ảnh negative có thuộc tập đã khóa hay không.
 Danh sách (`--real-train-list`) chọn đúng các ảnh; số đếm (`--expected-real-train`) chỉ kiểm tổng.
 Khi các batch synthetic nằm theo cấu trúc của `20_generate_synth.py` (`specs/` cạnh `dataset/`),
-gói còn từ chối hai nguồn synthetic dùng chung dải `seed + chỉ số ảnh`, và ghi κ, seed của từng
+gói còn từ chối hai nguồn synthetic dùng chung ảnh (cùng seed, chung chỉ số ảnh), và ghi κ, seed của từng
 nguồn vào `manifest.json`.
 
 Trên máy GPU, giải nén gói rồi:
@@ -201,7 +201,7 @@ Chỉ khai thác đúng CSV chính của buổi đó, không lấy thư mục `d
 ```bash
 python scripts/21_mine_failures.py --runs "results/e4adapt-1/experiment_real_*.csv" --n-budget 1000 --guided-seed 10000 --control-seed 20000 --out results/adaptation/e4_k1/failure_modes.json
 python scripts/20_generate_synth.py --from-failures results/adaptation/e4_k1/failure_modes.json --kappa <κ đã chọn> --seed 10000 --out data/synth/loop_k1
-python scripts/20_generate_synth.py --mode anchored --kappa <κ đã chọn> --n 1000 --seed 20000 --out data/synth/control_k1
+python scripts/20_generate_synth.py --control-for results/adaptation/e4_k1/failure_modes.json --kappa <κ đã chọn> --seed 20000 --out data/synth/control_k1
 ```
 
 Bộ khai thác chia lỗi theo **lớp và thẻ đã xếp**, không theo thứ detector báo: nó nối `pose_id`
@@ -217,11 +217,15 @@ và bản ghi đánh dấu là đã đổi. Báo cáo ghi SHA-256 của từng C
 thế. Không có lượt hỏng thì báo cáo vẫn được ghi, với phân bổ rỗng và dòng "không cập nhật";
 `20_generate_synth.py --from-failures` từ chối báo cáo đó, và vòng lặp dừng.
 
-Seed ở đây là seed **sinh cảnh**, và bộ sinh dùng `seed + chỉ số ảnh`: E3 đã chiếm 0–2999, nên
-vòng 1 dùng 10000 (guided) và 20000 (control), vòng 2 dùng 30000 và 40000. Dùng seed 2000 cho
-1000 ảnh control là sinh lại đúng 1000 ảnh cuối của E3, không phải ảnh mới. `--guided-seed` và
-`--control-seed` kiểm hai dải dự định với mọi `data/synth/*/specs/manifest.json` đã có (đổi bằng
-`--used-specs`) và với nhau, từ chối khi trùng; lệnh sinh phải dùng đúng các seed đã kiểm.
+Seed ở đây là seed **sinh cảnh**: ảnh `i` của seed `s` lấy draw từ `SeedSequence([s, i])`, nên
+hai đợt khác seed không chung ảnh nào, còn dùng lại một seed là sinh lại đúng các ảnh của nó từ
+chỉ số 0. E3 dùng seed 0; vòng 1 dùng 10000 (guided) và 20000 (control), vòng 2 dùng 30000 và
+40000. `--guided-seed` và `--control-seed` kiểm hai đợt dự định với mọi
+`data/synth/*/specs/manifest.json` đã có (đổi bằng `--used-specs`) và với nhau, từ chối khi
+trùng, rồi ghi seed và số ảnh vào báo cáo. Hai lệnh sinh đọc lại báo cáo: `--from-failures` lấy
+guided seed, `--control-for` lấy control seed, cả hai lấy số ảnh; chúng từ chối `--seed` hay
+`--n` khác giá trị đã kiểm, báo cáo không có seed của nhánh đó, và báo cáo lập cho phiên bản
+sampler khác.
 
 Đóng gói E4 bắt buộc truyền `--model` (checkpoint cha), `--parent-package` (gói đã huấn luyện ra
 checkpoint đó, còn `runs/seed<n>/run_record.json`), `--arm loop` hoặc `--arm control` và `--epochs`
@@ -304,7 +308,7 @@ với `f0` là nhánh `anchored` của E3, để đọc kèm); E5 là các yếu
 ### E6: khoảng cách mô phỏng với thật, và thời gian chu kỳ
 
 Khoảng cách mô phỏng với thật: chấm cùng một checkpoint trên một tập ảnh tổng hợp **sinh riêng
-để đánh giá** (dải seed không giao dải huấn luyện) và trên tập ảnh thật đánh giá, báo
+để đánh giá** (một seed riêng, chưa dùng cho ảnh huấn luyện) và trên tập ảnh thật đánh giá, báo
 `100 × (mAP tổng hợp − mAP thật)`.
 
 Thời gian chu kỳ: kế hoạch **100 chu kỳ hoàn chỉnh**. Lấy từ telemetry và CSV của Pha 4 nếu đủ

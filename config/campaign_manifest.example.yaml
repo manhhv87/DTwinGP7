@@ -195,9 +195,9 @@ experiments:
     parent_checkpoint_lineage_register_path: null
     mine_only_explicit_adaptation_file_allowlist: true
     adaptation_trial_counts: null
-    adaptation_generation_seeds: null  # e.g. [10000, 30000]; checked by 21_mine_failures.py --guided-seed.
-    control_generation_seeds: null  # e.g. [20000, 40000]; checked by --control-seed.
-    generation_range_register_path: null  # seed + start_index through seed + last_index.
+    adaptation_generation_seeds: null  # e.g. [10000, 30000]; checked by 21_mine_failures.py --guided-seed, used by 20_generate_synth.py --from-failures.
+    control_generation_seeds: null  # e.g. [20000, 40000]; checked by --control-seed, used by 20_generate_synth.py --control-for.
+    generation_range_register_path: null  # seed with start_index through last_index; scene streams are SeedSequence([seed, index]).
     rng_ranges_disjoint_from_initial_and_previous_batches: null
     no_failures_action: record_update_not_run_and_stop_without_reusing_old_allocation
     final_evaluation_after_updates_fixed: true

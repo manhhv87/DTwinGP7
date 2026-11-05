@@ -11,6 +11,7 @@ import sys
 import pytest
 import yaml
 
+from src.synthgen.seed_ranges import STREAM_RULE
 from src.training.package import RECIPE, build_package, inspect_sources, sha256
 from src.utils.dataset_check import EXPECTED_NAMES
 
@@ -278,7 +279,7 @@ def test_e4_arms_are_checked_against_each_other(real: Path, runner: Path, tmp_pa
         build_package(real, [initial], tmp_path / "x", experiment="E3", version=1, arm="loop", inspect_only=True)
 
 
-def make_batch(tmp_path: Path, name: str, seed: int, indices: range) -> Path:
+def make_batch(tmp_path: Path, name: str, seed: int, indices: range, spec_version: int = 2) -> Path:
     """A generated batch as 20_generate_synth.py lays it out: specs/ beside dataset/."""
     dataset = tmp_path / name / "dataset"
     dataset.parent.mkdir()
@@ -287,23 +288,29 @@ def make_batch(tmp_path: Path, name: str, seed: int, indices: range) -> Path:
     specs = tmp_path / name / "specs"
     specs.mkdir()
     (specs / "manifest.json").write_text(json.dumps({
-        "spec_version": 1, "seed": seed, "mode": "anchored", "kappa": 2.0,
+        "spec_version": spec_version, "seed": seed, "mode": "anchored", "kappa": 2.0,
         "files": [f"scene_{i:06d}.json" for i in indices]}), encoding="utf-8")
     return dataset
 
 
 def test_synthetic_batches_must_not_share_generation_streams(real: Path, tmp_path: Path) -> None:
     e3 = make_batch(tmp_path, "anchored_k2", 0, range(3000))
-    reused = make_batch(tmp_path, "control_bad", 2000, range(1000))
-    fresh = make_batch(tmp_path, "control_k1", 20000, range(1000))
+    reused = make_batch(tmp_path, "control_bad", 0, range(2000, 3000))
+    other_seed = make_batch(tmp_path, "control_k1", 2000, range(1000))
     unrecorded = make_source(tmp_path / "loose", synthetic=True)
     with pytest.raises(ValueError, match="synth01 and synth02, 1000 scene"):
         inspect_sources(real, [e3, reused])
-    inspected = inspect_sources(real, [e3, fresh, unrecorded])
-    assert inspected["generation_overlap_check"]["checked"] == ["synth01", "synth02"]
-    assert inspected["generation_overlap_check"]["unchecked"] == ["synth03"]
+    # Version 1 drew from seed + index, so seed 2000 then reused E3 scenes 2000..2999.
+    old_e3 = make_batch(tmp_path, "old_k2", 0, range(3000), spec_version=1)
+    old_control = make_batch(tmp_path, "old_control", 2000, range(1000), spec_version=1)
+    with pytest.raises(ValueError, match="synth01 and synth02, 1000 scene"):
+        inspect_sources(real, [old_e3, old_control])
+    inspected = inspect_sources(real, [e3, other_seed, unrecorded])
+    check = inspected["generation_overlap_check"]
+    assert check["checked"] == ["synth01", "synth02"] and check["unchecked"] == ["synth03"]
+    assert check["rules"] == {"synth01": STREAM_RULE[2], "synth02": STREAM_RULE[2]}
     assert inspected["sources"][1]["generation"]["kappa"] == 2.0
-    assert inspected["sources"][2]["generation"]["streams"] == [[20000, 21000]]
+    assert inspected["sources"][2]["generation"]["streams"] == [[[2000, 2001], [0, 1000]]]
 
 
 def test_cli_requires_a_declared_real_training_set(real: Path, tmp_path: Path) -> None:

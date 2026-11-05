@@ -4,7 +4,8 @@ The package contains relative image/label paths, real-only validation, and
 content hashes. Hash checks detect exact duplicates; they cannot establish
 independence of capture sessions or detect visually similar frames. Synthetic
 sources whose scene manifest sits beside them (<batch>/specs/manifest.json next
-to <batch>/dataset) must not share generation streams (seed + index).
+to <batch>/dataset) must not share generation streams (the seed/index rule of
+their spec version, src/synthgen/seed_ranges.py).
 
 An E4 package names the package that trained its parent checkpoint. It must keep
 that package's real training and validation images and all of its synthetic
@@ -225,7 +226,7 @@ def inspect_sources(
                if source["generation"] and source["generation"]["streams"] is not None}
     clashes = overlaps(streams)
     if clashes:
-        raise ValueError("Synthetic sources share generation streams (seed + index): " + "; ".join(
+        raise ValueError("Synthetic sources share generation streams: " + "; ".join(
             f"{first} and {second}, {count} scene(s)" for first, second, count in clashes))
     for key, expected in (("real_train", expected_real_train), ("synthetic_train", expected_synth_train)):
         if expected is not None and counts[key] != expected:
@@ -240,7 +241,9 @@ def inspect_sources(
         },
         "expected_real_train": expected_real_train,
         "generation_overlap_check": {
-            "rule": STREAM_RULE[1], "checked": sorted(streams),
+            "rules": {source["name"]: STREAM_RULE[source["generation"]["spec_version"]]
+                      for source in sources[1:] if source["name"] in streams},
+            "checked": sorted(streams),
             "unchecked": [source["name"] for source in sources[1:] if source["name"] not in streams],
         },
         "validation_role": "model_selection_only; not an independent final test set",
