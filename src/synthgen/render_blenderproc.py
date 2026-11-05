@@ -22,17 +22,30 @@ Python; run it from the repo root as:
 launcher; first run downloads Blender automatically.)
 
 Input:  scene_*.json specs written by scene_sampler.SceneSampler (mm units,
-        OpenCV camera convention: +Z looks forward/down).
+        OpenCV camera convention: +Z looks forward/down), and the render, sensor and
+        hard_profile sections of config/synthgen.yaml (--config).
 Output per frame (contract consumed by auto_label.convert_render_output):
-    frame_<idx>_rgb.png     rendered RGB
+    frame_<idx>_rgb.png     rendered RGB, 8-bit sRGB after the sensor model
     frame_<idx>_inst.png    instance map (uint16 PNG; 0 = background)
     frame_<idx>_meta.json   {"instances": {inst_id: class_id}, "scene": <spec file>}
+and once per output directory render_manifest.json: samples, device, Blender and
+BlenderProc versions, the profile and its hash (hard_profile.build_manifest).
 
 Design notes:
   - mm → m conversion happens HERE (Blender works in meters).
   - OpenCV cam → Blender cam: right-multiply by diag(1,-1,-1) (flip Y,Z axes).
-  - Meshes are placed so their bounding-box bottom rests on the table plane
-    (the sampler provides table-top z; STL origins are arbitrary).
+  - Every colour in the config and the specs is sRGB-encoded (a measured camera
+    value / 255); Base Color is scene-linear, so each one is linearised first
+    (sensor_model.srgb_to_linear).
+  - The scene is the hard condition of the trials (hard_profile.py): green sheet in
+    two parts split by the black strip, the 21 cards, the cell around the table's
+    edges. The spec's background albedo is the upper sheet's colour.
+  - Cycles renders scene-linear EXR; sensor_model.apply_sensor then applies white
+    balance, gain, Poisson-Gaussian noise and the sRGB curve (Blender's "Standard"
+    view, no tone mapping) in numpy.
+  - Meshes are placed so their bounding-box bottom rests at the spec height
+    xyz_mm[2]: the table top, or the top of the part underneath for a stack (STL
+    origins are arbitrary).
   - SMOKE TEST before a full run:
         blenderproc run src/synthgen/render_blenderproc.py -- \
             --scenes <dir-with-3-specs> --out /tmp/smoke --samples 16
@@ -46,22 +59,9 @@ from pathlib import Path
 import numpy as np
 
 MM = 1e-3  # mm → m
-
-
-def _kelvin_to_rgb(temp_k: float) -> tuple[float, float, float]:
-    """Approximate blackbody colour (Tanner Helland fit), normalized 0-1."""
-    t = max(1000.0, min(12000.0, float(temp_k))) / 100.0
-    if t <= 66:
-        r = 255.0
-        g = 99.4708025861 * np.log(t) - 161.1195681661
-    else:
-        r = 329.698727446 * ((t - 60.0) ** -0.1332047592)
-        g = 288.1221695283 * ((t - 60.0) ** -0.0755148492)
-    b = 255.0 if t >= 66 else (
-        0.0 if t <= 19 else 138.5177312231 * np.log(t - 10.0) - 305.0447927307
-    )
-    rgb = np.clip([r, g, b], 0.0, 255.0) / 255.0
-    return float(rgb[0]), float(rgb[1]), float(rgb[2])
+# Per-frame noise stream: drawn from (spec seed, scene index, this tag), so the
+# sensor noise of a frame is reproducible yet independent of the sampler's draws.
+NOISE_STREAM_TAG = 0x5E45
 
 
 def _cv_to_blender_cam(T_cv_m: np.ndarray) -> np.ndarray:
@@ -97,8 +97,13 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--scenes", required=True, help="Dir with scene_*.json specs")
     parser.add_argument("--out", required=True, help="Output dir for rendered frames")
-    parser.add_argument("--samples", type=int, default=64,
-                        help="Cycles samples/px (16 for smoke test, 64+ for real)")
+    parser.add_argument("--config", default="config/synthgen.yaml",
+                        help="Config with the render, sensor and hard_profile sections "
+                             "(relative paths are taken from the repo root)")
+    parser.add_argument("--samples", type=int, default=0,
+                        help="Cycles samples/px; 0 = render.samples of the config. "
+                             "Lower only for a smoke test: the value is written to the "
+                             "manifest, and packaging refuses arms that differ in it")
     parser.add_argument("--limit", type=int, default=0,
                         help="Render only the first N specs (0 = all)")
     parser.add_argument("--device", choices=["auto", "gpu", "cpu"], default="auto",
@@ -106,18 +111,48 @@ def main() -> int:
                              "there is none, so a batch meant for the GPU machine "
                              "cannot quietly spend hours on its CPU instead. "
                              "'auto' leaves the choice to BlenderProc.")
+    parser.add_argument("--save-linear", action="store_true",
+                        help="Also write frame_<idx>_linear.npy, the scene-linear render "
+                             "before the sensor model (scripts/fit_hard_profile.py)")
     args = parser.parse_args()
 
     scenes_dir = Path(args.scenes)
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
     repo_root = Path(__file__).resolve().parent.parent.parent
+    # The two helpers are plain modules next to this file. Imported as top-level
+    # modules, because src.synthgen's __init__ pulls in pydantic, which Blender's
+    # Python does not have.
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import hard_profile as hp
+    import sensor_model as sm
+
+    config_path = Path(args.config)
+    if not config_path.is_absolute():
+        config_path = repo_root / config_path
+    cfg = hp.load_render_config(config_path)
+    sm.check_sensor(cfg["sensor"])
+    rcfg = cfg["render"]
+    samples = int(args.samples) if args.samples > 0 else int(rcfg["samples"])
 
     spec_files = sorted(scenes_dir.glob("scene_*.json"))
     if args.limit > 0:
         spec_files = spec_files[: args.limit]
     if not spec_files:
         print(f"No scene_*.json in {scenes_dir}", file=sys.stderr)
+        return 1
+
+    # Frames already in the directory must come from a batch rendered the same way,
+    # which only a manifest can show. Frames without one predate the manifest (the
+    # Filmic, uniform-plane renders) and must not be mixed with these.
+    manifest_path = out_dir / hp.MANIFEST_NAME
+    old_manifest = None
+    if manifest_path.exists():
+        with manifest_path.open("r", encoding="utf-8") as f:
+            old_manifest = json.load(f)
+    elif any(out_dir.glob("frame_*_rgb.png")):
+        print(f"{out_dir} holds frames but no {hp.MANIFEST_NAME}: they were rendered "
+              "before the hard profile. Use a new output directory.", file=sys.stderr)
         return 1
 
     bproc.init()
@@ -132,8 +167,60 @@ def main() -> int:
                   "usable OPTIX/CUDA/HIP device. Check the driver, or run with "
                   "--device cpu deliberately.", file=sys.stderr)
             return 3
-    print(f"Render device: {bpy.context.scene.cycles.device} (--device {args.device})")
-    bproc.renderer.set_max_amount_of_samples(args.samples)
+    cycles_prefs = bpy.context.preferences.addons["cycles"].preferences
+    device = str(bpy.context.scene.cycles.device)
+    if device == "GPU":
+        device = f"GPU:{cycles_prefs.compute_device_type}"
+    print(f"Render device: {device} (--device {args.device})")
+
+    # Render settings come from the config so that every batch of every arm uses the
+    # same ones, and they are written to the manifest. BlenderProc's defaults
+    # (glossy_bounces 0, max_bounces 3) left a mirror nothing to reflect, so the inox
+    # box, the class the hard condition is about, rendered black.
+    bproc.renderer.set_max_amount_of_samples(samples)
+    bproc.renderer.set_noise_threshold(float(rcfg["noise_threshold"]))
+    bproc.renderer.set_denoiser(rcfg["denoiser"])
+    bproc.renderer.set_light_bounces(
+        diffuse_bounces=int(rcfg["diffuse_bounces"]),
+        glossy_bounces=int(rcfg["glossy_bounces"]),
+        max_bounces=int(rcfg["max_bounces"]),
+        transmission_bounces=int(rcfg["transmission_bounces"]),
+        transparent_max_bounces=int(rcfg["transparent_max_bounces"]))
+    # Scene-linear float output; the sensor model does the camera's encoding. The
+    # view transform is set to Standard as well so that no tone curve hides anywhere.
+    bproc.renderer.set_output_format(file_format="OPEN_EXR", color_depth=32,
+                                     view_transform=rcfg["view_transform"])
+    # The room around the cell: what the mirror-finish box reflects, and the light
+    # the room's walls and ceiling send back onto the scene.
+    world = [float(v) for v in cfg["hard_profile"]["environment"]["world_radiance_rgb"]]
+    bproc.renderer.set_world_background(world, strength=1.0)
+    render_settings = {
+        "samples": samples,
+        "denoiser": rcfg["denoiser"],
+        "noise_threshold": float(rcfg["noise_threshold"]),
+        "diffuse_bounces": int(rcfg["diffuse_bounces"]),
+        "glossy_bounces": int(rcfg["glossy_bounces"]),
+        "max_bounces": int(rcfg["max_bounces"]),
+        "transmission_bounces": int(rcfg["transmission_bounces"]),
+        "transparent_max_bounces": int(rcfg["transparent_max_bounces"]),
+        "view_transform": rcfg["view_transform"],
+        "output": "OPEN_EXR 32-bit scene-linear, then sensor_model.apply_sensor",
+    }
+    blender_version = str(bpy.app.version_string)
+    bproc_version = str(getattr(bproc, "__version__", "unknown"))
+
+    def write_manifest(frames: list[str]) -> None:
+        new = hp.build_manifest(cfg, render_settings, device=device,
+                                blender_version=blender_version,
+                                blenderproc_version=bproc_version,
+                                config_path=str(config_path), scenes_dir=str(scenes_dir),
+                                frames=frames)
+        merged = hp.merge_manifest(old_manifest, new) if old_manifest else new
+        with manifest_path.open("w", encoding="utf-8") as f:
+            json.dump(merged, f, indent=2)
+
+    # Refuse a mismatching batch before spending hours on it, not after.
+    write_manifest([])
 
     def import_mesh(path: Path):
         """Load STL/OBJ/PLY → bproc MeshObject (STL via bpy operator fallback)."""
@@ -150,13 +237,32 @@ def main() -> int:
             raise RuntimeError(f"STL import produced no object: {path}")
         return bproc.python.types.MeshObjectUtility.MeshObject(new[0])
 
-    def place_on_surface(obj, z_table_m: float) -> None:
-        """Shift the object so its bounding-box bottom sits on the table plane."""
+    def place_on_surface(obj, z_support_m: float) -> None:
+        """Shift the object so its bounding-box bottom sits at the support height."""
         bb = np.array(obj.get_bound_box())          # 8x3 world coords
-        dz = z_table_m - float(bb[:, 2].min())
+        dz = z_support_m - float(bb[:, 2].min())
         loc = np.array(obj.get_location())
         obj.set_location(loc + np.array([0.0, 0.0, dz]))
 
+    def flat_polygon(name: str, polygon_mm, z_mm: float):
+        """One flat face, normal up, from a CCW polygon in mm."""
+        mesh = bpy.data.meshes.new(name)
+        verts = [(float(x) * MM, float(y) * MM, float(z_mm) * MM) for x, y in polygon_mm]
+        mesh.from_pydata(verts, [], [list(range(len(verts)))])
+        mesh.update()
+        return bproc.object.create_from_blender_mesh(mesh, name)
+
+    def matte(name: str, albedo_srgb):
+        """Lambertian material: the static elements were fitted as pure diffuse
+        surfaces, so their brightness is exactly albedo times irradiance."""
+        mat = bproc.material.create(name)
+        mat.set_principled_shader_value(
+            "Base Color", [float(v) for v in sm.srgb_to_linear(albedo_srgb)] + [1.0])
+        mat.set_principled_shader_value("Roughness", 1.0)
+        mat.set_principled_shader_value("Specular IOR Level", 0.0)
+        return mat
+
+    rendered: list[str] = []
     for spec_path in spec_files:
         with spec_path.open("r", encoding="utf-8") as f:
             spec = json.load(f)
@@ -172,21 +278,20 @@ def main() -> int:
         # destroys the lighting factor the anchored generator exists to control.
         for light_obj in [o for o in bpy.data.objects if o.type == "LIGHT"]:
             bpy.data.objects.remove(light_obj, do_unlink=True)
-        # Materials are created per scene too and would otherwise pile up as
-        # bg_mat.001, bg_mat.002 ... over a 3000-image run.
+        # Materials and meshes are created per scene too and would otherwise pile up
+        # as bg_mat.001, bg_mat.002 ... over a 3000-image run.
         for mat in [m for m in bpy.data.materials if m.users == 0]:
             bpy.data.materials.remove(mat)
+        for mesh_data in [m for m in bpy.data.meshes if m.users == 0]:
+            bpy.data.meshes.remove(mesh_data)
 
-        # ── Background plane ──
+        # ── Static scene of the hard condition (never labelled: class id -1) ──
         bg = spec["background"]
-        z_table_m = float(bg["z_mm"]) * MM
-        plane = bproc.object.create_primitive("PLANE", scale=[2.0, 2.0, 1.0])
-        plane.set_location([0.7, 0.0, z_table_m])   # centred on the worktable
-        mat = bproc.material.create("bg_mat")
-        mat.set_principled_shader_value("Base Color", list(bg["albedo_rgb"]) + [1.0])
-        mat.set_principled_shader_value("Roughness", float(bg["roughness"]))
-        plane.replace_materials(mat)
-        plane.set_cp("custom_class_id", -1)
+        static = hp.static_elements(cfg, bg["albedo_rgb"], float(bg["z_mm"]))
+        for el in static:
+            plane = flat_polygon(f"{el['name']}_{idx}", el["polygon_mm"], el["z_mm"])
+            plane.replace_materials(matte(f"{el['name']}_mat_{idx}", el["albedo_rgb"]))
+            plane.set_cp("custom_class_id", -1)
 
         # ── Workpieces ──
         instances: dict[int, int] = {}
@@ -200,7 +305,7 @@ def main() -> int:
             T = _pose_from_spec(obj_spec["xyz_mm"], obj_spec["yaw_deg"])
             T[:3, :3] = T[:3, :3] * MM
             mesh.set_local2world_mat(T)
-            place_on_surface(mesh, z_table_m)
+            place_on_surface(mesh, float(obj_spec["xyz_mm"][2]) * MM)
             mesh.set_cp("custom_class_id", int(obj_spec["class_id"]))
             # Without this the workpiece renders in default grey, whatever the
             # sampler drew: an STL carries no material of its own.
@@ -208,7 +313,7 @@ def main() -> int:
             if ms:
                 omat = bproc.material.create(f"mat_{idx}_{obj_spec['class_name']}")
                 omat.set_principled_shader_value(
-                    "Base Color", list(ms["albedo_rgb"]) + [1.0])
+                    "Base Color", [float(v) for v in sm.srgb_to_linear(ms["albedo_rgb"])] + [1.0])
                 omat.set_principled_shader_value("Roughness", float(ms["roughness"]))
                 omat.set_principled_shader_value("Metallic", float(ms["metallic"]))
                 mesh.replace_materials(omat)
@@ -220,10 +325,10 @@ def main() -> int:
             prim = bproc.object.create_primitive(shape, scale=[size_m / 2.0] * 3)
             T = _pose_from_spec(d["xyz_mm"], d.get("yaw_deg", 0.0))
             prim.set_local2world_mat(T)
-            place_on_surface(prim, z_table_m)
+            place_on_surface(prim, float(d["xyz_mm"][2]) * MM)
             dmat = bproc.material.create(f"distractor_{idx}")
             dmat.set_principled_shader_value(
-                "Base Color", list(d["albedo_rgb"]) + [1.0])
+                "Base Color", [float(v) for v in sm.srgb_to_linear(d["albedo_rgb"])] + [1.0])
             prim.replace_materials(dmat)
             prim.set_cp("custom_class_id", -1)
 
@@ -233,7 +338,7 @@ def main() -> int:
             light.set_type("POINT")
             light.set_location(np.asarray(li["position_mm"], dtype=float) * MM)
             light.set_energy(float(li["energy_w"]))
-            light.set_color(_kelvin_to_rgb(li["color_temp_k"]))
+            light.set_color([float(v) for v in sm.light_rgb(li["color_temp_k"], cfg["white_k"])])
 
         # ── Camera (OpenCV convention in spec → Blender) ──
         cam = spec["camera"]
@@ -258,16 +363,20 @@ def main() -> int:
         bproc.renderer.enable_segmentation_output(map_by=["instance", "custom_class_id"],
                                                   default_values={"custom_class_id": -1})
         data = bproc.renderer.render()
-        rgb = np.asarray(data["colors"][0], dtype=np.uint8)
+        linear = np.asarray(data["colors"][0], dtype=np.float32)[..., :3]
         inst = np.asarray(data["instance_segmaps"][0])
         for attr in data["instance_attribute_maps"][0]:
             cls = int(attr.get("custom_class_id", -1))
             if cls >= 0:
                 instances[int(attr["idx"])] = cls
+        noise_rng = np.random.default_rng([int(spec.get("seed", 0)), idx, NOISE_STREAM_TAG])
+        rgb = sm.apply_sensor(linear, cfg["sensor"], noise_rng)
 
         stem = f"frame_{idx:06d}"
         Image.fromarray(rgb).save(out_dir / f"{stem}_rgb.png")
         Image.fromarray(inst.astype(np.uint16)).save(out_dir / f"{stem}_inst.png")
+        if args.save_linear:
+            np.save(out_dir / f"{stem}_linear.npy", linear)
         with (out_dir / f"{stem}_meta.json").open("w", encoding="utf-8") as f:
             json.dump({"instances": {str(k): v for k, v in instances.items()},
                        "scene": spec_path.name}, f, indent=2)
@@ -276,12 +385,14 @@ def main() -> int:
         # it. That went unnoticed once already, so it stops the run now.
         n_lights = len([o for o in bpy.data.objects if o.type == "LIGHT"])
         n_meshes = len(bproc.object.get_all_mesh_objects())
-        want_meshes = 1 + len(spec["objects"]) + len(spec.get("distractors", []))
+        want_meshes = len(static) + len(spec["objects"]) + len(spec.get("distractors", []))
         if n_lights != len(spec["lights"]) or n_meshes != want_meshes:
             raise RuntimeError(
                 f"{stem}: scene has {n_lights} lights and {n_meshes} meshes, but the "
                 f"spec asks for {len(spec['lights'])} and {want_meshes} — the "
                 f"per-scene reset leaked objects from an earlier frame.")
+        rendered.append(stem)
+        write_manifest(rendered)
         print(f"[{stem}] objects={len(spec['objects'])} "
               f"distractors={len(spec.get('distractors', []))} lights={n_lights}")
 

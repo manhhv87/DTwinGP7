@@ -68,7 +68,10 @@ tắc `seed + index`, chúng có nhiều draw trùng nhau. Nếu cần chiến d
 lập, phải định trước các dải seed/index không chồng nhau và ghi rõ estimand khác.
 
 Giữ phiên bản Blender/BlenderProc, số samples/px, render device và cài đặt renderer
-giống nhau; lưu thông tin này cùng manifest. Chọn `kappa`, anchor và protocol pose
+giống nhau. Số samples/px và các cài đặt renderer lấy từ mục `render` của
+`config/synthgen.yaml` (24 mẫu, như E3); renderer ghi chúng, thiết bị, phiên bản và hash
+của profile điều kiện khó vào `render_manifest.json` của mỗi thư mục render, từ chối lô
+khác thiết lập trong cùng thư mục, và `hard_profile.check_arms_match` so các nhánh. Chọn `kappa`, anchor và protocol pose
 trước khi xem điểm trên tập đánh giá cuối cùng. Giá trị fallback/proxy trong
 checkout hiện tại chưa tự trở thành calibration thật chỉ vì sampler chạy được.
 
@@ -99,7 +102,7 @@ riêng, thực hiện sau khi kiểm tra calibration và một lô ảnh nhỏ:
 for FACTOR in none illumination background distractors camera pose; do
   RUN="data/synth/e5_${FACTOR}"
   blenderproc run src/synthgen/render_blenderproc.py -- \
-    --scenes "$RUN/specs" --out "$RUN/render" --samples 64 --device gpu
+    --scenes "$RUN/specs" --out "$RUN/render" --device gpu
   python scripts/20_generate_synth.py --make-labels --out "$RUN" \
     --val-frac 0 --seed 0
 done

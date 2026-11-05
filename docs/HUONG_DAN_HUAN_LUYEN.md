@@ -103,10 +103,12 @@ Bộ sinh đọc `config/calibration/T_base_camera.npy` và `T_base_camera_sigma
 vậy không được dùng cho bài. Render rồi gán nhãn từng cấu hình:
 
 ```bash
-blenderproc run --custom-blender-path <thư mục blender> src/synthgen/render_blenderproc.py -- --scenes data/synth/anchored_k2/specs --out data/synth/anchored_k2/render --samples 24 --device gpu
+blenderproc run --custom-blender-path <thư mục blender> src/synthgen/render_blenderproc.py -- --scenes data/synth/anchored_k2/specs --out data/synth/anchored_k2/render --device gpu
 python scripts/20_generate_synth.py --make-labels --val-frac 0 --out data/synth/anchored_k2
 ```
 
+Số mẫu/px (24) và mọi cài đặt render lấy từ mục `render` của `config/synthgen.yaml`, không đặt ở
+dòng lệnh; `render_manifest.json` trong thư mục render ghi lại chúng cùng thiết bị và phiên bản.
 `--val-frac 0` giữ đủ 3000 ảnh cho train; validation luôn là ảnh thật. Sau mỗi lô đếm lại số
 ảnh và số nhãn, số spec không phải số ảnh đã render xong.
 
