@@ -227,7 +227,10 @@ def test_manifest_stores_effective_profile_and_independent_scene_metadata(config
     manifest = json.loads(manifest_path.read_text())
     assert manifest["generator_profile"] == {
         "config": config.model_dump(mode="json"), "T_BC_mm": T_BC.tolist(),
-        "sigma_trans_mm": sigma["sigma_trans_mm"], "sigma_rot_deg": sigma["sigma_rot_deg"]}
+        "sigma_trans_mm": sigma["sigma_trans_mm"], "sigma_rot_deg": sigma["sigma_rot_deg"],
+        "top_textures": sampler.top_textures}
+    # The texture list (files with their SHA-256) is part of the profile, hence of its digest.
+    assert sampler.top_textures and all(e["sha256"] for es in sampler.top_textures.values() for e in es)
     scene = json.loads((tmp_path / manifest["files"][0]).read_text())
     assert scene["ablation"] == manifest["ablation"]
     pristine = deepcopy(sampler.ablation_protocol)

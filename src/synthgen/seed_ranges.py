@@ -19,6 +19,8 @@ its entropy with zero words, so default_rng(k) is the stream of SeedSequence([k,
   spec_version 3  as version 2, words (seed, index), and each scene's session exposure
                   gain from SeedSequence([seed, index, 2]): a third word other than 0
                   never equals a two-word stream, so the overlap rule is version 2's.
+  spec_version 4  as version 3, and the anchored products' top-face textures from
+                  SeedSequence([seed, index, 3]); the overlap rule is version 2's.
 
 A sampler RNG change needs a SPEC_VERSION bump and its rule here; a spec version
 without one is reported as unchecked. A seed or index of 2**32 or more is refused,
@@ -37,7 +39,9 @@ from typing import Any, Iterable
 
 STREAM_RULE = {1: "default_rng(seed + index)",                  # spec_version → rule
                2: "default_rng(SeedSequence([seed, index]))",
-               3: "default_rng(SeedSequence([seed, index])); exposure SeedSequence([seed, index, 2])"}
+               3: "default_rng(SeedSequence([seed, index])); exposure SeedSequence([seed, index, 2])",
+               4: "default_rng(SeedSequence([seed, index])); exposure SeedSequence([seed, index, 2]); "
+                  "top textures SeedSequence([seed, index, 3])"}
 WORD = 2 ** 32
 _SCENE = re.compile(r"scene_(\d+)\.json$")
 

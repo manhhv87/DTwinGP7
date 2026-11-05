@@ -55,6 +55,7 @@ format=onnx`) rồi trỏ `model_path` tới file `.onnx`.
 | `models/` | `worktable.stl`, `pedestal.stl`, `gripper.stl`, `floor.stl` |
 | `models/gp7_links/` | 7 STL link Yaskawa GP7 (`gp7_base_link.stl` … `gp7_link_6_t.stl`) cho URDF chain |
 | `models/objects/` | **Bộ vật của paper (5 lớp, 6 mesh)**: `carton_large.stl`, `carton_small.stl`, `plastic_box.stl`, `wood_box.stl`, `metal_box.stl`, `inox_box.stl` — dựng theo số đo thước kẹp bằng `scripts/gen_product_meshes.py`. Bộ cũ cho sim/demo: `tray.stl`, `bottle.stl`, `cup.stl`, `bolt.stl` |
+| `models/textures/` | Hoa văn mặt trên đo được của `carton_large`, `carton_small`, `plastic_box`, `wood_box` (21-24 PNG mỗi mesh, chỉ cắt từ ảnh tập train) cho recipe anchored; `manifest.json` ghi file, SHA-256, ảnh nguồn và tư thế khớp; `candidates.json` ghi mọi ảnh ứng viên và lý do bỏ. Tạo lại: `python scripts/make_top_textures.py --yolo <dataset>/_work/yolo` |
 
 > **Lớp vật (class):** bài toán thật dùng 5 lớp `carton / plastic_box / wood_box /
 > metal_box / inox_box`, trong đó `carton` gồm HAI cỡ hộp (180×120×120 và
