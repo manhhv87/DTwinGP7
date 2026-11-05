@@ -117,9 +117,11 @@ training:
   ultralytics_version: 8.4.66
   architecture: yolov8s-seg
   initial_pretrained_checkpoint_path: null
-  initial_pretrained_checkpoint_sha256: null
+  # Pinned in src/training/package.py (COCO_INITIALIZER); train.py refuses another file.
+  initial_pretrained_checkpoint_sha256: 0bac0770b55e5eb5b76a61bc535673288dcec36c2bc0cd25ee0d584c632f3413
   epochs_E2_E3_E5: 130
-  epochs_per_E4_update: null  # Must be explicitly fixed before refinement.
+  epochs_per_E4_update: 130  # Fixed 05/11/2026: each update trains 130 epochs from the previous checkpoint.
+  workers: 4  # As E2; pinned in package.RECIPE.
   imgsz: 1280
   batch: 8
   nbs: 64
