@@ -45,8 +45,10 @@ def read_arm(path: Path) -> dict:
                          "render the batch and run --make-labels first")
     manifest = json.loads(candidate.read_text(encoding="utf-8"))
     specs = run / "specs" / "manifest.json"
-    n_specs = (len(json.loads(specs.read_text(encoding="utf-8")).get("files", []))
-               if specs.is_file() else None)
+    if not specs.is_file():
+        raise ValueError(f"{path}: no {specs}; without the scene list the batch cannot be "
+                         "checked for missing frames")
+    n_specs = len(json.loads(specs.read_text(encoding="utf-8")).get("files", []))
     return {"arm": run.name, "path": str(candidate), "manifest": manifest,
             "frames": len(manifest.get("frames", [])), "specs": n_specs}
 
@@ -58,7 +60,7 @@ def check(arms: list[dict]) -> None:
         raise ValueError(f"two batches share one name: {names}")
     check_arms_match({a["arm"]: a["manifest"] for a in arms})
     short = [f"{a['arm']} ({a['frames']} frames, {a['specs']} specs)" for a in arms
-             if a["specs"] is not None and a["frames"] < a["specs"]]
+             if a["frames"] < a["specs"]]
     if short:
         raise ValueError("incomplete batches: " + "; ".join(short))
 

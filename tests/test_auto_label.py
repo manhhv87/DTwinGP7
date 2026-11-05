@@ -173,6 +173,44 @@ class TestConvertRenderOutput:
         ys = [float(v) for v in line.split()[2::2]]
         assert min(ys) < 12 / 64 and max(ys) > 36 / 64   # both parts in the one polygon
 
+    def test_images_are_hard_links_to_the_render(self, tmp_path):
+        import os
+        render = tmp_path / "render"
+        render.mkdir()
+        self._write_frame(render, 0)
+        stats = convert_render_output(render, tmp_path / "ds", val_frac=0.0, seed=0)
+        assert stats["copied"] == 0
+        image = tmp_path / "ds" / "images" / "train" / "frame_000000.png"
+        assert os.stat(image).st_ino == os.stat(render / "frame_000000_rgb.png").st_ino
+        # A rerun links again: it removes the old link and never writes into the file
+        # that a package may share.
+        held = tmp_path / "package_copy.png"
+        os.link(image, held)
+        convert_render_output(render, tmp_path / "ds", val_frac=0.0, seed=0)
+        assert held.read_bytes() == (render / "frame_000000_rgb.png").read_bytes()
+
+    def test_images_are_copied_when_a_link_is_impossible(self, tmp_path, monkeypatch):
+        import os
+        render = tmp_path / "render"
+        render.mkdir()
+        self._write_frame(render, 0)
+
+        def no_link(*_args):
+            raise OSError(18, "Invalid cross-device link")
+        monkeypatch.setattr(os, "link", no_link)
+        stats = convert_render_output(render, tmp_path / "ds", val_frac=0.0, seed=0)
+        assert stats["copied"] == 1 and stats["frames"] == 1
+        image = tmp_path / "ds" / "images" / "train" / "frame_000000.png"
+        assert image.read_bytes() == (render / "frame_000000_rgb.png").read_bytes()
+
+    def test_meta_without_instances_is_skipped_not_a_negative(self, tmp_path):
+        render = tmp_path / "render"
+        render.mkdir()
+        self._write_frame(render, 0)
+        (render / "frame_000000_meta.json").write_text('{"scene": "scene_000000.json"}', encoding="utf-8")
+        stats = convert_render_output(render, tmp_path / "ds", val_frac=0.0, seed=0)
+        assert stats["frames"] == 0 and stats["skipped"] == 1
+
     def test_missing_meta_skipped(self, tmp_path):
         render = tmp_path / "render"
         render.mkdir()

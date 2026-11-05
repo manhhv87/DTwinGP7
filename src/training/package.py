@@ -24,6 +24,7 @@ from datetime import datetime, timezone
 import hashlib
 import json
 import math
+import os
 from pathlib import Path
 import shutil
 from typing import Any
@@ -371,6 +372,34 @@ def _check_e4_pair(paired: Path, training: dict[str, Any], manifest: dict[str, A
             "manifest_sha256": sha256(paired / "manifest.json")}
 
 
+def _link_or_copy(source: Path, target: Path) -> str:
+    """Hard-link an image into the package, or copy it across file systems."""
+    try:
+        os.link(source, target)
+        return "hardlink"
+    except OSError:
+        shutil.copy2(source, target)
+        return "copy"
+
+
+def _require_provenance(manifest: dict[str, Any]) -> None:
+    """Every synthetic source of E3-E5 carries both manifests of its batch.
+
+    Without specs/manifest.json beside the dataset the generation streams cannot be
+    checked for overlap, and without render_manifest.json the arms cannot be compared
+    for how they were rendered; the inspection records such a source as 'unchecked'.
+    """
+    missing = []
+    for source in manifest["sources"][1:]:
+        root = Path(source["root"])
+        if source.get("generation") is None:
+            missing.append(f"{source['name']} ({root}): no {root.parent / 'specs' / 'manifest.json'}")
+        if source.get("render") is None:
+            missing.append(f"{source['name']} ({root}): no {root / RENDER_MANIFEST}")
+    if missing:
+        raise ValueError("synthetic sources lack the records their checks need: " + "; ".join(missing))
+
+
 def build_package(
     real: Path,
     synthetic: list[Path],
@@ -389,8 +418,14 @@ def build_package(
     parent_package: Path | None = None,
     arm: str | None = None,
     paired_package: Path | None = None,
+    require_provenance: bool = False,
 ) -> dict[str, Any]:
     """Copy verified inputs to a new portable directory; never overwrite one.
+
+    Images are hard-linked into the package (copied only across file systems), labels
+    copied; the content hashes are checked either way. require_provenance (set by
+    scripts/23_launch_retrain.py for E3-E5) refuses a synthetic source without its
+    spec and render manifests instead of recording it as unchecked.
 
     E4 also needs parent_package (the package whose run produced `model`) and arm
     ('loop' or 'control'); paired_package names the other arm's package of the
@@ -447,6 +482,8 @@ def build_package(
         real, synthetic, real_train_list=real_train_list,
         expected_real_train=expected_real_train, expected_synth_train=expected_synth_train,
     )
+    if require_provenance:
+        _require_provenance(manifest)
     manifest["created_utc"] = datetime.now(timezone.utc).isoformat()
     if lineage is not None:
         _check_e4_data(lineage, manifest)
@@ -459,11 +496,15 @@ def build_package(
     if not runner_source.is_file():
         raise ValueError(f"Portable training runner is missing: {runner_source}")
     destination.mkdir(parents=True)
+    placed = {"hardlink": 0, "copy": 0}
     for row in manifest["images"]:
         for kind in ("image", "label"):
             target = destination / row[kind]
             target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(row[f"source_{kind}"], target)
+            if kind == "image":
+                placed[_link_or_copy(Path(row["source_image"]), target)] += 1
+            else:
+                shutil.copy2(row["source_label"], target)
             if sha256(target) != row[f"{kind}_sha256"]:
                 raise ValueError(f"Source content changed during packaging: {row[f'source_{kind}']}; package is incomplete")
     if initializer is not None:
@@ -486,6 +527,9 @@ def build_package(
         "Keep manifest.json, training.json and every run record with returned checkpoints. "
         "Validation selects models and is not an independent final test set. "
         "Content hashes do not establish capture-session independence. "
-        "The source paths in manifest.json are provenance only; they are not needed on Linux.\n", encoding="utf-8")
+        "The source paths in manifest.json are provenance only; they are not needed on Linux. "
+        "Images are hard links to the source datasets where both sit on one disk: never edit an "
+        "image in place here, it would change the source too (deleting the package is safe).\n", encoding="utf-8")
     return {"inspect_only": False, "destination": str(destination), "counts": manifest["counts"],
+            "images_placed": placed,
             "manifest_sha256": sha256(destination / "manifest.json"), "training": training}

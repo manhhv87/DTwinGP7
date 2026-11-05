@@ -356,6 +356,54 @@ def test_synthetic_batches_must_not_share_generation_streams(real: Path, tmp_pat
     assert inspected["sources"][2]["generation"]["streams"] == [[[2000, 2001], [0, 1000]]]
 
 
+def test_images_are_hard_links_and_labels_copies(real: Path, runner: Path, tmp_path: Path) -> None:
+    import os
+    synth = make_source(tmp_path / "synthetic", synthetic=True)
+    result = build_package(real, [synth], tmp_path / "dsv1", experiment="E3", version=1, runner_source=runner)
+    assert result["images_placed"] == {"hardlink": 3, "copy": 0}
+    image = tmp_path / "dsv1/images/train/synth01/sample.png"
+    assert os.stat(image).st_ino == os.stat(synth / "images/train/sample.png").st_ino
+    assert os.stat(tmp_path / "dsv1/images/val/real/sample.png").st_ino == \
+        os.stat(real / "images/val/sample.png").st_ino
+    label = tmp_path / "dsv1/labels/train/synth01/sample.txt"
+    assert os.stat(label).st_ino != os.stat(synth / "labels/train/sample.txt").st_ino
+
+
+def test_images_are_copied_across_file_systems(real: Path, runner: Path, tmp_path: Path, monkeypatch) -> None:
+    import os
+    synth = make_source(tmp_path / "synthetic", synthetic=True)
+
+    def no_link(*_args):
+        raise OSError(18, "Invalid cross-device link")
+    monkeypatch.setattr(os, "link", no_link)
+    result = build_package(real, [synth], tmp_path / "dsv1", experiment="E3", version=1, runner_source=runner)
+    assert result["images_placed"] == {"hardlink": 0, "copy": 3}
+    assert (tmp_path / "dsv1/images/train/synth01/sample.png").read_bytes() == \
+        (synth / "images/train/sample.png").read_bytes()
+
+
+def test_synthetic_sources_without_their_manifests_are_refused(real: Path, runner: Path, tmp_path: Path) -> None:
+    """For E3-E5 the CLI refuses what the inspection would only record as unchecked."""
+    loose = make_source(tmp_path / "loose", synthetic=True)
+    with pytest.raises(ValueError, match="loose.*specs.*manifest.json"):
+        build_package(real, [loose], tmp_path / "x", experiment="E3", version=1, inspect_only=True,
+                      require_provenance=True)
+    specs_only = make_batch(tmp_path, "specs_only", 0, range(1))
+    with pytest.raises(ValueError, match="specs_only.*render_manifest.json"):
+        build_package(real, [specs_only], tmp_path / "x", experiment="E3", version=1, inspect_only=True,
+                      require_provenance=True)
+    both = rendered(make_batch(tmp_path, "anchored_k2", 0, range(1)))
+    build_package(real, [both], tmp_path / "x", experiment="E3", version=1, inspect_only=True,
+                  require_provenance=True)
+    script = Path(__file__).resolve().parents[1] / "scripts/23_launch_retrain.py"
+    completed = subprocess.run([
+        sys.executable, str(script), "--real", str(real), "--synth", str(loose), "--experiment", "E3",
+        "--version", "1", "--out", str(tmp_path / "packages"), "--expected-real-train", "1"],
+        capture_output=True, text=True)
+    assert completed.returncode == 2 and "lack the records" in completed.stderr
+    assert not (tmp_path / "packages").exists()
+
+
 def test_cli_requires_a_declared_real_training_set(real: Path, tmp_path: Path) -> None:
     script = Path(__file__).resolve().parents[1] / "scripts/23_launch_retrain.py"
     command = [sys.executable, str(script), "--real", str(real), "--experiment", "E2", "--version", "0",

@@ -83,3 +83,13 @@ def test_a_batch_without_manifest_is_refused(tmp_path: Path, cfg: dict, capsys) 
     other = batch(tmp_path, "anchored_k2", cfg)
     assert cra.main([str(tmp_path / "empty"), str(other)]) == 2
     assert "REFUSED" in capsys.readouterr().out
+
+
+def test_a_batch_without_its_scene_list_is_refused(tmp_path: Path, cfg: dict, capsys) -> None:
+    """Without specs/manifest.json the frame count cannot be checked; that is an error."""
+    run = batch(tmp_path, "anchored_k1", cfg)
+    (run / "specs" / "manifest.json").unlink()
+    other = batch(tmp_path, "anchored_k2", cfg)
+    assert cra.main([str(run), str(other)]) == 2
+    out = capsys.readouterr().out
+    assert "REFUSED" in out and "missing frames" in out

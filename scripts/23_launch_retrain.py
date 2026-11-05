@@ -15,7 +15,12 @@ E4 update (one arm; the parent package holds the run that produced --model):
         --real-train-list <frozen train list> --expected-synth-train 4000 \
         [--paired-package <the other arm's package of the same update>]
 
-Validation is always real-only. Source images and labels are never changed.
+Validation is always real-only. Source images and labels are never changed. Images
+are hard-linked into the package when source and package share a disk (copied
+otherwise), so a package costs its labels only; the printout's images_placed says
+which. For E3, E4 and E5 every synthetic source must carry its batch's
+specs/manifest.json (beside the dataset) and render_manifest.json (in it); a source
+without them is refused, not left unchecked.
 """
 from __future__ import annotations
 
@@ -85,6 +90,7 @@ def main(argv: list[str] | None = None) -> int:
             parent_package=_resolve(args.parent_package) if args.parent_package else None,
             arm=args.arm,
             paired_package=_resolve(args.paired_package) if args.paired_package else None,
+            require_provenance=args.experiment != "E2",
         )
         if args.inspect_only:
             # The API returns full hashes; terminal output remains compact.

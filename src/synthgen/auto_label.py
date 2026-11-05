@@ -10,7 +10,7 @@ Contract with render_blenderproc.py (per frame, in the render output dir):
                              "scene": "scene_000123.json"}
 
 Output: ultralytics dataset layout
-    <out>/images/{train,val}/frame_*.png
+    <out>/images/{train,val}/frame_*.png    hard links to the rendered images
     <out>/labels/{train,val}/frame_*.txt     one line per instance:
                                              class_id x0 y0 x1 y1 ... (normalized polygon)
     <out>/dataset.yaml
@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import shutil
 from pathlib import Path
 
@@ -135,6 +136,20 @@ def instance_map_to_yolo_lines(
     return lines
 
 
+def link_or_copy(source: str | Path, target: str | Path) -> str:
+    """Hard-link source to target, or copy it when a link is impossible (another file
+    system). An existing target is removed first, so a file that other hard links
+    share is never written into. Returns "link" or "copy"."""
+    target = Path(target)
+    target.unlink(missing_ok=True)
+    try:
+        os.link(source, target)
+        return "link"
+    except OSError:
+        shutil.copy2(source, target)
+        return "copy"
+
+
 def convert_render_output(
     render_dir: str | Path,
     out_dir: str | Path,
@@ -145,9 +160,10 @@ def convert_render_output(
     """Convert a full render directory into an ultralytics YOLO-seg dataset.
 
     Returns:
-        Dict {frames, train, val, skipped, multipart} with counts; multipart is the
-        number of labelled instances whose mask came in two or more parts (joined
-        into one polygon by mask_to_polygon).
+        Dict {frames, train, val, skipped, multipart, copied} with counts; multipart
+        is the number of labelled instances whose mask came in two or more parts
+        (joined into one polygon by mask_to_polygon), copied the number of images
+        copied because a hard link to the render was impossible (0 on one disk).
     """
     import cv2  # lazy import
 
@@ -167,7 +183,7 @@ def convert_render_output(
         (out / "images" / split).mkdir(parents=True, exist_ok=True)
         (out / "labels" / split).mkdir(parents=True, exist_ok=True)
 
-    stats = {"frames": 0, "train": 0, "val": 0, "skipped": 0, "multipart": 0}
+    stats = {"frames": 0, "train": 0, "val": 0, "skipped": 0, "multipart": 0, "copied": 0}
     for i, rgb_path in enumerate(rgb_files):
         stem = rgb_path.name[: -len("_rgb.png")]
         inst_path = render / f"{stem}_inst.png"
@@ -179,7 +195,12 @@ def convert_render_output(
 
         with meta_path.open("r", encoding="utf-8") as f:
             meta = json.load(f)
-        inst_to_class = {int(k): int(v) for k, v in meta.get("instances", {}).items()}
+        if not isinstance(meta.get("instances"), dict):
+            # Without the mapping every part would go unlabelled: a negative image.
+            logger.warning("Frame %s: meta has no 'instances' — skipped", stem)
+            stats["skipped"] += 1
+            continue
+        inst_to_class = {int(k): int(v) for k, v in meta["instances"].items()}
         inst_map = cv2.imread(str(inst_path), cv2.IMREAD_UNCHANGED)
         if inst_map is None:
             logger.warning("Frame %s: unreadable instance map — skipped", stem)
@@ -193,7 +214,9 @@ def convert_render_output(
             1 for k in inst_to_class
             if (inst_map == k).sum() >= MIN_INSTANCE_PIXELS and count_parts(inst_map == k) >= 2)
         split = "val" if i in val_idx else "train"
-        shutil.copy2(rgb_path, out / "images" / split / f"{stem}.png")
+        # A hard link, not a copy: the image exists once on disk however many
+        # datasets and packages hold it (1.2 MB a frame, 3000 frames an arm).
+        stats["copied"] += link_or_copy(rgb_path, out / "images" / split / f"{stem}.png") == "copy"
         label_path = out / "labels" / split / f"{stem}.txt"
         label_path.write_text("\n".join(lines) + ("\n" if lines else ""),
                               encoding="utf-8")
