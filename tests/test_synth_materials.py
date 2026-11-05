@@ -54,13 +54,13 @@ class TestShippedConfig:
 
     def test_metals_carry_a_physical_reflectance(self, config):
         # The image colour of a metal is its surroundings, not its reflectance: the
-        # two metal classes carry a physical F0 (the metal study's fit), the dielectric
-        # ones their measured colour.
+        # two metal classes carry an F0 (fitted per channel on the E2 hard-condition
+        # trial frames, 05/11/2026), the dielectric ones their colour.
         mats = config.objects.materials
         inox, metal = mats["inox_box"], mats["metal_box"]
-        assert inox.f0_rgb == [0.57] * 3 and inox.albedo_rgb is None and inox.coat_ior is None
+        assert inox.f0_rgb == [0.5047, 0.5708, 0.4475] and inox.albedo_rgb is None and inox.coat_ior is None
         assert inox.roughness == 0.05 and inox.roughness_range == [0.02, 0.10]
-        assert metal.f0_rgb == [0.34] * 3 and metal.roughness == 0.9 and metal.coat_ior == 1.5
+        assert metal.f0_rgb == [0.5678, 0.6149, 0.5641] and metal.roughness == 0.9 and metal.coat_ior == 1.5
         assert metal.coat_roughness == 0.30 and metal.sigma_coat_roughness == 0.05
         assert inox.sigma_f0_rel == pytest.approx(0.03 / 0.57, abs=1e-3) and metal.sigma_f0_rel == 0.15
         for cls in ("carton", "plastic_box", "wood_box"):
@@ -119,10 +119,16 @@ class TestAnchoredSampling:
         for cls, mats in got.items():
             m = config.objects.materials[cls]
             f0 = np.array([g["f0_rgb"] for g in mats])
-            assert np.all(f0[:, 0] == f0[:, 2])                     # grey: one factor
-            log = np.log(f0[:, 1] / m.f0_rgb[1])
+            ratio = f0 / np.asarray(m.f0_rgb)
+            free = np.all(f0 < 1.0, axis=1)                       # draws below the F0 <= 1 clip
+            assert np.allclose(ratio[free, 0], ratio[free, 2])     # one factor keeps the hue
+            log = np.log(ratio[:, 1])
             assert abs(float(np.median(log))) < 0.03 * kappa
-            assert float(log.std()) == pytest.approx(kappa * m.sigma_f0_rel, rel=0.15)
+            # The metal's F0 (0.61 in G) clips at 1 above exp(eta) = 1.63, 21% of the draws at
+            # kappa 4, which truncates the standard deviation; the interquartile range of the
+            # log stays below the clip, so the width is checked on it (IQR / 1.349 = sigma).
+            q25, q75 = np.percentile(log, [25, 75])
+            assert float((q75 - q25) / 1.349) == pytest.approx(kappa * m.sigma_f0_rel, rel=0.15)
             rough = np.array([g["roughness"] for g in mats])
             lo, hi = m.roughness_range
             assert rough.min() >= max(0.02, m.roughness + kappa * (lo - m.roughness)) - 1e-9
