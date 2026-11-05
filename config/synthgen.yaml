@@ -232,28 +232,35 @@ objects:
   # Lớp ĐIỆN MÔI (carton, nhựa, gỗ): albedo_rgb là màu trong thang albedo của file này (bàn chuẩn
   # trần 0,305 tuyến tính), cộng lớp phản xạ gương điện môi F0 0,04 mà renderer nhân
   # render.reflectance_scale.
-  # DIỆN MẠO CẢ NĂM LỚP (albedo_rgb của điện môi, f0_rgb của kim loại) KHỚP ngày 05/11/2026 trên khung
+  # DIỆN MẠO CẢ NĂM LỚP (albedo_rgb của điện môi, f0_rgb của kim loại) KHỚP ngày 06/11/2026 trên khung
   # lượt gắp E2 điều kiện khó: e2kho-1 (02/11) và e2kho-2 (03/11/2026), vật một lớp, mỗi lớp 6 dòng của
   # config/pose_lists/hard_v2.csv (3 mỗi buổi; số dòng vật một lớp của hai buổi: carton 10/11, nhựa
   # 10/9, gỗ 11/9, metal 10/11, inox 39/40). Render đúng vị trí đo được và góc (yaw danh sách + 90 độ:
   # vạch 0 của thẻ theo +y base, cạnh dài mesh theo +x) của các dòng đó, ánh sáng danh định của profile
-  # (scripts/fit_hard_profile.nominal_light), mặt nền và thẻ của profile giữ nguyên. Thước đo: ô 17 px ở
-  # tâm mặt trên, trung vị độ chói tuyến tính chia trung vị nửa trên tấm nền trần của cùng khung, màu
-  # R/G, B/G là trung bình ô. Mỗi kênh mô hình r = S + D·p (p = albedo tuyến tính hoặc F0; lượt render
-  # thứ hai đặt p = 0 cho S), giải p để trung vị tỉ số tổng hợp/thật theo từng dòng bằng 1; render lại ở
-  # giá trị giải được trùng mô hình (lệch tới 0,2 %; metal xem dưới). Kiểm chéo hai buổi (khớp một
-  # buổi, đoán các dòng của buổi kia, chỉ báo cáo): lệch log độ sáng carton −0,11/+0,11, gỗ −0,17/+0,18,
-  # nhựa +0,21/−0,08, metal −0,04/+0,06, inox −0,20/+0,20. Không ảnh val, test, E3-E5 nào vào phép khớp.
-  # Độ sáng thật còn tăng theo x mà ánh sáng danh định không có (inox +0,51, gỗ +0,17 log mỗi 100 mm;
-  # gương inox chỉ thấy nền trên cao đồng đều nên phẳng theo x): giới hạn của mô hình đèn, không của vật.
-  # Bảng số và lệnh: synth_fix/appearance/bao_cao.md.
-  #   carton: tuyến tính (0,1309, 0,0723, 0,0274). Số cũ (0,396, 0,318, 0,220) đo 12/09/2026 trên ảnh
+  # (scripts/fit_hard_profile.nominal_light), mặt nền và thẻ của profile giữ nguyên. Thước đo: CẢ MẶT
+  # TRÊN, mặt nạ chiếu từ hình học tư thế, co 8 px (15 px ở dòng chỉ có tâm thẻ), trên render cắt thêm
+  # theo instance: trung vị độ chói tuyến tính chia trung vị nửa trên tấm nền trần cùng khung, màu R/G,
+  # B/G là trung bình mặt. Mỗi kênh mô hình r = S + D·p (p = albedo tuyến tính hoặc F0; lượt render thứ
+  # hai đặt p = 0 cho S), giải p để trung vị tỉ số tổng hợp/thật theo từng dòng bằng 1; render lại cả
+  # 30 dòng ở giá trị giải được trùng mô hình (lệch tới 0,2 %) và trùng trung vị thật (lệch log độ sáng
+  # −0,004 đến +0,047). Kiểm chéo hai buổi (khớp một buổi, đoán các dòng của buổi kia, chỉ báo cáo): lệch
+  # log độ sáng carton −0,04/+0,05, gỗ −0,17/+0,17, nhựa −0,01/+0,10, metal −0,16/+0,17, inox
+  # −0,19/+0,19. Không ảnh val, test, E3-E5 nào vào phép khớp. Mặt trên render đều, mặt thật thì không:
+  # p10 và p90 của mặt render cách thật (log) carton +0,16/−0,19, gỗ +0,16/−0,12, nhựa +0,50/−0,24,
+  # inox +0,34/−0,18, metal +1,04/−0,75 (hộp metal thật tối với một đốm sáng rộng giữa nắp, có lẽ do nắp
+  # hơi phồng phản chiếu vùng sáng phía trên; nền trên cao đồng đều và đèn xa không tạo được đốm đó trên
+  # mặt phẳng, kể cả với lớp phủ roughness 0,05). Độ sáng thật còn tăng theo x mà ánh sáng danh định
+  # không có (inox, gỗ): giới hạn của mô hình đèn, không của vật. Bảng số và lệnh:
+  # synth_fix/appearance/bao_cao.md. Lần khớp 05/11/2026 (commit bcdadfe) dùng ô 17 px ở tâm mặt trên;
+  # ô đó rơi vào đốm sáng của metal (F0 0,57-0,61, cả hộp render sáng), nên thay bằng cả mặt.
+  #   carton: tuyến tính (0,1226, 0,0730, 0,0242). Số cũ (0,396, 0,318, 0,220) đo 12/09/2026 trên ảnh
   #     điều kiện chuẩn (101, 81, 56).
-  #   gỗ: tuyến tính (0,2156, 0,1553, 0,0538). Số cũ (0,471, 0,412, 0,290) đo 12/09/2026 (120, 105, 74).
-  #   nhựa: G, B tuyến tính (0,0046, 0,0297). Kênh R NGOÀI TẦM: riêng lớp gương điện môi đã cho R gấp
-  #     1,72 lần R thật, nên R ở biên 0, ghi 0,0001 (bước nhỏ nhất của số 4 chữ số) để giữ quy tắc albedo
-  #     dương của sampler; nhựa render vẫn đỏ hơn thật (R/G gấp 1,7 lần). Số cũ (0,0559, 0,1165, 0,1774)
-  #     khớp ngày 05/11/2026 trên tập train (ánh sáng medium), nay thay bằng số khớp trên E2.
+  #   gỗ: tuyến tính (0,2190, 0,1556, 0,0526). Số cũ (0,471, 0,412, 0,290) đo 12/09/2026 (120, 105, 74).
+  #   nhựa: G, B tuyến tính (0,0030, 0,0157). Kênh R NGOÀI TẦM: riêng lớp gương điện môi đã cho R gấp
+  #     1,27 lần R thật, nên R ở biên 0, ghi 0,0001 (bước nhỏ nhất của số 4 chữ số) để giữ quy tắc albedo
+  #     dương của sampler; nhựa render vẫn đỏ hơn thật (R/G gấp 1,35 lần). Roughness 0,2 và 0,5 cũng không
+  #     đưa R/G vào khoảng tứ phân vị thật (thử 05/11/2026). Số cũ (0,0559, 0,1165, 0,1774) khớp ngày
+  #     05/11/2026 trên tập train (ánh sáng medium), nay thay bằng số khớp trên E2.
   #
   # sigma_albedo_rel là độ lệch TƯƠNG ĐỐI (phần của chính màu đó), vì độ lệch đo
   # được tỉ lệ thuận với từng kênh — carton lệch 9/101, 8/81, 6/56, đều quanh 0,10.
@@ -273,25 +280,25 @@ objects:
   #   F0 KHỚP trên khung E2 như các lớp điện môi ở trên (p = F0 từng kênh; lớp phủ của metal nằm trong S).
   #   F0 có màu vì nó gánh cả màu môi trường mà gương phản chiếu ở điều kiện khó (tông nền trên cao đo ở
   #   ánh sáng chuẩn); sampler nhân chung một hệ số nên giữ sắc.
-  #   inox: thép 304 đánh bóng, F0 (0,5047, 0,5708, 0,4475); số cũ 0,57 (tài liệu). Lệch tương đối 0,053
+  #   inox: thép 304 đánh bóng, F0 (0,4968, 0,5581, 0,4254); số cũ 0,57 (tài liệu). Lệch tương đối 0,053
   #     (0,03 / 0,57) giữ; roughness 0,05 trong 0,02-0,10 (mép đèn sắc trên gương inox train, độ chính
   #     xác cân bằng 0,98); không lớp phủ.
-  #   metal (hộp thép sơn): kim loại nhám F0 (0,5678, 0,6149, 0,5641); số cũ 0,34. Ở roughness 0,9 độ sáng
-  #     không tuyến tính theo F0 (GGX tán xạ nhiều lần): lượt render thứ ba ở F0 0,61-0,67 sáng hơn mô hình
-  #     tuyến tính 10 %, nên giải bằng r = S + a·F0·(1 + k·F0), k = 0,40 đo từ lượt đó; lượt thứ tư ở giá
-  #     trị cuối trùng mô hình (lệch 0,1 %). roughness 0,9 (0,8-1,0) dưới lớp phủ bóng IOR 1,5,
+  #   metal (hộp thép sơn): kim loại nhám F0 (0,2428, 0,2617, 0,2663); số cũ 0,34. Ở roughness 0,9 độ sáng
+  #     không tuyến tính theo F0 (GGX tán xạ nhiều lần): một lượt render ở F0 0,61-0,67 sáng hơn mô hình
+  #     tuyến tính 10 %, nên giải bằng r = S + a·F0·(1 + k·F0), k = 0,40 đo từ lượt đó; lượt kiểm ở giá
+  #     trị cuối trùng mô hình (lệch 0,2 %). roughness 0,9 (0,8-1,0) dưới lớp phủ bóng IOR 1,5,
   #     roughness 0,30: hai thùy khớp độ sáng hộp theo góc tới đèn ở 8 vị trí train (tổng hợp/thật 1,03,
   #     rms log 0,12); một thùy GGX không khớp (sáng gấp 4,1 lần gần đèn). Lớp phủ khớp ra phản xạ
   #     0,016-0,020 = 0,04 × 0,46: kiểm độc lập của reflectance_scale.
   # Màu đo cũ của hai lớp kim loại (metal 54,56,56, inox 83,88,78) là màu ảnh, không phải phản xạ:
   # render ra hộp inox và metal tối gấp 4-6 lần ảnh thật.
   materials:
-    carton:      {albedo_rgb: [0.3972, 0.2981, 0.1805], sigma_albedo_rel: 0.10, roughness: 0.85, metallic: 0.0}
-    plastic_box: {albedo_rgb: [0.0001, 0.0567, 0.1888], sigma_albedo_rel: 0.33, roughness: 0.80, metallic: 0.0}
-    wood_box:    {albedo_rgb: [0.5017, 0.4306, 0.2572], sigma_albedo_rel: 0.10, roughness: 0.80, metallic: 0.0}
-    metal_box:   {f0_rgb: [0.5678, 0.6149, 0.5641], sigma_f0_rel: 0.15, roughness: 0.90, roughness_range: [0.80, 1.0],
+    carton:      {albedo_rgb: [0.385, 0.2994, 0.1687], sigma_albedo_rel: 0.10, roughness: 0.85, metallic: 0.0}
+    plastic_box: {albedo_rgb: [0.0001, 0.0386, 0.132], sigma_albedo_rel: 0.33, roughness: 0.80, metallic: 0.0}
+    wood_box:    {albedo_rgb: [0.5053, 0.431, 0.2543], sigma_albedo_rel: 0.10, roughness: 0.80, metallic: 0.0}
+    metal_box:   {f0_rgb: [0.2428, 0.2617, 0.2663], sigma_f0_rel: 0.15, roughness: 0.90, roughness_range: [0.80, 1.0],
                   metallic: 1.0, coat_ior: 1.5, coat_roughness: 0.30, sigma_coat_roughness: 0.05}
-    inox_box:    {f0_rgb: [0.5047, 0.5708, 0.4475], sigma_f0_rel: 0.053, roughness: 0.05,
+    inox_box:    {f0_rgb: [0.4968, 0.5581, 0.4254], sigma_f0_rel: 0.053, roughness: 0.05,
                   roughness_range: [0.02, 0.10], metallic: 1.0}
   sigma_roughness: 0.08
   # Blind: dải rộng cố định, KHÔNG dùng bất kỳ số đo nào ở trên: albedo (cũng là F0 của phần kim
