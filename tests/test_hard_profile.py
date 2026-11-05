@@ -319,6 +319,31 @@ class TestManifest:
         with pytest.raises(ValueError, match="profile_sha256"):
             hp.check_arms_match({"anchored": self.make(cfg), "wide": self.make(other)})
 
+    def test_device_label_names_every_device_used(self):
+        """BlenderProc renders a GPU batch on the GPU and the CPU: both names go in."""
+        label = hp.render_device("GPU", "OPTIX", ["NVIDIA GeForce RTX 4090", "AMD Ryzen 9 7950X"])
+        assert label == "GPU:OPTIX [AMD Ryzen 9 7950X, NVIDIA GeForce RTX 4090]"
+        two_cards = ["AMD Ryzen 9 7950X", "NVIDIA GeForce RTX 4090", "NVIDIA GeForce RTX 4090"]
+        assert hp.render_device("GPU", "OPTIX", two_cards) == label
+        assert hp.render_device("CPU", "NONE", ["Intel Core i7-8650U CPU @ 1.90GHz"]) == \
+            "CPU [Intel Core i7-8650U CPU @ 1.90GHz]"
+        assert hp.render_device("GPU", "CUDA", []) == "GPU:CUDA"
+
+    def test_arms_of_one_machine_match_and_a_mix_does_not(self, cfg):
+        """Every arm on one Linux machine passes; one arm from another machine with the
+        same backend fails, and so does a manifest that recorded the backend alone."""
+        linux = hp.render_device("GPU", "OPTIX", ["NVIDIA GeForce RTX 4090", "AMD Ryzen 9 7950X"])
+        laptop = hp.render_device("GPU", "OPTIX", ["NVIDIA GeForce MX150",
+                                                   "Intel Core i7-8650U CPU @ 1.90GHz"])
+        arms = {name: self.make(cfg, kw={"device": linux, "scenes_dir": f"{name}/specs"})
+                for name in ("anchored_k1", "anchored_k2", "anchored_k4", "blind")}
+        hp.check_arms_match(arms)
+        with pytest.raises(ValueError, match="'blind'.*device"):
+            hp.check_arms_match({**arms, "blind": self.make(cfg, kw={"device": laptop})})
+        with pytest.raises(ValueError, match="device"):
+            hp.check_arms_match({"anchored_k1": arms["anchored_k1"],
+                                 "old": self.make(cfg, kw={"device": "GPU:OPTIX"})})
+
     def test_manifest_travels_with_the_dataset(self, cfg, tmp_path):
         import cv2
 
@@ -384,6 +409,14 @@ def test_renderer_applies_the_exposure_and_refuses_specs_without_it():
     assert calls == ["sm.apply_sensor(linear, cfg['sensor'], noise_rng, exposure_gain=exposure_gain)"]
     assert 'spec.get("mode") != "reference" and (exposure is None or environment is None)' in src
     assert "no exposure draw" in src
+
+
+def test_renderer_records_every_device_it_used():
+    """The manifest's device is the backend plus the name of each device used, so that
+    arms from two machines with the same backend do not pass check_arms_match."""
+    calls = [ast.unparse(c) for c in _renderer_calls("render_device")]
+    assert calls == ["hp.render_device(kind, compute, used)"]
+    assert "get_devices_for_type(compute) if d.use" in _renderer_source()
 
 
 def test_renderer_places_every_part_at_its_spec_height():

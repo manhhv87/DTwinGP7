@@ -359,6 +359,19 @@ def admitted_gain_range(sensor: dict[str, Any], upper_srgb: Any, lower_srgb: Any
 # Render manifest
 # ────────────────────────────────────────────────────────────
 
+def render_device(kind: str, compute_type: str, names: list[str]) -> str:
+    """The manifest's device label: Cycles' device, the GPU backend and every device used.
+
+    BlenderProc renders a GPU batch on all GPUs of the first backend it finds AND on the
+    CPU (hybrid rendering), so the label names both, sorted: two machines with the same
+    backend but another GPU or CPU get different labels, and check_arms_match refuses to
+    compare their batches. Arms rendered on one machine get one label.
+    """
+    head = f"GPU:{compute_type}" if kind == "GPU" else str(kind)
+    used = sorted({str(name).strip() for name in names if str(name).strip()})
+    return f"{head} [{', '.join(used)}]" if used else head
+
+
 def build_manifest(cfg: dict[str, Any], render_settings: dict[str, Any], *, device: str,
                    blender_version: str, blenderproc_version: str, config_path: str,
                    scenes_dir: str, frames: list[str]) -> dict[str, Any]:

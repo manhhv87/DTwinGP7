@@ -179,10 +179,17 @@ def main() -> int:
                   "usable OPTIX/CUDA/HIP device. Check the driver, or run with "
                   "--device cpu deliberately.", file=sys.stderr)
             return 3
+    # The manifest names every device used, not only the backend: a GPU batch also
+    # renders on the CPU (BlenderProc enables both), and arms compared in one
+    # experiment must come from one machine type (hard_profile.render_device).
     cycles_prefs = bpy.context.preferences.addons["cycles"].preferences
-    device = str(bpy.context.scene.cycles.device)
-    if device == "GPU":
-        device = f"GPU:{cycles_prefs.compute_device_type}"
+    kind = str(bpy.context.scene.cycles.device)
+    compute = str(cycles_prefs.compute_device_type)
+    if kind == "GPU":
+        used = [d.name for d in cycles_prefs.get_devices_for_type(compute) if d.use]
+    else:
+        used = [d.name for d in cycles_prefs.get_devices_for_type("CPU")]
+    device = hp.render_device(kind, compute, used)
     print(f"Render device: {device} (--device {args.device})")
 
     # Render settings come from the config so that every batch of every arm uses the
