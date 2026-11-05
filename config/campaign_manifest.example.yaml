@@ -149,7 +149,7 @@ selection:
   kappa_rule: maximum_mean_validation_score_across_five_seeds
   kappa_tie_break: smaller_kappa
   deploy_rule: maximum_validation_score_within_configuration
-  deploy_tie_break: first_in_declared_seed_order
+  deploy_tie_break: lowest_seed
   use_unrounded_scores: true
   final_evaluation_may_inform_selection: false
   selected_kappa: null
@@ -181,7 +181,7 @@ experiments:
     synthetic_train_images_per_recipe: 3000
     synthetic_label_val_fraction: 0.0
     generation_seed: 0
-    physical_contrasts_include_each_kappa: true
+    physical_contrasts_include_each_kappa: false  # Physical trials at the validation-selected kappa only.
     recipe_manifest_register_path: null
   E4:
     common_selected_E3_initial_checkpoint: true
@@ -195,8 +195,8 @@ experiments:
     parent_checkpoint_lineage_register_path: null
     mine_only_explicit_adaptation_file_allowlist: true
     adaptation_trial_counts: null
-    adaptation_generation_seeds: null
-    control_generation_seeds: null
+    adaptation_generation_seeds: null  # e.g. [10000, 30000]; checked by 21_mine_failures.py --guided-seed.
+    control_generation_seeds: null  # e.g. [20000, 40000]; checked by --control-seed.
     generation_range_register_path: null  # seed + start_index through seed + last_index.
     rng_ranges_disjoint_from_initial_and_previous_batches: null
     no_failures_action: record_update_not_run_and_stop_without_reusing_old_allocation

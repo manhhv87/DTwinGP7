@@ -2,7 +2,15 @@
 
 The package contains relative image/label paths, real-only validation, and
 content hashes. Hash checks detect exact duplicates; they cannot establish
-independence of capture sessions or detect visually similar frames.
+independence of capture sessions or detect visually similar frames. Synthetic
+sources whose scene manifest sits beside them (<batch>/specs/manifest.json next
+to <batch>/dataset) must not share generation streams (seed + index).
+
+An E4 package names the package that trained its parent checkpoint. It must keep
+that package's real training and validation images and all of its synthetic
+images, and an update-2 package must continue the same arm and seed with the same
+schedule. A package of the other arm, when given, must match in schedule, seeds,
+real data and image counts.
 """
 from __future__ import annotations
 
@@ -17,6 +25,7 @@ from typing import Any
 
 import yaml
 
+from src.synthgen.seed_ranges import STREAM_RULE, manifest_streams, overlaps
 from src.utils.dataset_check import EXPECTED_NAMES, IMAGE_EXTS
 
 
@@ -33,6 +42,11 @@ RECIPE: dict[str, Any] = {
     "mixup": 0.0, "copy_paste": 0.0,
     "deterministic": True, "save": True, "val": True,
 }
+SELECTION = {"metric": "sum_box_mask_map50_95", "checkpoint_tie": "latest_epoch",
+             "kappa": "highest_mean_over_seeds", "kappa_tie": "smaller_kappa",
+             "seed_tie": "lowest_seed"}
+E4_ARMS = ("loop", "control")
+E4_MAX_UPDATES = 2
 
 
 def sha256(path: Path) -> str:
@@ -200,7 +214,19 @@ def inspect_sources(
             source["counts"][split] = {"available": available_count, "selected": count}
             counts[split] += count
             counts[f"real_{split}" if index == 0 else "synthetic_train"] += count
+        if index:
+            specs = root.parent / "specs" / "manifest.json"
+            source["generation"] = None
+            if specs.is_file():
+                source["generation"] = manifest_streams(specs)
+                source["generation"]["sha256"] = sha256(specs)
         sources.append(source)
+    streams = {source["name"]: source["generation"]["streams"] for source in sources[1:]
+               if source["generation"] and source["generation"]["streams"] is not None}
+    clashes = overlaps(streams)
+    if clashes:
+        raise ValueError("Synthetic sources share generation streams (seed + index): " + "; ".join(
+            f"{first} and {second}, {count} scene(s)" for first, second, count in clashes))
     for key, expected in (("real_train", expected_real_train), ("synthetic_train", expected_synth_train)):
         if expected is not None and counts[key] != expected:
             raise ValueError(f"Expected {expected} {key} images, found {counts[key]}; reconcile the source manifest before packaging")
@@ -212,10 +238,109 @@ def inspect_sources(
         "real_train_allowlist": None if real_train_list is None else {
             "path": str(Path(real_train_list).resolve()), "sha256": sha256(Path(real_train_list)),
         },
+        "expected_real_train": expected_real_train,
+        "generation_overlap_check": {
+            "rule": STREAM_RULE[1], "checked": sorted(streams),
+            "unchecked": [source["name"] for source in sources[1:] if source["name"] not in streams],
+        },
         "validation_role": "model_selection_only; not an independent final test set",
         "independence_check": "Exact image-content duplicates rejected; session separation and near-duplicate checks still require a frozen capture manifest.",
         "images": records,
     }
+
+
+def _read_json(path: Path) -> dict[str, Any]:
+    try:
+        return json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError(f"Cannot read {path}: {exc}") from exc
+
+
+def _content(manifest: dict[str, Any], split: str, real: bool) -> set[tuple[str, str]]:
+    """Image and label hashes of one split's real or synthetic records."""
+    return {(row["image_sha256"], row["label_sha256"]) for row in manifest["images"]
+            if row["split"] == split and (row["source"] == "real") == real}
+
+
+def _parent_lineage(parent: Path, checkpoint_sha256: str) -> dict[str, Any]:
+    """The package that trained the parent checkpoint, and that checkpoint's run."""
+    parent = Path(parent).resolve()
+    training = _read_json(parent / "training.json")
+    manifest = _read_json(parent / "manifest.json")
+    manifest_sha256 = sha256(parent / "manifest.json")
+    runs = [record for record in (_read_json(path) for path in sorted((parent / "runs").glob("seed*/run_record.json")))
+            if record.get("status") == "complete" and record.get("checkpoint_sha256") == checkpoint_sha256]
+    if len(runs) != 1:
+        raise ValueError(f"{parent}: {len(runs)} complete run records hold the parent checkpoint's SHA-256; "
+                         "give the package that trained it, with its runs/seed<n>/run_record.json")
+    if runs[0].get("manifest_sha256") != manifest_sha256:
+        raise ValueError(f"{parent}: the parent run was trained on another manifest.json")
+    return {"root": parent, "training": training, "manifest": manifest, "run": runs[0],
+            "record": {"package": str(parent), "experiment": training.get("experiment"),
+                       "training_sha256": sha256(parent / "training.json"),
+                       "manifest_sha256": manifest_sha256, "run_seed": runs[0].get("seed"),
+                       "checkpoint_sha256": checkpoint_sha256}}
+
+
+def _e4_update(lineage: dict[str, Any], arm: str, seeds: list[int], recipe: dict[str, Any]) -> int:
+    """Update number of an E4 package; an update continues its own arm, seed and schedule."""
+    parent = lineage["training"]
+    if parent.get("experiment") == "E3":
+        return 1
+    if parent.get("experiment") != "E4":
+        raise ValueError("E4 starts from the selected E3 checkpoint; the parent package must be E3 or an earlier E4 update")
+    previous = parent.get("e4") or {}
+    if previous.get("arm") != arm:
+        raise ValueError(f"An update continues its own arm: the parent package is arm {previous.get('arm')!r}, not {arm!r}")
+    seed = lineage["run"].get("seed")
+    if seeds != [seed]:
+        raise ValueError(f"After the first update each seed continues its own checkpoint: the parent is seed "
+                         f"{seed}; package it with --seeds {seed}")
+    if parent.get("recipe") != recipe:
+        raise ValueError(f"Every update repeats the same fine-tuning schedule: the parent update used epochs "
+                         f"{parent.get('recipe', {}).get('epochs')}, this package {recipe['epochs']}")
+    update = int(previous.get("update", 0)) + 1
+    if update > E4_MAX_UPDATES:
+        raise ValueError(f"The loop permits at most {E4_MAX_UPDATES} guided updates")
+    return update
+
+
+def _check_e4_data(lineage: dict[str, Any], manifest: dict[str, Any]) -> None:
+    """E4 keeps the parent's real and synthetic images and adds new synthetic ones."""
+    parent = lineage["manifest"]
+    for split in ("train", "val"):
+        if _content(parent, split, True) != _content(manifest, split, True):
+            raise ValueError(f"E4 keeps the parent's real {split} images; this real {split} set differs from {lineage['root']}")
+    kept = _content(parent, "train", False)
+    missing = kept - _content(manifest, "train", False)
+    if missing:
+        raise ValueError(f"E4 keeps the parent's synthetic images; {len(missing)} of its {len(kept)} are missing")
+    if len(_content(manifest, "train", False)) == len(kept):
+        raise ValueError("This E4 update adds no synthetic images to the parent's")
+
+
+def _check_e4_pair(paired: Path, training: dict[str, Any], manifest: dict[str, Any]) -> dict[str, Any]:
+    """The other arm's package of the same update must share schedule, seeds, real data and counts."""
+    paired = Path(paired).resolve()
+    other = _read_json(paired / "training.json")
+    other_manifest = _read_json(paired / "manifest.json")
+    mine, theirs = training["e4"], other.get("e4") or {}
+    if other.get("experiment") != "E4" or theirs.get("arm") == mine["arm"] or theirs.get("update") != mine["update"]:
+        raise ValueError(f"{paired} is not the other arm's package of update {mine['update']}")
+    if other.get("recipe") != training["recipe"]:
+        raise ValueError(f"Both arms use the same fine-tuning schedule: epochs {other.get('recipe', {}).get('epochs')} "
+                         f"in {paired}, {training['recipe']['epochs']} here")
+    if other.get("seeds") != training["seeds"]:
+        raise ValueError(f"Both arms declare the same training seeds: {other.get('seeds')} in {paired}, {training['seeds']} here")
+    for split in ("train", "val"):
+        if _content(other_manifest, split, True) != _content(manifest, split, True):
+            raise ValueError(f"Both arms use the same real {split} images")
+    if other_manifest["counts"]["synthetic_train"] != manifest["counts"]["synthetic_train"]:
+        raise ValueError("Both arms hold the same number of synthetic images")
+    if mine["update"] == 1 and (other.get("initialization") or {}).get("sha256") != training["initialization"]["sha256"]:
+        raise ValueError("Both arms of update 1 start from the same f0 checkpoint")
+    return {"package": str(paired), "training_sha256": sha256(paired / "training.json"),
+            "manifest_sha256": sha256(paired / "manifest.json")}
 
 
 def build_package(
@@ -233,8 +358,16 @@ def build_package(
     expected_synth_train: int | None = None,
     inspect_only: bool = False,
     runner_source: Path | None = None,
+    parent_package: Path | None = None,
+    arm: str | None = None,
+    paired_package: Path | None = None,
 ) -> dict[str, Any]:
-    """Copy verified inputs to a new portable directory; never overwrite one."""
+    """Copy verified inputs to a new portable directory; never overwrite one.
+
+    E4 also needs parent_package (the package whose run produced `model`) and arm
+    ('loop' or 'control'); paired_package names the other arm's package of the
+    same update when it exists.
+    """
     experiment = experiment.upper()
     if experiment not in {"E2", "E3", "E4", "E5"} or version < 0:
         raise ValueError("Use experiment E2/E3/E4/E5 and a nonnegative dataset version")
@@ -248,26 +381,33 @@ def build_package(
         raise ValueError("Training seeds must be unique nonnegative integers")
     if epochs is not None and (type(epochs) is not int or epochs < 1):
         raise ValueError("Epoch count must be a positive integer")
+    recipe = dict(RECIPE)
+    if epochs is not None:
+        recipe["epochs"] = epochs
     initializer = None
+    lineage = None
     if experiment == "E4":
-        if str(model) == "yolov8s-seg.pt" or epochs is None:
-            raise ValueError("E4 requires --model pointing to the selected parent checkpoint and explicit --epochs for the frozen fine-tuning budget")
+        if str(model) == "yolov8s-seg.pt" or epochs is None or parent_package is None or arm not in E4_ARMS:
+            raise ValueError("E4 requires --model pointing to the selected parent checkpoint, --parent-package "
+                             "naming the package that trained it, --arm loop or control, and explicit --epochs "
+                             "for the frozen fine-tuning budget")
         initializer = Path(model).resolve()
         if not initializer.is_file():
             raise ValueError(f"Parent checkpoint does not exist: {initializer}")
         initialization = {"model": "initial.pt", "sha256": sha256(initializer), "source": str(initializer)}
+        lineage = _parent_lineage(parent_package, initialization["sha256"])
+        update = _e4_update(lineage, arm, seeds, recipe)
     else:
         if str(model) != "yolov8s-seg.pt":
             raise ValueError(f"{experiment} starts from the common COCO yolov8s-seg.pt initializer; custom parent checkpoints belong to E4")
+        if parent_package is not None or arm is not None or paired_package is not None:
+            raise ValueError("Parent, arm and paired packages belong to E4")
         initialization = {"model": "yolov8s-seg.pt"}
-    recipe = dict(RECIPE)
-    if epochs is not None:
-        recipe["epochs"] = epochs
     training = {
         "schema_version": 1, "experiment": experiment, "version": version,
         "seeds": seeds, "ultralytics_version": ULTRALYTICS_VERSION,
         "recipe": recipe, "initialization": initialization,
-        "selection": {"metric": "sum_box_mask_map50_95", "checkpoint_tie": "latest_epoch", "seed_tie": "first_in_declared_seed_order"},
+        "selection": dict(SELECTION),
     }
     destination = Path(destination).resolve()
     for root in [Path(real), *[Path(path) for path in synthetic]]:
@@ -280,6 +420,11 @@ def build_package(
         expected_real_train=expected_real_train, expected_synth_train=expected_synth_train,
     )
     manifest["created_utc"] = datetime.now(timezone.utc).isoformat()
+    if lineage is not None:
+        _check_e4_data(lineage, manifest)
+        training["e4"] = {"arm": arm, "update": update, "parent": lineage["record"], "paired_package": None}
+        if paired_package is not None:
+            training["e4"]["paired_package"] = _check_e4_pair(paired_package, training, manifest)
     if inspect_only:
         return {"inspect_only": True, "destination": str(destination), "training": training, "manifest": manifest}
     runner_source = Path(runner_source) if runner_source else Path(__file__).resolve().parents[2] / "scripts" / "train_packaged_model.py"

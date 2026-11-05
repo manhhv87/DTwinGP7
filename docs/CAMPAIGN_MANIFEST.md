@@ -92,8 +92,10 @@ guided/control lần lượt 10000/20000 rồi 30000/40000, mỗi dải dài 100
 sang 1 hoặc dùng control seed 2000 vẫn trùng các draw E3. Manifest cần lưu seed cùng
 start index và số scene; chỉ ghi seed là chưa đủ để kiểm tra trùng dải.
 
-E3 hiện có so sánh vật lý anchored–wide-range ở từng κ; κ chọn bằng validation chỉ quyết định
-khởi tạo E4/full E5. E5 đo cả mask mAP và task success cho đủ năm yếu tố. Muốn giảm nhánh vì
+E3 gắp thật chỉ ở κ chọn bằng validation; hai κ còn lại chỉ so bằng mAP validation, và κ đã
+chọn cũng quyết định khởi tạo E4/full E5. E5 đo mask mAP cho đủ năm yếu tố, task success cho ba
+yếu tố neo (camera, ánh sáng, nền). Lựa chọn κ, seed triển khai và model E4 ghi bằng
+`scripts/select_trained_models.py`; đường dẫn và SHA-256 của bản ghi điền vào `selection_record_*`. Muốn giảm nhánh vì
 ngân sách phải đổi protocol và bản thảo trước khi nhìn kết quả liên quan, không tự bỏ yếu tố
 vì dự đoán hiệu ứng nhỏ.
 

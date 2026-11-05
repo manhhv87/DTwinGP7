@@ -123,6 +123,13 @@ Số 1318 là số ảnh đang có trong `_work/yolo/images/train` (đếm 21/09
 `splits/train.txt` cộng 62 ảnh negative mà `export_yolo.py` nối thêm. Chưa đối chiếu được
 baseline trên Linux đã học bộ nào; đối chiếu log Linux rồi mới khóa con số này.
 
+Tập ảnh thật training phải được khai rõ: thiếu cả `--real-train-list` lẫn `--expected-real-train`
+thì công cụ từ chối, vì riêng thư mục không cho biết 62 ảnh negative có thuộc tập đã khóa hay không.
+Danh sách (`--real-train-list`) chọn đúng các ảnh; số đếm (`--expected-real-train`) chỉ kiểm tổng.
+Khi các batch synthetic nằm theo cấu trúc của `20_generate_synth.py` (`specs/` cạnh `dataset/`),
+gói còn từ chối hai nguồn synthetic dùng chung dải `seed + chỉ số ảnh`, và ghi κ, seed của từng
+nguồn vào `manifest.json`.
+
 Trên máy GPU, giải nén gói rồi:
 
 ```bash
@@ -147,6 +154,22 @@ Luật đúng theo Methods, chép vào nhật ký trước khi chạy đánh gi�
 3. Trong cấu hình đã chọn, seed đem đi gắp là seed có điểm cao nhất; bằng nhau thì seed đứng
    trước trong `0, 1, 2, 3, 4`.
 4. Không dùng bất kỳ kết quả gắp thật hay ảnh test nào để chọn.
+
+`scripts/select_trained_models.py` áp đúng các luật trên lên hồ sơ trả về (mang cả thư mục gói,
+gồm `runs/seed<n>/run_record.json`, `results.csv`, `weights/best.pt`). Nó kiểm lại từng run: run
+hoàn tất, checkpoint giữ lại đúng là epoch có điểm cao nhất (bằng nhau thì epoch muộn hơn, như
+Ultralytics ghi `best.pt`), lịch sử điểm khớp `results.csv`, hồ sơ gắn đúng `manifest.json` và
+`training.json` của gói; các κ phải cùng recipe, cùng seed, cùng ảnh thật và cùng số ảnh tổng hợp.
+Trung bình so bằng phân số chính xác của các số đã ghi, nên không có làm tròn nào tạo ra hay phá
+một thế hoà. Bản ghi lựa chọn chỉ được tạo một lần, SHA-256 của nó nằm ở file `.sha256` bên cạnh:
+
+```powershell
+python scripts/select_trained_models.py kappa --candidate 1=data/packages/e3_k1/dsv1 --candidate 2=data/packages/e3_k2/dsv1 --candidate 4=data/packages/e3_k4/dsv1 --out results/selection/e3_kappa.json
+python scripts/select_trained_models.py deploy --role e3_wide --package data/packages/e3_wide/dsv1 --out results/selection/e3_wide.json
+```
+
+Seed triển khai của κ đã chọn là `f0` (`e3_anchored.pt`); đường dẫn và SHA-256 của nó nằm trong
+mục `deployed` của bản ghi.
 
 `e2_seed1_best.pt` được chọn từ trước theo mask mAP, không phải theo tổng box + mask; ghi đúng
 như vậy, không viết lại lịch sử.
@@ -176,18 +199,50 @@ buổi `e4adapt-1` và `e4adapt-2`, lệnh D của hướng dẫn cell.
 Chỉ khai thác đúng CSV chính của buổi đó, không lấy thư mục `doichung`:
 
 ```bash
-python scripts/21_mine_failures.py --runs "results/e4adapt-1/experiment_real_*.csv" --n-budget 1000 --out results/adaptation/e4_k1/failure_modes.json
+python scripts/21_mine_failures.py --runs "results/e4adapt-1/experiment_real_*.csv" --n-budget 1000 --guided-seed 10000 --control-seed 20000 --out results/adaptation/e4_k1/failure_modes.json
 python scripts/20_generate_synth.py --from-failures results/adaptation/e4_k1/failure_modes.json --kappa <κ đã chọn> --seed 10000 --out data/synth/loop_k1
 python scripts/20_generate_synth.py --mode anchored --kappa <κ đã chọn> --n 1000 --seed 20000 --out data/synth/control_k1
 ```
 
+Bộ khai thác chia lỗi theo **lớp và thẻ đã xếp**, không theo thứ detector báo: nó nối `pose_id`
+của từng lượt với danh sách tư thế mà metadata của run ghi (`config/pose_lists/hard_v2.csv`, tính
+từ gốc repo, đổi bằng `--pose-root`), lấy lớp từ `class_hint` và ô 3×3 từ toạ độ thẻ. Một lượt bỏ
+sót không có lớp hay toạ độ phát hiện; chia theo detector thì gần như mọi lỗi của buổi khó dồn vào
+một ô "unknown" chỉ ràng buộc ánh sáng. Vật đỡ (`stack_on`) đi kèm làm ngữ cảnh, không phải điều
+khiển của bộ sinh. Lượt hỏng tính theo phán quyết của người vận hành (`human_ok`) khi có, nếu
+không theo cờ `success` của máy; lượt bị từ chối trước khi chạy không có phán quyết nên là hỏng.
+
+Công cụ từ chối mọi lượt ngoài tư thế 221–300 (danh sách adaptation); `--poses` đổi khoảng này
+và bản ghi đánh dấu là đã đổi. Báo cáo ghi SHA-256 của từng CSV, của metadata và của danh sách tư
+thế. Không có lượt hỏng thì báo cáo vẫn được ghi, với phân bổ rỗng và dòng "không cập nhật";
+`20_generate_synth.py --from-failures` từ chối báo cáo đó, và vòng lặp dừng.
+
 Seed ở đây là seed **sinh cảnh**, và bộ sinh dùng `seed + chỉ số ảnh`: E3 đã chiếm 0–2999, nên
 vòng 1 dùng 10000 (guided) và 20000 (control), vòng 2 dùng 30000 và 40000. Dùng seed 2000 cho
-1000 ảnh control là sinh lại đúng 1000 ảnh cuối của E3, không phải ảnh mới.
+1000 ảnh control là sinh lại đúng 1000 ảnh cuối của E3, không phải ảnh mới. `--guided-seed` và
+`--control-seed` kiểm hai dải dự định với mọi `data/synth/*/specs/manifest.json` đã có (đổi bằng
+`--used-specs`) và với nhau, từ chối khi trùng; lệnh sinh phải dùng đúng các seed đã kiểm.
 
-Đóng gói E4 bắt buộc truyền `--model` (checkpoint cha) và `--epochs` (đã khóa); từ vòng 2 mỗi
-seed nối tiếp checkpoint của chính nó nên mỗi cặp nhánh/seed một gói riêng, `--seeds <n>`.
+Đóng gói E4 bắt buộc truyền `--model` (checkpoint cha), `--parent-package` (gói đã huấn luyện ra
+checkpoint đó, còn `runs/seed<n>/run_record.json`), `--arm loop` hoặc `--arm control` và `--epochs`
+(đã khóa). Gói kiểm: checkpoint cha đúng là `best.pt` của một run hoàn tất trong gói cha; ảnh thật
+train và val giống hệt gói cha; mọi ảnh tổng hợp của gói cha (3000 ảnh của E3, cộng ảnh vòng 1 ở
+vòng 2) đều có mặt, cộng ảnh mới. Từ vòng 2 mỗi seed nối tiếp checkpoint của chính nó nên mỗi cặp
+nhánh/seed một gói riêng, `--seeds <n>` đúng seed của run cha, cùng nhánh và cùng recipe với vòng 1.
+Gói thứ hai của mỗi vòng truyền thêm `--paired-package <gói nhánh kia>` để kiểm hai nhánh cùng số
+epoch, cùng seed, cùng ảnh thật, cùng số ảnh tổng hợp và, ở vòng 1, cùng `f0`.
 Không có lỗi trong buổi adaptation thì ghi "không cập nhật" và dừng, không đọc lại file lỗi cũ.
+
+Mô hình chạy buổi adaptation 2 (`e4_guided1.pt`) và mô hình cuối của mỗi nhánh cũng chọn bằng
+script, cùng luật điểm validation, không dùng kết quả gắp:
+
+```powershell
+python scripts/select_trained_models.py e4-adaptation --package data/packages/e4_loop_u1/dsv1 --out results/selection/e4_adaptation2.json
+python scripts/select_trained_models.py e4-final --loop <3 gói loop vòng 2> --control <3 gói control vòng 2> --out results/selection/e4_final.json
+```
+
+`e4-final` từ chối khi hai nhánh khác số vòng, khác recipe (kể cả số epoch), khác seed hay khác ảnh
+thật.
 
 Đánh giá gắp thật **một lần, sau vòng 2**: hai nhánh guided-2 và control-2 chạy chung một chiến
 dịch mù trên `hard_v2.csv` 0:200; `f0` không chạy lại, lấy đúng lượt của nhánh anchored ở E3.
