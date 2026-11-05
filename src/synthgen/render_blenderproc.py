@@ -41,9 +41,11 @@ Design notes:
   - The scene is the hard condition of the trials (hard_profile.py): green sheet in
     two parts split by the black strip, the 21 cards, the cell around the table's
     edges. The spec's background albedo is the upper sheet's colour.
-  - Light: the spec's area luminaires (600 mm panels above the cell) and its uniform
-    overhead (spec environment.radiance_rgb, the world), as the sampler drew them
-    (hard_profile.luminaire_lights).
+  - Light: the spec's area luminaires (600 mm panels above the cell) and its overhead
+    (the world), as the sampler drew them (hard_profile.luminaire_lights): the spec's
+    uniform radiance (environment.radiance_rgb) shaped over directions by the profile's
+    overhead section (hard_profile.overhead_shape: brighter towards +x, as the mirror
+    top of the stainless case shows it on the E2 trial frames), the same for every spec.
   - Reflectances: a dielectric's Base Color is its albedo in the units of the config
     (the bare standard table is 0.305 linear), about 0.46 of physical. Every PHYSICAL
     specular reflectance is multiplied by render.reflectance_scale to match: an
@@ -65,6 +67,10 @@ Design notes:
     balance, the gain (sensor.gain times the scene's exposure gain), Poisson-Gaussian
     noise and the sRGB curve (Blender's "Standard" view, no tone mapping) in numpy.
     A spec without an exposure draw (spec_version < 3) is refused.
+  - Faces are shaded flat, except the vertical faces whose normal lies off the mesh's
+    X and Y axes: the bands of the rounded corners of metal_box, shaded smooth
+    (import_mesh). A product material with a face_pattern (the anchored painted steel
+    box) multiplies its top face's reflectance by that pattern (apply_face_pattern).
   - Meshes are placed so their bounding-box bottom rests at the spec height
     xyz_mm[2]: the table top, or the top of the part underneath for a stack (STL
     origins are arbitrary).
@@ -312,10 +318,117 @@ def main() -> int:
         # Blender 4.2's STL importer shades every face smooth. A box of 12 triangles
         # shares 8 vertices, so the interpolated normals bend each face like a pillow:
         # the mirror top of the stainless case became a convex mirror that shrank a
-        # 600 mm luminaire to a dot. The parts are flat-faced boxes.
+        # 600 mm luminaire to a dot. Every planar face is therefore shaded flat; only
+        # the facets of a rounded vertical corner (normal horizontal and off the mesh's
+        # X and Y axes) are smooth, so the corner renders round while the faces next to
+        # it, the top among them, stay planar.
         for poly in new[0].data.polygons:
-            poly.use_smooth = False
+            poly.use_smooth = smooth_facet(poly.normal)
         return bproc.python.types.MeshObjectUtility.MeshObject(new[0])
+
+    def smooth_facet(n) -> bool:
+        """A facet of a rounded vertical corner: horizontal normal, off the X and Y axes."""
+        return abs(n[2]) < 1e-4 and min(abs(n[0]), abs(n[1])) > 1e-4
+
+    def apply_face_pattern(mat, pattern: dict, size_mm) -> None:
+        """Scale the top face's reflectance (object-space normal z > 0.5) by the pattern
+        p(a, b) = floor + (1 - floor) exp(-(a/sa)^2 - (b/sb)^2), peak 1, with a, b the
+        object coordinates (the STL is in mm, centred in X and Y): the Base Color (the
+        metal's F0) by p / mean, mean the pattern's mean over the L x W rectangle of the
+        top face, so f0_rgb stays the face's mean reflectance; the clear coat's weight by p,
+        so it keeps the fitted weight at the bright middle and fades with the base towards
+        the rim. Other faces keep the plain material."""
+        import math
+        floor = float(pattern["floor"])
+        sa, sb = (float(v) for v in pattern["sigma_mm"])
+        L, W = float(size_mm[0]), float(size_mm[1])
+        mean = floor + (1.0 - floor) * (sa * math.sqrt(math.pi) * math.erf(L / (2.0 * sa)) / L) \
+            * (sb * math.sqrt(math.pi) * math.erf(W / (2.0 * sb)) / W)
+        nt = mat.blender_obj.node_tree
+        bsdf = next(n for n in nt.nodes if n.type == "BSDF_PRINCIPLED")
+        base = list(bsdf.inputs["Base Color"].default_value)[:3]
+        tc = nt.nodes.new("ShaderNodeTexCoord")
+        scale = nt.nodes.new("ShaderNodeVectorMath"); scale.operation = "MULTIPLY"
+        scale.inputs[1].default_value = (1.0 / sa, 1.0 / sb, 0.0)
+        nt.links.new(tc.outputs["Object"], scale.inputs[0])
+        dot = nt.nodes.new("ShaderNodeVectorMath"); dot.operation = "DOT_PRODUCT"
+        nt.links.new(scale.outputs["Vector"], dot.inputs[0])
+        nt.links.new(scale.outputs["Vector"], dot.inputs[1])
+        neg = nt.nodes.new("ShaderNodeMath"); neg.operation = "MULTIPLY"
+        neg.inputs[1].default_value = -1.0
+        nt.links.new(dot.outputs["Value"], neg.inputs[0])
+        ex = nt.nodes.new("ShaderNodeMath"); ex.operation = "EXPONENT"
+        nt.links.new(neg.outputs["Value"], ex.inputs[0])
+        pat = nt.nodes.new("ShaderNodeMath"); pat.operation = "MULTIPLY_ADD"   # e (1 - f) + f
+        pat.inputs[1].default_value = 1.0 - floor
+        pat.inputs[2].default_value = floor
+        nt.links.new(ex.outputs["Value"], pat.inputs[0])
+        # top = normal z > 0.5; factor = 1 + top (pattern / mean - 1)
+        sep = nt.nodes.new("ShaderNodeSeparateXYZ")
+        nt.links.new(tc.outputs["Normal"], sep.inputs[0])
+        top = nt.nodes.new("ShaderNodeMath"); top.operation = "GREATER_THAN"
+        top.inputs[1].default_value = 0.5
+        nt.links.new(sep.outputs["Z"], top.inputs[0])
+        rel = nt.nodes.new("ShaderNodeMath"); rel.operation = "MULTIPLY_ADD"   # p / mean - 1
+        rel.inputs[1].default_value = 1.0 / mean
+        rel.inputs[2].default_value = -1.0
+        nt.links.new(pat.outputs["Value"], rel.inputs[0])
+        fac = nt.nodes.new("ShaderNodeMath"); fac.operation = "MULTIPLY_ADD"   # top rel + 1
+        fac.inputs[2].default_value = 1.0
+        nt.links.new(top.outputs["Value"], fac.inputs[0])
+        nt.links.new(rel.outputs["Value"], fac.inputs[1])
+        col = nt.nodes.new("ShaderNodeVectorMath"); col.operation = "SCALE"
+        col.inputs[0].default_value = base
+        nt.links.new(fac.outputs["Value"], col.inputs["Scale"])
+        nt.links.new(col.outputs["Vector"], bsdf.inputs["Base Color"])
+        coat = float(bsdf.inputs["Coat Weight"].default_value)
+        if coat > 0.0:
+            # coat weight (1 + top (p - 1)) coat
+            crel = nt.nodes.new("ShaderNodeMath"); crel.operation = "SUBTRACT"
+            crel.inputs[1].default_value = 1.0
+            nt.links.new(pat.outputs["Value"], crel.inputs[0])
+            cfac = nt.nodes.new("ShaderNodeMath"); cfac.operation = "MULTIPLY_ADD"
+            cfac.inputs[2].default_value = 1.0
+            nt.links.new(top.outputs["Value"], cfac.inputs[0])
+            nt.links.new(crel.outputs["Value"], cfac.inputs[1])
+            cw = nt.nodes.new("ShaderNodeMath"); cw.operation = "MULTIPLY"
+            cw.inputs[1].default_value = coat
+            nt.links.new(cfac.outputs["Value"], cw.inputs[0])
+            nt.links.new(cw.outputs["Value"], bsdf.inputs["Coat Weight"])
+
+    # The overhead's shape over directions (hard_profile.overhead_shape), the same for
+    # every spec: Background strength exp(g clip(w_x)) / norm on the spec's uniform
+    # radiance, w the world direction (Generated coordinates of the world).
+    shape = hp.overhead_shape(cfg)
+
+    def set_overhead(radiance_rgb) -> None:
+        if shape["gradient_x"] == 0.0:
+            bproc.renderer.set_world_background([float(v) for v in radiance_rgb], strength=1.0)
+            return
+        world = bpy.context.scene.world
+        world.use_nodes = True
+        nt = world.node_tree
+        bg = nt.nodes.get("Background")
+        if "overhead_shape" not in nt.nodes:
+            tc = nt.nodes.new("ShaderNodeTexCoord")
+            sep = nt.nodes.new("ShaderNodeSeparateXYZ")
+            nt.links.new(tc.outputs["Generated"], sep.inputs[0])
+            clamp = nt.nodes.new("ShaderNodeClamp")
+            clamp.inputs["Min"].default_value, clamp.inputs["Max"].default_value = shape["clip_x"]
+            nt.links.new(sep.outputs["X"], clamp.inputs["Value"])
+            mul = nt.nodes.new("ShaderNodeMath"); mul.operation = "MULTIPLY"
+            mul.inputs[1].default_value = shape["gradient_x"]
+            nt.links.new(clamp.outputs["Result"], mul.inputs[0])
+            ex = nt.nodes.new("ShaderNodeMath"); ex.operation = "EXPONENT"
+            nt.links.new(mul.outputs["Value"], ex.inputs[0])
+            norm = nt.nodes.new("ShaderNodeMath"); norm.operation = "MULTIPLY"
+            norm.name = "overhead_shape"
+            norm.inputs[1].default_value = 1.0 / shape["norm"]
+            nt.links.new(ex.outputs["Value"], norm.inputs[0])
+            nt.links.new(norm.outputs["Value"], bg.inputs["Strength"])
+        for link in list(bg.inputs["Color"].links):
+            nt.links.remove(link)
+        bg.inputs["Color"].default_value = [float(v) for v in radiance_rgb] + [1.0]
 
     def place_on_surface(obj, z_support_m: float) -> None:
         """Shift the object so its bounding-box bottom sits at the support height."""
@@ -493,6 +606,9 @@ def main() -> int:
             if ms:
                 name = f"mat_{idx}_{obj_spec['class_name']}"
                 side = product_material(name, ms)
+                if ms.get("face_pattern"):
+                    bb = np.array(mesh.blender_obj.bound_box)       # object space, mm
+                    apply_face_pattern(side, ms["face_pattern"], np.ptp(bb, axis=0))
                 if ms.get("top_texture"):
                     texture_top(mesh, side, product_material(
                         f"{name}_top", ms, texture_image(ms["top_texture"])))
@@ -528,8 +644,7 @@ def main() -> int:
             light.set_location(np.asarray(li["position_mm"], dtype=float) * MM)
             light.set_energy(float(li["energy_w"]))
             light.set_color([float(v) for v in sm.light_rgb(li["color_temp_k"], cfg["white_k"])])
-        world = [0.0, 0.0, 0.0] if environment is None else environment["radiance_rgb"]
-        bproc.renderer.set_world_background([float(v) for v in world], strength=1.0)
+        set_overhead([0.0, 0.0, 0.0] if environment is None else environment["radiance_rgb"])
 
         # ── Camera (OpenCV convention in spec → Blender) ──
         cam = spec["camera"]

@@ -458,6 +458,42 @@ class TestPoseListMix:
             assert np.ptp(v, axis=0) == pytest.approx(size, abs=0.01), mesh
             assert v[:, 2].min() == pytest.approx(0.0, abs=0.01), mesh
 
+    def test_steel_box_has_rounded_corners_and_flat_faces(self, config):
+        """metal_box: corner radius 28.8 mm (train labels), flat top and bottom; every
+        other mesh a plain 12-triangle box; the generator rewrites each file unchanged."""
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("gpm", PROJECT_ROOT / "scripts" / "gen_product_meshes.py")
+        gpm = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(gpm)
+        assert gpm.CORNER_RADIUS_MM == {"metal_box": 28.8}
+        record = np.dtype([("normal", "<f4", 3), ("v", "<f4", (3, 3)), ("attr", "<u2")])
+        L, W, H = config.objects.mesh_sizes_mm["models/objects/metal_box.stl"]
+        data = (PROJECT_ROOT / "models/objects/metal_box.stl").read_bytes()
+        n = int(np.frombuffer(data, "<u4", count=1, offset=80)[0])
+        v = np.frombuffer(data, record, count=n, offset=84)["v"].astype(float)
+        top = v[np.all(np.abs(v[:, :, 2] - H) < 1e-4, axis=1)]
+        e1, e2 = top[:, 1, :2] - top[:, 0, :2], top[:, 2, :2] - top[:, 0, :2]
+        area = 0.5 * np.abs(e1[:, 0] * e2[:, 1] - e1[:, 1] * e2[:, 0]).sum()
+        r = 28.8
+        assert area == pytest.approx(L * W - (4 - np.pi) * r * r, rel=2e-3)
+        # every outline vertex in a corner lies on the circle of radius r about that corner's centre
+        pts = np.unique(np.round(v.reshape(-1, 3)[:, :2], 4), axis=0)
+        pts = pts[np.hypot(*pts.T) > 1.0]
+        corner = (np.abs(pts[:, 0]) > L / 2 - r + 1e-3) & (np.abs(pts[:, 1]) > W / 2 - r + 1e-3)
+        c = np.c_[np.sign(pts[corner, 0]) * (L / 2 - r), np.sign(pts[corner, 1]) * (W / 2 - r)]
+        assert np.hypot(*(pts[corner] - c).T) == pytest.approx(r, abs=1e-3)
+        for name, (sx, sy, sz) in gpm.PRODUCTS.items():
+            path = PROJECT_ROOT / "models" / "objects" / f"{name}.stl"
+            tris = list(gpm.rounded_box_triangles(sx, sy, sz, gpm.CORNER_RADIUS_MM[name])
+                        if name in gpm.CORNER_RADIUS_MM else gpm.box_triangles(sx, sy, sz))
+            assert len(tris) == (4 * (gpm.CORNER_SEGMENTS + 1) * 4 if name in gpm.CORNER_RADIUS_MM else 12)
+            out = PROJECT_ROOT / "models" / "objects" / f".{name}.tmp.stl"
+            try:
+                gpm.write_stl(out, sx, sy, sz, gpm.CORNER_RADIUS_MM.get(name, 0.0))
+                assert out.read_bytes() == path.read_bytes(), name
+            finally:
+                out.unlink(missing_ok=True)
+
     @pytest.mark.parametrize("recipe", ["k1", "blind"])
     def test_first_class_and_stacking_shares(self, config, scenes, recipe):
         # Pose lists, poses 1-200: inox 100, the other classes 25 each; 40 stacked.

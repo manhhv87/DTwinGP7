@@ -41,7 +41,8 @@ camera:
 
 lighting:
   # Ánh sáng của ĐIỀU KIỆN KHÓ (mọi lượt E3-E5): các đèn tấm 600 mm phía trên cell (đèn vùng của
-  # Blender, mặt gương thấy được) cộng một nền trên cao đồng đều có tông màu (world của Blender);
+  # Blender, mặt gương thấy được) cộng một nền trên cao có tông màu (world của Blender), sáng dần về
+  # phía +x theo hard_profile.overhead (dạng đo trên gương inox ở khung E2, giữ độ rọi mặt ngang);
   # hard_profile.luminaire_lights dựng chúng. Mô hình lấy từ mặt gương hộp inox trên ảnh train
   # (118 lần xuất hiện, ánh sáng chuẩn): một đèn bão hòa có cỡ góc của tấm 600 x 630 mm ở 1850 mm
   # trên bàn; phần trên cao ngoài đèn sáng 0,27 lần mặt bàn, tông (0,886, 1, 0,852). Ở điều kiện
@@ -244,11 +245,23 @@ objects:
   # log độ sáng carton −0,04/+0,05, gỗ −0,17/+0,17, nhựa −0,01/+0,10, metal −0,16/+0,17, inox
   # −0,19/+0,19. Không ảnh val, test, E3-E5 nào vào phép khớp. Mặt trên render đều, mặt thật thì không:
   # p10 và p90 của mặt render cách thật (log) carton +0,16/−0,19, gỗ +0,16/−0,12, nhựa +0,50/−0,24,
-  # inox +0,34/−0,18, metal +1,04/−0,75 (hộp metal thật tối với một đốm sáng rộng giữa nắp, có lẽ do nắp
-  # hơi phồng phản chiếu vùng sáng phía trên; nền trên cao đồng đều và đèn xa không tạo được đốm đó trên
-  # mặt phẳng, kể cả với lớp phủ roughness 0,05). Độ sáng thật còn tăng theo x mà ánh sáng danh định
-  # không có (inox, gỗ): giới hạn của mô hình đèn, không của vật. Bảng số và lệnh:
-  # synth_fix/appearance/bao_cao.md. Lần khớp 05/11/2026 (commit bcdadfe) dùng ô 17 px ở tâm mặt trên;
+  # inox +0,34/−0,18, metal +1,04/−0,75. Bảng số và lệnh: synth_fix/appearance/bao_cao.md.
+  # SAU ĐÓ (06/11/2026, synth_fix/geom/bao_cao.md), cùng 30 dòng và cùng thước đo:
+  #   inox: nền trên cao có dạng (hard_profile.overhead) làm gương tối đi trung bình 0,94 lần ở các dòng
+  #     đó, nên F0 chia 0,94: (0,5287, 0,5941, 0,4528); render lại lệch trung vị +0,01, p10/p90 +0,20/−0,09.
+  #   metal: hộp thiếc góc bo r 28,8 mm (mesh), nắp PHẲNG (ảnh độ sâu E2: giữa 83,1 mm, sát mép 83,7-84,5),
+  #     đốm sáng cố định ở giữa nắp ở mọi vị trí (tâm đốm không dịch theo hướng tới nadir camera: độ dốc
+  #     0,000 ± 0,014 và −0,020 ± 0,012), nên đó là tính chất bề mặt, không phải phản chiếu của nắp phồng.
+  #     face_pattern: p = floor + (1 − floor) exp(−(a/sa)² − (b/sb)²) trên mặt trên (a, b mm theo trục X,
+  #     Y mesh); renderer nhân F0 với p / trung bình của p trên hình chữ nhật mặt (2,79 lần ở giữa) và
+  #     trọng số lớp phủ với p. KHỚP (floor, sa, sb) vào ba tỉ số của 21 dòng metal thật: p10/trung vị
+  #     0,332, p90/trung vị 2,249, độ sáng tại a = L/4 trên tại b = W/4 1,322, theo luật render đo trên
+  #     một lượt (R = S·p + D·(m + 0,40·F0·m²), S/D 0,236): floor ra 0 (biên), sa 77,0, sb 42,4 mm; F0 là
+  #     trung bình mặt, giải lại theo trung vị và màu: (0,2389, 0,2631, 0,2543). Render lại lệch log
+  #     p10/trung vị/p90 +0,06/−0,01/+0,04 (trước +1,04/−0,00/−0,75), màu R/G +0,001, B/G −0,003.
+  #   carton, gỗ, nhựa: không đổi (lệch thay đổi ≤ 0,01). Độ sáng thật của các lớp khuếch tán còn tăng
+  #     theo x nhanh hơn render (thật +0,16-0,18, render +0,05-0,10 log mỗi 100 mm): giới hạn của mô
+  #     hình đèn xa, không của vật. Lần khớp 05/11/2026 (commit bcdadfe) dùng ô 17 px ở tâm mặt trên;
   # ô đó rơi vào đốm sáng của metal (F0 0,57-0,61, cả hộp render sáng), nên thay bằng cả mặt.
   # BA LỚP ĐIỆN MÔI KHỚP LẠI cùng ngày khi thêm hoa văn mặt trên (top_textures bên dưới): cùng 30 dòng,
   # cùng lượt S (p = 0, hoa văn không đổi lớp gương), lượt D render có hoa văn (mỗi vật một texture rút
@@ -285,10 +298,12 @@ objects:
   #   F0 KHỚP trên khung E2 như các lớp điện môi ở trên (p = F0 từng kênh; lớp phủ của metal nằm trong S).
   #   F0 có màu vì nó gánh cả màu môi trường mà gương phản chiếu ở điều kiện khó (tông nền trên cao đo ở
   #   ánh sáng chuẩn); sampler nhân chung một hệ số nên giữ sắc.
-  #   inox: thép 304 đánh bóng, F0 (0,4968, 0,5581, 0,4254); số cũ 0,57 (tài liệu). Lệch tương đối 0,053
+  #   inox: thép 304 đánh bóng, F0 (0,5287, 0,5941, 0,4528) dưới nền trên cao có dạng (khớp nền đều:
+  #     (0,4968, 0,5581, 0,4254)); số cũ 0,57 (tài liệu). Lệch tương đối 0,053
   #     (0,03 / 0,57) giữ; roughness 0,05 trong 0,02-0,10 (mép đèn sắc trên gương inox train, độ chính
   #     xác cân bằng 0,98); không lớp phủ.
-  #   metal (hộp thép sơn): kim loại nhám F0 (0,2428, 0,2617, 0,2663); số cũ 0,34. Ở roughness 0,9 độ sáng
+  #   metal (hộp thép sơn): kim loại nhám F0 trung bình mặt (0,2389, 0,2631, 0,2543) với face_pattern
+  #     (khớp mặt đều trước đó: (0,2428, 0,2617, 0,2663)); số cũ 0,34. Ở roughness 0,9 độ sáng
   #     không tuyến tính theo F0 (GGX tán xạ nhiều lần): một lượt render ở F0 0,61-0,67 sáng hơn mô hình
   #     tuyến tính 10 %, nên giải bằng r = S + a·F0·(1 + k·F0), k = 0,40 đo từ lượt đó; lượt kiểm ở giá
   #     trị cuối trùng mô hình (lệch 0,2 %). roughness 0,9 (0,8-1,0) dưới lớp phủ bóng IOR 1,5,
@@ -301,9 +316,10 @@ objects:
     carton:      {albedo_rgb: [0.3853, 0.3017, 0.1698], sigma_albedo_rel: 0.10, roughness: 0.85, metallic: 0.0}
     plastic_box: {albedo_rgb: [0.0001, 0.0405, 0.1203], sigma_albedo_rel: 0.33, roughness: 0.80, metallic: 0.0}
     wood_box:    {albedo_rgb: [0.5005, 0.4252, 0.2527], sigma_albedo_rel: 0.10, roughness: 0.80, metallic: 0.0}
-    metal_box:   {f0_rgb: [0.2428, 0.2617, 0.2663], sigma_f0_rel: 0.15, roughness: 0.90, roughness_range: [0.80, 1.0],
-                  metallic: 1.0, coat_ior: 1.5, coat_roughness: 0.30, sigma_coat_roughness: 0.05}
-    inox_box:    {f0_rgb: [0.4968, 0.5581, 0.4254], sigma_f0_rel: 0.053, roughness: 0.05,
+    metal_box:   {f0_rgb: [0.2389, 0.2631, 0.2543], sigma_f0_rel: 0.15, roughness: 0.90, roughness_range: [0.80, 1.0],
+                  metallic: 1.0, coat_ior: 1.5, coat_roughness: 0.30, sigma_coat_roughness: 0.05,
+                  face_pattern: {floor: 0.0, sigma_mm: [77.0, 42.4]}}
+    inox_box:    {f0_rgb: [0.5287, 0.5941, 0.4528], sigma_f0_rel: 0.053, roughness: 0.05,
                   roughness_range: [0.02, 0.10], metallic: 1.0}
   # HOA VĂN MẶT TRÊN (chỉ recipe anchored, chỉ carton, nhựa, gỗ): danh sách texture đo được, mỗi mesh
   # 21-24 cái, cắt từ ảnh TẬP TRAIN bằng scripts/make_top_textures.py (ảnh một vật của thư mục lớp, mặt
@@ -469,3 +485,19 @@ hard_profile:
     near_albedo_rgb: [0.1925, 0.1911, 0.1445]
   # Không còn mục environment: nền trên cao (world) nay đi theo từng spec (lighting, spec
   # environment.radiance_rgb), không còn một bức xạ phòng cố định 0,016.
+  overhead:
+    # DẠNG của nền trên cao theo hướng (hard_profile.overhead_shape), phần tĩnh của profile như tấm nền
+    # và thẻ, mọi spec của CẢ HAI recipe: bức xạ theo hướng w = bức xạ đều của spec × exp(gradient_x ·
+    # clip(w_x, clip_x)) / N, w_x thành phần x (base) của vector hướng đơn vị; N = 0,8988 giữ độ rọi trên
+    # mặt nằm ngang, nên mức sáng, tấm nền, thẻ và các lớp khuếch tán đã khớp trên đó không đổi.
+    # ĐO ngày 06/11/2026 trên CHÍNH ẢNH PHẢN CHIẾU của mặt gương inox ở khung lượt gắp E2 khó (e2kho-1,
+    # e2kho-2, 79 dòng inox một lớp): mỗi điểm ảnh mặt trên phản xạ tia camera theo một hướng đã biết
+    # (mặt phẳng z bàn + 40 mm, T_base_camera); hồi quy trung vị log độ sáng mặt (trên tấm nền cùng khung)
+    # theo hướng phản xạ trung bình của mặt: 1,84 ± 0,30 theo t_x, −0,01 ± 0,10 theo t_y (bỏ), tức inox
+    # sáng thêm 0,27 log mỗi 100 mm x của vật; nền đều cũ cho 0 (render inox phẳng 5,5 dọc x). Hai buổi
+    # riêng: 2,15 và 1,53. clip_x = p1-p99 của hướng mà gương thấy (ngoài khoảng đó không có số đo, giữ
+    # giá trị biên). Render thử cho độ dốc log trong một mặt inox 1,832. Độ loang lổ của inox KHÔNG do
+    # nền trên cao: mô hình trơn không giảm độ lệch trong mặt (0,256 còn 0,253), là vết trên mặt gương.
+    # Bảng và lệnh: synth_fix/geom/bao_cao.md.
+    gradient_x: 1.84
+    clip_x: [-0.257, 0.063]

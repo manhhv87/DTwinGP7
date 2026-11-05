@@ -156,6 +156,28 @@ class BackgroundFactors(BaseModel):
     blind_albedo_range: list[float] = Field(default=[0.05, 0.95])
 
 
+class FacePattern(BaseModel):
+    """Reflectance pattern fixed to a product's top face, fitted on the E2 trial frames.
+
+    The pattern p = floor + (1 - floor) exp(-(a/sa)^2 - (b/sb)^2), a and b the face
+    coordinates (mm, along the mesh's X and Y, origin at the centre), peaks at 1 in the
+    middle. The renderer scales the top face's F0 by p over its mean on the face's L x W
+    rectangle, so f0_rgb stays the face's mean reflectance, and the clear coat's weight
+    by p. Anchored recipe only.
+    """
+
+    floor: float
+    sigma_mm: list[float]
+
+    @model_validator(mode="after")
+    def _check(self) -> "FacePattern":
+        if not 0.0 <= self.floor <= 1.0:
+            raise ValueError("face_pattern.floor must lie in [0, 1]")
+        if len(self.sigma_mm) != 2 or min(self.sigma_mm) <= 0.0:
+            raise ValueError("face_pattern.sigma_mm must be [sa, sb] mm, both positive")
+        return self
+
+
 class MaterialFactors(BaseModel):
     """Appearance of ONE product class.
 
@@ -190,6 +212,8 @@ class MaterialFactors(BaseModel):
     coat_ior: float | None = None
     coat_roughness: float = 0.30
     sigma_coat_roughness: float = 0.0
+    # Top-face pattern of a metal (the painted steel box: bright middle, dark rim).
+    face_pattern: FacePattern | None = None
 
     @model_validator(mode="after")
     def _check(self) -> "MaterialFactors":

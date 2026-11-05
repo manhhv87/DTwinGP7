@@ -55,12 +55,15 @@ class TestShippedConfig:
     def test_metals_carry_a_physical_reflectance(self, config):
         # The image colour of a metal is its surroundings, not its reflectance: the
         # two metal classes carry an F0 (fitted per channel on the whole top face in the E2
-        # hard-condition trial frames, 06/11/2026), the dielectric ones their colour.
+        # hard-condition trial frames, 06/11/2026, under the shaped overhead; the steel box's
+        # is the face mean of its top-face pattern), the dielectric ones their colour.
         mats = config.objects.materials
         inox, metal = mats["inox_box"], mats["metal_box"]
-        assert inox.f0_rgb == [0.4968, 0.5581, 0.4254] and inox.albedo_rgb is None and inox.coat_ior is None
+        assert inox.f0_rgb == [0.5287, 0.5941, 0.4528] and inox.albedo_rgb is None and inox.coat_ior is None
         assert inox.roughness == 0.05 and inox.roughness_range == [0.02, 0.10]
-        assert metal.f0_rgb == [0.2428, 0.2617, 0.2663] and metal.roughness == 0.9 and metal.coat_ior == 1.5
+        assert metal.f0_rgb == [0.2389, 0.2631, 0.2543] and metal.roughness == 0.9 and metal.coat_ior == 1.5
+        assert metal.face_pattern.floor == 0.0 and metal.face_pattern.sigma_mm == [77.0, 42.4]
+        assert inox.face_pattern is None
         assert metal.coat_roughness == 0.30 and metal.sigma_coat_roughness == 0.05
         assert inox.sigma_f0_rel == pytest.approx(0.03 / 0.57, abs=1e-3) and metal.sigma_f0_rel == 0.15
         for cls in ("carton", "plastic_box", "wood_box"):
@@ -155,6 +158,26 @@ class TestAnchoredSampling:
                 per.setdefault(cls, []).append(mat.get("albedo_rgb", mat.get("f0_rgb")))
             return float(np.mean([np.std(np.asarray(v)) for v in per.values()]))
         assert spread(4.0) > spread(1.0)
+
+
+class TestFacePattern:
+    def test_anchored_steel_box_carries_its_pattern(self, config):
+        s = SceneSampler(config, T_BC, mode="anchored", kappa=2.0, seed=3)
+        mats = materials_in(s)
+        metal = [m for c, m in mats if c == "metal_box"]
+        assert metal and all(m["face_pattern"] == {"floor": 0.0, "sigma_mm": [77.0, 42.4]} for m in metal)
+        assert not any("face_pattern" in m for c, m in mats if c != "metal_box")
+
+    def test_blind_draws_no_pattern(self, config):
+        s = SceneSampler(config, T_BC, mode="blind", seed=3)
+        assert not any("face_pattern" in m for _, m in materials_in(s))
+
+    @pytest.mark.parametrize("bad", [{"floor": 1.2, "sigma_mm": [70.0, 40.0]},
+                                     {"floor": 0.1, "sigma_mm": [70.0]},
+                                     {"floor": 0.1, "sigma_mm": [70.0, 0.0]}])
+    def test_bad_pattern_rejected(self, bad):
+        with pytest.raises(ValidationError):
+            MaterialFactors(f0_rgb=[0.3, 0.3, 0.3], metallic=1.0, face_pattern=bad)
 
 
 class TestBlindSampling:
