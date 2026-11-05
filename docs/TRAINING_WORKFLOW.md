@@ -121,7 +121,7 @@ protocol và kiểm tra riêng. GPU/runtime thực tế được ghi trong hồ 
 
 Recipe mặc định E2/E3/E5: 130 epochs, `imgsz=1280`, batch 8, `nbs=64`,
 `patience=0`, AdamW, `lr0=0.001111`, `momentum=0.9`, `warmup_bias_lr=0`.
-E2/E3 dùng seed 0..4; E4/E5 dùng seed 0..2. Recipe đầy đủ nằm trong `training.json`.
+E2/E3/E5 dùng seed 0..4; E4 dùng seed 0..2. Recipe đầy đủ nằm trong `training.json`.
 Đây là recipe đã chỉ định cho so sánh sắp tới; không khẳng định mọi file log
 lịch sử đều ghi các tham số giống nhau.
 

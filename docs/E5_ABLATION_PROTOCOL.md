@@ -70,7 +70,7 @@ factor tự do: giống nhau ở mọi nhánh của cùng seed và index. Hoa v�
 sigma, seed hoặc ghi đè scene index đã có. Các manifest cũ thiếu provenance này
 phải dùng thư mục chạy mới; không suy đoán cấu hình của một bộ ảnh lịch sử.
 
-Sử dụng **một scene seed chung** cho cả sáu nhánh; ba training seed 0/1/2 dùng trên
+Sử dụng **một scene seed chung** cho cả sáu nhánh; năm training seed 0..4 dùng trên
 cùng các bộ ảnh này. Các generation seed khác nhau cho các bộ scene không chung draw
 nào (`SeedSequence([seed, index])`), nên đổi generation seed giữa các nhánh là bỏ ghép
 cặp. Nếu cần chiến dịch scene độc lập, định trước một seed mới cho mỗi bộ và ghi rõ
@@ -126,9 +126,11 @@ thiếu, không âm thầm giảm ngân sách một nhánh. Giữ toàn bộ ả
 nhau giữa sáu nhánh; validation/test không được đưa vào training.
 
 Đóng gói từng dataset cùng dữ liệu thật bằng `scripts/23_launch_retrain.py` và dùng
-cùng training recipe đã khóa cho full/ablated. Dùng ba training seed 0/1/2; chọn
-checkpoint bằng cùng quy tắc validation đã định trước. Đây là 18 lần huấn luyện
-cho 6 nhánh × 3 seed. Chỉ tái sử dụng full-recipe run nếu khớp hoàn toàn dữ liệu,
+cùng training recipe đã khóa cho full/ablated. Dùng năm training seed 0..4 như E3
+(chốt 06/11/2026): nhánh full recipe là gói E3 anchored ở κ đã chọn, triển khai từ năm
+seed, nên mỗi nhánh cắt bỏ cũng chọn checkpoint trong năm seed theo cùng quy tắc validation
+đã định trước. Đây là 30 lần huấn luyện cho 6 nhánh × 5 seed, trong đó 5 run của nhánh full
+lấy lại từ E3 (25 run mới). Chỉ tái sử dụng full-recipe run nếu khớp hoàn toàn dữ liệu,
 calibration, `kappa`, recipe và quy tắc chọn model; ghi lại trường hợp tái sử dụng.
 
 ## Ghi nhận và diễn giải kết quả sau này

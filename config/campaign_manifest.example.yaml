@@ -140,7 +140,7 @@ training:
     E2: [0, 1, 2, 3, 4]
     E3: [0, 1, 2, 3, 4]
     E4: [0, 1, 2]
-    E5: [0, 1, 2]
+    E5: [0, 1, 2, 3, 4]  # As E3 (06/11/2026): the full-recipe row is E3 anchored at the selected kappa.
   run_register_path: null  # Include GPU, update counts, data ratios, wall time, seed.
   run_register_sha256: null
 

@@ -475,7 +475,7 @@ def test_e2_cannot_include_synthetic_and_e5_cannot_change_parent(real: Path, tmp
     with pytest.raises(ValueError, match="common COCO"):
         build_package(real, [synth], tmp_path / "bad", experiment="E5", version=0, model="custom.pt", inspect_only=True)
     result = build_package(real, [synth], tmp_path / "e5", experiment="E5", version=0, inspect_only=True)
-    assert result["training"]["seeds"] == [0, 1, 2]
+    assert result["training"]["seeds"] == [0, 1, 2, 3, 4]      # as E3, whose anchored package is E5's full row
 
 
 def test_cli_inspect_only_accepts_explicit_count_guards(real: Path, tmp_path: Path) -> None:

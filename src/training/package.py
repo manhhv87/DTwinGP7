@@ -477,7 +477,10 @@ def build_package(
     if experiment != "E2" and not synthetic:
         raise ValueError(f"{experiment} requires synthetic training sources")
     if seeds is None:
-        seeds = list(range(5 if experiment in {"E2", "E3"} else 3))
+        # E5 trains five seeds like E3 (06/11/2026): its full-recipe row is E3's anchored
+        # package at the selected kappa, deployed from five seeds, so every ablated arm is
+        # selected from the same number of seeds. E4 fine-tunes three.
+        seeds = list(range(5 if experiment in {"E2", "E3", "E5"} else 3))
     if not seeds or len(set(seeds)) != len(seeds) or any(type(seed) is not int or seed < 0 for seed in seeds):
         raise ValueError("Training seeds must be unique nonnegative integers")
     if epochs is not None and (type(epochs) is not int or epochs < 1):

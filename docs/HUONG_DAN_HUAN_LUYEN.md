@@ -146,7 +146,7 @@ python train.py --device 0 --seeds 0 1 2 3 4
 
 Recipe cố định theo bài báo: Ultralytics 8.4.66, YOLOv8s-seg, 130 epoch, `imgsz=1280`,
 `batch=8`, AdamW `lr0=0.001111`, `warmup_epochs=3`, `close_mosaic=10`; gói đã ghi sẵn trong
-`training.json`, không sửa tay. E2 và E3 dùng năm seed `0..4`, E4 và E5 dùng ba seed `0..2`.
+`training.json`, không sửa tay. E2, E3 và E5 dùng năm seed `0..4`, E4 dùng ba seed `0..2`.
 Mỗi seed một thư mục `runs/seed<n>/`, không ghi đè run đã có.
 
 ### Chọn κ và mô hình bằng validation, luật viết trước khi nhìn số
@@ -274,7 +274,7 @@ python scripts/20_generate_synth.py --mode anchored --kappa <κ đã chọn> --a
 ```
 
 Định nghĩa "tắt một yếu tố" của từng cờ ghi trong `docs/E5_ABLATION_PROTOCOL.md`; đọc trước khi
-sinh lô lớn. Huấn luyện ba seed mỗi cấu hình. Hiệu ứng báo cáo là `ablation − full` theo điểm
+sinh lô lớn. Huấn luyện năm seed `0..4` mỗi cấu hình, như E3. Hiệu ứng báo cáo là `ablation − full` theo điểm
 phần trăm, âm hay dương đều ghi, các phép so sánh hiệu chỉnh Holm chung một họ.
 
 **Gắp thật cho ba yếu tố neo**: `camera`, `illumination`, `background`, ba nhánh trong một chiến

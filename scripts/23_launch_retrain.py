@@ -49,7 +49,7 @@ def parser_for_cli() -> argparse.ArgumentParser:
     parser.add_argument("--arm", choices=E4_ARMS, help="E4 only: loop (failure-guided) or control (unguided)")
     parser.add_argument("--paired-package", help="E4 only: the other arm's package of the same update, to compare against")
     seed_options = parser.add_mutually_exclusive_group()
-    seed_options.add_argument("--seeds", type=int, nargs="+", help="Default 0..4 for E2/E3 and 0..2 for E4/E5")
+    seed_options.add_argument("--seeds", type=int, nargs="+", help="Default 0..4 for E2/E3/E5 and 0..2 for E4")
     seed_options.add_argument("--seed", type=int, help="Alias for packaging one declared training seed")
     parser.add_argument("--real-train-list", help="Explicit real train allowlist; raw capture names flattened with __ are supported")
     parser.add_argument("--expected-real-train", type=int,
