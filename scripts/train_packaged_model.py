@@ -78,7 +78,19 @@ def verify_package(root: Path) -> tuple[dict, dict]:
             raise ValueError("Initial checkpoint changed since packaging")
     elif initial["model"] != "yolov8s-seg.pt":
         raise ValueError("An explicit initial checkpoint requires a recorded SHA-256")
+    else:
+        check_coco_initializer(root, initial)
     return config, manifest
+
+
+def check_coco_initializer(root: Path, initial: dict) -> None:
+    """yolov8s-seg.pt, once in the package (copied there, or downloaded by Ultralytics
+    on the first run), must be the file the package pins (expected_sha256)."""
+    path = checked_path(root, initial["model"])
+    expected = initial.get("expected_sha256")
+    if expected and path.is_file() and sha256(path) != expected:
+        raise ValueError(f"{initial['model']} has SHA-256 {sha256(path)}, not the pinned {expected} "
+                         "of the E2 initializer; replace it with that file")
 
 
 def validation_record(trainer) -> dict:
@@ -162,6 +174,7 @@ def run_training(root: Path, config: dict, manifest: dict, seeds: list[int], dev
             record["initial_checkpoint_sha256"] = sha256(initial_path)
             if initial.get("sha256") and record["initial_checkpoint_sha256"] != initial["sha256"]:
                 raise ValueError("Initial checkpoint hash changed before training")
+            check_coco_initializer(root, initial)
 
             def count_update(*_args):
                 record["optimizer_updates"] += 1

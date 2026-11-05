@@ -102,3 +102,26 @@ def test_runner_records_selection_steps_and_incomplete_runs(tmp_path, monkeypatc
     assert record["wall_seconds"] >= 0
     with pytest.raises(ValueError, match="already exists"):
         runner.run_training(tmp_path, config, manifest, [0], "cpu")
+
+
+def test_coco_initializer_must_be_the_pinned_file(tmp_path):
+    """yolov8s-seg.pt in a package (copied, or downloaded on the first run) must be the
+    E2 initializer; another file under that name is refused before training."""
+    from src.training.package import COCO_INITIALIZER
+    initial = dict(COCO_INITIALIZER)
+    runner.check_coco_initializer(tmp_path, initial)            # not there yet: checked later
+    (tmp_path / "yolov8s-seg.pt").write_bytes(b"some other release")
+    with pytest.raises(ValueError, match="not the pinned 0bac0770"):
+        runner.check_coco_initializer(tmp_path, initial)
+    e2 = Path("/home/manhhv/AI/yolo/yolov8s-seg.pt")
+    if e2.is_file():
+        (tmp_path / "yolov8s-seg.pt").write_bytes(e2.read_bytes())
+        runner.check_coco_initializer(tmp_path, initial)
+
+
+def test_recipe_pins_the_e2_worker_count():
+    from src.training.package import RECIPE
+    assert RECIPE["workers"] == 4
+    trainer = SimpleNamespace(args=SimpleNamespace(workers=8, batch=8), batch_size=8)
+    with pytest.raises(ValueError, match="workers=8"):
+        runner.assert_recipe(trainer, {"workers": 4, "batch": 8})

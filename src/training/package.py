@@ -50,7 +50,15 @@ RECIPE: dict[str, Any] = {
     "degrees": 0.0, "shear": 0.0, "perspective": 0.0,
     "mixup": 0.0, "copy_paste": 0.0,
     "deterministic": True, "save": True, "val": True,
+    # E2 ran with 4 dataloader workers (its checkpoints' train_args); Ultralytics'
+    # default is 8, and the worker count changes the augmentation streams.
+    "workers": 4,
 }
+# The COCO initializer of E2, E3 and E5: the file E2 trained from
+# (/home/manhhv/AI/yolo/yolov8s-seg.pt), which Ultralytics also downloaded into a
+# package on 05/11/2026. train.py refuses another file under this name.
+COCO_INITIALIZER = {"model": "yolov8s-seg.pt",
+                    "expected_sha256": "0bac0770b55e5eb5b76a61bc535673288dcec36c2bc0cd25ee0d584c632f3413"}
 SELECTION = {"metric": "sum_box_mask_map50_95", "checkpoint_tie": "latest_epoch",
              "kappa": "highest_mean_over_seeds", "kappa_tie": "smaller_kappa",
              "seed_tie": "lowest_seed"}
@@ -495,7 +503,7 @@ def build_package(
             raise ValueError(f"{experiment} starts from the common COCO yolov8s-seg.pt initializer; custom parent checkpoints belong to E4")
         if parent_package is not None or arm is not None or paired_package is not None:
             raise ValueError("Parent, arm and paired packages belong to E4")
-        initialization = {"model": "yolov8s-seg.pt"}
+        initialization = dict(COCO_INITIALIZER)
     training = {
         "schema_version": 1, "experiment": experiment, "version": version,
         "seeds": seeds, "ultralytics_version": ULTRALYTICS_VERSION,

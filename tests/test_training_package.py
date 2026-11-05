@@ -57,6 +57,11 @@ def test_portable_package_retains_five_classes_real_validation_and_namespaces(re
     assert data["train"] == "images/train"
     assert data["val"] == "images/val"
     assert (destination / "train.py").read_bytes() == runner.read_bytes()
+    training = json.loads((destination / "training.json").read_text())
+    assert training["recipe"]["workers"] == 4
+    assert training["initialization"] == {
+        "model": "yolov8s-seg.pt",
+        "expected_sha256": "0bac0770b55e5eb5b76a61bc535673288dcec36c2bc0cd25ee0d584c632f3413"}
     moved = tmp_path / "transferred"
     destination.rename(moved)
     # A transfer does not require the original Windows source paths.
