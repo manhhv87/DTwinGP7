@@ -122,8 +122,12 @@ python scripts/23_launch_retrain.py --real D:/Scientific/Dataset/DigitalTwin/_wo
 ```
 
 Số 1318 là số ảnh đang có trong `_work/yolo/images/train` (đếm 21/09/2026): 1256 ảnh của
-`splits/train.txt` cộng 62 ảnh negative mà `export_yolo.py` nối thêm. Chưa đối chiếu được
-baseline trên Linux đã học bộ nào; đối chiếu log Linux rồi mới khóa con số này.
+`splits/train.txt` cộng 62 ảnh negative mà `export_yolo.py` nối thêm. Baseline E2 đã học đúng
+1318 ảnh này: cache nhãn Ultralytics của lần huấn luyện trên máy Linux (`labels/train.cache` trong
+thư mục huấn luyện E2, ghi 10/09/2026 trước seed đầu tiên và không bị ghi lại) liệt kê 1318 ảnh,
+2701 instance, 106 ảnh nhãn rỗng (44 của danh sách cộng 62 negative), và ảnh cùng nhãn ở đó trùng
+từng byte với `_work/yolo/{images,labels}/train` (đối chiếu 05/11/2026). Mọi gói E3, E4, E5 dùng
+`--expected-real-train 1318`, không dùng `--real-train-list splits/train.txt`.
 
 Tập ảnh thật training phải được khai rõ: thiếu cả `--real-train-list` lẫn `--expected-real-train`
 thì công cụ từ chối, vì riêng thư mục không cho biết 62 ảnh negative có thuộc tập đã khóa hay không.
