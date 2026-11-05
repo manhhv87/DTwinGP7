@@ -74,7 +74,7 @@ validation, còn checkpoint trong run được giữ theo composite. Ghi sự kh
 | E3 | Real-only, wide-range và anchored κ=1/2/4; 3000 ảnh **train** cho mỗi recipe synthetic; năm seed |
 | E4 | Cùng checkpoint E3 được chọn làm f0 cho guided/control; mỗi update +1000 ảnh mỗi nhánh; giữ dữ liệu tích lũy 3000→4000→5000; ba seed fine-tuning |
 | E5 | Full và cả năm ablation, mỗi nhánh 3000 ảnh train; cùng generation seed; năm seed training như E3 |
-| E6 | Cùng checkpoint chấm hai tập synthetic/real riêng; không chấm lại ảnh train để tính gap |
+| E6 | Cùng checkpoint chấm hai tập synthetic/real riêng; không chấm lại ảnh train để tính gap. Tập synthetic: anchored ở κ đã chọn, seed sinh cảnh 50000, 2700 ảnh (số nhỏ nhất để mọi lớp có ít nhất số instance của tập thật khó: 648/420/434/616/678), render sau khi chọn κ |
 
 Giữ toàn bộ ảnh synthetic của ngân sách train bằng `--make-labels --val-frac 0`; bộ synthetic
 evaluation được sinh riêng. Kiểm số ảnh/nhãn hợp lệ sau render/conversion. Với E4, mỗi nhánh

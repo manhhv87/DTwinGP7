@@ -216,6 +216,21 @@ experiments:
     difference_direction: ablation_minus_full
   E6:
     transfer_gap_percentage_points: 100_times_synthetic_map_minus_real_map
+    # Synthetic evaluation set, fixed 06/11/2026 (Methods: "Separate images are generated for the
+    # E6 synthetic evaluation"; the paper gives no count). Generated after kappa is selected, never
+    # trained on; render digests must MATCH the E3 anchored arm (check_render_arms --expect-kappa).
+    synthetic_evaluation_set:
+      recipe: anchored
+      kappa: selected_E3_kappa
+      generation_seed: 50000   # [50000, index] streams share no draw with E3/E5 (seed 0) or E4 (10000-40000)
+      images: 2700
+      # Smallest count from seed 50000 at which every class has at least the labelled instances of
+      # the real hard set (648 carton, 420 plastic, 434 wood, 616 metal, 678 inox; Methods tab:dataset):
+      # 2645 frames by spec objects, 2654 with the 514/516 label-to-object ratio of the trial lot,
+      # rounded up to 2700. Classes do not depend on kappa (same draws at kappa 1, 2, 4).
+      real_comparison_set: test_hard
+      scored_checkpoints: e3_anchored_package_all_seeds
+      label_val_fraction: 0.0
     planned_complete_cycles: 100
     timing_boundary_definition: null
     stage_timestamp_instrumentation_record: null

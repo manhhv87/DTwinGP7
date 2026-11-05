@@ -320,8 +320,11 @@ với `f0` là nhánh `anchored` của E3, để đọc kèm); E5 là các yếu
 ### E6: khoảng cách mô phỏng với thật, và thời gian chu kỳ
 
 Khoảng cách mô phỏng với thật: chấm cùng một checkpoint trên một tập ảnh tổng hợp **sinh riêng
-để đánh giá** (một seed riêng, chưa dùng cho ảnh huấn luyện) và trên tập ảnh thật đánh giá, báo
-`100 × (mAP tổng hợp − mAP thật)`.
+để đánh giá** và trên tập ảnh thật đánh giá, báo `100 × (mAP tổng hợp − mAP thật)`. Tập tổng hợp
+(chốt 06/11/2026): recipe anchored ở κ đã chọn ở E3, seed sinh cảnh 50000 (không chung luồng với
+E3, E4, E5), 2700 ảnh, `--val-frac 0`, sinh sau khi chọn κ. 2700 là số nhỏ nhất (làm tròn lên trăm)
+để mỗi lớp có ít nhất số instance của tập thật khó (648 carton, 420 nhựa, 434 gỗ, 616 metal, 678
+inox): 2645 khung theo vật trong spec, 2654 khi tính tỉ lệ nhãn/vật 514/516 của lô thử.
 
 Thời gian chu kỳ: kế hoạch **100 chu kỳ hoàn chỉnh**. Lấy từ telemetry và CSV của Pha 4 nếu đủ
 mốc; `05_analyze_telemetry.py` suy đoạn chuyển động từ vận tốc khớp, chưa có mốc riêng cho nhận
