@@ -153,7 +153,7 @@ def link_or_copy(source: str | Path, target: str | Path) -> str:
 def convert_render_output(
     render_dir: str | Path,
     out_dir: str | Path,
-    val_frac: float = 0.1,
+    val_frac: float = 0.0,
     seed: int = 0,
     class_names: list[str] | None = None,
 ) -> dict[str, int]:

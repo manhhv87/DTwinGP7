@@ -250,10 +250,10 @@ python scripts/23_launch_retrain.py --synth data/synth/anchored_k2/dataset --rea
 # Vòng failure-driven (C3): mine lỗi của buổi adaptation (tư thế 221-300) → phân bổ budget → sinh batch mới
 python scripts/21_mine_failures.py --runs "results/e4adapt-1/experiment_real_*.csv" --n-budget 1000 \
     --guided-seed 10000 --control-seed 20000 --out results/adaptation/e4_k1/failure_modes.json
-python scripts/20_generate_synth.py --from-failures results/adaptation/e4_k1/failure_modes.json --out data/synth/loop_k1 --seed 10000
+python scripts/20_generate_synth.py --from-failures results/adaptation/e4_k1/failure_modes.json --kappa <κ đã chọn> --out data/synth/loop_k1 --seed 10000
 # Nhánh control E4: cùng số ảnh, không ràng buộc lớp/vùng, cùng nhãn ánh sáng của buổi (dim),
 # control seed đã kiểm trong báo cáo
-python scripts/20_generate_synth.py --control-for results/adaptation/e4_k1/failure_modes.json --out data/synth/control_k1 --seed 20000
+python scripts/20_generate_synth.py --control-for results/adaptation/e4_k1/failure_modes.json --kappa <κ đã chọn> --out data/synth/control_k1 --seed 20000
 # Chọn κ / seed / model E4 từ run record trả về (docs/HUONG_DAN_HUAN_LUYEN.md)
 python scripts/select_trained_models.py kappa --candidate 1=<gói κ1> --candidate 2=<gói κ2> --candidate 4=<gói κ4> --out results/selection/e3_kappa.json
 

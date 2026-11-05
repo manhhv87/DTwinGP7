@@ -281,7 +281,8 @@ def test_e4_arms_are_checked_against_each_other(real: Path, runner: Path, tmp_pa
 
 RENDERED = {"manifest_version": 1, "blender_version": "4.2.1 LTS", "blenderproc_version": "2.8.0",
             "device": "GPU:OPTIX", "render": {"samples": 24, "reflectance_scale": 0.46},
-            "profile_sha256": "a" * 64, "frames": ["frame_000000"]}
+            "profile_sha256": "a" * 64, "generator_sha256": "c" * 64, "code_sha256": "d" * 64,
+            "frames": ["frame_000000"]}
 
 
 def rendered(dataset: Path, **change: object) -> Path:
@@ -302,6 +303,13 @@ def test_synthetic_sources_must_be_rendered_alike(real: Path, tmp_path: Path) ->
         inspect_sources(real, [a, other_samples])
     with pytest.raises(ValueError, match="profile_sha256"):
         inspect_sources(real, [a, other_profile])
+    # Another sampler config (materials, light, exposure) or other generator code: refused.
+    other_generator = rendered(make_source(tmp_path / "refit", synthetic=True), generator_sha256="e" * 64)
+    with pytest.raises(ValueError, match="generator_sha256"):
+        inspect_sources(real, [a, other_generator])
+    other_code = rendered(make_source(tmp_path / "newcode", synthetic=True), code_sha256="f" * 64)
+    with pytest.raises(ValueError, match="code_sha256"):
+        inspect_sources(real, [a, other_code])
     inspected = inspect_sources(real, [a, b, loose])
     check = inspected["render_check"]
     assert check["checked"] == ["synth01", "synth02"] and check["unchecked"] == ["synth03"]
@@ -322,7 +330,8 @@ def test_e4_arms_must_be_rendered_alike(real: Path, runner: Path, tmp_path: Path
                       inspect_only=True)
 
 
-def make_batch(tmp_path: Path, name: str, seed: int, indices: range, spec_version: int = 2) -> Path:
+def make_batch(tmp_path: Path, name: str, seed: int, indices: range, spec_version: int = 2,
+               kappa: float | None = 2.0) -> Path:
     """A generated batch as 20_generate_synth.py lays it out: specs/ beside dataset/."""
     dataset = tmp_path / name / "dataset"
     dataset.parent.mkdir()
@@ -331,7 +340,7 @@ def make_batch(tmp_path: Path, name: str, seed: int, indices: range, spec_versio
     specs = tmp_path / name / "specs"
     specs.mkdir()
     (specs / "manifest.json").write_text(json.dumps({
-        "spec_version": spec_version, "seed": seed, "mode": "anchored", "kappa": 2.0,
+        "spec_version": spec_version, "seed": seed, "mode": "anchored", "kappa": kappa,
         "files": [f"scene_{i:06d}.json" for i in indices]}), encoding="utf-8")
     return dataset
 
@@ -392,6 +401,10 @@ def test_synthetic_sources_without_their_manifests_are_refused(real: Path, runne
     with pytest.raises(ValueError, match="specs_only.*render_manifest.json"):
         build_package(real, [specs_only], tmp_path / "x", experiment="E3", version=1, inspect_only=True,
                       require_provenance=True)
+    old_render = rendered(make_batch(tmp_path, "old_render", 0, range(1)), code_sha256=None)
+    with pytest.raises(ValueError, match="old_render.*no generator or code digest"):
+        build_package(real, [old_render], tmp_path / "x", experiment="E3", version=1, inspect_only=True,
+                      require_provenance=True)
     both = rendered(make_batch(tmp_path, "anchored_k2", 0, range(1)))
     build_package(real, [both], tmp_path / "x", experiment="E3", version=1, inspect_only=True,
                   require_provenance=True)
@@ -402,6 +415,32 @@ def test_synthetic_sources_without_their_manifests_are_refused(real: Path, runne
         capture_output=True, text=True)
     assert completed.returncode == 2 and "lack the records" in completed.stderr
     assert not (tmp_path / "packages").exists()
+
+
+def test_e4_batches_are_sampled_at_the_kappa_of_f0(real: Path, runner: Path, tmp_path: Path) -> None:
+    """A loop or control batch generated at another kappa than the E3 arm of f0 (a
+    forgotten --kappa) is refused; both arms record the kappa and must agree."""
+    e3_batch = rendered(make_batch(tmp_path, "anchored_k2", 0, range(3)))
+    e3 = tmp_path / "e3_k2"
+    build_package(real, [e3_batch], e3, experiment="E3", version=1, runner_source=runner,
+                  require_provenance=True)
+    parent = finish_runs(e3, tmp_path, [0])[0]
+    options = dict(experiment="E4", version=1, model=parent, epochs=30, parent_package=e3,
+                   runner_source=runner, require_provenance=True)
+    wrong = rendered(make_batch(tmp_path, "loop_k1_at_1", 10000, range(2), kappa=1.0))
+    with pytest.raises(ValueError, match="kappa of f0.*loop_k1_at_1.*kappa 1.0"):
+        build_package(real, [e3_batch, wrong], tmp_path / "x", arm="loop", inspect_only=True, **options)
+    loop = rendered(make_batch(tmp_path, "loop_k1", 20000, range(2)))
+    loop_package = tmp_path / "loop_u1"
+    result = build_package(real, [e3_batch, loop], loop_package, arm="loop", **options)
+    assert result["training"]["e4"]["kappa"] == 2.0
+    control = rendered(make_batch(tmp_path, "control_k1", 30000, range(2)))
+    paired = build_package(real, [e3_batch, control], tmp_path / "control_u1", arm="control",
+                           paired_package=loop_package, inspect_only=True, **options)
+    assert paired["training"]["e4"]["kappa"] == 2.0
+    blind = rendered(make_batch(tmp_path, "blind_like", 40000, range(2), kappa=None))
+    with pytest.raises(ValueError, match="record their kappa.*blind_like"):
+        build_package(real, [e3_batch, blind], tmp_path / "y", arm="loop", inspect_only=True, **options)
 
 
 def test_cli_requires_a_declared_real_training_set(real: Path, tmp_path: Path) -> None:

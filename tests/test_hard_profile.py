@@ -314,6 +314,26 @@ class TestManifest:
         with pytest.raises(ValueError, match="device"):
             hp.merge_manifest(a, self.make(cfg, kw={"device": "CPU"}))
 
+    def test_generator_and_code_digests(self, tmp_path):
+        profile = {"config": {"objects": {"materials": {"carton": [0.4, 0.3, 0.2]}}}, "T_BC_mm": [[1.0]]}
+        reordered = json.loads(json.dumps(profile, sort_keys=True))
+        assert hp.generator_sha256({"generator_profile": profile}) == \
+            hp.generator_sha256({"generator_profile": reordered, "kappa": 4.0, "seed": 9})
+        refit = copy.deepcopy(profile)
+        refit["config"]["objects"]["materials"]["carton"][0] = 0.41
+        assert hp.generator_sha256({"generator_profile": refit}) != hp.generator_sha256({"generator_profile": profile})
+        assert hp.generator_sha256(None) is None and hp.generator_sha256({}) is None
+        src = ROOT / "src" / "synthgen"
+        assert hp.code_sha256(src) == hp.code_sha256(src)
+        for name in hp.GENERATOR_CODE:
+            (tmp_path / name).write_bytes((src / name).read_bytes())
+        assert hp.code_sha256(tmp_path) == hp.code_sha256(src)
+        (tmp_path / "sensor_model.py").write_bytes((src / "sensor_model.py").read_bytes() + b"# x\n")
+        assert hp.code_sha256(tmp_path) != hp.code_sha256(src)
+        commit = hp.code_commit(ROOT)
+        assert commit is None or len(commit.split("+")[0]) == 40
+        assert hp.code_commit(tmp_path) is None              # not a repo
+
     def test_arms_must_match(self, cfg):
         other = copy.deepcopy(cfg)
         other["hard_profile"]["strip"]["width_mm"] = 20.0

@@ -9,9 +9,10 @@ score, ties to the lowest seed. Scores are compared unrounded, and means as
 exact fractions of the recorded floats, so no rounding can create or break a tie.
 
 Each run is re-checked against its own record before it is used: complete, the
-selected epoch equal to the best of its validation history, that history equal
-to results.csv to the CSV's six significant digits, and the record bound to the
-package's manifest.json and training.json by SHA-256. Candidates compared with
+selected epoch equal to the best of its validation history, that history holding
+every epoch of the package's recipe and equal to results.csv to the CSV's six
+significant digits, and the record bound to the package's manifest.json and
+training.json by SHA-256. Candidates compared with
 one another must share recipe, seeds, real images and synthetic image counts.
 """
 from __future__ import annotations
@@ -49,8 +50,9 @@ def _read_json(path: Path) -> dict[str, Any]:
         raise ValueError(f"Cannot read {path}: {exc}") from exc
 
 
-def load_run(package: Path, seed: int) -> dict[str, Any]:
-    """One complete run of a package, checked against its history and results.csv."""
+def load_run(package: Path, seed: int, epochs: int | None = None) -> dict[str, Any]:
+    """One complete run of a package, checked against its history and results.csv, and
+    (epochs given) against the epoch count of the package's recipe."""
     run_dir = Path(package) / "runs" / f"seed{seed}"
     record_path = run_dir / "run_record.json"
     record = _read_json(record_path)
@@ -63,6 +65,10 @@ def load_run(package: Path, seed: int) -> dict[str, Any]:
     history = record.get("validation_history") or []
     if not history:
         raise ValueError(f"{where}: no validation history")
+    # The runner refuses to mark a short run complete, but a record edited or copied by
+    # hand would pass every other check: a 3-epoch run must not compete as a 130-epoch one.
+    if epochs is not None and [entry.get("epoch") for entry in history] != list(range(1, epochs + 1)):
+        raise ValueError(f"{where}: the run holds {len(history)} epochs, the package's recipe {epochs}")
     best = max(history, key=lambda entry: (entry["score"], entry["epoch"]))
     selected = record.get("selected_validation") or {}
     if (selected.get("epoch"), selected.get("score")) != (best["epoch"], best["score"]):
@@ -97,7 +103,8 @@ def load_package(package: Path) -> dict[str, Any]:
     return {"root": package, "training": training, "manifest": manifest,
             "training_sha256": sha256(package / "training.json"),
             "manifest_sha256": sha256(package / "manifest.json"),
-            "runs": [load_run(package, seed) for seed in training["seeds"]]}
+            "runs": [load_run(package, seed, int(training["recipe"]["epochs"]))
+                     for seed in training["seeds"]]}
 
 
 def _real(manifest: dict[str, Any]) -> set[tuple[str, str, str]]:

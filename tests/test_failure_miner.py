@@ -482,7 +482,7 @@ class TestGeneratorUsesTheCheckedPlan:
             flag, str(report), "--out", str(out),
             "--config", str(Path(__file__).resolve().parents[1] / "config/synthgen.yaml"),
             "--calib", str(calib), "--sigma", str(tmp_path / "absent.json"),
-            "--allow-sigma-fallback", *extra])
+            "--allow-sigma-fallback", "--kappa", "1", *extra])
         manifest = out / "specs/manifest.json"
         return code, manifest if manifest.exists() else None
 

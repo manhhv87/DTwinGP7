@@ -31,19 +31,25 @@ def cfg() -> dict:
     return hp.load_render_config(ROOT / "config" / "synthgen.yaml")
 
 
+CODE = hp.code_sha256(ROOT / "src" / "synthgen")
+
+
 def batch(root: Path, name: str, cfg: dict, *, device: str = LINUX, frames: int = 3,
-          specs: int = 3, where: str = "dataset", samples: int = 24) -> Path:
+          specs: int = 3, where: str = "dataset", samples: int = 24, kappa: float | None = 2.0,
+          profile: dict | None = None, code: str = CODE) -> Path:
     """A run directory as 20_generate_synth.py lays it out, with its render manifest."""
     run = root / name
     (run / where).mkdir(parents=True)
+    spec_manifest = {"files": [f"scene_{i:06d}.json" for i in range(specs)], "kappa": kappa,
+                     "generator_profile": profile or {"config": {"objects": {"carton": [0.4, 0.3, 0.2]}}}}
     manifest = hp.build_manifest(cfg, {"samples": samples, "denoiser": "INTEL"}, device=device,
                                  blender_version="4.2.1 LTS", blenderproc_version="2.8.0",
                                  config_path="config/synthgen.yaml", scenes_dir=f"{name}/specs",
-                                 frames=[f"frame_{i:06d}" for i in range(frames)])
+                                 frames=[f"frame_{i:06d}" for i in range(frames)],
+                                 generator=hp.generator_sha256(spec_manifest), code=code)
     (run / where / hp.MANIFEST_NAME).write_text(json.dumps(manifest), encoding="utf-8")
     (run / "specs").mkdir()
-    (run / "specs" / "manifest.json").write_text(
-        json.dumps({"files": [f"scene_{i:06d}.json" for i in range(specs)]}), encoding="utf-8")
+    (run / "specs" / "manifest.json").write_text(json.dumps(spec_manifest), encoding="utf-8")
     return run
 
 
@@ -93,3 +99,27 @@ def test_a_batch_without_its_scene_list_is_refused(tmp_path: Path, cfg: dict, ca
     assert cra.main([str(run), str(other)]) == 2
     out = capsys.readouterr().out
     assert "REFUSED" in out and "missing frames" in out
+
+
+def test_arms_from_another_generator_config_or_code_fail(tmp_path: Path, cfg: dict) -> None:
+    """A refit of the materials (sampler config) or a change of the generator code
+    between the E3 batches and a later E4/E5 batch is a mismatch."""
+    a = cra.read_arm(batch(tmp_path, "anchored_k2", cfg))
+    refit = cra.read_arm(batch(tmp_path, "e5_camera", cfg,
+                               profile={"config": {"objects": {"carton": [0.5, 0.3, 0.2]}}}))
+    with pytest.raises(ValueError, match="generator_sha256"):
+        cra.check([a, refit])
+    newer = cra.read_arm(batch(tmp_path, "e5_pose", cfg, code="0" * 64))
+    with pytest.raises(ValueError, match="code_sha256"):
+        cra.check([a, newer])
+
+
+def test_expected_kappa_is_checked(tmp_path: Path, cfg: dict, capsys) -> None:
+    """E5 arms and the full arm run at the kappa chosen in E3 (--expect-kappa)."""
+    full = batch(tmp_path, "anchored_k2", cfg)
+    camera = batch(tmp_path, "e5_camera", cfg)
+    assert cra.main([str(full), str(camera), "--expect-kappa", "2"]) == 0
+    wrong = batch(tmp_path, "e5_pose", cfg, kappa=1.0)
+    assert cra.main([str(full), str(camera), str(wrong), "--expect-kappa", "2"]) == 2
+    out = capsys.readouterr().out
+    assert "MISMATCH" in out and "e5_pose" in out and "kappa 1.0" in out

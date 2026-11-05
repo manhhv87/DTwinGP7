@@ -282,6 +282,24 @@ def test_cli_rejects_confounded_or_invalid_options(cli, arguments):
     assert exc.value.code == 2
 
 
+@pytest.mark.parametrize("arguments", [
+    [], ["--ablation", "camera"], ["--from-failures", "f.json"], ["--control-for", "f.json"],
+    ["--from-failures", "f.json", "--mode", "blind"],
+])
+def test_cli_requires_kappa_for_anchored_scenes(cli, arguments, capsys):
+    """No default: a forgotten --kappa in E4 or E5 would otherwise sample at 2."""
+    with pytest.raises(SystemExit) as exc:
+        cli.parse_args(["--out", "unused", *arguments])
+    assert exc.value.code == 2 and "--kappa is required" in capsys.readouterr().err
+    assert cli.parse_args(["--out", "unused", "--kappa", "4", *arguments]).kappa == 4.0
+
+
+def test_cli_blind_and_labels_need_no_kappa_and_no_val_split(cli):
+    assert cli.parse_args(["--out", "unused", "--mode", "blind"]).kappa is None
+    args = cli.parse_args(["--out", "unused", "--make-labels"])
+    assert args.kappa is None and args.val_frac == 0.0
+
+
 @pytest.mark.parametrize("factor", ("none", *FACTORS))
 def test_cli_writes_requested_treatment_without_rendering(cli, config, tmp_path, monkeypatch, factor):
     calib = tmp_path / "T_BC.npy"
@@ -291,7 +309,7 @@ def test_cli_writes_requested_treatment_without_rendering(cli, config, tmp_path,
                         "--config", str(ROOT / "config/synthgen.yaml"),
                         "--calib", str(calib), "--sigma", str(tmp_path / "absent.json"),
                         "--allow-sigma-fallback",
-                        "--ablation", factor, "--n", "2", "--seed", "17"])
+                        "--ablation", factor, "--kappa", "2", "--n", "2", "--seed", "17"])
     assert cli.main() == 0
     manifest = json.loads((out / "specs/manifest.json").read_text())
     assert manifest["ablation"]["factor"] == factor
@@ -314,7 +332,7 @@ def test_cli_stops_without_bootstrap_sigma(cli, tmp_path, monkeypatch, extra):
     monkeypatch.setattr(sys, "argv", ["20_generate_synth.py", "--out", str(out),
                         "--config", str(ROOT / "config/synthgen.yaml"),
                         "--calib", str(calib), "--sigma", str(tmp_path / "absent.json"),
-                        "--n", "2", *extra])
+                        "--kappa", "2", "--n", "2", *extra])
     assert cli.main() == 1
     assert not out.exists()
 

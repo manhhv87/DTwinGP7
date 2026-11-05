@@ -29,7 +29,8 @@ Output per frame (contract consumed by auto_label.convert_render_output):
     frame_<idx>_inst.png    instance map (uint16 PNG; 0 = background)
     frame_<idx>_meta.json   {"instances": {inst_id: class_id}, "scene": <spec file>}
 and once per output directory render_manifest.json: samples, device, Blender and
-BlenderProc versions, the profile and its hash (hard_profile.build_manifest).
+BlenderProc versions, the profile and its hash, the digests of the specs' generator
+profile and of the generator code, and the commit (hard_profile.build_manifest).
 
 Design notes:
   - mm → m conversion happens HERE (Blender works in meters).
@@ -244,6 +245,15 @@ def main() -> int:
     }
     blender_version = str(bpy.app.version_string)
     bproc_version = str(getattr(bproc, "__version__", "unknown"))
+    # What the scenes were drawn from and the code that drew and renders them, so that
+    # arms compared in one experiment can be shown to come from one frozen generator.
+    spec_manifest_path = scenes_dir / "manifest.json"
+    spec_manifest = (json.loads(spec_manifest_path.read_text(encoding="utf-8"))
+                     if spec_manifest_path.is_file() else None)
+    generator = hp.generator_sha256(spec_manifest)
+    code = hp.code_sha256(Path(__file__).resolve().parent)
+    commit = hp.code_commit(repo_root)
+    print(f"Generator profile {str(generator)[:12]}, code {code[:12]}, commit {commit}")
 
     # Frames of an earlier run of this directory: those of other specs are kept as
     # listed; those of this batch count only when complete, the rest are rendered.
@@ -258,7 +268,8 @@ def main() -> int:
                                 blender_version=blender_version,
                                 blenderproc_version=bproc_version,
                                 config_path=str(config_path), scenes_dir=str(scenes_dir),
-                                frames=kept + frames)
+                                frames=kept + frames, generator=generator, code=code,
+                                commit=commit)
         if old_manifest:
             hp.merge_manifest(old_manifest, new)   # refuses a batch rendered differently
         tmp = manifest_path.with_name(manifest_path.name + ".part")

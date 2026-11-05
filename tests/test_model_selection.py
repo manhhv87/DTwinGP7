@@ -38,9 +38,15 @@ def make_source(root: Path, *, synthetic: bool = False, kappa: float | None = No
     return root
 
 
-def finish(package: Path, scores: dict[int, list[tuple[float, float]]], *, selected_epoch: int | None = None) -> None:
-    """Complete runs as train.py leaves them: per seed, (box, mask) for each epoch."""
+def finish(package: Path, scores: dict[int, list[tuple[float, float]]], *, selected_epoch: int | None = None,
+           pad: bool = True) -> None:
+    """Complete runs as train.py leaves them: per seed, (box, mask) for each epoch. pad
+    fills the remaining epochs of the package's recipe with zero scores, which never
+    become the best epoch, so a run holds every epoch as train.py requires."""
+    recipe_epochs = json.loads((package / "training.json").read_text())["recipe"]["epochs"]
     for seed, epochs in scores.items():
+        if pad:
+            epochs = list(epochs) + [(0.0, 0.0)] * (recipe_epochs - len(epochs))
         run = package / "runs" / f"seed{seed}"
         (run / "weights").mkdir(parents=True)
         (run / "weights/best.pt").write_bytes(f"{package.name} seed {seed}".encode())
@@ -109,7 +115,7 @@ def test_tied_runs_deploy_the_lowest_seed():
 
 
 def test_each_run_is_rechecked_against_its_history_and_csv(tmp_path, real, runner):
-    package = e3_package(tmp_path, real, runner, "k2", seeds=[0])
+    package = e3_package(tmp_path, real, runner, "k2", seeds=[0], epochs=3)
     finish(package, {0: [(0.7, 0.7), (0.8, 0.7), (0.7, 0.8)]}, selected_epoch=2)
     # Epochs 2 and 3 tie at 1.5; the kept checkpoint must be the later one.
     with pytest.raises(ValueError, match="not the best validation epoch 3"):
@@ -127,6 +133,17 @@ def test_each_run_is_rechecked_against_its_history_and_csv(tmp_path, real, runne
     (run / "run_record.json").write_text(json.dumps(record))
     with pytest.raises(ValueError, match="not complete"):
         load_run(package, 0)
+
+
+def test_a_run_shorter_than_the_recipe_is_refused(tmp_path, real, runner):
+    """A complete-looking record of 3 epochs in a 130-epoch package does not compete."""
+    package = e3_package(tmp_path, real, runner, "k2", seeds=[0])
+    finish(package, {0: [(0.7, 0.7), (0.8, 0.7), (0.7, 0.8)]}, pad=False)
+    assert load_run(package, 0)["epoch"] == 3                 # the record itself is consistent
+    with pytest.raises(ValueError, match="holds 3 epochs, the package's recipe 130"):
+        load_run(package, 0, 130)
+    with pytest.raises(ValueError, match="holds 3 epochs"):
+        select_deployed([package], "e3_wide")
 
 
 def test_candidates_must_be_comparable_and_correctly_labelled(tmp_path, real, runner):

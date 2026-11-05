@@ -343,6 +343,31 @@ def _check_e4_data(lineage: dict[str, Any], manifest: dict[str, Any]) -> None:
         raise ValueError("This E4 update adds no synthetic images to the parent's")
 
 
+def _kappas(manifest: dict[str, Any]) -> dict[str, Any]:
+    """kappa of each synthetic source, from its specs/manifest.json (None when unrecorded)."""
+    return {f"{source['name']} ({source['root']})": (source.get("generation") or {}).get("kappa")
+            for source in manifest["sources"][1:]}
+
+
+def _check_e4_kappa(lineage: dict[str, Any], manifest: dict[str, Any], *, require: bool) -> float | None:
+    """Every batch of an E4 package, new and kept, is sampled at the kappa of f0.
+
+    The parent's synthetic images are the E3 arm that trained f0 (or the earlier update,
+    which kept them), so one recorded kappa over this package and its parent is the
+    kappa of f0; a loop or control batch generated with another (or a forgotten) --kappa
+    is refused here instead of being trained. require: every source must record one.
+    """
+    recorded = {**_kappas(lineage["manifest"]), **_kappas(manifest)}
+    if require and any(value is None for value in recorded.values()):
+        unrecorded = sorted(name for name, value in recorded.items() if value is None)
+        raise ValueError(f"E4 batches must be anchored and record their kappa; none for {unrecorded}")
+    values = {value for value in recorded.values() if value is not None}
+    if len(values) > 1:
+        raise ValueError("E4 samples every batch at the kappa of f0: " + "; ".join(
+            f"{name} kappa {value}" for name, value in sorted(recorded.items())))
+    return next(iter(values)) if values else None
+
+
 def _check_e4_pair(paired: Path, training: dict[str, Any], manifest: dict[str, Any]) -> dict[str, Any]:
     """The other arm's package of the same update must share schedule, seeds, real data and counts."""
     paired = Path(paired).resolve()
@@ -361,6 +386,8 @@ def _check_e4_pair(paired: Path, training: dict[str, Any], manifest: dict[str, A
             raise ValueError(f"Both arms use the same real {split} images")
     if other_manifest["counts"]["synthetic_train"] != manifest["counts"]["synthetic_train"]:
         raise ValueError("Both arms hold the same number of synthetic images")
+    if mine.get("kappa") is not None and theirs.get("kappa") is not None and mine["kappa"] != theirs["kappa"]:
+        raise ValueError(f"Both arms sample at one kappa: {theirs['kappa']} in {paired}, {mine['kappa']} here")
     renders = {source["name"]: source["render"] for source in manifest["sources"][1:]
                if source.get("render")}
     renders.update({f"{paired.name}/{source['name']}": source["render"]
@@ -396,6 +423,9 @@ def _require_provenance(manifest: dict[str, Any]) -> None:
             missing.append(f"{source['name']} ({root}): no {root.parent / 'specs' / 'manifest.json'}")
         if source.get("render") is None:
             missing.append(f"{source['name']} ({root}): no {root / RENDER_MANIFEST}")
+        elif not source["render"].get("generator_sha256") or not source["render"].get("code_sha256"):
+            missing.append(f"{source['name']} ({root}): {RENDER_MANIFEST} records no generator or "
+                           "code digest (rendered before they were recorded, or without specs/manifest.json)")
     if missing:
         raise ValueError("synthetic sources lack the records their checks need: " + "; ".join(missing))
 
@@ -487,7 +517,9 @@ def build_package(
     manifest["created_utc"] = datetime.now(timezone.utc).isoformat()
     if lineage is not None:
         _check_e4_data(lineage, manifest)
-        training["e4"] = {"arm": arm, "update": update, "parent": lineage["record"], "paired_package": None}
+        kappa = _check_e4_kappa(lineage, manifest, require=require_provenance)
+        training["e4"] = {"arm": arm, "update": update, "kappa": kappa, "parent": lineage["record"],
+                          "paired_package": None}
         if paired_package is not None:
             training["e4"]["paired_package"] = _check_e4_pair(paired_package, training, manifest)
     if inspect_only:

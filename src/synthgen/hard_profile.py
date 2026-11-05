@@ -54,7 +54,14 @@ MANIFEST_VERSION = 1
 # What has to be equal for two batches to count as rendered the same way. Two arms
 # of a comparison (E3 recipes, E5 ablations, E4 rounds) that differ here differ in
 # more than the factor under test: E5 once allowed 64 samples where E3 used 24.
-MATCH_KEYS = ("blender_version", "blenderproc_version", "device", "render", "profile_sha256")
+MATCH_KEYS = ("blender_version", "blenderproc_version", "device", "render", "profile_sha256",
+              "generator_sha256", "code_sha256")
+# The files whose code decides what a spec holds and how it renders. Their digest
+# (code_sha256), not the commit, is compared between arms: a later commit that only
+# touches packaging, training or the cell must not split E4/E5 from the E3 arms, but a
+# change to any of these would.
+GENERATOR_CODE = ("anchored_config.py", "hard_profile.py", "render_blenderproc.py",
+                  "scene_sampler.py", "seed_ranges.py", "sensor_model.py")
 
 
 def _rgb(value: Any, name: str) -> list[float]:
@@ -372,10 +379,48 @@ def render_device(kind: str, compute_type: str, names: list[str]) -> str:
     return f"{head} [{', '.join(used)}]" if used else head
 
 
+def generator_sha256(spec_manifest: dict[str, Any] | None) -> str | None:
+    """Digest of a batch's generator profile (specs/manifest.json): the whole sampler
+    config (materials, light, exposure, camera, objects), the calibration T_BC and
+    the camera widths. Arms of one experiment differ in recipe, kappa, ablation, seed
+    or condition, all recorded beside the profile, never in it. None without one."""
+    profile = (spec_manifest or {}).get("generator_profile")
+    if profile is None:
+        return None
+    text = json.dumps(profile, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def code_sha256(src_dir: str | Path) -> str:
+    """Digest of the generator's code (GENERATOR_CODE in src/synthgen), name and bytes."""
+    digest = hashlib.sha256()
+    for name in GENERATOR_CODE:
+        digest.update(name.encode("utf-8") + b"\0" + (Path(src_dir) / name).read_bytes() + b"\0")
+    return digest.hexdigest()
+
+
+def code_commit(repo_root: str | Path) -> str | None:
+    """The repo's commit, with '+dirty' when src/synthgen or config differ from it;
+    provenance only (the comparison uses code_sha256). None without git."""
+    import subprocess
+
+    try:
+        head = subprocess.run(["git", "-C", str(repo_root), "rev-parse", "HEAD"],
+                              capture_output=True, text=True, check=True).stdout.strip()
+        dirty = subprocess.run(["git", "-C", str(repo_root), "status", "--porcelain", "--",
+                                "src/synthgen", "config"],
+                               capture_output=True, text=True, check=True).stdout.strip()
+    except (OSError, subprocess.CalledProcessError):
+        return None
+    return head + ("+dirty" if dirty else "")
+
+
 def build_manifest(cfg: dict[str, Any], render_settings: dict[str, Any], *, device: str,
                    blender_version: str, blenderproc_version: str, config_path: str,
-                   scenes_dir: str, frames: list[str]) -> dict[str, Any]:
-    """Render manifest of one batch: how it was rendered and from which profile."""
+                   scenes_dir: str, frames: list[str], generator: str | None = None,
+                   code: str | None = None, commit: str | None = None) -> dict[str, Any]:
+    """Render manifest of one batch: how it was rendered, from which profile, generator
+    profile (generator_sha256) and generator code (code_sha256, code_commit)."""
     return {
         "manifest_version": MANIFEST_VERSION,
         "blender_version": blender_version,
@@ -383,6 +428,9 @@ def build_manifest(cfg: dict[str, Any], render_settings: dict[str, Any], *, devi
         "device": device,
         "render": dict(render_settings),
         "profile_sha256": profile_sha256(cfg),
+        "generator_sha256": generator,
+        "code_sha256": code,
+        "code_commit": commit,
         "profile": {k: cfg[k] for k in (*RENDER_SECTIONS, "white_k", "table_z_mm")},
         "config_path": config_path,
         "scenes_dir": scenes_dir,

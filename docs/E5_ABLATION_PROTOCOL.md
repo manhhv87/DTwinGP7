@@ -118,8 +118,8 @@ done
 
 `--val-frac 0` giữ đủ 3000 ảnh cho **training**; dùng validation ảnh thật đã khóa
 trong bước đóng gói huấn luyện. Không train trực tiếp bằng `dataset.yaml` vừa tạo
-với synthetic validation rỗng. Mặc định `--val-frac 0.1` sẽ chỉ còn 2700 training
-images, không đúng ngân sách 3000 ảnh training. Xác nhận đủ 3000 ảnh và nhãn mỗi
+với synthetic validation rỗng. `--val-frac` mặc định là 0 (một tỷ lệ khác 0, ví dụ 0,1,
+chỉ còn 2700 training images, không đúng ngân sách 3000 ảnh training). Xác nhận đủ 3000 ảnh và nhãn mỗi
 nhánh, `skipped = 0`; nếu render/conversion lỗi thì sửa hoặc hoàn tất các scene
 thiếu, không âm thầm giảm ngân sách một nhánh. Giữ toàn bộ ảnh thật training giống
 nhau giữa sáu nhánh; validation/test không được đưa vào training.

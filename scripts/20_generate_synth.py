@@ -17,9 +17,9 @@ Three-step flow (rendering runs in the blenderproc env, NOT the repo venv):
      but for the session lighting the report's allocation names, so that both arms
      render the same light and exposure distributions):
        python scripts/20_generate_synth.py --from-failures results/failure_modes.json \
-           --out data/synth/loop_k1 --seed 10000
+           --kappa 2 --out data/synth/loop_k1 --seed 10000
        python scripts/20_generate_synth.py --control-for results/failure_modes.json \
-           --out data/synth/control_k1 --seed 20000
+           --kappa 2 --out data/synth/control_k1 --seed 20000
      E5 single-factor intervention (same seed/index as the full anchored recipe):
        python scripts/20_generate_synth.py --mode anchored --ablation camera \
            --kappa 2 --n 3000 --seed 0 --out data/synth/e5_camera
@@ -32,8 +32,8 @@ Three-step flow (rendering runs in the blenderproc env, NOT the repo venv):
        python scripts/20_generate_synth.py --make-labels --out data/synth/anchored_k2 \
            --val-frac 0
 
-For paper training budgets use --val-frac 0 and the separately locked real
-validation set. Scene i of a run draws from SeedSequence([seed, i]): a batch with
+Paper training budgets use --val-frac 0 (the default) and the separately locked
+real validation set. --kappa has no default and is required for anchored scenes. Scene i of a run draws from SeedSequence([seed, i]): a batch with
 another seed shares no scene with this one, whatever its index range, while one
 seed reused must not reuse an index range. Give every batch its own seed.
 --from-failures and --control-for take the seed and scene count that the report's
@@ -70,8 +70,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--ablation", choices=ABLATION_FACTORS, default="none",
                         help="E5: fix/remove one factor of the unconditional anchored "
                              "recipe; see docs/E5_ABLATION_PROTOCOL.md")
-    parser.add_argument("--kappa", type=float, default=2.0,
-                        help="Width multiplier of Eq. (1); E3 selects among {1,2,4}")
+    parser.add_argument("--kappa", type=float, default=None,
+                        help="Width multiplier of Eq. (1); E3 selects among {1,2,4}, E4 and E5 "
+                             "use the selected one. Required for anchored scenes (also with "
+                             "--ablation, --from-failures, --control-for): there is no default, "
+                             "so a forgotten kappa cannot fill a batch with kappa 2")
     parser.add_argument("--n", type=int, default=None,
                         help="Number of scenes (default 3000; with a failure report, "
                              "the count its plan checked)")
@@ -101,9 +104,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                              "with the control seed its plan checked")
     parser.add_argument("--make-labels", action="store_true",
                         help="Convert <out>/render → <out>/dataset (after step 2)")
-    parser.add_argument("--val-frac", type=float, default=0.1,
-                        help="Synthetic validation fraction (default 0.1); use 0 for "
-                             "paper training budgets with separate real validation")
+    parser.add_argument("--val-frac", type=float, default=0.0,
+                        help="Synthetic validation fraction (default 0: every paper budget "
+                             "trains on all frames and validates on real images only)")
     args = parser.parse_args(argv)
     if args.ablation != "none":
         if args.mode != "anchored":
@@ -118,6 +121,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         parser.error("--control-for samples anchored scenes")
     if not 0.0 <= args.val_frac < 1.0:
         parser.error("--val-frac must be in [0, 1)")
+    # --from-failures always samples anchored scenes, whatever --mode says.
+    if not args.make_labels and (args.mode == "anchored" or args.from_failures) and args.kappa is None:
+        parser.error("--kappa is required for anchored scenes (E3: 1, 2 or 4; E4 and E5: the kappa "
+                     "selected in E3, results/selection/e3_kappa.json)")
+    if args.kappa is not None and args.kappa <= 0:
+        parser.error("--kappa must be positive")
     return args
 
 
@@ -246,7 +255,9 @@ def main(argv: list[str] | None = None) -> int:
             start += n_img
         total = start
     else:
-        sampler = SceneSampler(config, T_BC, mode=args.mode, kappa=args.kappa,
+        # Blind sampling ignores kappa (its manifest records none).
+        sampler = SceneSampler(config, T_BC, mode=args.mode,
+                               kappa=1.0 if args.kappa is None else args.kappa,
                                sigma=sigma, seed=seed, ablation=args.ablation)
         # The control batch renders the session's lighting, as the guided arm does,
         # and nothing else of the failure bins.
