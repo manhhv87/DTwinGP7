@@ -305,7 +305,8 @@ exposure:
 
 render:
   # Mọi lô của mọi nhánh render bằng CÙNG thiết lập này; render_manifest.json ghi lại, và
-  # gói huấn luyện phải từ chối hai nhánh khác nhau ở đây (hard_profile.check_arms_match).
+  # hai nhánh khác nhau ở đây không được so với nhau (hard_profile.check_arms_match: trong một gói và
+  # giữa hai nhánh E4 khi đóng gói; các nhánh E3, E5 bằng scripts/check_render_arms.py).
   # 24 mẫu/px như docs/HUONG_DAN_HUAN_LUYEN.md (16-28 s/ảnh trên MX150); --samples chỉ để
   # chạy thử, vì số mẫu thực dùng được ghi vào manifest.
   samples: 24

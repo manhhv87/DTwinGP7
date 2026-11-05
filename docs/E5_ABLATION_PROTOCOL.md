@@ -79,7 +79,7 @@ Giữ phiên bản Blender/BlenderProc, số samples/px, render device và cài 
 giống nhau. Số samples/px và các cài đặt renderer lấy từ mục `render` của
 `config/synthgen.yaml` (24 mẫu, như E3); renderer ghi chúng, thiết bị, phiên bản và hash
 của profile điều kiện khó vào `render_manifest.json` của mỗi thư mục render, từ chối lô
-khác thiết lập trong cùng thư mục, và `hard_profile.check_arms_match` so các nhánh. Chọn `kappa`, anchor và protocol pose
+khác thiết lập trong cùng thư mục. Sáu nhánh đóng gói riêng từng nhánh, nên chúng được so bằng `scripts/check_render_arms.py` (gọi `hard_profile.check_arms_match`; thiết bị ghi tên từng GPU và CPU đã dùng) trước khi đóng gói. Chọn `kappa`, anchor và protocol pose
 trước khi xem điểm trên tập đánh giá cuối cùng. Giá trị fallback/proxy trong
 checkout hiện tại chưa tự trở thành calibration thật chỉ vì sampler chạy được.
 
