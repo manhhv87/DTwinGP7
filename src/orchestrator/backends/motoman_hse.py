@@ -40,10 +40,12 @@ from .hse_protocol import (
     Command,
     DataType,
     HSEDecodeError,
+    POSITION_INSTANCE_R1_CARTESIAN,
     HSEResponse,
     HSERequest,
     Service,
     encode_cartesian_position,
+    parse_cartesian_position_response,
     parse_position_response,
     pulse_to_deg,
 )
@@ -362,6 +364,19 @@ class MotomanHSEBackend:
         )
         parsed = parse_position_response(resp.payload)
         return pulse_to_deg(parsed["joints_raw"])
+
+    def read_cartesian(self) -> dict:
+        """Read the tool centre point of R1 as the controller reports it (READ-ONLY).
+
+        READ_POSITION (0x75) instance 101: the Cartesian value in the robot BASE
+        frame, of the tool whose number the reply carries. Returns the dict of
+        `parse_cartesian_position_response` (xyz_mm, rxyz_deg, tool_no, form, ...).
+        """
+        resp = self._send_request(
+            Command.READ_POSITION, instance=POSITION_INSTANCE_R1_CARTESIAN,
+            service=Service.GET_ATTRIBUTE_ALL,
+        )
+        return parse_cartesian_position_response(resp.payload)
 
     def JointsHome(self) -> list[float]:
         """Home joints — set via config from Orchestrator (cell_layout.yaml)."""
