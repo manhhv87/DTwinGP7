@@ -62,9 +62,11 @@ python -m venv .venv
 pip install -r requirements.txt
 ```
 
-Máy đang ở nhánh `fix/b3-review` (các buổi đến e2kho-2 ngày 03/11/2026) chuyển sang `main` một lần,
-trước buổi e3-1. Nhánh `main` từ ngày 06/11/2026 gồm toàn bộ mã của `fix/b3-review` cùng mã sinh ảnh
-tổng hợp. Các lệnh dưới giống khối sửa lỗi `git pull` ở dưới, nên các số đã sửa ở máy vẫn được giữ:
+Máy đã lấy mã trước ngày 06/11/2026 (nhánh `fix/b3-review` của các buổi đến e2kho-2 ngày 03/11/2026,
+hoặc nhánh `main` cũ) chuyển sang `main` mới một lần, trước buổi e3-1. Nhánh `main` từ ngày 06/11/2026
+gồm toàn bộ mã của `fix/b3-review` cùng mã sinh ảnh tổng hợp; lịch sử git của nó đã được viết lại nên
+`git pull` đơn thuần không dùng được cho lần chuyển này. Các lệnh dưới giữ các số đã sửa ở máy như khối
+sửa lỗi `git pull` ở dưới:
 
 ```
 cd DTwinGP7
@@ -72,8 +74,7 @@ cd DTwinGP7
 git fetch origin
 git checkout -- config/calibration/
 git stash
-git checkout main
-git pull
+git checkout -B main origin/main
 git stash pop
 ```
 
@@ -105,7 +106,7 @@ pytest tests/ -q
 python scripts/03_run_experiment.py --mode sim --headless --trials 5
 ```
 
-**Đạt khi:** `git branch --show-current` in `main`; `git log -1` hiện mã `682dea2` hoặc một mã mới hơn; dòng cuối của `pytest` không có
+**Đạt khi:** `git branch --show-current` in `main`; `git log -1` hiện mã `972fc39` hoặc một mã mới hơn; dòng cuối của `pytest` không có
 chữ `failed` (một bài `skipped` là bình thường: bài đó cần PyMuPDF, không có trong
 `requirements.txt`); lệnh thứ ba tạo một file mới `results\experiment_headless_*.csv` (tỷ lệ `0.0%` ở lệnh
 này là bình thường). Một bài test đo nhịp thời gian thỉnh thoảng trượt khi máy bận: hỏng đúng một
