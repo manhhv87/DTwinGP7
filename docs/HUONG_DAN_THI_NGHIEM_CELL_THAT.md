@@ -55,12 +55,29 @@ DỪNG.
 Máy cần Python 3.10 trở lên và Git. Lần đầu:
 
 ```
-git clone -b fix/b3-review https://github.com/manhhv87/DTwinGP7.git
+git clone -b main https://github.com/manhhv87/DTwinGP7.git
 cd DTwinGP7
 python -m venv .venv
 .venv\Scripts\activate
 pip install -r requirements.txt
 ```
+
+Máy đang ở nhánh `fix/b3-review` (các buổi đến e2kho-2 ngày 03/11/2026) chuyển sang `main` một lần,
+trước buổi e3-1. Nhánh `main` từ ngày 06/11/2026 gồm toàn bộ mã của `fix/b3-review` cùng mã sinh ảnh
+tổng hợp. Các lệnh dưới giống khối sửa lỗi `git pull` ở dưới, nên các số đã sửa ở máy vẫn được giữ:
+
+```
+cd DTwinGP7
+.venv\Scripts\activate
+git fetch origin
+git checkout -- config/calibration/
+git stash
+git checkout main
+git pull
+git stash pop
+```
+
+**Đạt khi:** `git branch --show-current` in `main`.
 
 Những lần sau:
 
@@ -88,7 +105,7 @@ pytest tests/ -q
 python scripts/03_run_experiment.py --mode sim --headless --trials 5
 ```
 
-**Đạt khi:** `git log -1` hiện mã `4468f8d` hoặc một mã mới hơn; dòng cuối của `pytest` không có
+**Đạt khi:** `git branch --show-current` in `main`; `git log -1` hiện mã `682dea2` hoặc một mã mới hơn; dòng cuối của `pytest` không có
 chữ `failed` (một bài `skipped` là bình thường: bài đó cần PyMuPDF, không có trong
 `requirements.txt`); lệnh thứ ba tạo một file mới `results\experiment_headless_*.csv` (tỷ lệ `0.0%` ở lệnh
 này là bình thường). Một bài test đo nhịp thời gian thỉnh thoảng trượt khi máy bận: hỏng đúng một
