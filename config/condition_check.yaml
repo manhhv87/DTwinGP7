@@ -1,0 +1,39 @@
+# Kiem dieu kien anh truoc buoi (scripts/29_check_condition.py, src/perception/condition_check.py).
+# Trung binh 10 khung cua camera cell sau 5 giay on dinh phoi sang, ban de nhu se chay nhung khong co vat.
+#
+# Vung anh tinh bang pixel tren khung 1280x720 cua camera co dinh (A2 kiem camera con dung cho):
+# nua tren va nua duoi cua mat ban trong anh, nhu tren hai anh mau dieu kien kho (chi co mot ban;
+# hai nua ngan boi duong noi giua anh); bo the vi tri o nua tren khong tinh, vi anh tham chieu chup
+# truoc khi dan the.
+upper_area: [230, 1080, 30, 455]    # x0, x1, y0, y1
+lower_area: [230, 1080, 495, 700]
+cards: [430, 845, 220, 400]
+
+# Dieu kien kho = nen xanh la phu kin ban + thieu sang, dung bo anh novelbg_dim (110 anh,
+# 27/08/2026) ma detector duoc danh gia. Do tren o vuong block_px (tb khoang 1000 diem anh),
+# khong do tung diem anh: o do sang nay mau cua mot diem chu yeu la nhieu, ket qua nhay giua
+# cac lan chay (02/11/2026).
+#
+# min_green_share = nguong trung vi G/(R+G+B) moi phan.
+#   Nua tren (noi dat vat): 0,38. Bo tham chieu 0,388 den 0,473 khi con vat tren ban, 0,410
+#   den 0,493 khi bo vat theo do sau.
+#   Nua duoi: 0,345. Bo tham chieu 0,415 den 0,490, nhung vat khong dat o day; ngay 02/11/2026
+#   be mat phia duoi vach den do 0,355 ngay duoi vach, phia tren 0,401 ngay tren vach: buoc nhay
+#   gon o vach, du hai phia cung loai tam nen va chinh den lam ca hai phia cung tang; nguyen
+#   nhan chua ro. Nguong nay chi xac nhan co sac xanh (xam trung tinh la 0,333); ban trang duoc
+#   phat hien bang bare_*, khong bang mau.
+# luminance = do sang trung vi moi phan. Tham chieu 11,0 den 42,6 (tinh bang ma nay tren 110 anh).
+# bare_* = o duoc tinh la ban tran khi sang hon bare_relative_brightness lan do sang the trang
+#   trong cung khung (khong phu thuoc phoi sang); ngay 29/10/2026 phan ban tran sang 1,14 lan
+#   the, tam nen 0,17 lan; ngay 02/11/2026 tam nen 0,20 va 0,24 lan.
+#
+# Kiem lai: ca 110 anh tham chieu dat mau va do sang, ke ca khi con vat tren ban; 345 anh nen xanh
+# du sang, 2010 anh chuan, 220 anh den xien, 28 anh ban trong deu truot. 229 trong 811 anh thieu
+# sang nen thuong dat mau va do sang: cac anh ay khong co the nen chi bare_* moi loai duoc, va
+# bare_* moi kiem tren mot khung that (29/10/2026).
+hard:
+  block_px: 32
+  min_green_share: {upper_area: 0.38, lower_area: 0.345}
+  luminance: [10.0, 45.0]
+  bare_relative_brightness: 0.5
+  max_bare_share: 0.05

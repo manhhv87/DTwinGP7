@@ -54,6 +54,8 @@ def _bare_orch(trial_logger, hook):
     o.session_id = o.block_id = o.operator_id = ""
     o.sm = SimpleNamespace(state=SimpleNamespace(value="done"))
     o.human_score_hook = hook
+    o._last_support_height_mm = 0.0
+    o._last_place_z_mm = None
     return o
 
 
@@ -134,6 +136,22 @@ class TestScoreCol:
         df = pd.DataFrame({"success": [1, 1], "human_ok": ["yes", "maybe"]})
         assert mod._apply_score_col(log, df, "human_ok", "x") is None
 
+    def test_blank_on_a_machine_failure_scores_zero(self):
+        """A trial refused before motion has no verdict and completed nothing."""
+        import pandas as pd
+        mod = _analyze_mod()
+        df = pd.DataFrame({"success": [1, 0], "human_ok": [1, None]})
+        out = mod._apply_score_col(log, df, "human_ok", "x")
+        assert list(out["success"]) == [1, 0]
+
+    def test_float_encoded_verdicts(self):
+        """A column with a blank is read as float: 1 arrives as 1.0."""
+        import pandas as pd
+        mod = _analyze_mod()
+        df = pd.DataFrame({"success": [1, 0, 1], "human_ok": [1.0, None, 0.0]})
+        out = mod._apply_score_col(log, df, "human_ok", "x")
+        assert list(out["success"]) == [1, 0, 0]
+
 
 class TestSplitCol:
     """A blinded campaign writes one CSV per block, so the arm is a column."""
@@ -184,6 +202,37 @@ class TestSplitCol:
                 "--score-col", "human_ok", "--out", str(tmp_path / "fig.png")]
         monkeypatch.setattr(sys, "argv", argv)
         assert mod.main() == 0
+
+
+class TestPlacementColumns:
+    """Rows written by the placement check of 03 (see test_placement_cycle.py)."""
+
+    def test_a_run_stopped_at_the_check_is_no_outcome(self):
+        import pandas as pd
+        mod = _analyze_mod()
+        df = pd.DataFrame({"pose_id": ["P1", "P2", "P2"],
+                           "failure_reason": ["", "aborted_at_check", ""],
+                           "success": [1, 0, 1]})
+        out = mod._drop_aborted(log, df, "x")
+        assert list(out["pose_id"]) == ["P1", "P2"] and list(out["success"]) == [1, 1]
+        assert mod._drop_aborted(log, df.drop(columns="failure_reason"), "x") is not None
+
+    def test_the_check_is_summarised_per_arm(self):
+        import pandas as pd
+        mod = _analyze_mod()
+        df = pd.DataFrame({
+            "depth_mode": ["rgbd", "rgbd", "plane", "plane", "plane"],
+            "placement_events": ["none:clear", "stack:fixed;none:clear", "noframe:skip",
+                                 "position:fixed;position:fixed;position:limit", ""],
+            "placement_flags": ["", "stack", "", "position", ""],
+            "placement_recaptures": [0, 1, 0, 2, None],
+            "placement_override": [0, 0, 0, 1, None]})
+        table = mod._placement_table(df, "depth_mode")
+        assert table.loc["rgbd"].to_dict() == {"checked": 2, "flagged": 1,
+                                                "fixed": 1, "limit": 0}
+        assert table.loc["plane"].to_dict() == {"checked": 2, "flagged": 1,
+                                                 "fixed": 1, "limit": 1}
+        assert mod._placement_table(df.drop(columns="placement_events"), None) is None
 
 
 if __name__ == "__main__":

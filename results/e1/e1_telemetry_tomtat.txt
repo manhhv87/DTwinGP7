@@ -1,0 +1,31 @@
+Auto-pick latest: telemetry_20261006_152206.csv
+Loading: C:\Users\admin\DTwinGP7_NEW\DTwinGP7_REMOTE_CLEAN\results\telemetry_20261006_152206.csv
+Saving figures:
+  â†’ C:\Users\admin\DTwinGP7_NEW\DTwinGP7_REMOTE_CLEAN\figures\joint_trajectory_20261006_152206.png
+  â†’ C:\Users\admin\DTwinGP7_NEW\DTwinGP7_REMOTE_CLEAN\figures\joint_velocity_20261006_152206.png
+  â†’ C:\Users\admin\DTwinGP7_NEW\DTwinGP7_REMOTE_CLEAN\figures\drift_events_20261006_152206.png
+  â†’ C:\Users\admin\DTwinGP7_NEW\DTwinGP7_REMOTE_CLEAN\figures\cycle_time_20261006_152206.png
+
+â”€â”€â”€ Summary â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  Telemetry rows:   8935
+  Duration:         1070.8s
+  Sample rate:      8.3 Hz
+
+  Joint range (min..max, Â° per axis):
+    J1 (S):  -85.79 ..   16.05  (span 101.84)
+    J2 (L):  -10.28 ..   21.42  (span  31.70)
+    J3 (U):  -22.46 ..   33.20  (span  55.66)
+    J4 (R):   -0.00 ..    0.00  (span   0.00)
+    J5 (B): -102.17 ..  -59.73  (span  42.44)
+    J6 (T):   10.53 ..  181.76  (span 171.23)
+
+  Max joint velocity (Â°/s per axis):
+    J1 (S): 58.92
+    J2 (L): 17.72
+    J3 (U): 33.11
+    J4 (R): 0.01
+    J5 (B): 19.61
+    J6 (T): 57.05
+
+  Cycles detected:  126
+  Cycle time:       8.35s mean, 4.14s median

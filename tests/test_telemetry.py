@@ -34,6 +34,16 @@ class TestTelemetryLogger:
         assert row[7] == "1"                        # running
         assert row[8] == "0"                        # alarm
 
+    def test_the_perf_counter_instant_of_the_read_is_kept(self, tmp_path):
+        """t_perf lines the joint read up with the stage timings of the trial rows."""
+        with TelemetryLogger(tmp_path / "tel.csv") as log:
+            log.log_state([1, 2, 3, 4, 5, 6], t_perf=1234.5678901)
+            log.log_state([1, 2, 3, 4, 5, 6])
+        with (tmp_path / "tel.csv").open() as f:
+            rows = list(csv.reader(f))
+        assert rows[0][-1] == "t_perf"
+        assert rows[1][9] == "1234.567890" and rows[2][9] == ""
+
     def test_log_state_wrong_joint_count_skipped(self, tmp_path):
         with TelemetryLogger(tmp_path / "tel.csv") as log:
             log.log_state([1, 2, 3])                # 3 ≠ 6

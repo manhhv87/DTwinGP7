@@ -168,6 +168,20 @@ class TestMirrorThread:
         telemetry.close.assert_called_once()
         assert telemetry.log_state.call_count >= 3
 
+    def test_mirror_stamps_each_row_with_the_reads_own_exchange(self, mock_hse, viewport_cb):
+        """t_perf is the middle of the joint read's exchange (the backend's per-thread
+        last_exchange), on the clock of the trial rows' stage timings."""
+        telemetry = MagicMock()
+        mock_hse.last_exchange = MagicMock(return_value=(500.0, 500.0104))
+        twin = DigitalTwinMirror(
+            mock_hse, viewport_callback=viewport_cb, telemetry=telemetry,
+            telemetry_hz=50.0, mirror_hz=50.0,
+        )
+        twin.start_mirror()
+        time.sleep(0.15)
+        twin.stop_mirror()
+        assert telemetry.log_state.call_args.kwargs["t_perf"] == pytest.approx(500.0052)
+
     def test_stop_mirror_joins_thread(self, mock_hse, viewport_cb):
         twin = DigitalTwinMirror(mock_hse, viewport_callback=viewport_cb, telemetry_hz=20.0, mirror_hz=20.0)
         twin.start_mirror()
@@ -267,14 +281,20 @@ class TestDecoupledRates:
             telemetry_hz=100.0,                            # rất cao
             alarm_poll_period_s=0.1,                       # 10/sec
         )
+        t0 = time.monotonic()
         twin.start_mirror()
         time.sleep(0.35)                                   # ~3 alarm polls expected
         twin.stop_mirror()
-        # ~3-4 alarm polls (so với joint polls ~35) — verify alarm dùng time-based.
+        elapsed = time.monotonic() - t0
         # Trừ 1 lần poll ĐỒNG BỘ lúc start_mirror (refresh alarm state, #7).
         alarm_calls = mock_hse.read_alarm.call_count - 1
         joints_calls = mock_hse.Joints.call_count
-        assert alarm_calls < joints_calls / 5             # alarm thưa hơn joint nhiều
+        # Time-based: không quá một lần mỗi chu kỳ 0,1 s (cộng một lần ở biên chu kỳ).
+        # Không so với một tỉ lệ joint cố định: trên Windows vòng lặp 100 Hz chỉ đạt
+        # khoảng 57 Hz (bước timer ~15,6 ms), máy cell 29/10/2026 đo 20 joint / 4 alarm,
+        # đúng biên của phép so cũ alarm < joints / 5. Poll theo tick thì alarm = joints.
+        assert alarm_calls <= elapsed / 0.1 + 1
+        assert alarm_calls < joints_calls / 2
 
 
 class TestAlarmAutoPoll:

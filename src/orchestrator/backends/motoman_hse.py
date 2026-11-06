@@ -30,6 +30,7 @@ import ftplib
 import io
 import logging
 import socket
+import os
 import struct
 import threading
 import time
@@ -39,10 +40,12 @@ from .hse_protocol import (
     Command,
     DataType,
     HSEDecodeError,
+    POSITION_INSTANCE_R1_CARTESIAN,
     HSEResponse,
     HSERequest,
     Service,
     encode_cartesian_position,
+    parse_cartesian_position_response,
     parse_position_response,
     pulse_to_deg,
 )
@@ -130,16 +133,41 @@ class MotomanHSEBackend:
         self._sock: socket.socket | None = None
         self._request_id = request_id_seed % 256
         self._lock = threading.Lock()       # request_id ++ must be atomic
+        # Per-thread record of the exchanges each thread made (_exchanges), so the
+        # mirror's polling never touches the orchestrator's timing of a job.
+        self._tls = threading.local()
         # Cache for JointsHome — set via config from orchestrator
         self._home_joints: list[float] = [0.0] * 6
         # FTP credentials for job upload (YRC1000 defaults to "" / "")
-        self.ftp_user = ftp_user
-        self.ftp_pass = ftp_pass
+        self.ftp_user = ftp_user or os.getenv("YRC_FTP_USER", "")
+        self.ftp_pass = ftp_pass or os.getenv("YRC_FTP_PASS", "")
         self.ftp_job_dir = ftp_job_dir
         # Safety + naming
         self.max_speed_pct = max_speed_pct
-        self.job_name_prefix = job_name_prefix
+
+        # Give every Python session its own YRC1000 JOB namespace.
+        # This avoids collisions with DTWIN jobs that may still be
+        # selected/current on the controller from an earlier run.
+        #
+        # Example:
+        #   DTWIN2609281530280001
+        #   DTWIN2609281530280002
+        #
+        # yy mm dd HH MM SS + 4-digit counter
+        _session_tag = time.strftime("%y%m%d%H%M%S")
+        _base_prefix = str(job_name_prefix).upper().strip() or "DTWIN"
+
+        # Keep generated INFORM names comfortably below YRC1000 name limits.
+        _base_prefix = _base_prefix[:8]
+
+        self.job_name_prefix = f"{_base_prefix}{_session_tag}"
         self._job_counter = 0
+
+        logger.info(
+            "Legacy JOB prefix (unused by direct YRC Cartesian path): %s",
+            self.job_name_prefix,
+        )
+
         self.wait_completion_timeout_s = wait_completion_timeout_s
         # Bounded window for _wait_idle to confirm a started job asserted its
         # Running bit before polling for completion (job_start() returns on the
@@ -227,6 +255,7 @@ class MotomanHSEBackend:
                 service=service, payload=payload, request_id=request_id,
             )
             packet = req.encode()
+            t_send = time.perf_counter()
             self._sock.sendto(packet, (self.ip, self.port))
 
             try:
@@ -236,10 +265,12 @@ class MotomanHSEBackend:
                 # request, so a stale reply can't be mis-read as the answer to
                 # the NEXT request (UDP keeps it buffered otherwise).
                 self._drain_socket()
+                self._exchanges().timeouts += 1
                 raise TimeoutError(
                     f"HSE request 0x{command:02X} timeout {self.timeout_s}s — "
                     f"YRC1000 not responding. Check ping + HSE Server function."
                 ) from e
+            t_recv = time.perf_counter()
 
         try:
             resp = HSEResponse.decode(raw)
@@ -247,16 +278,52 @@ class MotomanHSEBackend:
             logger.error("HSE response decode error, raw bytes: %s", raw.hex())
             raise
 
+        rec = self._exchanges()
+        rec.last = (t_send, t_recv)
         # NOTE: request_id is WARNED on but NOT enforced — the YRC1000 does not
         # reliably echo it, so discarding mismatches would drop valid replies. The
         # _drain_socket() on the timeout path is the actual stale-datagram guard.
         if resp.request_id != request_id:
+            rec.mismatches += 1
             logger.warning(
                 "HSE request_id mismatch: sent=%d got=%d", request_id, resp.request_id
             )
 
         resp.raise_for_status()
         return resp
+
+    def _exchanges(self) -> threading.local:
+        """The calling thread's record of its HSE exchanges: last, the
+        perf_counter instants just before sendto and just after recvfrom of its
+        latest one, taken inside the lock so waiting for another thread's exchange
+        does not enter; status, (running, hold, last) of its latest READ_STATUS;
+        timeouts and mismatches, counts of timed-out requests and request_id
+        mismatches; job, the end of the last job it waited for (_wait_idle)."""
+        tls = self.__dict__.get("_tls")
+        if tls is None:                          # a backend built without __init__
+            tls = self._tls = threading.local()
+        if not hasattr(tls, "timeouts"):
+            tls.last, tls.status, tls.job = None, None, None
+            tls.timeouts = tls.mismatches = 0
+        return tls
+
+    def last_exchange(self) -> tuple[float, float] | None:
+        """Send and receive instants (perf_counter) of the calling thread's latest
+        HSE exchange, or None."""
+        return self._exchanges().last
+
+    def last_job_timing(self) -> dict | None:
+        """The end of the last job the calling thread waited for, from the status
+        reads _wait_idle made, or None. Keys: lo and hi, the send of the last read
+        that saw the job running or held and the receipt of the first that saw it
+        over, between which Running cleared; end, the middle of those two
+        exchanges' midpoints, or None when no bracket could be formed; flags,
+        held (a HOLD during the job), race (the read that ended the wait showed a
+        hold its follow-up did not, so the job may have resumed), untimed (a read
+        of the bracket carried no instants), timeout, mismatch and error (a
+        timed-out request, a request_id mismatch, or another failed read during
+        the job)."""
+        return self._exchanges().job
 
     def _drain_socket(self) -> None:
         """Discard any datagrams currently buffered on the socket — e.g. a late
@@ -297,6 +364,19 @@ class MotomanHSEBackend:
         )
         parsed = parse_position_response(resp.payload)
         return pulse_to_deg(parsed["joints_raw"])
+
+    def read_cartesian(self) -> dict:
+        """Read the tool centre point of R1 as the controller reports it (READ-ONLY).
+
+        READ_POSITION (0x75) instance 101: the Cartesian value in the robot BASE
+        frame, of the tool whose number the reply carries. Returns the dict of
+        `parse_cartesian_position_response` (xyz_mm, rxyz_deg, tool_no, form, ...).
+        """
+        resp = self._send_request(
+            Command.READ_POSITION, instance=POSITION_INSTANCE_R1_CARTESIAN,
+            service=Service.GET_ATTRIBUTE_ALL,
+        )
+        return parse_cartesian_position_response(resp.payload)
 
     def JointsHome(self) -> list[float]:
         """Home joints — set via config from Orchestrator (cell_layout.yaml)."""
@@ -415,36 +495,124 @@ class MotomanHSEBackend:
         logger.debug("JOB_SELECT '%s'", job_name)
 
     def job_start(self) -> None:
-        """START (0x86): execute current job. Robot must have servo on + REMOTE mode.
+        """START selected JOB only when the real controller is motion-ready."""
 
-        Refuses to START while halted (Stop() latched _halted) — the central gate
-        for every job-based motion path (MoveJ/MoveL/_move_pose/batch/ultra-fast).
-        Cleared by servo_on()."""
         if self._halted:
-            raise MotionHaltedError("START refused — motion halted (call servo_on to resume)")
+            raise MotionHaltedError(
+                "START refused — motion is halted; servo_on() must be called "
+                "after the operator clears the cell."
+            )
+
+        status = self.read_controller_status()
+
+        if status.get("running", False):
+            raise RuntimeError(
+                f"START refused — controller is already running a JOB: {status}"
+            )
+
+        if not status.get("remote", False):
+            raise RuntimeError(
+                f"START refused — YRC1000 is not in REMOTE mode: {status}"
+            )
+
+        if status.get("alarm", False):
+            raise RuntimeError(
+                f"START refused — YRC1000 has an active alarm: {status}"
+            )
+
+        if status.get("error", False):
+            raise RuntimeError(
+                f"START refused — YRC1000 reports controller error: {status}"
+            )
+
+        if status.get("hold", False):
+            raise RuntimeError(
+                f"START refused — YRC1000 HOLD is active: {status}"
+            )
+
+        if not status.get("servo", False):
+            raise RuntimeError(
+                f"START refused — YRC1000 servo is OFF: {status}"
+            )
+
         self._send_request(
-            Command.START, instance=1, attribute=1,
+            Command.START,
+            instance=1,
+            attribute=1,
             service=Service.SET_ATTRIBUTE_SINGLE,
-            payload=struct.pack("<I", 1),       # 1 = start
+            payload=struct.pack("<I", 1),
         )
-        logger.debug("JOB_START")
+
+        logger.info("JOB_START accepted — REMOTE + SERVO ON verified")
 
     def servo_on(self) -> None:
-        """Turn servo power ON via HOLD_SERVO (0x83), instance 2 (servo-ON control),
-        data 1 = ON (mirror of Stop()'s 2 = OFF). Required before START in REMOTE
-        mode (the mode key switch on the TP must be set to REMOTE separately).
-
-        SAFETY/VERIFY: value/instance per Yaskawa HSE spec, not yet confirmed on
-        hardware — if START still fails after this, capture the controller error.
-        """
+        """Enable servo and VERIFY controller status before allowing motion."""
         self._send_request(
-            Command.HOLD_SERVO, instance=2, attribute=1,
+            Command.HOLD_SERVO,
+            instance=2,
+            attribute=1,
             service=Service.SET_ATTRIBUTE_SINGLE,
-            payload=struct.pack("<I", 1),       # 1 = servo ON
+            payload=struct.pack("<I", 1),   # 1 = servo ON
         )
-        self._halted = False                    # resuming → clear the halt latch
-        logger.info("HSE servo ON sent to YRC1000")
 
+        deadline = time.monotonic() + 1.5
+        last_status = None
+
+        while time.monotonic() < deadline:
+            last_status = self.read_controller_status()
+
+            if last_status.get("servo", False):
+                with self._halt_lock:
+                    self._halted = False
+
+                logger.info(
+                    "HSE servo ON verified — mode=%s alarm=%s error=%s hold=%s",
+                    last_status.get("mode"),
+                    last_status.get("alarm"),
+                    last_status.get("error"),
+                    last_status.get("hold"),
+                )
+                return
+
+            time.sleep(0.05)
+
+        raise RuntimeError(
+            f"SERVO ON command was sent but controller still reports servo OFF: "
+            f"{last_status}"
+        )
+    def servo_off(self) -> None:
+        """Disable servo and VERIFY controller status.
+
+        Used between physical trials so the operator can safely enter the cell.
+        """
+        # Block every pending START before sending servo OFF.
+        with self._halt_lock:
+            self._halted = True
+
+        self._send_request(
+            Command.HOLD_SERVO,
+            instance=2,
+            attribute=1,
+            service=Service.SET_ATTRIBUTE_SINGLE,
+            payload=struct.pack("<I", 2),   # 2 = servo OFF
+        )
+
+        deadline = time.monotonic() + 1.5
+        last_status = None
+
+        while time.monotonic() < deadline:
+            last_status = self.read_controller_status()
+
+            if not last_status.get("servo", True):
+                logger.info("HSE servo OFF verified")
+                return
+
+            time.sleep(0.05)
+
+        raise RuntimeError(
+            f"SERVO OFF command was sent but controller still reports servo ON: "
+            f"{last_status}"
+        )
     # ─── Direct real-time motion (RoboDK-style, NO job upload) ───
     # move_type instances (per Yaskawa HSE / fs100): 1 = joint absolute,
     # 2 = linear absolute, 3 = linear incremental. speed_class 0 = percent.
@@ -521,9 +689,12 @@ class MotomanHSEBackend:
         # "Running" is bit3 (0x08); the previous 0x02 read the 1-Cycle MODE flag,
         # so _wait_idle could mis-detect completion. If payload empty → idle.
         # NOTE: verify against the real controller — see Stop()'s caveat.
-        if not resp.payload:
-            return False
-        return bool(resp.payload[0] & 0x08)
+        p = resp.payload or b""
+        running = bool(p[0] & 0x08) if p else False
+        rec = self._exchanges()
+        # The hold bits of this same reply (Data2 bits 1-3), for timing the job.
+        rec.status = (running, bool(p[4] & 0x0E) if len(p) >= 5 else False, rec.last)
+        return running
 
     def read_controller_status(self) -> dict:
         """READ_STATUS (0x72) decoded into operation mode / cycle / servo / alarm.
@@ -539,6 +710,8 @@ class MotomanHSEBackend:
         p = resp.payload or b""
         d1 = p[0] if len(p) >= 1 else 0
         d2 = p[4] if len(p) >= 5 else 0
+        rec = self._exchanges()
+        rec.status = (bool(d1 & 0x08), bool(d2 & 0x0E), rec.last)
         remote, play, teach = bool(d1 & 0x80), bool(d1 & 0x40), bool(d1 & 0x20)
         return {
             "data1": d1, "data2": d2,
@@ -696,9 +869,22 @@ class MotomanHSEBackend:
         otherwise drive the gripper / next move blind). start_confirm_timeout_s
         MUST exceed the controller's worst-case START→Running latency; the default
         is generous and Phase 1 breaks as soon as Running is seen. Setting it to 0
-        skips Phase 1 (unit tests only — no real start latency to cover)."""
+        skips Phase 1 (unit tests only — no real start latency to cover).
+
+        It also times the job's end (last_job_timing) from the reads it makes
+        anyway: Running clears between the last read that saw the job running or
+        held (L) and the first whose own reply shows it neither (U). The end is
+        taken as the middle of the two exchanges' midpoints, so the poll interval
+        and the alarm and HOME reads after U do not run into it. Nothing is sent
+        that was not sent before."""
         total = timeout_s or self.wait_completion_timeout_s
         deadline = time.monotonic() + total
+        rec = self._exchanges()
+        rec.job = None
+        counts0 = (rec.timeouts, rec.mismatches)
+        in_job = None                       # L: the last read showing Running or a hold
+        held = False
+        errors = 0                          # failed reads other than timeouts
         # Phase 1 — confirm the job actually STARTED (Running asserted).
         confirm = min(self.start_confirm_timeout_s, total)
         if confirm > 0:
@@ -706,10 +892,16 @@ class MotomanHSEBackend:
             running_seen = False
             while time.monotonic() < confirm_deadline:
                 try:
-                    if self.read_status_running():
+                    rec.status = None
+                    running = self.read_status_running()
+                    if rec.status is not None and rec.status[1]:
+                        held = True                 # a hold inside the start latency
+                    if running:
+                        in_job = rec.status
                         running_seen = True
                         break                        # started — go wait for it to finish
                 except Exception as e:              # noqa: BLE001
+                    errors += not isinstance(e, TimeoutError)
                     logger.warning("READ_STATUS error while confirming start: %s", e)
                 time.sleep(0.02)
             if not running_seen:
@@ -721,20 +913,69 @@ class MotomanHSEBackend:
                     f"Job did not start (Running not asserted within {confirm:.1f}s) "
                     f"— check REMOTE mode / servo ON / teach-pendant alarm.")
         # Phase 2 — wait for completion, then verify no alarm aborted the job.
+        # HOLD pauses a job without ending it: Running clears while the robot
+        # waits mid-job. On 20 Oct 2026 (B4, trial 14) the PC took the cycle as
+        # over with the robot held at the pick, and the robot finished the job
+        # afterwards. While a hold is on, keep waiting for the job to resume and
+        # end, or for the timeout.
+        held_logged = False
         while time.monotonic() < deadline:
             try:
-                if not self.read_status_running():
+                rec.status = None
+                running = self.read_status_running()
+                first = rec.status                   # this read's own reply
+                if first is not None and (first[0] or first[1]):
+                    in_job, held = first, held or first[1]
+                if not running:
+                    rec.status = None
+                    if self.read_controller_status().get("hold"):
+                        if rec.status is not None:
+                            in_job = rec.status
+                        held = True
+                        if not held_logged:
+                            logger.warning("Job on HOLD: waiting for it to resume "
+                                           "and finish")
+                            held_logged = True
+                        time.sleep(0.1)
+                        continue
+                    self._record_job_end(rec, in_job, first, held, counts0, errors)
                     self._raise_if_alarm()
                     return
             except RobotAlarmError:
                 raise
             except Exception as e:                  # noqa: BLE001
+                errors += not isinstance(e, TimeoutError)
                 logger.warning("READ_STATUS error while polling: %s", e)
             time.sleep(0.1)
         self._raise_if_alarm()                       # surface an alarm behind a timeout
         raise TimeoutError(
             f"Job did not complete within {total}s — check teach pendant / alarm."
         )
+
+    @staticmethod
+    def _record_job_end(rec, in_job, over, held: bool, counts0: tuple[int, int],
+                        errors: int = 0) -> None:
+        """Store last_job_timing from L (in_job) and U (over), each (running,
+        hold, (t_send, t_recv)) or None. A hold in U's own reply means the wait
+        ended on a follow-up read that saw none, so the job may have resumed: no
+        end then (race), and the trial is flagged rather than timed. errors counts
+        the reads that failed other than by a timeout (error)."""
+        flags = ["held"] if held else []
+        lo = hi = end = None
+        if over is not None and over[1]:
+            flags.append("race")
+        elif over is None or in_job is None or over[2] is None or in_job[2] is None:
+            flags.append("untimed")
+        else:
+            (ls, lr), (us, ur) = in_job[2], over[2]
+            lo, hi, end = ls, ur, 0.25 * (ls + lr + us + ur)
+        if rec.timeouts > counts0[0]:
+            flags.append("timeout")
+        if rec.mismatches > counts0[1]:
+            flags.append("mismatch")
+        if errors:
+            flags.append("error")
+        rec.job = {"lo": lo, "hi": hi, "end": end, "flags": flags}
 
     def _next_job_name(self) -> str:
         self._job_counter += 1
@@ -958,7 +1199,9 @@ class MotomanHSEBackend:
           - 4x4 matrix → Cartesian pose in BASE frame → P-variable BASE,
             YRC1000 computes IK internally
 
-        Non-batch: 1 INFORM upload + JOB_START + wait (200-300ms overhead).
+        Non-batch: one direct HSE MOVE packet, then wait for the controller to
+        assert and clear RUNNING. No job file is written, which removes the
+        200-300 ms of the former upload + JOB_START path.
         Batch (M3): appends instruction to batch builder (immediate return).
         Ultra-fast batch (M3++): appends to pvar buffer.
         """
@@ -974,18 +1217,11 @@ class MotomanHSEBackend:
             return
 
         joints = self._to_joint_list(target)
-        job_name = self._next_job_name()
-        job_text = (
-            InformJobBuilder(name=job_name, max_speed_pct=self.max_speed_pct)
-            .add_position("target", joints)
-            .comment(f"Auto-gen MoveJ #{self._job_counter}")
-            .movj("target")
-            .render()
+        self.move_joints(
+            joints,
+            speed_pct=float(self.max_speed_pct),
         )
-        self.upload_job(job_text, job_name)
-        self.job_select(job_name)
-        self.job_start()
-        self._wait_idle()
+        self._wait_direct_move_complete()
 
     def MoveL(self, target: Any) -> None:
         """Linear move — polymorphic like MoveJ (joints or 4x4 Cartesian)."""
@@ -1005,7 +1241,7 @@ class MotomanHSEBackend:
             InformJobBuilder(name=job_name, max_speed_pct=self.max_speed_pct)
             .add_position("target", joints)
             .comment(f"Auto-gen MoveL #{self._job_counter}")
-            .movl("target", speed_mm_s=80.0)
+            .movl("target", speed_mm_s=20.0)
             .render()
         )
         self.upload_job(job_text, job_name)
@@ -1013,64 +1249,348 @@ class MotomanHSEBackend:
         self.job_start()
         self._wait_idle()
 
-    def _move_pose(self, T_base: Any, kind: str) -> None:
-        """Single-shot Cartesian move via P-variable BASE + small INFORM job.
 
-        Workflow:
-          1. WRITE_POS_VAR P000 ← Cartesian pose (data_type=BASE)
-          2. Upload tiny INFORM job referencing P000 with MOVJ/MOVL
-          3. JOB_SELECT + START + wait_idle
+    def _wait_direct_move_complete(self, timeout_s: float | None = None) -> None:
+        # Wait for an HSE direct MOVE (0x8A/0x8B) to actually run and finish.
+        total = float(timeout_s or self.wait_completion_timeout_s)
+        deadline = time.monotonic() + total
+        confirm = min(float(self.start_confirm_timeout_s), total)
 
-        Same pattern as non-batch joint MoveJ but uses P-var instead of C-var.
-        In batch mode only joint targets are currently supported — Cartesian batch
-        is future work (requires INFORM template with BASE-typed P-vars).
-        """
-        if self._batch_builder is not None or self._pvar_batch_buffer is not None:
-            raise NotImplementedError(
-                "Cartesian MoveJ/MoveL inside a batch context is not yet supported. "
-                "Call outside batch or use joint path."
+        # A non-positive confirm window disables the start check, matching
+        # _wait_idle. Unit tests set it to 0 because their mock never asserts
+        # RUNNING; real hardware keeps the 3 s default.
+        running_seen = confirm <= 0.0
+        confirm_deadline = time.monotonic() + confirm
+
+        while not running_seen and time.monotonic() < confirm_deadline:
+            st = self.read_controller_status()
+
+            if st["alarm"]:
+                self._raise_if_alarm()
+                raise RuntimeError("Direct HSE MOVE aborted: controller alarm")
+            if st["error"]:
+                raise RuntimeError("Direct HSE MOVE aborted: controller ERROR is ON")
+            if st["hold"]:
+                raise RuntimeError("Direct HSE MOVE aborted: HOLD is ON")
+            if not st["servo"]:
+                raise RuntimeError("Direct HSE MOVE aborted: SERVO turned OFF")
+
+            if st["running"]:
+                running_seen = True
+                break
+            time.sleep(0.02)
+
+        if not running_seen:
+            self._raise_if_alarm()
+            raise TimeoutError(
+                "Direct HSE MOVE did not assert RUNNING within "
+                f"{confirm:.1f}s; refusing to send the next motion."
+            )
+
+        while time.monotonic() < deadline:
+            st = self.read_controller_status()
+
+            if st["alarm"]:
+                self._raise_if_alarm()
+                raise RuntimeError("Direct HSE MOVE aborted: controller alarm")
+            if st["error"]:
+                raise RuntimeError("Direct HSE MOVE aborted: controller ERROR is ON")
+            if st["hold"]:
+                raise RuntimeError("Direct HSE MOVE aborted: HOLD is ON")
+            if not st["servo"]:
+                raise RuntimeError("Direct HSE MOVE aborted: SERVO turned OFF")
+
+            if not st["running"]:
+                self._raise_if_alarm()
+                return
+
+            time.sleep(0.05)
+
+        self._raise_if_alarm()
+        raise TimeoutError(
+            f"Direct HSE MOVE did not complete within {total:.1f}s"
+        )
+
+    def move_cartesian(
+        self,
+        T_base: Any,
+        *,
+        move_type: int,
+        joint_speed_pct: float | None = None,
+        linear_speed_mm_s: float | None = None,
+        tool_no: int | None = None,
+        form: int = 4,
+    ) -> None:
+        # Direct Cartesian MOVE via Yaskawa HSE command 0x8A.
+        # move_type 1 = link/joint absolute (MOVJ-like)
+        # move_type 2 = straight absolute (MOVL-like)
+        # No P-variable write, FTP upload, JOB_SELECT or JOB_START is used.
+        if self._halted:
+            raise MotionHaltedError(
+                "MOVE refused - motion halted (call servo_on to resume)"
+            )
+
+        if move_type not in (1, 2):
+            raise ValueError(f"move_cartesian move_type must be 1 or 2, got {move_type}")
+
+        if tool_no is None:
+            tool_no = self.tool_no
+        tool_no = int(tool_no)
+        if not (0 <= tool_no <= 63):
+            raise ValueError(f"tool_no must be 0..63, got {tool_no}")
+
+        st = self.read_controller_status()
+        problems = []
+        if not st["remote"]:
+            problems.append("REMOTE is OFF")
+        if not st["servo"]:
+            problems.append("SERVO is OFF")
+        if st["running"]:
+            problems.append("controller is already RUNNING")
+        if st["hold"]:
+            problems.append("HOLD is ON")
+        if st["alarm"]:
+            problems.append("ALARM is ON")
+        if st["error"]:
+            problems.append("ERROR is ON")
+        if problems:
+            raise RuntimeError(
+                "Direct HSE MOVE precheck blocked: " + "; ".join(problems)
             )
 
         from src.orchestrator.frame_convert import matrix_to_xyzrpy_yaskawa
-        tool_no = getattr(self, "tool_no", 1)               # TOOL01 default
-        user_frame = 0
-        form = 0                                            # default IK branch
-
-        # 1. Write P000 with Cartesian pose
-        self.write_pose_var(p_index=0, T_base=T_base,
-                            tool_no=tool_no, user_frame=user_frame,
-                            form=form, data_type=DataType.BASE)
-
-        # 2. Upload INFORM job that references P000 with MOVJ/MOVL
         x, y, z, rx, ry, rz = matrix_to_xyzrpy_yaskawa(T_base)
-        job_name = self._next_job_name()
-        # Inline INFORM with P-variable + BASE position
-        instr = ("MOVJ P000" if kind == "movj" else "MOVL P000")
-        if kind == "movj":
-            instr += f" VJ={self.max_speed_pct:.2f}"
+
+        # HSES 0x8A units: XYZ=0.001 mm, angles=0.0001 degree.
+        pos = [
+            int(round(float(x) * 1000.0)),
+            int(round(float(y) * 1000.0)),
+            int(round(float(z) * 1000.0)),
+            int(round(float(rx) * 10000.0)),
+            int(round(float(ry) * 10000.0)),
+            int(round(float(rz) * 10000.0)),
+            0,
+        ]
+
+        if move_type == 1:
+            pct = float(
+                self.max_speed_pct if joint_speed_pct is None else joint_speed_pct
+            )
+            pct = min(pct, float(self.max_speed_pct))
+            if pct <= 0.0:
+                raise ValueError(f"joint speed must be > 0, got {pct}")
+            speed_class = 0
+            speed = int(round(pct * 100))
+            speed_desc = f"{pct:.2f}%"
         else:
-            instr += " V=80.0"
-        job_text = (
-            "/JOB\r\n"
-            f"//NAME {job_name}\r\n"
-            "//POS\r\n"
-            "///NPOS 0,0,0,0,0,0\r\n"
-            f"///TOOL {tool_no}\r\n"
-            "///POSTYPE BASE\r\n"
-            "///BASE\r\n"
-            "//INST\r\n"
-            "///DATE 2026/01/01 00:00\r\n"
-            "///ATTR SC,RW\r\n"
-            "///GROUP1 RB1\r\n"
-            "NOP\r\n"
-            f"'Cartesian {kind} target=({x:.1f},{y:.1f},{z:.1f})mm\r\n"
-            f"{instr}\r\n"
-            "END\r\n"
+            v = 20.0 if linear_speed_mm_s is None else float(linear_speed_mm_s)
+            if v <= 0.0:
+                raise ValueError(f"linear speed must be > 0, got {v}")
+            speed_class = 1
+            speed = int(round(v * 10))
+            speed_desc = f"{v:.1f} mm/s"
+
+        # BASE coordinate = 16.
+        payload = struct.pack(
+            "<IIIII7iIIIII",
+            1,
+            0,
+            speed_class,
+            speed,
+            16,
+            *pos,
+            0,
+            int(form),
+            0,
+            tool_no,
+            0,
+        ) + bytes(36)
+
+        self._send_request(
+            0x8A,
+            instance=int(move_type),
+            attribute=1,
+            service=Service.SET_ATTRIBUTE_ALL,
+            payload=payload,
         )
-        self.upload_job(job_text, job_name)
+
+        logger.info(
+            "HSE DIRECT CARTESIAN 0x8A: %s xyz=(%.1f, %.1f, %.1f) "
+            "rpy=(%.1f, %.1f, %.1f) speed=%s TOOL%02d",
+            "MOVJ" if move_type == 1 else "MOVL",
+            x, y, z, rx, ry, rz, speed_desc, tool_no,
+        )
+
+    def _move_pose(self, T_base: Any, kind: str) -> None:
+        # Cartesian real motion using direct HSE 0x8A; no FTP/JOB files.
+        if self._batch_builder is not None or self._pvar_batch_buffer is not None:
+            raise NotImplementedError(
+                "Direct Cartesian HSE path must run outside batch mode."
+            )
+
+        if kind == "movj":
+            self.move_cartesian(
+                T_base,
+                move_type=1,
+                joint_speed_pct=float(self.max_speed_pct),
+                tool_no=self.tool_no,
+            )
+        elif kind == "movl":
+            self.move_cartesian(
+                T_base,
+                move_type=2,
+                linear_speed_mm_s=20.0,
+                tool_no=self.tool_no,
+            )
+        else:
+            raise ValueError(f"Unknown Cartesian move kind: {kind!r}")
+
+        self._wait_direct_move_complete()
+
+
+    def run_dtwinrun_motion(
+        self,
+        pick_T_base: Any,
+        approach_T_base: Any,
+        place_T_base: Any,
+        job_name: str = "DTWINRUN",
+    ) -> None:
+        # Fixed YRC INFORM job using runtime P000-P003 plus taught P004 HOME.
+        # P000=P0, P001=P1, P002=P2, P003=P3; P004 HOME is YRC-taught.
+        # Runtime performs zero FTP uploads.
+        # Gripper close/open and the wait for the carrier-detect sensor are in
+        # the taught job, supervised by the PLC; this method sends no I/O.
+        self._exchanges().job = None          # no timing left over from a job before
+        if self._halted:
+            raise MotionHaltedError(
+                "DTWINRUN refused - motion halted (call servo_on to resume)"
+            )
+
+        st = self.read_controller_status()
+        problems = []
+        if not st["remote"]:
+            problems.append("REMOTE is OFF")
+        if not st["servo"]:
+            problems.append("SERVO is OFF")
+        if st["running"]:
+            problems.append("controller already RUNNING")
+        if st["hold"]:
+            problems.append("HOLD is ON")
+        if st["alarm"]:
+            problems.append("ALARM is ON")
+        if st["error"]:
+            problems.append("ERROR is ON")
+        if problems:
+            raise RuntimeError("DTWINRUN precheck blocked: " + "; ".join(problems))
+
+        # --------------------------------------------------------
+        # Build P003 = PLACE approach/retreat.
+        #
+        # P3.X/Y/orientation = P2
+        # P3.Z = max(P2.Z + (P1.Z - P0.Z), P1.Z)
+        #
+        # The approach height of the pick, but never below P1, so the
+        # transfer does not descend over a support (place_approach_base).
+        # --------------------------------------------------------
+        import numpy as _np
+
+        _p0_arr = _np.asarray(pick_T_base, dtype=float)
+        _p1_arr = _np.asarray(approach_T_base, dtype=float)
+        _p2_arr = _np.asarray(place_T_base, dtype=float)
+
+        for _name, _pose in (
+            ("P0", _p0_arr),
+            ("P1", _p1_arr),
+            ("P2", _p2_arr),
+        ):
+            if _pose.shape != (4, 4):
+                raise ValueError(
+                    f"{_name} must be a 4x4 pose, got {_pose.shape}"
+                )
+
+        _place_dz = float(
+            _p1_arr[2, 3] - _p0_arr[2, 3]
+        )
+
+        if _place_dz <= 1e-6:
+            raise RuntimeError(
+                "DTWINRUN P3 refused: expected P1.Z > P0.Z in "
+                f"YRC BASE, got dz={_place_dz:.3f} mm"
+            )
+
+        # Same X, Y and orientation as P2. Raise only BASE Z.
+        from src.orchestrator.frame_convert import place_approach_base
+        p3_base = place_approach_base(_p0_arr, _p1_arr, _p2_arr)
+
+        self.write_pose_var(
+            p_index=0,
+            T_base=pick_T_base,
+            tool_no=self.tool_no,
+            user_frame=0,
+            form=4,
+            data_type=DataType.BASE,
+        )
+        self.write_pose_var(
+            p_index=1,
+            T_base=approach_T_base,
+            tool_no=self.tool_no,
+            user_frame=0,
+            form=4,
+            data_type=DataType.BASE,
+        )
+        self.write_pose_var(
+            p_index=2,
+            T_base=place_T_base,
+            tool_no=self.tool_no,
+            user_frame=0,
+            form=4,
+            data_type=DataType.BASE,
+        )
+
+        self.write_pose_var(
+            p_index=3,
+            T_base=p3_base,
+            tool_no=self.tool_no,
+            user_frame=0,
+            form=4,
+            data_type=DataType.BASE,
+        )
+
+        from src.orchestrator.frame_convert import matrix_to_xyzrpy_yaskawa
+        p0 = matrix_to_xyzrpy_yaskawa(pick_T_base)
+        p1 = matrix_to_xyzrpy_yaskawa(approach_T_base)
+        p2 = matrix_to_xyzrpy_yaskawa(place_T_base)
+        p3 = matrix_to_xyzrpy_yaskawa(p3_base)
+
+        logger.info(
+            "DTWINRUN P-VARS: P000(P0)=(%.1f,%.1f,%.1f) "
+            "P001(P1)=(%.1f,%.1f,%.1f) "
+            "P002(P2 PLACE)=(%.1f,%.1f,%.1f) "
+            "P003(P3 SAFE)=(%.1f,%.1f,%.1f) "
+            "P004(HOME)=TAUGHT_ON_YRC "
+            "TOOL%02d FORM=4",
+            p0[0], p0[1], p0[2],
+            p1[0], p1[1], p1[2],
+            p2[0], p2[1], p2[2],
+            p3[0], p3[1], p3[2],
+            int(self.tool_no),
+        )
+
         self.job_select(job_name)
-        self.job_start()
+        with self._halt_lock:
+            if self._halted:
+                raise MotionHaltedError(
+                    "DTWINRUN START refused - Stop() latched before START"
+                )
+            self.job_start()
+
+        logger.info(
+            "DTWINRUN STARTED: MOVJ P001 -> MOVL P000 -> TIMER 1.5 "
+            "-> MOVL P001 -> MOVJ P003 -> MOVL P002 -> MOVL P003 "
+            "-> MOVJ P004(HOME)"
+        )
         self._wait_idle()
+        logger.info("DTWINRUN COMPLETE")
 
     def timer(self, seconds: float) -> None:
         """Pause for `seconds`.

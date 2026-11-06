@@ -1,103 +1,124 @@
-# =============================================================================
-# experiment.yaml — Cấu hình thí nghiệm pick-and-place
-# =============================================================================
-# Dùng bởi scripts/03_run_experiment.py. Các key dưới được nạp trực tiếp vào
-# Orchestrator (xem src/orchestrator/orchestrator.py :: _DEFAULT_CONFIG).
-# =============================================================================
-
-# ───── Robot + calibration ─────
-robot_name: "Yaskawa GP7"
-calibration_path: "config/calibration/T_base_camera.npy"
-
-# ───── Điểm PLACE trên băng tải (base frame, mm) ─────
-# Bài toán: PICK vật random trên BÀN (dưới camera) → PLACE lên BĂNG TẢI (điểm cố định này).
-# [MEASURE] đo điểm đặt trên băng tải khi lắp cell; giá trị dưới là placeholder.
-place_position: [700.0, 120.0, 700.0]   # [MEASURE] điểm đặt cố định trên băng tải, phải trong tầm với
-
-# ───── Tham số chuyển động (tinh chỉnh ở pha tuning — mục 9) ─────
-approach_height_mm: 200.0       # lift_T Z = grasp_Z + 200 → MoveL xuống thẳng đứng từ cao, IK pick elbow-up clean
-return_home_after_success: true # về home sau mỗi success → trial kế APPROACH từ trên cao xuống tự nhiên (video demo đẹp)
-speed_joint_deg_s: 60.0         # tốc độ joint
-speed_linear_mm_s: 80.0         # tốc độ linear
-yaw_offset_deg: 90.0            # 90°: gripper jaws spread vuông góc PCA major axis → kẹp chiều rộng tray (Y, 100mm) thay vì chiều dài (X, 180mm)
-
-# ───── Gripper ─────
-gripper_do_index: 10            # chỉ số Digital Output điều khiển gripper (OT#10 trên YRC1000)
-# gripper_delay_s: fallback blind delay khi KHÔNG có CC-Link sensor feedback
-# (sim/headless, hoặc real chưa wire sensor). Real chain PC → YRC → PLC
-# Mitsubishi → solenoid → pneumatic total ~150-415ms tùy hardware. 0.5s an toàn.
-# Tăng nếu PLC scan time chậm hoặc pneumatic cylinder lớn.
+robot_name: Yaskawa GP7
+calibration_path: config/calibration/T_base_camera.npy
+# Hiệu chỉnh cao độ gắp riêng cho một lớp, chỉ dùng khi đã đo được lý do. Để
+# trống nghĩa là không lớp nào được đối xử riêng. Hộp nhựa từng được cộng 10 mm;
+# nay khoảng cách table_safety_margin_mm tới mặt bàn hoặc vật đỡ giữ nó trong vùng
+# độ cao đã chạy không va chạm.
+class_pick_z_bias_mm: {}
+place_position:
+- 500.0
+- -350.0
+- 150.0
+# Ngưỡng của ba phép chặn chuyển động, áp chung cho mọi lớp. Chiều cao mặt trên
+# đo được phải không thấp hơn chiều cao thấp nhất của lớp quá height_tolerance_mm;
+# tỷ lệ điểm ảnh có độ sâu hợp lệ trong mặt nạ phải đạt min_depth_valid_frac; và
+# cạnh dài của hình chữ nhật mặt trên đo được phải khớp một cỡ của lớp trong
+# size_tolerance_mm; cạnh ngắn không xét vì nó không đổi chỗ ngón kẹp hạ xuống.
+# height_tolerance_mm còn đặt sàn cho cao độ lệnh: lệnh không xuống thấp hơn chiều
+# cao thấp nhất của lớp trừ đi ngưỡng này. Trên 55 lượt đo ngày 12 và 14/10/2026,
+# sàn ấy không nâng lượt nào; đặt sàn ngay ở chiều cao danh định thì nâng 36 lượt.
+height_tolerance_mm: 20.0
+# 0,15: ở buổi B3 ngày 14/10, 14 lượt inox đặt phẳng gắp thành công có tỷ lệ từ
+# 0,299 tới 0,991, nên mọi ngưỡng từ 0,3 trở lên đều loại nhầm lượt gắp được. Ngưỡng này chỉ để bắt
+# mặt nạ gần như không có độ sâu; việc phát hiện đo sai chiều cao thuộc hai luật kia.
+min_depth_valid_frac: 0.15
+size_tolerance_mm: 40.0
+# Bỏ phát hiện khi từ 0,3 điểm ảnh của mặt nạ trở lên trả độ sâu sát mặt bàn (trong
+# 5 mm): mặt nạ tràn ra bàn bên cạnh vật, hoặc phát hiện giả trên thẻ giấy. Trên bộ
+# C4 có độ sâu, inox thật đứng riêng đạt nhiều nhất 0,223; phép cũ theo chiều cao
+# (dải mặt trên hoặc trung vị dưới sàn lớp) loại nhầm 103 trên 842 inox. Riêng phát
+# hiện mà phần mặt nạ còn lại sau khi bỏ các điểm ảnh sát bàn vẫn khớp hình chữ nhật
+# đúng cỡ của lớp (IoU từ 0,5) và qua kiểm tra hình dạng thì được giữ: mặt nạ nằm
+# trên vật và chỉ tràn sang thẻ bên cạnh, như ngày 23/10 (P0038, P0096: 0,38 tới 0,48).
+table_share_max: 0.3
+# Từ chối lượt khi hình chữ nhật đúng cỡ khớp vào mặt nạ trượt được quá 10 mm dọc
+# cạnh dài mà độ trùng không đổi: mặt nạ không xác định được tâm gắp theo trục má
+# kẹp đóng. Ngày 22/10 (kiemtra-2210 lần 1, lượt 3) mặt nạ inox tràn qua đầu hộp cho
+# trượt 49 tới 50 mm, tâm lệch 31,8 mm; trên 76 phát hiện thật, độ trượt không quá 7 mm.
+fit_plateau_max_mm: 10.0
+# Mỗi chu trình job cố định phải bắt đầu và kết thúc ở HOME dạy trên tay dạy
+# (taught_home_joints_deg trong khối real), sai lệch tối đa ngưỡng này.
+home_tolerance_deg: 0.5
+# Vật xếp chồng được nhả cao thêm chừng này: chiều cao thật của vật cao hơn số danh
+# định (inox 41,5 so với 40; carton 120 đo được 125,4), nên nhả đúng độ cao tính
+# ra sẽ ép vật xuống bàn 1,8 đến 6,6 mm. Vật đặt phẳng không cần lề này.
+stack_release_margin_mm: 8.0
+# 100 mm, chọn ngày 20/10/2026 từ hình học, telemetry và tầm với của cell.
+# Cận dưới: ở P001 đầu ngón kẹp, thấp hơn điểm lệnh 23,9 mm, còn cao hơn mặt trên
+# đo được 76 mm; trên 131 chu trình telemetry, đoạn từ HOME tới P001 không xuống
+# dưới P001. Cận trên: chồng cao nhất là hộp gỗ trên hộp kim loại, đo 237,8 mm. Ở
+# 200 mm đỉnh cổ tay lên tới độ cao tâm quang camera ở P0219 (thẻ 12, ngay dưới
+# camera) và tay chỉ còn 10 mm tới tầm với tối đa ở dãy x 625; ở 100 mm còn 102,8
+# mm và 79,6 mm. Vật nhấc khỏi vật đỡ đi ngang ở độ cao P001 rồi mới hạ thẳng tại
+# chỗ thả (P003 không thấp hơn P001), nên không cần vượt chồng cao nhất.
+approach_height_mm: 100.0
+return_home_after_success: false
+speed_joint_deg_s: 60.0
+speed_linear_mm_s: 80.0
+yaw_offset_deg: 90
+gripper_do_index: 10
 gripper_delay_s: 0.5
-
-# ───── Gripper CC-Link (Path A — double-acting + sensor feedback) ─────
-# Gripper khí nén điều khiển qua PLC Mitsubishi, PC ↔ PLC qua YRC1000 làm
-# CC-Link bridge (set_io/read_io absolute bit). Khi block này active,
-# orchestrator dùng _gripper_cc_link(): toggle solenoid → chờ position sensor
-# → (close) verify detect sensor, thay vì blind delay.
-#
-# --mode real TỰ ĐỘNG bật block dưới với mapping mặc định (xem
-# scripts/03_run_experiment.py). Bỏ comment ở đây để OVERRIDE nếu bit address
-# trên YRC TP khác (Setup → I/O Module → CC-Link). Chi tiết: docs §7.9 +
-# HUONG_DAN_CAI_DAT §2.9 Bước 4.
-#
-# Sim/headless: GIỮ comment (= None) → dùng blind-delay đơn giản ở trên.
-# gripper_cc_link:
-#   clamp_bit:               30010   # OUT → PLC Y502 (Clamp solenoid)
-#   unclamp_bit:             30011   # OUT → PLC Y503 (UnClamp solenoid)
-#   clamp_sensor_bit:        30050   # IN  ← PLC X504 (cylinder tại vị trí Clamp)
-#   unclamp_sensor_bit:      30051   # IN  ← PLC X503 (cylinder tại vị trí UnClamp)
-#   detect_bit:              30052   # IN  ← PLC X505 (Carrier Detect — có vật trong gripper)
-#   wait_sensor_timeout_s:   2.0     # timeout chờ position sensor ON → raise gripper_timeout
-#   wait_sensor_poll_s:      0.05    # chu kỳ poll sensor (giây)
-#   require_detect_on_close: true    # sau close, verify detect ON → raise grasp_failed nếu OFF
-
-# ───── Điều phối ─────
-inter_trial_delay_s: 1.0        # nghỉ giữa các trial
-detection_timeout_s: 2.0        # thời gian chờ detection tối đa
-
-# ───── Perception (mode real) ─────
-# Checkpoint E2 hiện có: seed 1, được chọn trước đây theo validation mask mAP.
-# Chưa xác nhận lại lựa chọn này theo điểm composite box+mask của protocol mới.
-# Bản cục bộ trùng _work/ket_qua_E2/runs/seed1/weights/best.pt theo SHA-256.
-model_path: "models/e2_seed1_best.pt"
+inter_trial_delay_s: 1.0
+detection_timeout_s: 2.0
+model_path: models/e2_seed1_best.pt
 conf_threshold: 0.5
-
-# ───── Robot thật (mode real) ─────
-robot_ip: "192.168.1.100"       # IP YRC1000
-
-# ───── Tham số RIÊNG cho --mode real (cell thật, 5 vật của paper) ─────
-# 03_run_experiment.py gộp khối này đè lên các khóa phía trên CHỈ khi --mode real, nên
-# mô phỏng (khay, chai, cốc, bu lông) giữ nguyên hành vi cũ.
+robot_ip: 192.168.125.100
 real:
-  # Hàm kẹp mở 180 mm (đóng hết) tới 216 mm (mở hết), không đệm. Mỗi vật chỉ kẹp được
-  # theo cạnh 180 đến 190 mm của nó, tức dọc trục chính của mặt nạ, nên góc lệch là 0.
-  # Giá trị 90 ở trên là cho khay S23 (kẹp chiều rộng 100 mm) với bộ kẹp trước đây.
-  yaw_offset_deg: 0.0
-  # Mặt bàn, trong ĐÚNG hệ tọa độ của T_base_camera. Để null: 02_run_calibration.py đo
-  # mặt bàn từ depth qua chính T_BC vừa giải và ghi config/calibration/table_plane.json,
-  # chế độ real đọc từ đó. Chỉ gõ tay khi biết chắc con số nằm trong hệ của T_BC.
+  # 3,2: trục đóng của má kẹp lệch góc lệnh -3,2 ± 0,3 độ, đo trực tiếp ngày
+  # 21/10/2026 trên 19 lượt của khối đối chứng 15:09 (cạnh hai thanh má trong khung
+  # ảnh camera lúc kẹp, so với góc dụng cụ tính từ telemetry; độ phân tán 0,20 độ).
+  # Hai tấm tay đỡ thanh má ở -2,9 và -3,5 độ, nên phần lệch chính nằm ở tay kẹp.
+  # Hai thanh má không song song (-3,8 và -2,6 độ), xoay thêm 2 tới 4 độ khi kẹp, và
+  # góc nghỉ đổi khoảng 1,2 độ giữa hai lần chạy cùng ngày: phải vuông và bắt chặt
+  # chúng vào tay kẹp, rồi kiểm lại bằng thước trong chế độ TEACH. Số 5,0 dùng từ
+  # 06/10 thừa 1,8 độ; số 0 đặt sáng 21/10 suy từ ảnh vật đã thả với giả định vật tự
+  # thẳng theo má, giả định này sai (vật chỉ xoay một phần).
+  yaw_offset_deg: 3.2
   table_top_z_mm: null
-  # Đầu má kẹp không xuống thấp hơn mặt bàn cộng khoảng này, và không kẹp sâu hơn chiều
-  # cao vật trừ khoảng này. [XÁC NHẬN theo má kẹp thật; để lớn khi chạy thử lần đầu]
-  table_safety_margin_mm: 20.0
-  # Độ sâu kẹp tối đa tính từ mặt trên của vật. [XÁC NHẬN theo má kẹp thật]
-  grasp_depth_offset_mm: 50.0
-  # Chiều cao từng lớp theo thước kẹp (2026-09-11). Carton có hai cỡ, cao 120 và 80 mm:
-  # lấy 80 để má kẹp không vượt đáy vật với cả hai cỡ; độ sâu vẫn bị chặn ở 50 mm.
+  # 35: khoảng cách nhỏ nhất từ điểm lệnh (TCP của bộ điều khiển) tới mặt bàn hoặc
+  # mặt vật đỡ, áp chung mọi lớp và áp cả cho điểm thả P2. Đầu ngón kẹp nằm thấp hơn
+  # điểm lệnh: động học thuận của góc khớp ghi ngày 14/10/2026 thấp hơn lệnh P0 từ
+  # 23,6 tới 23,9 mm trên 38 lượt gắp. Các lượt lệnh từ 34,9 mm trở lên không va
+  # chạm; lượt 45, lệnh khoảng 25 mm, báo động va chạm 4315 khi đóng kẹp.
+  table_safety_margin_mm: 35.0
+  # HOME dạy trên tay dạy (P004), đọc từ telemetry ngày 14 và 15/10/2026: robot nghỉ
+  # đúng tư thế này, lệch không quá 0,006 độ, ở 5 trong 6 lần chạy. Dạy lại P004 thì
+  # phải sửa dòng này, nếu không mọi chu trình sẽ bị từ chối vì không ở HOME.
+  taught_home_joints_deg: [-86.481, -17.385, -21.274, 0.0, -86.115, 91.775]
+  grasp_depth_offset_mm: 0.0
+  # Reject RGB-D target-height estimates that differ too far from the
+  # measured physical variants in class_sizes_mm.
+  place_height_tolerance_mm: 20.0
   class_heights_mm:
     carton: 80.0
     plastic_box: 30.0
     wood_box: 150.0
     metal_box: 85.0
     inox_box: 40.0
-  # Kích thước (dài, rộng, cao) theo thước kẹp, cho chế độ độ sâu plane và fusion (C4).
-  # Lớp có hai cỡ (carton) được phân biệt theo từng vật: mỗi cỡ được đặt lên mặt bàn và
-  # chiếu vào ảnh, cỡ nào có bóng khớp mặt nạ nhất (IoU) thì chọn, và chiều cao của cỡ đó
-  # thay cho 80 mm ở trên. Chiều cao thấp nhất của mỗi lớp phải bằng class_heights_mm
-  # (preflight kiểm tra).
   class_sizes_mm:
-    carton: [[180, 120, 120], [180, 100, 80]]
-    plastic_box: [[180, 140, 30]]
-    wood_box: [[190, 190, 150]]
-    metal_box: [[190, 135, 85]]
-    inox_box: [[180, 85, 40]]
+    carton:
+    - - 180
+      - 120
+      - 120
+    - - 180
+      - 100
+      - 80
+    plastic_box:
+    - - 180
+      - 140
+      - 30
+    wood_box:
+    - - 190
+      - 190
+      - 150
+    metal_box:
+    - - 190
+      - 135
+      - 85
+    inox_box:
+    - - 180
+      - 85
+      - 40
+  # 3,2: bằng yaw_offset_deg, để má kẹp thẳng trục x khi thả, nên vật thả thẳng
+  # dù nó có tự xoay theo má hay không (xem yaw_offset_deg).
+  place_yaw_deg: 3.2

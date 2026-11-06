@@ -140,3 +140,34 @@ def matrix_to_xyzrpy_yaskawa(
     x, y, z = T[0, 3], T[1, 3], T[2, 3]
     rx, ry, rz = matrix_to_rpy_yaskawa(T[:3, :3])
     return float(x), float(y), float(z), rx, ry, rz
+
+
+def place_approach_base(
+    p0: np.ndarray, p1: np.ndarray, p2: np.ndarray,
+) -> np.ndarray:
+    """P003, the point above the place, from P000, P001 and P002 (YRC BASE, mm).
+
+    X, Y and orientation are P002's. Z is P002's raised by the approach height
+    of the pick (P001.Z - P000.Z), but never below P001, so the joint move from
+    P001 to P003 does not descend.
+
+    A part lifted off a support is set down lower than it was picked, by the
+    support's height less the release margin, and P002 plus the approach height
+    then lies under P001 by as much. DTWINRUN reaches P003 with a joint move,
+    which spreads that drop over the transfer while the part still overlaps its
+    support: on 14 Oct 2026 (B3, approach 100 mm, a plastic box lifted off the
+    wood box) the forward kinematics of the logged joints put the plastic's
+    bottom 9.1 mm under the wood's top while their footprints overlapped. Held
+    at P001's height the transfer is level, and the part descends only on the
+    straight move from P003 to P002. A part picked from the table is set down
+    within 1 mm of the height it was picked at (the table's tilt between the
+    cards and the place), so its P003 moves by at most that.
+
+    The orchestrator plans with this P003 and the HSE backend writes it, so the
+    two cannot differ.
+    """
+    p0 = np.asarray(p0, dtype=float)
+    p1 = np.asarray(p1, dtype=float)
+    p3 = np.array(p2, dtype=float)
+    p3[2, 3] = max(float(p3[2, 3]) + float(p1[2, 3] - p0[2, 3]), float(p1[2, 3]))
+    return p3

@@ -352,7 +352,8 @@ def parse_position_response(payload: bytes) -> dict[str, list[float]]:
     """Parse READ_POSITION payload (Command 0x75) into a dict.
 
     Per spec, the READ_POSITION payload returns at minimum:
-      [0-3]    Data type (0x10 = pulse, 0x11 = base coord, ...)
+      [0-3]    Data type (0 = pulse value, 16 = base coordinate value; manual
+               160766-1CD section 3.3.6)
       [4-7]    Figure / form
       [8-11]   Tool no
       [12-15]  User coord no
@@ -393,6 +394,46 @@ def parse_position_response(payload: bytes) -> dict[str, list[float]]:
         "user_frame": fields[3],
         "extended_form": fields[4],
         "joints_raw": joints_raw,
+    }
+
+
+# READ_POSITION (0x75) instances, FS100 HSE manual 160766-1CD section 3.3.6 (the
+# YRC1000 server answers the same command set): 1-2 = R1-R2 as pulse values,
+# 101-102 = R1-R2 as a Cartesian value, which "can select the base coordinate
+# only". Units of a Cartesian value as in section 3.3.39: X, Y, Z in um,
+# Rx, Ry, Rz in 0.0001 degree (POSITION_UNIT_SCALE, ROTATION_UNIT_SCALE).
+POSITION_INSTANCE_R1_PULSE = 1
+POSITION_INSTANCE_R1_CARTESIAN = 101
+
+
+def parse_cartesian_position_response(payload: bytes) -> dict:
+    """Parse the READ_POSITION reply of a Cartesian instance (101) into mm and deg.
+
+    The tool number is the tool whose centre point the controller reports, so a
+    caller comparing against its own tool model must check it.
+
+    Returns:
+        dict {data_type, form, tool_no, user_frame, extended_form,
+        xyz_mm: (x, y, z), rxyz_deg: (rx, ry, rz)}.
+
+    Raises:
+        HSEDecodeError: payload too short, or a data type other than the base
+            coordinate value (16).
+    """
+    parsed = parse_position_response(payload)
+    if parsed["data_type"] != DataType.BASE:
+        raise HSEDecodeError(
+            f"Cartesian position reply has data type {parsed['data_type']}, "
+            f"expected {int(DataType.BASE)} (base coordinate value)")
+    raw = parsed["joints_raw"]
+    return {
+        "data_type": parsed["data_type"],
+        "form": parsed["form"],
+        "tool_no": parsed["tool_no"],
+        "user_frame": parsed["user_frame"],
+        "extended_form": parsed["extended_form"],
+        "xyz_mm": tuple(float(v) / POSITION_UNIT_SCALE for v in raw[:3]),
+        "rxyz_deg": tuple(float(v) / ROTATION_UNIT_SCALE for v in raw[3:6]),
     }
 
 

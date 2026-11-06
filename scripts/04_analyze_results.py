@@ -78,11 +78,14 @@ def parse_args() -> argparse.Namespace:
                              "comparison. Default: the first value alphabetically.")
     parser.add_argument("--score-col", default="success",
                         help="Which column counts as the outcome: 'success' (the "
-                             "machine's, from motion + the gripper detect sensor) or "
-                             "'human_ok' (what the operator saw, written by 03 "
-                             "--confirm-each-trial). They disagree when a part was "
-                             "gripped but dropped in transfer or landed off the drop "
-                             "point, so the paper must say which one it reports.")
+                             "machine's; on the fixed DTWINRUN job the real cell runs, "
+                             "it means the job ran to its end without an alarm; the job "
+                             "itself waits for the part-detect sensor, the PC reads none, "
+                             "and nothing checks the placement) or 'human_ok' (what the "
+                             "operator saw, written by 03 --confirm-each-trial after "
+                             "every cycle handed to the robot). A trial refused or "
+                             "skipped before motion has no verdict and is scored as a "
+                             "failure. The paper must say which column it reports.")
     parser.add_argument("--label-a", default="run_a", help="Name of the --csv run")
     parser.add_argument("--labels-b", nargs="+", default=None,
                         help="Names for the --paired-with runs, in the same order.")
@@ -163,16 +166,170 @@ def _pair(log, a, b, key):
     return merged
 
 
-_SCORE_MAP = {"1": 1, "0": 0, "true": 1, "false": 0, "yes": 1, "no": 0}
+# A column with any blank is read as float, so 1 and 0 arrive as 1.0 and 0.0.
+_SCORE_MAP = {"1": 1, "0": 0, "1.0": 1, "0.0": 0,
+              "true": 1, "false": 0, "yes": 1, "no": 0}
+
+# Failure reasons logged before any motion was dispatched: the three motion
+# guards (the place-height check also logs depth_geometry_reject), no usable
+# detection, no reachable pose, and the predictive joint-trajectory check, whose
+# reasons start with "predicted_". Such a trial is a failure, never a missing
+# value, and it costs only the detection window, so it is counted on its own and
+# kept out of the cycle-time statistics.
+NO_MOTION_REASONS = frozenset({
+    "pick_z_safety_reject", "depth_geometry_reject", "yaw_geometry_reject",
+    "detection_miss", "detection_timeout", "unreachable",
+    "no_start_joints_for_prediction", "not_at_home",
+})
+
+
+# Written by the orchestrator when the run was stopped at a prompt of the placement
+# check before the trial (Ctrl+C, a closed stdin): a record that a check capture was
+# taken and the run stopped there, not an outcome of the trial.
+ABORTED_AT_CHECK = "aborted_at_check"
+
+
+def _drop_aborted(log, df, source: str):
+    """The rows of df without those of trials stopped at the placement check."""
+    if "failure_reason" not in df.columns:
+        return df
+    aborted = df["failure_reason"].fillna("").astype(str).str.strip().eq(ABORTED_AT_CHECK)
+    if aborted.any():
+        log.warning("%d row(s) in %s record a run stopped at the placement check (%s) "
+                    "and are left out: pose_id %s", int(aborted.sum()), source,
+                    ABORTED_AT_CHECK,
+                    sorted(df.loc[aborted, "pose_id"].astype(str).unique())[:10]
+                    if "pose_id" in df.columns else "?")
+        df = df[~aborted].reset_index(drop=True)
+    return df
+
+
+def _placement_table(df, split_col: str | None):
+    """Per arm (split_col, else one row 'all'), the trials whose placement was
+    checked before the trial: checked, flagged at the first check, asked to fix it
+    at least once (fixed: placement_recaptures > 0), and run with the last check
+    still flagged (limit: placement_override). None when the runs carry no
+    placement check."""
+    import pandas as pd
+
+    if "placement_events" not in df.columns:
+        return None
+    checked = df["placement_events"].fillna("").astype(str).str.strip().ne("")
+    if not checked.any():
+        return None
+    sub = df[checked]
+
+    def col(name):
+        return (pd.to_numeric(sub[name], errors="coerce").fillna(0)
+                if name in sub.columns else pd.Series(0, index=sub.index))
+
+    flags = (sub["placement_flags"].fillna("").astype(str).str.strip()
+             if "placement_flags" in sub.columns else pd.Series("", index=sub.index))
+    table = pd.DataFrame({"checked": 1, "flagged": flags.ne("").astype(int),
+                          "fixed": (col("placement_recaptures") > 0).astype(int),
+                          "limit": (col("placement_override") > 0).astype(int)},
+                         index=sub.index)
+    by = (sub[split_col].astype(str) if split_col and split_col in sub.columns
+          else pd.Series("all", index=sub.index))
+    return table.groupby(by).sum()
+
+
+def _log_placement(log, df, split_col: str | None) -> None:
+    """Log _placement_table, when the runs carry the placement check."""
+    table = _placement_table(df, split_col)
+    if table is not None:
+        log.info("Placement check before the trial (trials checked / flagged at the "
+                 "first check / asked to fix / run with the last check still "
+                 "flagged):\n%s", table)
+
+
+STAGE_COLUMNS = ("detect_window_ms", "inference_ms", "localize_ms", "plan_ms", "job_ms",
+                 "cycle_ms", "confirm_ms", "cycle_pc_ms")
+
+
+def _complete_cycles(moved):
+    """The complete cycles the cycle-time table rests on, and how many of each
+    kind were set aside, by rules fixed before the E3 sessions. A complete cycle
+    ended its job with a bracketed end (job_ms logged) and no failure. Set aside,
+    in this order: held (a HOLD during the job, which lasts as long as the operator
+    takes); hse_fault, a timeout, mismatch or error in job_flags (a stale reply or
+    a failed read can widen or move the bracket); wide, a bracket over 200 ms
+    (an end known only to within more than 100 ms; normal ones stay under 160 ms);
+    and the first trial of each run (warm-up), reported apart. Also counted:
+    no_end, successful cycles whose end could not be bracketed, by their flags.
+    Only rows with job_flags carry this definition of job_ms: (None, {}) for runs
+    without it, which includes those recorded before the bracket existed."""
+    import pandas as pd
+
+    if not len(moved) or "job_ms" not in moved.columns or "job_flags" not in moved.columns:
+        return None, {}
+
+    def col(frame, name, default=""):
+        return frame[name] if name in frame.columns else pd.Series(default, index=frame.index)
+
+    reason = col(moved, "failure_reason").fillna("").astype(str).str.strip()
+    timed = pd.to_numeric(moved["job_ms"], errors="coerce").notna()
+    no_end = col(moved, "job_flags").fillna("").astype(str)[~timed & reason.eq("")]
+    done = moved[timed & reason.eq("")]
+    flags = col(done, "job_flags").fillna("").astype(str)
+    held = flags.str.contains("held")
+    fault = flags.str.contains("timeout|mismatch|error") & ~held
+    width = (pd.to_numeric(col(done, "job_end_hi_ms", None), errors="coerce")
+             - pd.to_numeric(col(done, "job_end_lo_ms", None), errors="coerce"))
+    wide = (width > 200.0) & ~held & ~fault
+    first = pd.to_numeric(col(done, "trial_id", None), errors="coerce").eq(1) & ~held & ~fault & ~wide
+    keep = ~held & ~fault & ~wide & ~first
+    src = col(done, "frame_capture_src").fillna("").astype(str)[keep]
+    counts = {"complete": len(done), "held": int(held.sum()), "hse_fault": int(fault.sum()),
+              "wide": int(wide.sum()), "first_of_run": int(first.sum()),
+              "no_end": {k or "none": int(v) for k, v in no_end.value_counts().items()},
+              "frame_src": {k: int(v) for k, v in src[src.ne("")].value_counts().items()}}
+    return done[keep], counts
+
+
+def _stage_table(moved):
+    """P50 and P95 in ms of each logged stage, of the cycle to the robot's return
+    (cycle_ms), of the PC's confirmation (confirm_ms), of the cycle to that
+    confirmation (cycle_pc_ms) and of the frame's age when taken (frame_age_ms =
+    detect_window_ms - frame_capture_ms), with the number of cycles each rests on,
+    over _complete_cycles. Totals are each cycle's own duration, not sums of stage
+    percentiles. None when the runs carry no bracketed job ends."""
+    import pandas as pd
+
+    done, _ = _complete_cycles(moved)
+    if done is None or not len(done):
+        return None
+    data = {c: pd.to_numeric(done[c], errors="coerce") for c in STAGE_COLUMNS if c in done.columns}
+    if "frame_capture_ms" in done.columns and "detect_window_ms" in done.columns:
+        data["frame_age_ms"] = (pd.to_numeric(done["detect_window_ms"], errors="coerce")
+                                - pd.to_numeric(done["frame_capture_ms"], errors="coerce"))
+    return pd.DataFrame({name: {"n": int(v.notna().sum()), "P50": v.quantile(0.5),
+                                "P95": v.quantile(0.95)}
+                         for name, v in data.items()}).T
+
+
+def _no_motion(df):
+    """True for every row whose trial was refused or skipped before motion."""
+    import pandas as pd
+
+    if "failure_reason" not in df.columns:
+        return pd.Series(False, index=df.index)
+    reason = df["failure_reason"].fillna("").astype(str).str.strip()
+    return reason.isin(NO_MOTION_REASONS) | reason.str.startswith("predicted_")
 
 
 def _apply_score_col(log, df, col: str, source: str):
     """Make `success` carry the chosen outcome column, or refuse and return None.
 
     Everything downstream (rates, failure matrix, McNemar, figure) reads
-    `success`, so the switch happens once, here. A partly filled column is
-    refused rather than silently scored on the rows that happen to be filled:
-    that would drop trials from one arm only and bias the comparison.
+    `success`, so the switch happens once, here. A machine success without a
+    verdict is refused rather than silently scored on the rows that happen to be
+    filled: that would drop trials from one arm only and bias the comparison.
+
+    A row the machine already failed needs no verdict. 03 asks the operator
+    after every cycle handed to the robot, so the only blanks by design are
+    trials refused or skipped before motion; none of them completed a
+    pick-and-place, and scoring them 0 keeps every arm whole.
     """
     if col == "success":
         return df
@@ -183,10 +340,17 @@ def _apply_score_col(log, df, col: str, source: str):
         return None
     raw = df[col].astype(str).str.strip().str.lower()
     blank = df[col].isna() | raw.isin({"", "nan", "none"})
-    if blank.any():
-        log.error("%d of %d row(s) in %s have no '%s' value. Refusing to score on a "
-                  "partly filled column.", int(blank.sum()), len(df), source, col)
+    machine = df["success"].astype(str).str.strip().str.lower().map(_SCORE_MAP)
+    unscored = blank & (machine == 1)
+    if unscored.any():
+        log.error("%d machine success(es) of %d row(s) in %s have no '%s' value; the "
+                  "operator's verdict decides those. Refusing to score on a partly "
+                  "filled column.", int(unscored.sum()), len(df), source, col)
         return None
+    if blank.any():
+        log.info("%d row(s) in %s carry no '%s' value because the machine had already "
+                 "failed them; scored as failures.", int(blank.sum()), source, col)
+    raw = raw.mask(blank, "0")
     mapped = raw.map(_SCORE_MAP)
     if mapped.isna().any():
         bad = sorted(set(raw[mapped.isna()]))[:5]
@@ -250,6 +414,7 @@ def main() -> int:
         df = df[values.isin(args.only)].reset_index(drop=True)
         log.info("Kept %d trial(s) of %s = %s", len(df), args.split_col, args.only)
 
+    df = _drop_aborted(log, df, "--csv")
     df = _apply_score_col(log, df, args.score_col, "--csv")
     if df is None:
         return 1
@@ -272,6 +437,36 @@ def main() -> int:
         # thought it went fine. Those rows must show up, not be dropped as NaN.
         fm = fails["failure_reason"].fillna("(no machine failure)").value_counts()
         log.info("Failure modes:\n%s", fm)
+
+    # ─── Trials that never moved ───
+    # Reported beside every success rate, per arm when the arm is a column: the
+    # arms refuse at structurally different rates (the depth plausibility clause
+    # can only fire on a command built from depth), so a rate alone would hide
+    # part of the comparison.
+    no_motion = _no_motion(df)
+    log.info("Refused or skipped before motion: %d of %d trial(s)",
+             int(no_motion.sum()), len(df))
+    if no_motion.any():
+        keys = ([args.split_col] if args.split_col and args.split_col in df.columns
+                else []) + ["failure_reason"]
+        log.info("By reason:\n%s", df[no_motion].groupby(keys).size())
+
+    _log_placement(log, df, args.split_col)
+
+    moved = df[~no_motion]
+    if len(moved) and "cycle_time_s" in moved.columns:
+        log.info("Cycle time over the %d trial(s) with motion: median %.2f s",
+                 len(moved), float(moved["cycle_time_s"].median()))
+    stages = _stage_table(moved)
+    if stages is not None:
+        _, counts = _complete_cycles(moved)
+        log.info("Cycle times over the complete cycles, ms (n, P50, P95):\n%s", stages.round(1))
+        log.info("Complete cycles %d; set aside %d with a HOLD, %d with an HSE fault, %d "
+                 "with a bracket over 200 ms and %d first of a run; successful cycles "
+                 "without a bracketed end: %s; frame capture source: %s",
+                 counts["complete"], counts["held"], counts["hse_fault"], counts["wide"],
+                 counts["first_of_run"], counts["no_end"] or "none",
+                 counts["frame_src"] or "none")
 
     # ─── Paired exact McNemar: RGB-only vs RGB-D ───
     # Binary paired outcomes → McNemar on the discordant pairs (paper §3.7).
@@ -336,7 +531,8 @@ def main() -> int:
                 log.error("--paired-with '%s' matched no file", other)
                 return 1
             df_b = _apply_score_col(
-                log, pd.concat([pd.read_csv(f) for f in files], ignore_index=True),
+                log, _drop_aborted(log, pd.concat([pd.read_csv(f) for f in files],
+                                                  ignore_index=True), other),
                 args.score_col, other)
             if df_b is None:
                 return 1
@@ -390,8 +586,9 @@ def main() -> int:
         fig, axes = plt.subplots(1, 2, figsize=(12, 4))
         df.groupby("class_name")["success"].mean().plot.bar(
             ax=axes[0], title="Success rate by class", ylim=(0, 1))
-        df.boxplot(column="cycle_time_s", by="class_name", ax=axes[1])
-        axes[1].set_title("Cycle time by class")
+        df[~_no_motion(df)].boxplot(column="cycle_time_s", by="class_name",
+                                    ax=axes[1])
+        axes[1].set_title("Cycle time by class (trials with motion)")
         plt.suptitle("")
         out_path = ensure_dir(PROJECT_ROOT / Path(args.out).parent) / Path(args.out).name
         plt.tight_layout()

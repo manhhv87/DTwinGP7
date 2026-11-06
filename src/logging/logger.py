@@ -68,7 +68,31 @@ CONTEXT_FIELDNAMES = [
     "depth_valid_frac",
     "part_height_mm",
     "size_iou",
+    # Top face measured in mm on the part plane, from the mask outline. The
+    # motion guard refuses a trial whose rectangle matches no size variant of
+    # the detected class, so the numbers it judged on belong in the record.
+    "yaw_rect_long_mm",
+    "yaw_rect_short_mm",
+    "yaw_near_square",
     "h_depth_mm",
+    # Height of the median-depth point above the table. With h_depth_mm (the
+    # top band) it shows whether the mask lay on the part or spilled beside it.
+    "h_median_mm",
+    # Share of the mask's pixels returning depth at table height (within 5 mm);
+    # from 0.3 up the detection is dropped as off the part, unless what is left
+    # still gives the class's known-size fit and passes the shape check
+    # (Orchestrator._mask_off_part).
+    "table_share",
+    # Mask pixels left once those at table height are removed; the outline and the
+    # known-size fit read these (perception/depth_modes.py, off_table_mask).
+    "part_mask_area",
+    # IoU of the class's known top-face rectangle fitted to the mask outline; from
+    # 0.5 up its centre and yaw are the grasp pose (perception/depth_modes.py,
+    # fit_footprint), below it the mask centroid and rectangle yaw stand.
+    "fit_iou",
+    # How far that rectangle slides along its long side at the same IoU, mm; over
+    # 10 mm the trial is refused before motion (Orchestrator._shape_contradicts_class).
+    "fit_plateau_mm",
     # Operator verdict, scored by eye right after the trial (03 --confirm-each-trial).
     # `success` is the machine's: the detect sensor proves a part was in the gripper
     # when it closed, but nothing checks that the part was still held at PLACE or
@@ -76,6 +100,109 @@ CONTEXT_FIELDNAMES = [
     # human_ok=0. Empty when nobody scored the trial.
     "human_ok",
     "run_id",
+    # Called carton size of the target and of the support, mm (80 or 120), from the
+    # pose list's carton sidecar; empty for other classes.
+    "carton_mm",
+    "stack_on_carton_mm",
+    # Centre of the part's top face in the base frame, the same in every depth mode
+    # (placement_check.top_centre_xy); det_x/y_mm is the commanded point, which in
+    # rgbd lies at the median depth and in plane at the class height.
+    "top_x_mm",
+    "top_y_mm",
+    # Placement check before the trial, servo OFF (03 --confirm-each-trial with a
+    # pose list, see Orchestrator.run_placement_check). Its captures are never used
+    # for the trial, which detects afresh. Empty when the check did not run.
+    #   placement_flags       flags of the first check, '+'-joined (class,
+    #                         position, stack, carton_size, yaw); empty when none.
+    #   placement_recaptures  checks after the first, each after the operator was
+    #                         asked to fix the placement (0 to MAX_CHECKS - 1).
+    #   placement_override    1 when the trial ran after its last check (the
+    #                         MAX_CHECKS-th) was still flagged (limit), else 0.
+    #   placement_events      every check as flags:outcome, joined by ';'. flags is
+    #                         'none' when nothing was flagged and 'noframe' when the
+    #                         detection window received no frame; outcome is clear,
+    #                         skip (no frame: nothing checked, the trial goes on),
+    #                         fixed (the operator was asked to fix it: checked
+    #                         again), limit (the last check, still flagged: the
+    #                         trial runs as placed), or abort (the run was stopped
+    #                         at the check).
+    #   placement_captures    JSON list, one entry per check: capture number,
+    #                         frames received, frame path, the judged detection's
+    #                         class, top_x_mm, top_y_mm, h_depth_mm and yaw_deg
+    #                         (null when absent), its flags, the outcome and, for a
+    #                         flagged check, answer_s, the seconds until the
+    #                         operator's ENTER.
+    #   placement_check_s     seconds from the first check to the motion gate; not
+    #                         in cycle_time_s, which starts after the checks.
+    "placement_flags",
+    "placement_recaptures",
+    "placement_override",
+    "placement_events",
+    "placement_captures",
+    "placement_check_s",
+    # Stage durations of the cycle, ms (Orchestrator.run_one_cycle); empty for a
+    # stage the trial did not reach.
+    #   detect_window_ms  from the start of the cycle, the instant cycle_time_s
+    #                     starts from, until a usable detection was taken or the
+    #                     detection window ended.
+    #   inference_ms      the detector on the frame that gave the detection.
+    #   localize_ms       the pose extractor on that frame (depth modes) and the
+    #                     selection of the called class with its known-size fit.
+    #   plan_ms           from the detection to the dispatch of the job: commanded
+    #                     height, the refusals, reachability, IK and the predictive
+    #                     safety check.
+    #   job_ms            the parametric job, from its dispatch (P-variable writes,
+    #                     JOB_SELECT, START) to its end: Running clearing with the
+    #                     robot back at HOME, taken as the middle of the last status
+    #                     read that saw the job running or held and the first that
+    #                     saw it over (MotomanHSEBackend.last_job_timing). Motion and
+    #                     gripping run on the controller and are timed together.
+    #                     Empty when no end could be bracketed (job_flags says why).
+    #   cycle_ms          from the start of the cycle to that end; empty without it.
+    #   cycle_pc_ms       from the start of the cycle until its row is written, when
+    #                     the PC has confirmed the end (alarm and HOME reads), before
+    #                     the operator's verdict. cycle_time_s, kept as it was for
+    #                     comparison with earlier runs, also holds that verdict wait
+    #                     under --confirm-each-trial.
+    #   confirm_ms        cycle_pc_ms - cycle_ms: noticing the end and confirming it.
+    #   job_end_lo_ms,    the bracket of the end, from the start of the cycle: the
+    #   job_end_hi_ms     send of the last read that saw the job running or held and
+    #                     the receipt of the first that saw it over.
+    #   job_flags         '+'-joined: held (a HOLD during the job; the hold lasts as
+    #                     long as the operator takes), race (the read that ended the
+    #                     wait showed a hold its follow-up did not, so the job may have
+    #                     resumed: no end), untimed (no bracket), timeout, mismatch and
+    #                     error (an HSE timeout, request_id mismatch or other failed
+    #                     read during the job).
+    #   cycle_start_perf_s the start of the cycle on the time.perf_counter axis, s;
+    #                     the telemetry's t_perf is on the same axis.
+    #   frame_capture_ms  when the frame that gave the detection was captured, from
+    #                     the start of the cycle (negative: before it); its age when
+    #                     taken is detect_window_ms - frame_capture_ms.
+    #   frame_arrival_ms  when that frame reached the host (camera TIME_OF_ARRIVAL),
+    #                     same axis; empty when the camera does not report it.
+    #   frame_capture_src the camera instant behind frame_capture_ms
+    #                     (camera.frame_clock): global_mid or global_readout (device
+    #                     timestamp mapped by global time, accuracy not published),
+    #                     arrival (host arrival: a lower bound of the frame's age),
+    #                     got (when get_frame received it: later still), mock.
+    # The perception thread runs continuously, so the frame that gave the detection
+    # may have been processed before the detection window opened.
+    "detect_window_ms",
+    "inference_ms",
+    "localize_ms",
+    "plan_ms",
+    "job_ms",
+    "cycle_ms",
+    "cycle_pc_ms",
+    "confirm_ms",
+    "job_end_lo_ms",
+    "job_end_hi_ms",
+    "job_flags",
+    "cycle_start_perf_s",
+    "frame_capture_ms",
+    "frame_arrival_ms",
+    "frame_capture_src",
 ]
 
 
