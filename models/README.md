@@ -10,7 +10,9 @@ hoặc đã hoàn tất thí nghiệm vật lý.
 | File | Mô tả | Nguồn |
 |---|---|---|
 | `e2_seed1_best.pt` | Ứng viên baseline E2, YOLOv8s-seg, năm lớp | Được commit riêng tại `d736b75`; có trên nhánh `feat/synthgen-c2-c3-dataset` |
-| Các file E3/E4/E5 | Checkpoint riêng của từng cấu hình, seed/vòng | Chuyển từ máy train cùng manifest, log và SHA-256 |
+| `e3_anchored.pt` | Mô hình E3 triển khai: công thức neo, κ = 4, seed 2 (chọn bằng luật validation, 15/11/2026) | SHA-256 `6d5e2d7bf969f05163a325d2c10d582302850ca0f893f737fc8dce45902a9f95` |
+| `e3_wide.pt` | Mô hình E3 triển khai: công thức dải rộng, seed 2 | SHA-256 `311af74bdcc3a27e1b398058492a81acbf2c00fbe9d27c90439ac9f6025bd2cd` |
+| Các file E4 | Checkpoint riêng của từng nhánh, vòng | Chuyển từ máy train cùng manifest, log và SHA-256 |
 
 `config/experiment.yaml :: model_path` hiện trỏ tới `models/e2_seed1_best.pt`.
 Link artifact cố định theo commit:

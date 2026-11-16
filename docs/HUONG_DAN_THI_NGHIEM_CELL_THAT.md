@@ -1,5 +1,7 @@
 # HƯỚNG DẪN CHẠY THÍ NGHIỆM
 
+Bản ngày 16/11/2026, dùng từ buổi `e3-1`; lấy về bằng lần cập nhật trước buổi `e3-1` (B5).
+
 **Hiệu chuẩn tay–mắt đã xong, các file kết quả đã có trên git, không làm lại. Chỉ còn kiểm
 lại bằng thước kẹp (A3) và chạm thử (A5).**
 
@@ -35,7 +37,7 @@ Xong A1 đến A8, gửi các số trên cho thầy rồi sang phần B.
 | B2 | Pha 2: chạy thử | 1, rồi 5 |
 | B3 | Pha 3 (E1): đo độ trễ, telemetry, gắp theo thẻ; điểm công cụ (jog tay) | 50; 20 tư thế |
 | B4 | Pha 4 (E2): 2 buổi chuẩn, 2 buổi khó | 340, 340, 140, 140 |
-| B5 | Pha 5: 8 buổi, chỉ chạy khi người huấn luyện gửi mô hình mới | xem B5 |
+| B5 | Pha 5: 6 buổi, chỉ chạy khi người huấn luyện gửi mô hình mới | xem B5 |
 
 Từ B3 trở đi không đo tay nữa: máy ghi từng lượt, người đặt vật chỉ gõ y hoặc n sau mỗi lượt,
 và bấm ENTER sau khi sửa chỗ đặt nếu máy báo lệch (B1, bước 4). Riêng B2 còn một phép đo bằng thước.
@@ -87,6 +89,8 @@ cd DTwinGP7
 .venv\Scripts\activate
 git pull
 ```
+
+Từ buổi `e3-1` tới hết buổi `e4-2` không chạy `git pull` (B5, mục giữ cố định).
 
 Nếu `git pull` báo lỗi vì file ở máy đã sửa (sẽ gặp sau A4 và A7), chạy bốn lệnh này; các số đã
 sửa ở máy vẫn được giữ:
@@ -292,7 +296,7 @@ Xong A8: gửi các số của A1 đến A7 về, sang phần B.
 >    `results\pha2\B2_do.csv`.
 > 3. Lượt robot không gắp được vật thì chấm `n`.
 
-Phần B có **bốn việc phải chạy**, theo thứ tự: B2, rồi B3, rồi bốn buổi của B4, rồi tám buổi
+Phần B có **bốn việc phải chạy**, theo thứ tự: B2, rồi B3, rồi bốn buổi của B4, rồi sáu buổi
 của B5. Hai mục còn lại **không phải việc, chỉ để tra**: B1 là cách đặt vật và chấm một lượt,
 B6 là trình tự của một buổi trong B4 và B5.
 
@@ -365,9 +369,9 @@ không thay thứ nào trong số đó.
 ![Đọc góc trên thẻ](ban_ve_doc_goc.png)
 
 **Phép kiểm chỗ đặt** chạy ở mọi lần chạy có dòng gọi (B3, khối đối chứng, lệnh A và D), trừ
-lệnh B, C, E, F: các cấu hình của lệnh C, E, F dùng mô hình nhận dạng khác nhau, nên dòng lệch có
+lệnh B, C, E: các cấu hình của lệnh C, E dùng mô hình nhận dạng khác nhau, nên dòng lệch có
 thể khác nhau giữa các cấu hình và để lộ mã nào là cấu hình nào; lệnh B tắt phép kiểm để chạy cùng
-quy trình với C, E, F, vì kết quả lệnh B được dùng lại làm cấu hình đối chứng của chúng. Đầu mỗi lần chạy, màn hình in
+quy trình với lệnh C, vì kết quả lệnh B được so với kết quả lệnh C trên cùng 200 tư thế. Đầu mỗi lần chạy, màn hình in
 `Placement check: on` hoặc `Placement check: off`. Dòng lệch giống nhau ở mọi cấu hình; mỗi dòng
 nêu số đo, mức mong đợi và chỗ cần kiểm:
 
@@ -564,27 +568,93 @@ chạy ở bước 6.
 | `$B = "e2kho-1"; $F = 0` | khó | B | 100 + 40 đối chứng |
 | `$B = "e2kho-2"; $F = 100` | khó | B | 100 + 40 đối chứng |
 
-## B5. Pha 5: tám buổi, khi có mô hình mới
+## B5. Pha 5: sáu buổi, khi có mô hình mới
 
 Mọi buổi Pha 5 dùng **điều kiện khó**, trình tự như B6.
 
-**Trước buổi `e3-1`:** lệnh 6 của B3 đã chạy; ảnh màn hình TOOL01 và hai file `e1_tcp_*` đã gửi.
+**Trước buổi `e3-1`.** Cập nhật mã một lần (lấy mô hình E3 và hướng dẫn này), như mục **Những lần
+sau** của A1:
+
+```
+cd DTwinGP7
+.venv\Scripts\activate
+git pull
+```
+
+`git pull` báo lỗi vì file ở máy đã sửa: làm khối sửa lỗi `git pull` ở A1. Sau lần cập nhật này, tới
+hết buổi `e4-2` không chạy `git pull` nữa. Buổi `e3-1` chỉ bắt đầu khi đủ sáu mục dưới và thầy đã
+xác nhận các file gửi về.
+
+1. Lệnh 6 của B3 đã chạy; ảnh màn hình TOOL01 và hai file `e1_tcp_*` đã gửi.
+2. Ảnh màn hình các hệ toạ độ người dùng trên pendant (MAIN MENU → ROBOT → USER COORD) đã gửi,
+   mỗi user frame đã khai một ảnh. Không sửa số nào trên màn hình này.
+3. Ba file mô hình của E3 nằm trong `models\`; lệnh kiểm ở mục **Nhận mô hình** dưới đây in ba
+   dòng `True`.
+4. Lệnh `git diff --stat 3d06434 HEAD -- scripts src config tools` không in dòng nào: mã chạy và
+   cấu hình giống hệt commit `3d06434`, lần cập nhật trước E3 chỉ thêm mô hình vào `models\` và sửa
+   hướng dẫn trong `docs\`. In ra dòng nào: DỪNG. Lệnh `git status --porcelain --untracked-files=no`
+   không in dòng nào; in ra dòng nào, tức có file trong mã hay trong `config\` đã sửa ở máy: DỪNG.
+   **Ghi:** dòng in ra của `git log -1 --format=%h`.
+5. Ổ D: còn ít nhất 60 GB trống, đo bằng lệnh `[math]::Floor((Get-PSDrive D).Free / 1GB)` (một buổi
+   E3 ghi tới khoảng 44 GB ảnh vào ổ D:). Thiếu chỗ: DỪNG, báo thầy; không tự xoá gì.
+6. Sau khi dán dòng biến của buổi `e3-1`, lệnh C chạy với `--dry-run` ở cuối in
+   `Placement check: off`, dòng `3 arm(s), 12 block(s) of 25 trials.` và danh sách khối có đủ ba
+   mã A, B, C.
+
+**Gửi:** ảnh của mục 1 và 2, hai file `e1_tcp_*`, các dòng in ra ở mục 3 đến 6.
+
+**Giữ cố định từ buổi `e3-1` tới hết buổi `e4-2`.** Các buổi E3, E4 chỉ so được với nhau và với
+E2 khó khi cell, mã và cấu hình không đổi giữa các buổi; một số thay đổi, như sửa TOOL01 trên
+pendant, làm đổi độ sâu gắp mà dữ liệu của lượt không ghi lại. Trong khoảng này:
+
+- camera không xê dịch, không hiệu chuẩn lại (phụ lục cuối hướng dẫn không làm);
+- điều kiện khó dựng như ở các buổi E2 khó và đạt bước 4 của B6 (lệnh kiểm điều kiện in
+  `HARD CONDITION: PASS`); đèn chỉnh khi cần trước khi bước 4 đạt `PASS`, không chỉnh sau đó trong buổi;
+- TOOL01 trên pendant và chiều dài tool `tcp_offset_xyz_mm` trong `config\cell_layout_real.yaml`
+  không sửa; kết quả lệnh 6 của B3 chỉ gửi về, không dùng để sửa số nào;
+- các hệ toạ độ người dùng (USER COORD) trên pendant không sửa;
+- job `DTWINRUN` trên tủ điều khiển, kể cả điểm HOME `P004` đã dạy, không sửa;
+- `config\cell_layout_real.yaml` và các file khác trong `config\` không sửa, không chép file từ
+  nơi khác vào `config\`;
+- không chạy `git pull`; mã trên máy cell chỉ đổi theo lệnh cập nhật riêng của thầy, gửi kèm mã
+  commit.
+
+**DỪNG nếu:** camera bị chạm hoặc xê dịch; một mục trên cần sửa.
 
 **Vật dự phòng** để ngoài bàn, ngoài khung hình camera, suốt buổi, kể cả lúc đổi vật giữa hai
 lượt (B1, bước 3). Vật nằm trong khung hình thì camera thấy thêm một vật không có trong dòng gọi:
 robot có thể gắp nó thay cho vật của lượt, và ảnh lưu của lượt không còn là cảnh được gọi.
 
-**Nhận mô hình.** Các file mô hình của Pha 5 chỉ có sau khi huấn luyện E3, E4, E5. Tên file cố
-định theo cột `Cần file trong models\` của bảng dưới: người huấn luyện đổi tên mô hình đã chọn
-thành đúng tên ấy. SHA-256 của từng file chỉ có sau khi huấn luyện và được gửi kèm file. Chép file
-vào thư mục `models\`, giữ đúng tên, rồi kiểm từng file, ví dụ:
+**Nhận mô hình.** Ba file của E3, `e2_seed1_best.pt`, `e3_anchored.pt` và `e3_wide.pt`, có sẵn trong
+`models\` sau lần cập nhật trước buổi `e3-1`. Các file mô hình của E4 chỉ có sau khi huấn luyện E4. Tên file cố định theo cột `Cần file trong models\` của
+bảng dưới: người huấn luyện đổi tên mô hình đã chọn thành đúng tên ấy. Chép file vào thư mục
+`models\`, giữ đúng tên. SHA-256 của ba file dùng ở E3:
+
+| File | SHA-256 |
+|---|---|
+| `e3_anchored.pt` | `6d5e2d7bf969f05163a325d2c10d582302850ca0f893f737fc8dce45902a9f95` |
+| `e3_wide.pt` | `311af74bdcc3a27e1b398058492a81acbf2c00fbe9d27c90439ac9f6025bd2cd` |
+| `e2_seed1_best.pt` | `52e25b0349d1586b45f7a0077e4b38479d845621435e85722555ea65cf5e702a` |
+
+Kiểm cả ba file bằng một lệnh:
 
 ```
-Get-FileHash models\e3_anchored.pt
+"e3_anchored.pt 6d5e2d7bf969f05163a325d2c10d582302850ca0f893f737fc8dce45902a9f95", "e3_wide.pt 311af74bdcc3a27e1b398058492a81acbf2c00fbe9d27c90439ac9f6025bd2cd", "e2_seed1_best.pt 52e25b0349d1586b45f7a0077e4b38479d845621435e85722555ea65cf5e702a" | ForEach-Object { $ten, $ma = $_ -split ' '; "{0}  {1}" -f $ten, ((Get-FileHash "models\$ten").Hash -eq $ma) }
+```
+
+**Đạt khi:** in ba dòng, mỗi dòng kết thúc bằng `True` (phép so không phân biệt chữ hoa, chữ
+thường). Có dòng `False`: DỪNG, không chạy buổi cần file đó.
+
+SHA-256 của các file E4 chỉ có sau khi huấn luyện và được gửi kèm file. Kiểm từng file, ví dụ:
+
+```
+Get-FileHash models\e4_guided1.pt
 ```
 
 **Đạt khi:** chuỗi ở cột `Hash` trùng SHA-256 gửi kèm (chữ hoa hay thường như nhau). Khác: DỪNG,
 không chạy buổi cần file đó.
+
+Mỗi file được kiểm khi nhận, và kiểm lại ở bước 2 của B6 đầu mỗi buổi dùng file.
 **Ghi:** tên file và SHA-256 vào nhật ký của buổi dùng file.
 
 **Không sửa** `model_path` trong `config\experiment.yaml`: khối đối chứng luôn chạy bằng mô hình gốc ghi ở đó, còn mô hình mới đã ghi sẵn trong lệnh.
@@ -594,30 +664,29 @@ làm theo trình tự ở B6; lệnh ở cột Lệnh chiến dịch chạy ở 
 
 | Dòng biến | Cần file trong `models\` | Lệnh chiến dịch | Số lượt |
 |---|---|---|---:|
-| `$B = "e3-1"; $F = 0` | `e3_anchored.pt`, `e3_wide.pt` | C | 200 + 40 đối chứng |
-| `$B = "e3-2"; $F = 100` | như trên | C | 200 + 40 đối chứng |
+| `$B = "e3-1"; $F = 0` | `e3_anchored.pt`, `e3_wide.pt`, `e2_seed1_best.pt` | C | 300 + 40 đối chứng |
+| `$B = "e3-2"; $F = 100` | như trên | C | 300 + 40 đối chứng |
 | `$B = "e4adapt-1"; $M = "models/e3_anchored.pt"` | `e3_anchored.pt` | D | 80 + 40 đối chứng |
 | `$B = "e4adapt-2"; $M = "models/e4_guided1.pt"` | `e4_guided1.pt` | D | 80 + 40 đối chứng |
 | `$B = "e4-1"; $F = 0` | `e4_guided2.pt`, `e4_control2.pt` | E | 200 + 40 đối chứng |
 | `$B = "e4-2"; $F = 100` | như trên | E | 200 + 40 đối chứng |
-| `$B = "e5-1"; $F = 0` | `e5_camera.pt`, `e5_illumination.pt`, `e5_background.pt` | F | 300 + 40 đối chứng |
-| `$B = "e5-2"; $F = 100` | như trên | F | 300 + 40 đối chứng |
 
 ## B6. Tra cứu: trình tự một buổi của B4 và B5
 
-Lấy một dòng trong bảng ở B4 hoặc B5 rồi làm bước 1 đến bước 8. Mọi lượt ở bước 5, 6 và 7 làm
+Lấy một dòng trong bảng ở B4 hoặc B5 rồi làm bước 1 đến bước 9. Mọi lượt ở bước 5, 6 và 7 làm
 theo B1.
 
 | Bước | Việc | Robot |
 |---|---|---|
 | 1 | Đặt biến | đứng yên |
-| 2 | Kiểm không còn file rời | đứng yên |
+| 2 | Kiểm file rời, ổ D:, mô hình | đứng yên |
 | 3 | Dựng điều kiện | đứng yên |
 | 4 | Kiểm điều kiện ảnh | jog tay ra khuất camera |
 | 5 | Đối chứng đầu buổi, 20 lượt | tự chạy |
 | 6 | Chiến dịch chính | tự chạy |
 | 7 | Đối chứng cuối buổi, 20 lượt | tự chạy |
-| 8 | Kiểm rồi gửi | đứng yên |
+| 8 | Kiểm, gom file | đứng yên |
+| 9 | Sao lưu ảnh, dọn ổ D:, gửi | đứng yên |
 
 1. **Đặt biến.** Mở PowerShell, `cd DTwinGP7`, `.venv\Scripts\activate`, dán dòng biến của buổi,
    ví dụ:
@@ -628,13 +697,25 @@ theo B1.
 
    Mở lại PowerShell giữa buổi thì dán lại dòng này.
 
-2. **Kiểm không còn file rời.**
+2. **Kiểm file rời, ổ D:, mô hình.**
 
    ```
    dir results\experiment_real_*
    ```
 
    Phải không in ra gì. Còn file thì dồn về thư mục của buổi trước.
+
+   ```
+   [math]::Floor((Get-PSDrive D).Free / 1GB)
+   ```
+
+   **Đạt khi:** số in ra, tức số GB còn trống trên ổ D:, không dưới 60. Dưới 60: DỪNG.
+
+   Buổi của B5: chạy lệnh kiểm SHA-256 ở mục **Nhận mô hình** của B5 cho mọi file mà buổi dùng, và
+   hai lệnh git ở mục 4 của phần **Trước buổi `e3-1`** trong B5. **Đạt khi:** lệnh kiểm SHA-256 đạt
+   như ở mục **Nhận mô hình**, mã commit trùng mã đã ghi trước buổi `e3-1`, `git status` không in dòng
+   nào. Không đạt: DỪNG.
+   **Ghi:** số GB trống của ổ D:, kết quả kiểm SHA-256 và mã commit.
 
 3. **Dựng điều kiện.** Buổi chuẩn: bàn trống, đèn bình thường. Buổi khó: dựng như hai ảnh mẫu
    `anh_mau_bo_kho_1.jpg` và `anh_mau_bo_kho_2.jpg`:
@@ -665,6 +746,10 @@ theo B1.
    hoặc `too bright` là chỉnh đèn. Sửa xong chạy lại lệnh, tới khi `PASS` mới sang bước 5. Buổi
    chuẩn không có ngưỡng. **Ghi:** các dòng số đo vào nhật ký.
 
+   Buổi khó của B5 kiểm như trên ở đầu mỗi buổi, kể cả buổi chạy lại. Đạt `PASS` rồi thì từ bước 5
+   tới hết bước 7 không đổi đèn, rèm hay tấm nền; chọn giờ chạy sao cho ánh sáng phòng không đổi
+   trong buổi.
+
 5. **Đối chứng đầu buổi**, 20 lượt.
 
    1. Tháo vít chỉ nếu còn gắn, dọn vật lạ trên bàn, không còn ai trong cell, nút dừng khẩn trong
@@ -693,9 +778,10 @@ theo B1.
 
 6. **Chiến dịch chính.** Chép lệnh mà bảng của buổi gọi tên, từ danh sách ở cuối mục này.
 
-   1. Lệnh A, B, C, E, F: chạy trước một lần có thêm `--dry-run` ở cuối lệnh. Dòng
-      `Placement check:` phải ghi `on` với lệnh A và `off` với lệnh B, C, E, F; khác thế thì chép
-      lại lệnh. Rồi chạy thật, bỏ `--dry-run`. Lệnh D chạy thẳng.
+   1. Lệnh A, B, C, E: chạy trước một lần có thêm `--dry-run` ở cuối lệnh. Dòng
+      `Placement check:` phải ghi `on` với lệnh A và `off` với lệnh B, C, E; lệnh C còn phải in
+      dòng `3 arm(s), 12 block(s) of 25 trials.` và danh sách khối có đủ ba mã A, B, C. Khác thế
+      thì chép lại lệnh. Rồi chạy thật, bỏ `--dry-run`. Lệnh D chạy thẳng.
    2. Trong buổi không mở file khoá trong `results\blinding_keys\` và không mở `logs\experiment.log`.
    3. Dồn file:
 
@@ -707,7 +793,7 @@ theo B1.
 7. **Đối chứng cuối buổi.** Chạy lại lệnh của bước 5, đổi `doichung-dau` thành `doichung-cuoi`,
    rồi dồn file như bước 5.
 
-8. **Kiểm rồi gửi.** Buổi khó: đổi `std_v2.csv` trong lệnh thành `hard_v2.csv`.
+8. **Kiểm, gom file.** Buổi khó: đổi `std_v2.csv` trong lệnh thành `hard_v2.csv`.
 
    ```
    python -c "import csv,glob,sys;rows=[d for f in glob.glob(sys.argv[2],recursive=True) for d in csv.DictReader(open(f,encoding='utf-8'))];p={d['pose_id']:d['class_hint'] for d in csv.DictReader(open(sys.argv[1],encoding='utf-8'))};k=[d for d in rows if d['class_name']];m=sum(1 for d in k if d['class_name']==p.get(d['pose_id']));print('dung lop:',m,'/',len(k))" config/pose_lists/std_v2.csv "results/$B/**/experiment_real_*.csv"
@@ -715,7 +801,17 @@ theo B1.
 
    **Đạt khi:** `dung lop` không dưới 90 phần trăm. Không đạt: DỪNG.
 
-   Đạt thì gom vào thư mục của buổi:
+   Kiểm ảnh của các lượt chính (khối đối chứng không lưu ảnh nên không tính):
+
+   ```
+   python -c "import csv,glob,os,sys;r=[d for f in glob.glob(sys.argv[1]) for d in csv.DictReader(open(f,encoding='utf-8'))];k=[d for d in r if not (d.get('frame_path') and os.path.isfile(d['frame_path']) and os.path.isfile(d['frame_path'][:-4]+'_depth.png'))];print('thieu anh:',len(k),'/',len(r))" "results/$B/experiment_real_*.csv"
+   ```
+
+   **Đạt khi:** in `thieu anh: 0 / N`, với N là số lượt chính của buổi trong bảng ở B4 hoặc B5
+   (buổi E3: `thieu anh: 0 / 300`). Số đầu khác 0 nghĩa là có lượt mà ảnh màu hoặc ảnh độ sâu
+   không được ghi xuống đĩa (ổ đầy, lỗi ghi): DỪNG.
+
+   Đạt cả hai phép kiểm thì gom vào thư mục của buổi:
 
    ```
    copy results\blinding_keys\key_$B.json results\$B\
@@ -725,12 +821,48 @@ theo B1.
    Get-ChildItem results\$B -Recurse -Filter "experiment_real_*.csv" | ForEach-Object { Import-Csv $_.FullName } | Where-Object { $_.frame_path } | ForEach-Object { Copy-Item $_.frame_path results\$B\anh\; Copy-Item ($_.frame_path -replace '\.png$','_depth.png') results\$B\anh\ }
    ```
 
-   Ghi trang nhật ký của buổi vào `results\<tên buổi>\nhat_ky.txt`, rồi gửi một thư mục
-   `results\<tên buổi>\`. Thư mục `D:\Scientific\Dataset\DigitalTwin\frames` không gửi, chỉ sao
-   lưu ra ổ ngoài cùng `results\` và `logs\`.
+9. **Gửi.** Ghi trang nhật ký của buổi vào `results\<tên buổi>\nhat_ky.txt`, rồi gửi một thư mục
+   `results\<tên buổi>\` (ảnh màu và ảnh độ sâu của từng lượt đã gom vào `anh\` ở bước 8). Thư mục
+   `D:\Scientific\Dataset\DigitalTwin\frames` không gửi và không xoá. Đo chỗ trống còn lại của ổ D:
+   bằng `[math]::Floor((Get-PSDrive D).Free / 1GB)` và ghi vào nhật ký; dưới 60 GB thì báo thầy trước
+   buổi sau.
 
-Chiến dịch dừng giữa chừng (lỗi, dừng khẩn, mất điện): DỪNG, ghi lượt cuối đã chạy, gửi về. Không
-chạy lại lệnh chiến dịch với cùng tên buổi.
+**Buổi lỗi.** Các lỗi kỹ thuật và lỗi quy trình sau làm cả buổi lỗi:
+
+1. robot hoặc tủ điều khiển làm buổi dừng: lệnh dừng giữa chừng vì alarm hay lỗi (với lệnh A, B,
+   C, E, màn hình in `Campaign stopped here`), dừng khẩn, mất điện, mất kết nối tới tủ điều khiển;
+2. camera mất tín hiệu;
+3. phần mềm báo lỗi làm lệnh dừng;
+4. ổ đĩa đầy, hoặc phép kiểm ảnh ở bước 8 in số đầu khác 0;
+5. buổi khó đã chạy lượt khi bước 4 chưa in `HARD CONDITION: PASS`;
+6. `dung lop` ở bước 8 dưới 90 phần trăm;
+7. buổi của B5 chạy trên mã commit khác mã đã ghi trước buổi `e3-1`, có file trong mã hay trong
+   `config\` đã sửa ở máy, hoặc camera đã hiệu chuẩn lại.
+
+Lỗi được xác định từ log và các file kiểm của buổi, không mở file khoá, không xét kết quả gắp của
+các lượt. Gặp một lỗi trong danh sách: DỪNG, ghi lượt cuối đã chạy, gửi `logs\experiment.log` và
+các file của buổi về, chờ trả lời.
+
+Thầy xác nhận lỗi thuộc danh sách thì buổi chạy lại **toàn bộ**, từ bước 1, **với đúng tên buổi
+cũ** và cùng dòng biến. Không chạy tiếp phần còn lại của lần lỗi. Trước khi chạy lại, mọi dữ liệu
+của lần lỗi dồn sang `results\khong_dung\`; lệnh nào báo không tìm thấy file thì bỏ qua, vì lần
+lỗi dừng trước khi tạo file ấy:
+
+```
+$K = "results\khong_dung\${B}_$(Get-Date -Format yyyyMMdd_HHmm)"
+mkdir results\khong_dung -Force
+if (Test-Path results\$B) { Move-Item results\$B $K } else { mkdir $K }
+move results\blinding_keys\key_$B.json $K\
+move results\experiment_real_* $K\
+move results\telemetry_* $K\
+move results\do_sang_$B* $K\
+copy logs\experiment.log $K\
+```
+
+Dữ liệu trong `results\khong_dung\` chỉ dùng để sửa mã, không được phân tích hay báo cáo.
+
+Lượt bị từ chối trước khi robot chạy, lượt có alarm mà lệnh vẫn chạy sang lượt sau, lượt rơi vật
+là kết quả của chính lượt ấy: không chạy lại lượt, không chạy lại buổi vì các lượt ấy.
 
 Được nghỉ giữa buổi, miễn không đổi gì trong cell: camera, đèn, nền, thẻ, người đặt vật.
 
@@ -748,10 +880,10 @@ python tools/run_blinded_campaign.py --arm rgbd "--depth-mode rgbd" --arm plane 
 python tools/run_blinded_campaign.py --arm real_only "--depth-mode rgbd" --pose-list config/pose_lists/hard_v2.csv --first-pose $F --trials 100 --block 25 --session $B --operator PQM --common "--mode real --ik-source yrc --tool-no 1 --confirm-each-trial --no-viewport-mirror --no-placement-check --save-frames --frames-dir D:/Scientific/Dataset/DigitalTwin/frames --lighting dim"
 ```
 
-**Lệnh C** (E3):
+**Lệnh C** (E3, ba cấu hình):
 
 ```
-python tools/run_blinded_campaign.py --arm anchored "--depth-mode rgbd --model-path models/e3_anchored.pt" --arm wide "--depth-mode rgbd --model-path models/e3_wide.pt" --pose-list config/pose_lists/hard_v2.csv --first-pose $F --trials 100 --block 25 --session $B --operator PQM --common "--mode real --ik-source yrc --tool-no 1 --confirm-each-trial --no-viewport-mirror --save-frames --frames-dir D:/Scientific/Dataset/DigitalTwin/frames --lighting dim"
+python tools/run_blinded_campaign.py --arm anchored "--depth-mode rgbd --model-path models/e3_anchored.pt" --arm wide "--depth-mode rgbd --model-path models/e3_wide.pt" --arm real_only "--depth-mode rgbd --model-path models/e2_seed1_best.pt" --pose-list config/pose_lists/hard_v2.csv --first-pose $F --trials 100 --block 25 --session $B --operator PQM --common "--mode real --ik-source yrc --tool-no 1 --confirm-each-trial --no-viewport-mirror --save-frames --frames-dir D:/Scientific/Dataset/DigitalTwin/frames --lighting dim"
 ```
 
 **Lệnh D** (E4, buổi adaptation): một cấu hình, không có mã A, B, không có file khoá; bước 6 vẫn
@@ -767,11 +899,11 @@ python scripts/03_run_experiment.py --mode real --depth-mode rgbd --model-path $
 python tools/run_blinded_campaign.py --arm guided2 "--depth-mode rgbd --model-path models/e4_guided2.pt" --arm control2 "--depth-mode rgbd --model-path models/e4_control2.pt" --pose-list config/pose_lists/hard_v2.csv --first-pose $F --trials 100 --block 25 --session $B --operator PQM --common "--mode real --ik-source yrc --tool-no 1 --confirm-each-trial --no-viewport-mirror --save-frames --frames-dir D:/Scientific/Dataset/DigitalTwin/frames --lighting dim"
 ```
 
-**Lệnh F** (E5):
-
-```
-python tools/run_blinded_campaign.py --arm camera "--depth-mode rgbd --model-path models/e5_camera.pt" --arm illumination "--depth-mode rgbd --model-path models/e5_illumination.pt" --arm background "--depth-mode rgbd --model-path models/e5_background.pt" --pose-list config/pose_lists/hard_v2.csv --first-pose $F --trials 100 --block 25 --session $B --operator PQM --common "--mode real --ik-source yrc --tool-no 1 --confirm-each-trial --no-viewport-mirror --save-frames --frames-dir D:/Scientific/Dataset/DigitalTwin/frames --lighting dim"
-```
+Lệnh E như trên dùng khi E4 có hai lần cập nhật mô hình, sau buổi `e4adapt-1` và sau buổi `e4adapt-2`.
+Khi thầy báo chỉ có một lần cập nhật, hai file gửi đến là `e4_guided1.pt`, `e4_control1.pt`; trong lệnh E
+và trong bảng ở B5, `guided2`, `control2`, `e4_guided2.pt`, `e4_control2.pt` đổi thành `guided1`,
+`control1`, `e4_guided1.pt`, `e4_control1.pt`. Khi thầy báo không có lần cập nhật nào, các buổi
+`e4adapt-2`, `e4-1`, `e4-2` không chạy.
 
 **Tổng số lượt cả phần B**
 
@@ -781,10 +913,9 @@ python tools/run_blinded_campaign.py --arm camera "--depth-mode rgbd --model-pat
 | 3 | E1 | 50 | |
 | 4 | E2 chuẩn, 2 buổi | 600 | 80 |
 | 4 | E2 khó, 2 buổi | 200 | 80 |
-| 5 | E3, 2 buổi | 400 | 80 |
+| 5 | E3, 2 buổi | 600 | 80 |
 | 5 | E4 adaptation, 2 buổi | 160 | 80 |
 | 5 | E4 đánh giá, 2 buổi | 400 | 80 |
-| 5 | E5, 2 buổi | 600 | 80 |
 
 ---
 
@@ -806,7 +937,8 @@ máy không biết. Sau mỗi buổi, điền một trang:
 
 ## Phụ lục: hiệu chuẩn lại (chỉ làm khi người huấn luyện yêu cầu)
 
-Chỉ cần khi A2 hoặc A3 không đạt.
+Chỉ cần khi A2 hoặc A3 không đạt. Không làm từ buổi `e3-1` tới hết buổi `e4-2` (B5, mục giữ cố
+định).
 
 1. In `charuco_a3_o45mm.pdf` ở 100%, kiểm vạch 100 mm in sẵn, giấy mặt mờ, dán lên tấm alu phẳng (tấm đang dùng dày 4 mm cả lớp in). Gá
    lên má kẹp bằng hai thanh nhôm hộp 20 × 40 dán ở lưng tấm, hai mặt ngoài cách nhau 200 mm, mặt in
