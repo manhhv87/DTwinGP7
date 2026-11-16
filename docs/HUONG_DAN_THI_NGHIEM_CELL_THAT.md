@@ -529,10 +529,13 @@ hai điểm.
    | Tư thế | Vị trí nhìn từ trên | Độ cao | Cổ tay |
    |---|---|---|---|
    | 1 đến 5 | thẻ 1, 3, 11, 19, 21 | khoảng 50 mm | chúc thẳng xuống |
-   | 6 đến 10 | thẻ 1, 3, 11, 19, 21 | khoảng 200 mm | chúc thẳng xuống, rồi xoay Rz 45 độ |
-   | 11 đến 14 | thẻ 2, 10, 12, 20 | khoảng 150 mm | chúc thẳng xuống, rồi nghiêng 15 độ: thẻ 2 và 20 quanh Rx, thẻ 10 và 12 quanh Ry |
+   | 6 đến 10 | thẻ 1, 3, 11, 19, 21 | khoảng 200 mm | chúc thẳng xuống, rồi bấm phím xoay quanh Z (Rz), xoay khoảng 45 độ |
+   | 11 đến 14 | thẻ 2, 10, 12, 20 | khoảng 150 mm | chúc thẳng xuống, rồi nghiêng khoảng 15 độ: thẻ 2 và 20 bấm phím quanh X (Rx), thẻ 10 và 12 bấm phím quanh Y (Ry) |
    | 15 đến 17 | dấu điểm thả | khoảng 50, 150, 250 mm | chúc thẳng xuống |
-   | 18 đến 20 | dấu điểm thả | khoảng 150 mm | chúc thẳng xuống, rồi lần lượt: xoay Rz −45 độ; nghiêng Rx 15 độ; nghiêng Ry 15 độ |
+   | 18 đến 20 | dấu điểm thả | khoảng 150 mm | chúc thẳng xuống, rồi lần lượt: tư thế 18 xoay quanh Z (Rz) khoảng 45 độ, ngược chiều với tư thế 6 đến 10; tư thế 19 nghiêng quanh X (Rx) khoảng 15 độ; tư thế 20 nghiêng quanh Y (Ry) khoảng 15 độ |
+
+   Xoay, nghiêng bằng phím jog hệ ROBOT, ước bằng mắt (45 độ là một phần tám vòng). Độ cao và góc chỉ
+   cần gần đúng: ở mỗi tư thế máy đọc vị trí thật của robot.
 
    Hai dòng sau không phải lỗi, chỉ cần làm lại tư thế đang đọc:
 
@@ -715,7 +718,9 @@ theo B1.
    2. Giảm đèn phòng, chốt theo kết quả kiểm ở bước 4.
    3. Dán bộ thẻ thứ hai lên tấm nền, lấy dấu bằng robot như A6. Bộ thẻ này để luôn trên tấm nền.
 
-   Hết buổi khó: cất tấm nền, bật đèn lại.
+   Hết buổi khó của B4: cất tấm nền, bật đèn lại. Các buổi của B5 (E3, E4): tấm nền và bộ thẻ để
+   nguyên trên bàn từ buổi `e3-1` tới hết buổi `e4-2`, hết mỗi buổi chỉ bật đèn lại; cần nhấc tấm
+   nền ra thì báo thầy trước.
 
    ![Ảnh mẫu điều kiện khó](anh_mau_bo_kho_2.jpg)
 
@@ -918,7 +923,6 @@ máy không biết. Sau mỗi buổi, điền một trang:
 | Tên buổi, ngày, giờ bắt đầu và kết thúc | |
 | Người đặt vật | |
 | Số lượt đã chạy, số lượt hỏng | |
-| Điều kiện phòng | số đo độ sáng đầu buổi; đèn nào bật, có che nắng không, ai đi qua chắn sáng |
 | Bất thường | robot dừng, vật rơi, thẻ xê dịch, camera bị chạm, dòng lỗi lộ tên cấu hình |
 
 ---
