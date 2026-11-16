@@ -90,10 +90,12 @@ Thầy xác nhận rồi mới chạy `e3-1`.
 
 ## 3. CHẠY MỘT BUỔI E3
 
-Buổi `e3-1` trước. Buổi `e3-2` chạy sau khi thầy xác nhận dữ liệu `e3-1`. Mỗi buổi làm bước 1 đến
-9. Mỗi lượt ở bước 5, 6, 7: đặt vật đúng dòng máy gọi, rút tay khỏi cell, bấm ENTER; robot thả xong
-thì trả lời `y` hoặc `n` như B1 của hướng dẫn đầy đủ. Vật dự phòng để ngoài bàn, ngoài khung hình
-camera.
+E3 có hai buổi, làm giống hệt nhau theo bước 1 đến 9 dưới, chỉ khác dòng dán ở bước 1: `e3-1` gắp
+tư thế 1 đến 100, `e3-2` gắp tư thế 101 đến 200. Chạy `e3-1` trước; `e3-2` ngày nào cũng được, miễn
+`e3-1` đạt bước 8.
+
+Mỗi lượt: đặt vật như máy gọi, rút tay ra khỏi cell, bấm ENTER; robot thả xong thì gõ `y` (được)
+hoặc `n` (hỏng). Vật dự phòng để ngoài bàn, ngoài khung hình camera.
 
 1. **Đặt biến buổi.** Dán dòng của buổi. Mở lại PowerShell giữa buổi thì `cd DTwinGP7`,
    `.venv\Scripts\activate`, dán lại dòng này.
@@ -271,8 +273,28 @@ move results\do_sang_$B* $K\
 copy logs\experiment.log $K\
 ```
 
-## 4. SAU BUỔI `e3-2`
+## 4. SAU BUỔI `e3-2`: BUỔI `e4adapt-1`
 
-E3 xong. Các buổi tiếp theo trên cell là E4 (`e4adapt-1`, `e4adapt-2`, `e4-1`, `e4-2`), chạy theo
-tờ hướng dẫn E4 thầy gửi sau, vì các buổi đó cần mô hình huấn luyện giữa các buổi. Không có buổi E5
-trên cell.
+Chạy ngày nào cũng được sau `e3-2`, không cần chờ thầy; dùng mô hình `e3_anchored.pt` đã có. Làm
+bước 1 đến 9 của phần 3, chỉ khác ba chỗ:
+
+- **Bước 1:** dòng biến là
+
+  ```
+  $B = "e4adapt-1"; $M = "models/e3_anchored.pt"
+  ```
+
+- **Bước 6:** thay lệnh chiến dịch bằng lệnh dưới (80 lượt, không có mã A, B, C), rồi dồn file như
+  bước 6. **Đạt khi:** chạy hết 80 lượt, cuối cùng in một dòng bắt đầu bằng `RESULTS: success_rate=`
+  và một dòng bắt đầu bằng `CSV:`.
+
+  ```
+  python scripts/03_run_experiment.py --mode real --depth-mode rgbd --model-path $M --pose-list config/pose_lists/hard_v2.csv --pose-slice 220:300 --session-id $B --block-id adapt --operator-id PQM --ik-source yrc --tool-no 1 --confirm-each-trial --no-viewport-mirror --save-frames --frames-dir D:/Scientific/Dataset/DigitalTwin/frames --lighting dim
+  ```
+
+- **Bước 8:** lệnh kiểm ảnh phải in `thieu anh: 0 / 80`. Trong khối gom file, dòng
+  `copy results\blinding_keys\key_$B.json results\$B\` báo không tìm thấy file thì bỏ qua (buổi này
+  không có file khoá).
+
+Ba buổi E4 còn lại (`e4adapt-2`, `e4-1`, `e4-2`) cần mô hình huấn luyện từ dữ liệu `e4adapt-1`: chạy
+khi thầy gửi mô hình và dòng biến.
