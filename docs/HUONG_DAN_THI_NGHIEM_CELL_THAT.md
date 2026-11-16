@@ -505,7 +505,7 @@ move results\experiment_real_* results\e1\
 move results\telemetry_* results\e1\
 ```
 
-**6. Điểm công cụ: twin so với tủ điều khiển** (khoảng 30 phút, chạy xong trước buổi `e3-1`
+**6. Điểm công cụ: twin so với tủ điều khiển** (chạy xong trước buổi `e3-1`
 của B5). Chìa ở TEACH, robot chỉ jog tay, tốc độ thấp. Máy tính chỉ đọc vị trí (lệnh HSE 0x75),
 không gửi lệnh chuyển động, servo, job hay I/O. Ở mỗi tư thế, máy đọc góc khớp và điểm công cụ
 mà tủ điều khiển tính, tự tính điểm công cụ của twin từ cùng góc khớp, rồi ghi khoảng cách giữa
@@ -582,26 +582,22 @@ git pull
 ```
 
 `git pull` báo lỗi vì file ở máy đã sửa: làm khối sửa lỗi `git pull` ở A1. Sau lần cập nhật này, tới
-hết buổi `e4-2` không chạy `git pull` nữa. Buổi `e3-1` chỉ bắt đầu khi đủ sáu mục dưới và thầy đã
+hết buổi `e4-2` không chạy `git pull` nữa. Buổi `e3-1` chỉ bắt đầu khi đủ bốn mục dưới và thầy đã
 xác nhận các file gửi về.
 
 1. Lệnh 6 của B3 đã chạy; ảnh màn hình TOOL01 và hai file `e1_tcp_*` đã gửi.
-2. Ảnh màn hình các hệ toạ độ người dùng trên pendant (MAIN MENU → ROBOT → USER COORD) đã gửi,
-   mỗi user frame đã khai một ảnh. Không sửa số nào trên màn hình này.
-3. Ba file mô hình của E3 nằm trong `models\`; lệnh kiểm ở mục **Nhận mô hình** dưới đây in ba
+2. Ba file mô hình của E3 nằm trong `models\`; lệnh kiểm ở mục **Nhận mô hình** dưới đây in ba
    dòng `True`.
-4. Lệnh `git diff --stat 3d06434 HEAD -- scripts src config tools` không in dòng nào: mã chạy và
+3. Lệnh `git diff --stat 3d06434 HEAD -- scripts src config tools` không in dòng nào: mã chạy và
    cấu hình giống hệt commit `3d06434`, lần cập nhật trước E3 chỉ thêm mô hình vào `models\` và sửa
    hướng dẫn trong `docs\`. In ra dòng nào: DỪNG. Lệnh `git status --porcelain --untracked-files=no`
    không in dòng nào; in ra dòng nào, tức có file trong mã hay trong `config\` đã sửa ở máy: DỪNG.
    **Ghi:** dòng in ra của `git log -1 --format=%h`.
-5. Ổ D: còn ít nhất 60 GB trống, đo bằng lệnh `[math]::Floor((Get-PSDrive D).Free / 1GB)` (một buổi
-   E3 ghi tới khoảng 44 GB ảnh vào ổ D:). Thiếu chỗ: DỪNG, báo thầy; không tự xoá gì.
-6. Sau khi dán dòng biến của buổi `e3-1`, lệnh C chạy với `--dry-run` ở cuối in
+4. Sau khi dán dòng biến của buổi `e3-1`, lệnh C chạy với `--dry-run` ở cuối in
    `Placement check: off`, dòng `3 arm(s), 12 block(s) of 25 trials.` và danh sách khối có đủ ba
    mã A, B, C.
 
-**Gửi:** ảnh của mục 1 và 2, hai file `e1_tcp_*`, các dòng in ra ở mục 3 đến 6.
+**Gửi:** ảnh TOOL01 và hai file `e1_tcp_*` của mục 1, các dòng in ra ở mục 2 đến 4.
 
 **Giữ cố định từ buổi `e3-1` tới hết buổi `e4-2`.** Các buổi E3, E4 chỉ so được với nhau và với
 E2 khó khi cell, mã và cấu hình không đổi giữa các buổi; một số thay đổi, như sửa TOOL01 trên
@@ -697,7 +693,7 @@ theo B1.
 
    Mở lại PowerShell giữa buổi thì dán lại dòng này.
 
-2. **Kiểm file rời, ổ D:, mô hình.**
+2. **Kiểm file rời, mô hình.**
 
    ```
    dir results\experiment_real_*
@@ -705,14 +701,8 @@ theo B1.
 
    Phải không in ra gì. Còn file thì dồn về thư mục của buổi trước.
 
-   ```
-   [math]::Floor((Get-PSDrive D).Free / 1GB)
-   ```
-
-   **Đạt khi:** số in ra, tức số GB còn trống trên ổ D:, không dưới 60. Dưới 60: DỪNG.
-
    Buổi của B5: chạy lệnh kiểm SHA-256 ở mục **Nhận mô hình** của B5 cho mọi file mà buổi dùng, và
-   hai lệnh git ở mục 4 của phần **Trước buổi `e3-1`** trong B5. **Đạt khi:** lệnh kiểm SHA-256 đạt
+   hai lệnh git ở mục 3 của phần **Trước buổi `e3-1`** trong B5. **Đạt khi:** lệnh kiểm SHA-256 đạt
    như ở mục **Nhận mô hình**, mã commit trùng mã đã ghi trước buổi `e3-1`, `git status` không in dòng
    nào. Không đạt: DỪNG.
    **Ghi:** số GB trống của ổ D:, kết quả kiểm SHA-256 và mã commit.
@@ -824,8 +814,6 @@ theo B1.
 9. **Gửi.** Ghi trang nhật ký của buổi vào `results\<tên buổi>\nhat_ky.txt`, rồi gửi một thư mục
    `results\<tên buổi>\` (ảnh màu và ảnh độ sâu của từng lượt đã gom vào `anh\` ở bước 8). Thư mục
    `D:\Scientific\Dataset\DigitalTwin\frames` không gửi và không xoá. Đo chỗ trống còn lại của ổ D:
-   bằng `[math]::Floor((Get-PSDrive D).Free / 1GB)` và ghi vào nhật ký; dưới 60 GB thì báo thầy trước
-   buổi sau.
 
 **Buổi lỗi.** Các lỗi kỹ thuật và lỗi quy trình sau làm cả buổi lỗi:
 
