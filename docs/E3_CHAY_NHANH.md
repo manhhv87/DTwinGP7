@@ -40,8 +40,8 @@ git status --porcelain --untracked-files=no
 
 **3. Điểm công cụ (lệnh 6 của B3).**
 
-- Chụp một ảnh màn hình tay dạy: MAIN MENU, ROBOT, TOOL, tool số 1; ảnh thấy đủ X, Y, Z, Rx, Ry,
-  Rz. Không sửa số nào.
+- Trên tay dạy vào MAIN MENU → ROBOT → TOOL → chọn tool số 1, chụp một ảnh màn hình này (ảnh thấy
+  đủ X, Y, Z, Rx, Ry, Rz). Không sửa số nào.
 - Chìa ở TEACH, chọn TOOL01, hệ Robot, rồi chạy:
 
   ```
